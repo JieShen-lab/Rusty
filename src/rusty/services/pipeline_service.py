@@ -204,6 +204,7 @@ class PipelineService:
             response = self.ai_client.chat(model, api_key, message_builder(chapter, template))
             saver(chapter, model, template, response)
             self._mark_stage(chapter_id, stage, "completed", response.elapsed_ms, response.token_usage)
+            self._resolve_stage_errors(chapter_id, stage)
             return response.text
         except Exception as exc:
             self._mark_stage(chapter_id, stage, "failed")
@@ -457,6 +458,17 @@ class PipelineService:
                 VALUES (?, ?, ?, ?)
                 """,
                 (chapter_id, stage, type(exc).__name__, str(exc)),
+            )
+
+    def _resolve_stage_errors(self, chapter_id: int, stage: str) -> None:
+        with session(self.database_path) as connection:
+            connection.execute(
+                """
+                UPDATE chapter_errors
+                SET resolved_at = CURRENT_TIMESTAMP
+                WHERE chapter_id = ? AND stage = ? AND resolved_at IS NULL
+                """,
+                (chapter_id, stage),
             )
 
     def _set_project_status(self, project_id: int, status: str) -> None:

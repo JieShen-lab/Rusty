@@ -115,6 +115,7 @@ class PipelineServiceTests(unittest.TestCase):
             retried = retrying.retry_chapter_stage(chapter_id, "summary")
             result = retrying.run_project(project_id, should_pause=lambda: True)
             diagnostics_errors = retrying.list_chapter_errors(chapter_id)
+            historical_errors = retrying.list_chapter_errors(chapter_id, include_resolved=True)
             diagnostics_statuses = retrying.list_chapter_stage_statuses(chapter_id)
 
             connection = sqlite3.connect(database_path)
@@ -126,8 +127,10 @@ class PipelineServiceTests(unittest.TestCase):
         self.assertEqual("Structured summary.", retried)
         self.assertEqual(1, errors)
         self.assertTrue(result.paused)
-        self.assertEqual(1, len(diagnostics_errors))
-        self.assertEqual("summary", diagnostics_errors[0].stage)
+        self.assertEqual([], diagnostics_errors)
+        self.assertEqual(1, len(historical_errors))
+        self.assertEqual("summary", historical_errors[0].stage)
+        self.assertIsNotNone(historical_errors[0].resolved_at)
         self.assertTrue(any(status.stage == "summary" for status in diagnostics_statuses))
 
     def test_pipeline_prefers_project_model_and_prompt_settings(self) -> None:
