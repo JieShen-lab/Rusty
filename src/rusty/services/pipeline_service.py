@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
 
@@ -235,7 +235,36 @@ class PipelineService:
         )
         if template is None:
             raise ValueError("No prompt template configured.")
-        return template
+        return self._apply_project_prompt_overrides(project_id, template)
+
+    def _apply_project_prompt_overrides(self, project_id: int, template: PromptTemplate) -> PromptTemplate:
+        prompts = self.prompt_service.list_project_prompts(project_id)
+        if not prompts:
+            return template
+
+        global_rules = _append_prompt(
+            template.global_rules,
+            prompts.get("global_rules") or prompts.get("global") or prompts.get("global_override"),
+        )
+        summary_rules = _append_prompt(
+            template.summary_rules,
+            prompts.get("summary_rules") or prompts.get("summary") or prompts.get("summary_override"),
+        )
+        scene_detection_rules = _append_prompt(
+            template.scene_detection_rules,
+            prompts.get("scene_detection_rules") or prompts.get("scene_detection") or prompts.get("scene_override"),
+        )
+        rewrite_rules = _append_prompt(
+            template.rewrite_rules,
+            prompts.get("rewrite_rules") or prompts.get("rewrite") or prompts.get("rewrite_override"),
+        )
+        return replace(
+            template,
+            global_rules=global_rules,
+            summary_rules=summary_rules,
+            scene_detection_rules=scene_detection_rules,
+            rewrite_rules=rewrite_rules,
+        )
 
     @staticmethod
     def _summary_messages(chapter: ChapterRecord, template: PromptTemplate) -> list[dict[str, str]]:
@@ -514,3 +543,13 @@ def _parse_scene_response(text: str) -> dict:
         "labels": labels,
         "reasoning": str(data.get("reasoning", "")),
     }
+
+
+def _append_prompt(base: str, override: str | None) -> str:
+    override_text = (override or "").strip()
+    if not override_text:
+        return base
+    base_text = base.strip()
+    if not base_text:
+        return override_text
+    return f"{base_text}\n\n{override_text}"

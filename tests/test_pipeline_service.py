@@ -174,6 +174,55 @@ class PipelineServiceTests(unittest.TestCase):
         self.assertEqual("project-model", used_model.model_name)
         self.assertIn("Project summary", messages[-1]["content"])
 
+    def test_pipeline_applies_project_prompt_overrides(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            database_path = root / "rusty.db"
+            source_path = root / "book.txt"
+            source_path.write_text("1. One\nOriginal text.", encoding="utf-8")
+
+            project_service = ProjectService(database_path)
+            project_id = project_service.import_book(source_path, root)
+            chapter_id = project_service.list_chapters(project_id)[0].id
+            ModelService(database_path).create_model(
+                display_name="Fake",
+                provider="openai_compatible",
+                base_url="https://api.example.test/v1",
+                model_name="fake-model",
+                is_default=True,
+            )
+            prompt_service = PromptService(database_path)
+            prompt_service.create_template(
+                name="Default",
+                global_rules="Base global",
+                summary_rules="Base summary",
+                scene_detection_rules="Base scene",
+                rewrite_rules="Base rewrite",
+                is_default=True,
+            )
+            prompt_service.save_project_prompt(project_id, "global_override", "Project global")
+            prompt_service.save_project_prompt(project_id, "summary_rules", "Project summary")
+            prompt_service.save_project_prompt(project_id, "scene_detection_rules", "Project scene")
+            prompt_service.save_project_prompt(project_id, "rewrite_rules", "Project rewrite")
+
+            fake_client = FakeAIClient()
+            pipeline = PipelineService(database_path, ai_client=fake_client)
+            pipeline.summarize_chapter(chapter_id)
+            pipeline.detect_scene(chapter_id)
+            pipeline.rewrite_chapter(chapter_id)
+
+        summary_messages = fake_client.calls[0][1]
+        scene_messages = fake_client.calls[1][1]
+        rewrite_messages = fake_client.calls[2][1]
+        self.assertIn("Base global", summary_messages[0]["content"])
+        self.assertIn("Project global", summary_messages[0]["content"])
+        self.assertIn("Base summary", summary_messages[-1]["content"])
+        self.assertIn("Project summary", summary_messages[-1]["content"])
+        self.assertIn("Base scene", scene_messages[-1]["content"])
+        self.assertIn("Project scene", scene_messages[-1]["content"])
+        self.assertIn("Base rewrite", rewrite_messages[-1]["content"])
+        self.assertIn("Project rewrite", rewrite_messages[-1]["content"])
+
     def test_rewrite_uses_project_targets_and_records_target_word_count(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)
