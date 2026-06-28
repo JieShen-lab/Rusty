@@ -81,5 +81,25 @@ class ChapterRecord:
     end_line: int | None
 
 
+@dataclass(frozen=True)
+class StageStatus:
+    stage: str
+    status: str
+    retry_count: int
+    elapsed_ms: int | None
+    started_at: str | None
+    finished_at: str | None
+
+
+@dataclass(frozen=True)
+class ChapterError:
+    id: int
+    stage: str
+    error_type: str | None
+    message: str
+    created_at: str
+    resolved_at: str | None
+
+
 def count_text_units(text: str) -> int:
     return sum(1 for char in text if not char.isspace())

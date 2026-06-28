@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Callable
 
 from rusty.db import initialize_database, session
-from rusty.models import ChapterRecord, count_text_units
+from rusty.models import ChapterError, ChapterRecord, StageStatus, count_text_units
 from rusty.services.ai_client import AIClient, AIResponse, OpenAICompatibleClient
 from rusty.services.model_service import ModelConfig, ModelService
 from rusty.services.project_service import ProjectService, default_database_path
@@ -136,6 +136,53 @@ class PipelineService:
             text = chapter.rewritten_text or chapter.original_text
             parts.append(f"{chapter.title}\n\n{text.strip()}")
         return "\n\n".join(parts).strip() + "\n"
+
+    def list_chapter_stage_statuses(self, chapter_id: int) -> list[StageStatus]:
+        with session(self.database_path) as connection:
+            rows = connection.execute(
+                """
+                SELECT stage, status, retry_count, elapsed_ms, started_at, finished_at
+                FROM chapter_stage_status
+                WHERE chapter_id = ?
+                ORDER BY stage
+                """,
+                (chapter_id,),
+            ).fetchall()
+        return [
+            StageStatus(
+                stage=row["stage"],
+                status=row["status"],
+                retry_count=row["retry_count"],
+                elapsed_ms=row["elapsed_ms"],
+                started_at=row["started_at"],
+                finished_at=row["finished_at"],
+            )
+            for row in rows
+        ]
+
+    def list_chapter_errors(self, chapter_id: int, include_resolved: bool = False) -> list[ChapterError]:
+        where = "chapter_id = ?" if include_resolved else "chapter_id = ? AND resolved_at IS NULL"
+        with session(self.database_path) as connection:
+            rows = connection.execute(
+                f"""
+                SELECT id, stage, error_type, message, created_at, resolved_at
+                FROM chapter_errors
+                WHERE {where}
+                ORDER BY created_at DESC, id DESC
+                """,
+                (chapter_id,),
+            ).fetchall()
+        return [
+            ChapterError(
+                id=row["id"],
+                stage=row["stage"],
+                error_type=row["error_type"],
+                message=row["message"],
+                created_at=row["created_at"],
+                resolved_at=row["resolved_at"],
+            )
+            for row in rows
+        ]
 
     def _run_chapter_stage(
         self,

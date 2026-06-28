@@ -501,6 +501,10 @@ class RustyMainWindow:
         self.ai_output_text = QTextEdit()
         self.ai_output_text.setReadOnly(True)
         layout.addWidget(self.ai_output_text, 1)
+        self.ai_diagnostics_text = QTextEdit()
+        self.ai_diagnostics_text.setReadOnly(True)
+        self.ai_diagnostics_text.setPlaceholderText("Stage status and open errors for the selected chapter.")
+        layout.addWidget(self.ai_diagnostics_text, 1)
         return page
 
     def show(self) -> None:
@@ -744,6 +748,32 @@ class RustyMainWindow:
             return
         self.QMessageBox.information(self.window, "Project prompt", "Project prompt saved.")
 
+    def refresh_ai_diagnostics(self, chapter_id: int | None = None) -> None:
+        target_chapter_id = chapter_id if chapter_id is not None else self.selected_chapter_id()
+        if target_chapter_id is None:
+            self.ai_diagnostics_text.clear()
+            return
+
+        statuses = self.pipeline_service.list_chapter_stage_statuses(target_chapter_id)
+        errors = self.pipeline_service.list_chapter_errors(target_chapter_id)
+        lines: list[str] = ["Stage status"]
+        if statuses:
+            for status in statuses:
+                elapsed = f", {status.elapsed_ms} ms" if status.elapsed_ms is not None else ""
+                lines.append(f"- {status.stage}: {status.status} (retries: {status.retry_count}{elapsed})")
+        else:
+            lines.append("- No stage records yet.")
+
+        lines.append("")
+        lines.append("Open errors")
+        if errors:
+            for error in errors:
+                lines.append(f"- [{error.stage}] {error.error_type or 'Error'}: {error.message}")
+        else:
+            lines.append("- No open errors.")
+
+        self.ai_diagnostics_text.setPlainText("\n".join(lines))
+
     def save_ai_project_settings(self) -> None:
         project_id = self.active_project_id()
         if project_id is None:
@@ -813,6 +843,7 @@ class RustyMainWindow:
             return
         self.ai_output_text.setPlainText(text)
         self.ai_status_label.setText(f"{label} completed.")
+        self.refresh_ai_diagnostics(chapter_id)
 
     def select_table_row(self, table, row_id: int) -> None:
         for row in range(table.rowCount()):
@@ -886,6 +917,7 @@ class RustyMainWindow:
         self.preview_title.setText(f"{chapter.index}. {chapter.title}")
         self.preview_meta.setText(f"{chapter.word_count} chars | {chapter.status}{line_info}")
         self.preview_text.setPlainText(chapter.original_text)
+        self.refresh_ai_diagnostics(chapter.id)
 
     def export_txt(self) -> None:
         project_id = self.active_project_id()
