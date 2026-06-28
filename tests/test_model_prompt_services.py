@@ -1,0 +1,110 @@
+from __future__ import annotations
+
+import sqlite3
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from rusty.db import session
+from rusty.secrets import InMemorySecretStore
+from rusty.services import ModelService, PromptService
+
+
+class ModelPromptServiceTests(unittest.TestCase):
+    def test_model_crud_stores_api_key_outside_main_database(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            database_path = Path(directory) / "rusty.db"
+            secret_store = InMemorySecretStore()
+            service = ModelService(database_path, secret_store=secret_store)
+
+            model_id = service.create_model(
+                display_name="OpenAI",
+                provider="openai_compatible",
+                base_url="https://api.example.test/v1",
+                model_name="gpt-test",
+                api_key="secret-value",
+                is_default=True,
+            )
+            models = service.list_models()
+            api_key = service.get_api_key(model_id)
+            connection = sqlite3.connect(database_path)
+            try:
+                row = connection.execute(
+                    "SELECT api_key_secret_ref FROM ai_models WHERE id = ?",
+                    (model_id,),
+                ).fetchone()
+            finally:
+                connection.close()
+
+            service.update_model(
+                model_id=model_id,
+                display_name="OpenAI Updated",
+                provider="openai_compatible",
+                base_url="https://api.example.test/v1",
+                model_name="gpt-test-2",
+                api_key=None,
+                temperature=0.2,
+                timeout_seconds=30,
+                is_default=False,
+            )
+            updated = service.list_models()[0]
+            service.delete_model(model_id)
+            remaining_models = service.list_models()
+
+        self.assertEqual(1, len(models))
+        self.assertTrue(models[0].has_api_key)
+        self.assertEqual("secret-value", api_key)
+        self.assertIsNotNone(row)
+        self.assertNotEqual("secret-value", row[0])
+        self.assertEqual("OpenAI Updated", updated.display_name)
+        self.assertEqual(0.2, updated.temperature)
+        self.assertEqual([], remaining_models)
+
+    def test_prompt_template_and_project_prompt_crud(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            database_path = Path(directory) / "rusty.db"
+            service = PromptService(database_path)
+            with session(database_path) as connection:
+                cursor = connection.execute(
+                    "INSERT INTO projects (name, status, current_stage) VALUES ('Book', 'draft', 'import')"
+                )
+                project_id = int(cursor.lastrowid)
+
+            template_id = service.create_template(
+                name="Default",
+                global_rules="global",
+                summary_rules="summary",
+                scene_detection_rules="scene",
+                rewrite_rules="rewrite",
+                is_default=True,
+            )
+            template = service.get_template(template_id)
+            service.update_template(
+                template_id,
+                name="Default v2",
+                global_rules="global2",
+                summary_rules="summary2",
+                scene_detection_rules="scene2",
+                rewrite_rules="rewrite2",
+                is_default=False,
+            )
+            updated = service.get_template(template_id)
+            service.save_project_prompt(project_id, "global_override", "project text")
+            project_prompts = service.list_project_prompts(project_id)
+            service.delete_template(template_id)
+            remaining_templates = service.list_templates()
+
+        self.assertIsNotNone(template)
+        self.assertEqual("Default", template.name)
+        self.assertIsNotNone(updated)
+        self.assertEqual("Default v2", updated.name)
+        self.assertEqual(2, updated.version)
+        self.assertEqual({"global_override": "project text"}, project_prompts)
+        self.assertEqual([], remaining_templates)
+
+
+if __name__ == "__main__":
+    unittest.main()

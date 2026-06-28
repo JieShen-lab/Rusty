@@ -32,6 +32,10 @@ The MVP app stores its local database at:
 %USERPROFILE%\AppData\Local\Rusty\rusty.db
 ```
 
+Model API keys are not stored in the main SQLite database. Rusty stores a
+keyring reference in `ai_models.api_key_secret_ref` and writes the secret value
+to the operating system keyring through the `keyring` package.
+
 Run tests without installing the package:
 
 ```powershell
@@ -51,6 +55,8 @@ python -m rusty.db.schema rusty.db
 - `src/rusty/importers/`: TXT / EPUB / DOCX parsing
 - `src/rusty/exporters/`: TXT / EPUB export
 - `src/rusty/services/project_service.py`: project persistence and import/export workflow
+- `src/rusty/services/model_service.py`: model CRUD and keyring-backed API key references
+- `src/rusty/services/prompt_service.py`: prompt template CRUD and project-level prompt overrides
 - `src/rusty/ui/main_window.py`: PySide6 main window, workbench, new-project dialog, and chapter preview
 - `src/rusty/db/connection.py`: SQLite connection defaults
 - `src/rusty/db/schema.py`: schema creation and seed data
@@ -58,4 +64,5 @@ python -m rusty.db.schema rusty.db
 - `tests/test_txt_importer.py`: TXT parsing and export tests
 - `tests/test_epub_docx.py`: EPUB / DOCX parser and EPUB export tests
 - `tests/test_project_service.py`: persistence and metadata tests
+- `tests/test_model_prompt_services.py`: model, keyring-reference, prompt, and project-prompt tests
 - `tests/test_ui_main_window.py`: offscreen UI smoke test
