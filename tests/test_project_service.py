@@ -14,6 +14,35 @@ from rusty.services import ProjectService
 
 
 class ProjectServiceTests(unittest.TestCase):
+    def test_save_chapter_rewrite_updates_export_text_and_can_clear(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            txt_path = root / "manual.txt"
+            database_path = root / "rusty.db"
+            export_path = root / "manual-export.txt"
+            txt_path.write_text("1. Opening\nOriginal text.\n", encoding="utf-8")
+
+            service = ProjectService(database_path)
+            project_id = service.import_book(txt_path, root)
+            chapter = service.list_chapters(project_id)[0]
+
+            service.save_chapter_rewrite(chapter.id, "Manual rewrite.")
+            updated = service.get_chapter(chapter.id)
+            service.export_txt(project_id, export_path)
+            exported_text = export_path.read_text(encoding="utf-8")
+
+            service.save_chapter_rewrite(chapter.id, "")
+            cleared = service.get_chapter(chapter.id)
+
+        self.assertIsNotNone(updated)
+        self.assertEqual("Manual rewrite.", updated.rewritten_text)
+        self.assertEqual("rewritten", updated.status)
+        self.assertIn("Manual rewrite.", exported_text)
+        self.assertNotIn("Original text.", exported_text)
+        self.assertIsNotNone(cleared)
+        self.assertIsNone(cleared.rewritten_text)
+        self.assertEqual("imported", cleared.status)
+
     def test_import_docx_persists_metadata_and_exports_epub(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)
@@ -48,4 +77,3 @@ class ProjectServiceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

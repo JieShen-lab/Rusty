@@ -239,6 +239,8 @@ class RustyMainWindow:
         self.refresh_button.clicked.connect(self.load_projects)
         self.preview_export_txt_button.clicked.connect(self.export_txt)
         self.preview_export_epub_button.clicked.connect(self.export_epub)
+        self.save_rewrite_button.clicked.connect(self.save_selected_chapter_rewrite)
+        self.clear_rewrite_button.clicked.connect(self.clear_selected_chapter_rewrite)
         self.project_table.itemSelectionChanged.connect(self.project_table_selection_changed)
         self.project_table.doubleClicked.connect(self.open_selected_project_preview)
         self.chapter_list.currentItemChanged.connect(self.chapter_selected)
@@ -306,8 +308,12 @@ class RustyMainWindow:
         self.preview_project_label = QLabel("No project selected")
         self.preview_export_txt_button = QPushButton("Export TXT")
         self.preview_export_epub_button = QPushButton("Export EPUB")
+        self.save_rewrite_button = QPushButton("Save Rewritten Text")
+        self.clear_rewrite_button = QPushButton("Clear Rewrite")
         toolbar.addWidget(self.preview_project_label)
         toolbar.addStretch(1)
+        toolbar.addWidget(self.save_rewrite_button)
+        toolbar.addWidget(self.clear_rewrite_button)
         toolbar.addWidget(self.preview_export_txt_button)
         toolbar.addWidget(self.preview_export_epub_button)
         layout.addLayout(toolbar)
@@ -325,9 +331,13 @@ class RustyMainWindow:
         self.preview_meta.setWordWrap(True)
         self.preview_text = QTextEdit()
         self.preview_text.setReadOnly(True)
+        self.rewrite_text = QTextEdit()
         preview_panel_layout.addWidget(self.preview_title)
         preview_panel_layout.addWidget(self.preview_meta)
+        preview_panel_layout.addWidget(QLabel("Original"))
         preview_panel_layout.addWidget(self.preview_text, 1)
+        preview_panel_layout.addWidget(QLabel("Rewritten"))
+        preview_panel_layout.addWidget(self.rewrite_text, 1)
         splitter.addWidget(preview_panel)
         splitter.setSizes([360, 840])
         layout.addWidget(splitter, 1)
@@ -949,7 +959,7 @@ class RustyMainWindow:
             return
         self.open_project_preview(project_id)
 
-    def open_project_preview(self, project_id: int) -> None:
+    def open_project_preview(self, project_id: int, focus_chapter_id: int | None = None) -> None:
         self.current_project_id = project_id
         self.chapters = self.service.list_chapters(project_id)
         self.load_project_ai_settings(project_id)
@@ -965,11 +975,12 @@ class RustyMainWindow:
 
         self.stack.setCurrentWidget(self.preview_page)
         if self.chapters:
-            self.chapter_list.setCurrentRow(0)
+            self.select_chapter_item(focus_chapter_id or self.chapters[0].id)
         else:
             self.preview_title.setText("No chapters")
             self.preview_meta.setText("")
             self.preview_text.clear()
+            self.rewrite_text.clear()
 
     def chapter_selected(self, current, previous) -> None:
         if current is None:
@@ -985,7 +996,40 @@ class RustyMainWindow:
         self.preview_title.setText(f"{chapter.index}. {chapter.title}")
         self.preview_meta.setText(f"{chapter.word_count} chars | {chapter.status}{line_info}")
         self.preview_text.setPlainText(chapter.original_text)
+        self.rewrite_text.setPlainText(chapter.rewritten_text or "")
         self.refresh_ai_diagnostics(chapter.id)
+
+    def save_selected_chapter_rewrite(self) -> None:
+        chapter_id = self.selected_chapter_id()
+        if chapter_id is None:
+            self.QMessageBox.information(self.window, "Save rewrite", "Select a chapter first.")
+            return
+
+        try:
+            self.service.save_chapter_rewrite(chapter_id, self.rewrite_text.toPlainText())
+        except Exception as exc:  # noqa: BLE001
+            self.QMessageBox.critical(self.window, "Save rewrite failed", str(exc))
+            return
+
+        if self.current_project_id is not None:
+            self.open_project_preview(self.current_project_id, chapter_id)
+        self.QMessageBox.information(self.window, "Save rewrite", "Rewritten text saved.")
+
+    def clear_selected_chapter_rewrite(self) -> None:
+        chapter_id = self.selected_chapter_id()
+        if chapter_id is None:
+            self.QMessageBox.information(self.window, "Clear rewrite", "Select a chapter first.")
+            return
+
+        try:
+            self.service.save_chapter_rewrite(chapter_id, "")
+        except Exception as exc:  # noqa: BLE001
+            self.QMessageBox.critical(self.window, "Clear rewrite failed", str(exc))
+            return
+
+        self.rewrite_text.clear()
+        if self.current_project_id is not None:
+            self.open_project_preview(self.current_project_id, chapter_id)
 
     def export_txt(self) -> None:
         project_id = self.active_project_id()
@@ -1039,6 +1083,14 @@ class RustyMainWindow:
             return None
         return int(current.data(self.Qt.ItemDataRole.UserRole))
 
+    def select_chapter_item(self, chapter_id: int) -> None:
+        for row in range(self.chapter_list.count()):
+            item = self.chapter_list.item(row)
+            if item is not None and int(item.data(self.Qt.ItemDataRole.UserRole)) == chapter_id:
+                self.chapter_list.setCurrentRow(row)
+                return
+        self.chapter_list.setCurrentRow(0)
+
     def active_project_id(self) -> int | None:
         return self.selected_project_id() or self.current_project_id
 
@@ -1063,3 +1115,4 @@ class RustyMainWindow:
         self.preview_title.setText("No projects yet")
         self.preview_meta.setText("")
         self.preview_text.setPlainText("Create a project to preview chapters.")
+        self.rewrite_text.clear()

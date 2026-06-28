@@ -8,7 +8,7 @@ from pathlib import Path
 from rusty.db import initialize_database, session
 from rusty.exporters import build_txt_export, export_epub
 from rusty.importers import parse_docx, parse_epub, parse_txt
-from rusty.models import ChapterRecord, ParsedBook, ProjectSettings, ProjectSummary
+from rusty.models import ChapterRecord, ParsedBook, ProjectSettings, ProjectSummary, count_text_units
 
 
 def default_database_path() -> Path:
@@ -266,6 +266,54 @@ class ProjectService:
             ).fetchone()
 
         return self._chapter_from_row(row) if row is not None else None
+
+    def save_chapter_rewrite(self, chapter_id: int, rewritten_text: str) -> None:
+        chapter = self.get_chapter(chapter_id)
+        if chapter is None:
+            raise ValueError(f"Chapter not found: {chapter_id}")
+
+        text = rewritten_text.strip()
+        with session(self.database_path) as connection:
+            if not text:
+                connection.execute("DELETE FROM chapter_rewrites WHERE chapter_id = ?", (chapter_id,))
+                connection.execute(
+                    """
+                    UPDATE chapters
+                    SET rewritten_text = NULL, status = 'imported', updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (chapter_id,),
+                )
+                return
+
+            word_count = count_text_units(text)
+            ratio = word_count / chapter.word_count if chapter.word_count else None
+            connection.execute(
+                """
+                INSERT INTO chapter_rewrites (
+                    chapter_id,
+                    rewritten_text,
+                    actual_word_count,
+                    expansion_ratio,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(chapter_id)
+                DO UPDATE SET
+                    rewritten_text = excluded.rewritten_text,
+                    actual_word_count = excluded.actual_word_count,
+                    expansion_ratio = excluded.expansion_ratio,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (chapter_id, text, word_count, ratio),
+            )
+            connection.execute(
+                """
+                UPDATE chapters
+                SET rewritten_text = ?, status = 'rewritten', updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (text, chapter_id),
+            )
 
     def export_txt(self, project_id: int, output_path: str | Path) -> Path:
         chapters = self.list_chapters(project_id)
