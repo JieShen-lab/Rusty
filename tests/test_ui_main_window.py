@@ -43,6 +43,8 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual("Run Project Pipeline", window.ai_run_project_button.text())
         self.assertEqual("Save Project AI Settings", window.ai_save_settings_button.text())
         self.assertTrue(hasattr(window, "ai_diagnostics_text"))
+        self.assertTrue(hasattr(window, "run_background_task"))
+        self.assertEqual([], window.running_tasks)
         self.assertEqual(0, window.project_table.rowCount())
 
 

@@ -5,6 +5,7 @@ from pathlib import Path
 
 from rusty.models import ChapterRecord, ParsedBook, ProjectSummary
 from rusty.services import ModelService, PipelineService, ProjectService, PromptService
+from rusty.ui.task_runner import RunningTask, start_background_task
 
 
 class NewProjectDialog:
@@ -184,6 +185,7 @@ class RustyMainWindow:
         self.current_project_id: int | None = None
         self.current_model_id: int | None = None
         self.current_template_id: int | None = None
+        self.running_tasks: list[RunningTask] = []
 
         self.window = QMainWindow()
         self.window.setWindowTitle("Rusty")
@@ -655,12 +657,24 @@ class RustyMainWindow:
         if self.current_model_id is None:
             self.QMessageBox.information(self.window, "Test connection", "Select a saved model first.")
             return
-        result = self.model_service.test_connection(self.current_model_id)
-        if result.ok:
-            elapsed = f" ({result.elapsed_ms} ms)" if result.elapsed_ms is not None else ""
-            self.QMessageBox.information(self.window, "Test connection", f"Connection OK{elapsed}\n{result.message}")
-        else:
-            self.QMessageBox.critical(self.window, "Test connection failed", result.message)
+        model_id = self.current_model_id
+
+        def on_success(result) -> None:
+            if result.ok:
+                elapsed = f" ({result.elapsed_ms} ms)" if result.elapsed_ms is not None else ""
+                self.QMessageBox.information(
+                    self.window,
+                    "Test connection",
+                    f"Connection OK{elapsed}\n{result.message}",
+                )
+            else:
+                self.QMessageBox.critical(self.window, "Test connection failed", result.message)
+
+        self.run_background_task(
+            "Testing model connection...",
+            lambda: self.model_service.test_connection(model_id),
+            on_success,
+        )
 
     def load_templates(self) -> None:
         selected_template_id = self.ai_template_combo.currentData()
@@ -814,16 +828,19 @@ class RustyMainWindow:
         if project_id is None:
             self.QMessageBox.information(self.window, "AI Pipeline", "Select a project first.")
             return
-        try:
-            result = self.pipeline_service.run_project(project_id)
-        except Exception as exc:  # noqa: BLE001
-            self.QMessageBox.critical(self.window, "AI pipeline failed", str(exc))
-            return
-        self.ai_status_label.setText(
-            f"Processed: {result.processed} | Failed: {result.failed} | Paused: {result.paused}"
+
+        def on_success(result) -> None:
+            self.ai_status_label.setText(
+                f"Processed: {result.processed} | Failed: {result.failed} | Paused: {result.paused}"
+            )
+            self.load_projects()
+            self.open_project_preview(project_id)
+
+        self.run_background_task(
+            "Project pipeline running...",
+            lambda: self.pipeline_service.run_project(project_id),
+            on_success,
         )
-        self.load_projects()
-        self.open_project_preview(project_id)
 
     def pause_current_project(self) -> None:
         project_id = self.active_project_id()
@@ -850,14 +867,51 @@ class RustyMainWindow:
         if chapter_id is None:
             self.QMessageBox.information(self.window, "AI Pipeline", "Select a chapter first.")
             return
-        try:
-            text = action(chapter_id)
-        except Exception as exc:  # noqa: BLE001
-            self.QMessageBox.critical(self.window, f"{label} failed", str(exc))
-            return
-        self.ai_output_text.setPlainText(text)
-        self.ai_status_label.setText(f"{label} completed.")
-        self.refresh_ai_diagnostics(chapter_id)
+
+        def on_success(text) -> None:
+            self.ai_output_text.setPlainText(text)
+            self.ai_status_label.setText(f"{label} completed.")
+            self.refresh_ai_diagnostics(chapter_id)
+
+        self.run_background_task(
+            f"{label} running...",
+            lambda: action(chapter_id),
+            on_success,
+            failure_title=f"{label} failed",
+        )
+
+    def run_background_task(
+        self,
+        status_text: str,
+        task,
+        on_success,
+        failure_title: str = "Task failed",
+    ) -> None:
+        self.set_ai_controls_enabled(False)
+        self.ai_status_label.setText(status_text)
+        running_task: RunningTask | None = None
+
+        def on_failure(message: str) -> None:
+            self.QMessageBox.critical(self.window, failure_title, message)
+            self.ai_status_label.setText(message)
+
+        def on_finished() -> None:
+            self.set_ai_controls_enabled(True)
+            if running_task in self.running_tasks:
+                self.running_tasks.remove(running_task)
+
+        running_task = start_background_task(task, on_success, on_failure, on_finished)
+        self.running_tasks.append(running_task)
+
+    def set_ai_controls_enabled(self, enabled: bool) -> None:
+        for button in (
+            self.model_test_button,
+            self.ai_run_project_button,
+            self.ai_summary_button,
+            self.ai_scene_button,
+            self.ai_rewrite_button,
+        ):
+            button.setEnabled(enabled)
 
     def select_table_row(self, table, row_id: int) -> None:
         for row in range(table.rowCount()):
