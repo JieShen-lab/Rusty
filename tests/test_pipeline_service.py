@@ -174,6 +174,7 @@ class PipelineServiceTests(unittest.TestCase):
             pipeline = PipelineService(database_path, ai_client=fake_client)
             result = pipeline.run_project(project_id)
             chapter = project_service.get_chapter(chapter_id)
+            project = project_service.get_project(project_id)
 
         self.assertEqual(1, result.processed)
         self.assertEqual(1, result.skipped)
@@ -181,6 +182,8 @@ class PipelineServiceTests(unittest.TestCase):
         self.assertIsNotNone(chapter)
         self.assertEqual("kept_original", chapter.status)
         self.assertIsNone(chapter.rewritten_text)
+        self.assertIsNotNone(project)
+        self.assertEqual(1, project.completed_chapters)
         self.assertEqual(2, len(fake_client.calls))
 
     def test_pipeline_prefers_project_model_and_prompt_settings(self) -> None:

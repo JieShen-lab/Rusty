@@ -297,35 +297,71 @@ class ProjectService:
                     """,
                     (chapter_id,),
                 )
-                return
+            else:
+                word_count = count_text_units(text)
+                ratio = word_count / chapter.word_count if chapter.word_count else None
+                connection.execute(
+                    """
+                    INSERT INTO chapter_rewrites (
+                        chapter_id,
+                        rewritten_text,
+                        actual_word_count,
+                        expansion_ratio,
+                        updated_at
+                    ) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(chapter_id)
+                    DO UPDATE SET
+                        rewritten_text = excluded.rewritten_text,
+                        actual_word_count = excluded.actual_word_count,
+                        expansion_ratio = excluded.expansion_ratio,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (chapter_id, text, word_count, ratio),
+                )
+                connection.execute(
+                    """
+                    UPDATE chapters
+                    SET rewritten_text = ?, status = 'rewritten', updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (text, chapter_id),
+                )
+        self.refresh_project_progress(chapter.project_id)
 
-            word_count = count_text_units(text)
-            ratio = word_count / chapter.word_count if chapter.word_count else None
+    def refresh_project_progress(self, project_id: int) -> None:
+        with session(self.database_path) as connection:
+            row = connection.execute(
+                """
+                SELECT
+                    COUNT(*) AS total_chapters,
+                    COALESCE(SUM(word_count), 0) AS total_words,
+                    COALESCE(
+                        SUM(CASE WHEN status IN ('rewritten', 'kept_original') THEN 1 ELSE 0 END),
+                        0
+                    ) AS completed_chapters
+                FROM chapters
+                WHERE project_id = ?
+                """,
+                (project_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"Project not found: {project_id}")
             connection.execute(
                 """
-                INSERT INTO chapter_rewrites (
-                    chapter_id,
-                    rewritten_text,
-                    actual_word_count,
-                    expansion_ratio,
-                    updated_at
-                ) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(chapter_id)
-                DO UPDATE SET
-                    rewritten_text = excluded.rewritten_text,
-                    actual_word_count = excluded.actual_word_count,
-                    expansion_ratio = excluded.expansion_ratio,
+                UPDATE projects
+                SET
+                    total_chapters = ?,
+                    total_words = ?,
+                    completed_chapters = ?,
                     updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND deleted_at IS NULL
                 """,
-                (chapter_id, text, word_count, ratio),
-            )
-            connection.execute(
-                """
-                UPDATE chapters
-                SET rewritten_text = ?, status = 'rewritten', updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-                """,
-                (text, chapter_id),
+                (
+                    row["total_chapters"],
+                    row["total_words"],
+                    row["completed_chapters"],
+                    project_id,
+                ),
             )
 
     def export_txt(self, project_id: int, output_path: str | Path) -> Path:

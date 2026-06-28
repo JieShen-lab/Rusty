@@ -290,9 +290,9 @@ class RustyMainWindow:
         toolbar.addWidget(self.status_label)
         layout.addLayout(toolbar)
 
-        self.project_table = QTableWidget(0, 8)
+        self.project_table = QTableWidget(0, 9)
         self.project_table.setHorizontalHeaderLabels(
-            ["ID", "Name", "Book", "Format", "Chapters", "Chars", "Status", "Updated"]
+            ["ID", "Name", "Book", "Format", "Chapters", "Chars", "Progress", "Status", "Updated"]
         )
         self.project_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.project_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -578,6 +578,7 @@ class RustyMainWindow:
                 (project.source_format or "").upper(),
                 project.total_chapters,
                 project.total_words,
+                self.project_progress_text(project),
                 project.status,
                 project.updated_at,
             ]
@@ -1026,6 +1027,13 @@ class RustyMainWindow:
         if len(compacted) <= limit:
             return compacted
         return f"{compacted[: max(0, limit - 3)]}..."
+
+    @staticmethod
+    def project_progress_text(project: ProjectSummary) -> str:
+        if project.total_chapters <= 0:
+            return "0/0"
+        percent = round(project.completed_chapters * 100 / project.total_chapters)
+        return f"{project.completed_chapters}/{project.total_chapters} ({percent}%)"
 
     def new_project(self) -> None:
         dialog = NewProjectDialog(self.window, self.service)

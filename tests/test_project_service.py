@@ -49,16 +49,20 @@ class ProjectServiceTests(unittest.TestCase):
 
             service.save_chapter_rewrite(chapter.id, "Manual rewrite.")
             updated = service.get_chapter(chapter.id)
+            project_after_rewrite = service.get_project(project_id)
             service.export_txt(project_id, export_path)
             export_records = service.list_exports(project_id)
             exported_text = export_path.read_text(encoding="utf-8")
 
             service.save_chapter_rewrite(chapter.id, "")
             cleared = service.get_chapter(chapter.id)
+            project_after_clear = service.get_project(project_id)
 
         self.assertIsNotNone(updated)
         self.assertEqual("Manual rewrite.", updated.rewritten_text)
         self.assertEqual("rewritten", updated.status)
+        self.assertIsNotNone(project_after_rewrite)
+        self.assertEqual(1, project_after_rewrite.completed_chapters)
         self.assertEqual(1, len(export_records))
         self.assertEqual("txt", export_records[0].export_format)
         self.assertEqual(str(export_path), export_records[0].output_path)
@@ -68,6 +72,8 @@ class ProjectServiceTests(unittest.TestCase):
         self.assertIsNotNone(cleared)
         self.assertIsNone(cleared.rewritten_text)
         self.assertEqual("imported", cleared.status)
+        self.assertIsNotNone(project_after_clear)
+        self.assertEqual(0, project_after_clear.completed_chapters)
 
     def test_import_docx_persists_metadata_and_exports_epub(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:

@@ -488,6 +488,7 @@ class PipelineService:
                 """,
                 (response.text, chapter.id),
             )
+        self.project_service.refresh_project_progress(chapter.project_id)
 
     def _mark_stage(
         self,
@@ -568,6 +569,9 @@ class PipelineService:
             )
 
     def _mark_chapter_kept_original(self, chapter_id: int) -> None:
+        chapter = self.project_service.get_chapter(chapter_id)
+        if chapter is None:
+            raise ValueError(f"Chapter not found: {chapter_id}")
         with session(self.database_path) as connection:
             connection.execute(
                 """
@@ -577,6 +581,7 @@ class PipelineService:
                 """,
                 (chapter_id,),
             )
+        self.project_service.refresh_project_progress(chapter.project_id)
 
     @staticmethod
     def _scene_needs_rewrite(scene_text: str) -> bool:

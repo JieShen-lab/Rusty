@@ -63,6 +63,8 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual("ab...", window.compact_text("abcdef", 5))
         self.assertEqual([], window.running_tasks)
         self.assertEqual(0, window.project_table.rowCount())
+        self.assertEqual(9, window.project_table.columnCount())
+        self.assertEqual("Progress", window.project_table.horizontalHeaderItem(6).text())
 
 
 if __name__ == "__main__":
