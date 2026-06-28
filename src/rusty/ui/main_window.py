@@ -244,6 +244,7 @@ class RustyMainWindow:
         self.model_new_button.clicked.connect(self.clear_model_form)
         self.model_save_button.clicked.connect(self.save_model)
         self.model_delete_button.clicked.connect(self.delete_model)
+        self.model_test_button.clicked.connect(self.test_model_connection)
         self.template_table.itemSelectionChanged.connect(self.template_selection_changed)
         self.template_new_button.clicked.connect(self.clear_template_form)
         self.template_save_button.clicked.connect(self.save_template)
@@ -352,9 +353,11 @@ class RustyMainWindow:
         self.model_new_button = QPushButton("New")
         self.model_save_button = QPushButton("Save")
         self.model_delete_button = QPushButton("Delete")
+        self.model_test_button = QPushButton("Test Connection")
         buttons.addWidget(self.model_new_button)
         buttons.addWidget(self.model_save_button)
         buttons.addWidget(self.model_delete_button)
+        buttons.addWidget(self.model_test_button)
         buttons.addStretch(1)
         layout.addLayout(buttons)
 
@@ -647,6 +650,17 @@ class RustyMainWindow:
         self.model_service.delete_model(self.current_model_id)
         self.clear_model_form()
         self.load_models()
+
+    def test_model_connection(self) -> None:
+        if self.current_model_id is None:
+            self.QMessageBox.information(self.window, "Test connection", "Select a saved model first.")
+            return
+        result = self.model_service.test_connection(self.current_model_id)
+        if result.ok:
+            elapsed = f" ({result.elapsed_ms} ms)" if result.elapsed_ms is not None else ""
+            self.QMessageBox.information(self.window, "Test connection", f"Connection OK{elapsed}\n{result.message}")
+        else:
+            self.QMessageBox.critical(self.window, "Test connection failed", result.message)
 
     def load_templates(self) -> None:
         selected_template_id = self.ai_template_combo.currentData()

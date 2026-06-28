@@ -11,6 +11,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from rusty.db import session
 from rusty.secrets import InMemorySecretStore
 from rusty.services import ModelService, PromptService
+from rusty.services.ai_client import AIResponse
+
+
+class FakeModelTestClient:
+    def __init__(self, should_fail: bool = False) -> None:
+        self.should_fail = should_fail
+        self.calls = []
+
+    def chat(self, model, api_key, messages):
+        self.calls.append((model, api_key, messages))
+        if self.should_fail:
+            raise RuntimeError("connection failed")
+        return AIResponse(text="OK", token_usage={}, elapsed_ms=12)
 
 
 class ModelPromptServiceTests(unittest.TestCase):
@@ -62,6 +75,29 @@ class ModelPromptServiceTests(unittest.TestCase):
         self.assertEqual("OpenAI Updated", updated.display_name)
         self.assertEqual(0.2, updated.temperature)
         self.assertEqual([], remaining_models)
+
+    def test_model_connection_uses_saved_api_key_and_reports_failures(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            database_path = Path(directory) / "rusty.db"
+            secret_store = InMemorySecretStore()
+            service = ModelService(database_path, secret_store=secret_store)
+            model_id = service.create_model(
+                display_name="OpenAI",
+                provider="openai_compatible",
+                base_url="https://api.example.test/v1",
+                model_name="gpt-test",
+                api_key="secret-value",
+            )
+            success_client = FakeModelTestClient()
+            success = service.test_connection(model_id, ai_client=success_client)
+            failure = service.test_connection(model_id, ai_client=FakeModelTestClient(should_fail=True))
+
+        self.assertTrue(success.ok)
+        self.assertEqual("OK", success.message)
+        self.assertEqual(12, success.elapsed_ms)
+        self.assertEqual("secret-value", success_client.calls[0][1])
+        self.assertFalse(failure.ok)
+        self.assertEqual("connection failed", failure.message)
 
     def test_prompt_template_and_project_prompt_crud(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:

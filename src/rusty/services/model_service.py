@@ -22,6 +22,13 @@ class ModelConfig:
     has_api_key: bool
 
 
+@dataclass(frozen=True)
+class ModelTestResult:
+    ok: bool
+    message: str
+    elapsed_ms: int | None = None
+
+
 class ModelService:
     def __init__(
         self,
@@ -216,6 +223,28 @@ class ModelService:
         if row is None:
             return None
         return self.secret_store.get_secret(row["api_key_secret_ref"])
+
+    def test_connection(self, model_id: int, ai_client=None) -> ModelTestResult:
+        from rusty.services.ai_client import OpenAICompatibleClient
+
+        model = self.get_model(model_id)
+        if model is None:
+            raise ValueError(f"Model not found: {model_id}")
+        client = ai_client or OpenAICompatibleClient()
+        try:
+            response = client.chat(
+                model,
+                self.get_api_key(model_id),
+                [
+                    {
+                        "role": "user",
+                        "content": "Reply with OK to confirm this model connection works.",
+                    }
+                ],
+            )
+        except Exception as exc:  # noqa: BLE001
+            return ModelTestResult(ok=False, message=str(exc), elapsed_ms=None)
+        return ModelTestResult(ok=True, message=response.text.strip(), elapsed_ms=response.elapsed_ms)
 
     @staticmethod
     def _from_row(row) -> ModelConfig:

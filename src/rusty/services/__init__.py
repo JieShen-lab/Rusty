@@ -1,4 +1,4 @@
-from .model_service import ModelConfig, ModelService
+from .model_service import ModelConfig, ModelService, ModelTestResult
 from .pipeline_service import PipelineResult, PipelineService
 from .prompt_service import PromptService, PromptTemplate
 from .project_service import ProjectService, default_database_path
@@ -6,6 +6,7 @@ from .project_service import ProjectService, default_database_path
 __all__ = [
     "ModelConfig",
     "ModelService",
+    "ModelTestResult",
     "PipelineResult",
     "PipelineService",
     "ProjectService",

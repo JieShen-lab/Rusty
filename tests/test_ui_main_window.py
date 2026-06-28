@@ -38,6 +38,7 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual("New Project", window.new_project_button.text())
         self.assertEqual("Export EPUB", window.export_epub_button.text())
         self.assertEqual("Save", window.model_save_button.text())
+        self.assertEqual("Test Connection", window.model_test_button.text())
         self.assertEqual("Save", window.template_save_button.text())
         self.assertEqual("Run Project Pipeline", window.ai_run_project_button.text())
         self.assertEqual("Save Project AI Settings", window.ai_save_settings_button.text())
