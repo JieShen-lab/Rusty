@@ -174,6 +174,83 @@ class PipelineServiceTests(unittest.TestCase):
         self.assertEqual("project-model", used_model.model_name)
         self.assertIn("Project summary", messages[-1]["content"])
 
+    def test_rewrite_uses_project_targets_and_records_target_word_count(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            database_path = root / "rusty.db"
+            source_path = root / "book.txt"
+            source_path.write_text("1. One\nOriginal text.", encoding="utf-8")
+
+            project_service = ProjectService(database_path)
+            project_id = project_service.import_book(source_path, root)
+            chapter_id = project_service.list_chapters(project_id)[0].id
+            ModelService(database_path).create_model(
+                display_name="Fake",
+                provider="openai_compatible",
+                base_url="https://api.example.test/v1",
+                model_name="fake-model",
+                is_default=True,
+            )
+            PromptService(database_path).create_template(name="Default", rewrite_rules="Rewrite", is_default=True)
+            project_service.update_project_settings(
+                project_id=project_id,
+                target_word_count=10,
+                min_expansion_ratio=1.1,
+            )
+
+            fake_client = FakeAIClient()
+            pipeline = PipelineService(database_path, ai_client=fake_client)
+            pipeline.rewrite_chapter(chapter_id)
+
+            connection = sqlite3.connect(database_path)
+            try:
+                target_word_count, actual_word_count, expansion_ratio = connection.execute(
+                    """
+                    SELECT target_word_count, actual_word_count, expansion_ratio
+                    FROM chapter_rewrites
+                    WHERE chapter_id = ?
+                    """,
+                    (chapter_id,),
+                ).fetchone()
+            finally:
+                connection.close()
+
+        user_text = fake_client.calls[0][1][-1]["content"]
+        self.assertIn("Target length: at least 10", user_text)
+        self.assertIn("Minimum expansion ratio: 1.10x", user_text)
+        self.assertEqual(10, target_word_count)
+        self.assertGreaterEqual(actual_word_count, 10)
+        self.assertGreaterEqual(expansion_ratio, 1.1)
+
+    def test_rewrite_target_validation_records_error(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            database_path = root / "rusty.db"
+            source_path = root / "book.txt"
+            source_path.write_text("1. One\nOriginal text.", encoding="utf-8")
+
+            project_service = ProjectService(database_path)
+            project_id = project_service.import_book(source_path, root)
+            chapter_id = project_service.list_chapters(project_id)[0].id
+            ModelService(database_path).create_model(
+                display_name="Fake",
+                provider="openai_compatible",
+                base_url="https://api.example.test/v1",
+                model_name="fake-model",
+                is_default=True,
+            )
+            PromptService(database_path).create_template(name="Default", rewrite_rules="Rewrite", is_default=True)
+            project_service.update_project_settings(project_id=project_id, target_word_count=10_000)
+
+            pipeline = PipelineService(database_path, ai_client=FakeAIClient())
+            with self.assertRaises(ValueError):
+                pipeline.rewrite_chapter(chapter_id)
+            errors = pipeline.list_chapter_errors(chapter_id)
+
+        self.assertEqual(1, len(errors))
+        self.assertEqual("rewrite", errors[0].stage)
+        self.assertIn("shorter than target", errors[0].message)
+
 
 if __name__ == "__main__":
     unittest.main()

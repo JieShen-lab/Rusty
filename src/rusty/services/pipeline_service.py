@@ -261,13 +261,21 @@ class PipelineService:
             },
         ]
 
-    @staticmethod
-    def _rewrite_messages(chapter: ChapterRecord, template: PromptTemplate) -> list[dict[str, str]]:
+    def _rewrite_messages(self, chapter: ChapterRecord, template: PromptTemplate) -> list[dict[str, str]]:
+        settings = self.project_service.get_project_settings(chapter.project_id)
+        target_text = ""
+        if settings and settings.target_word_count:
+            target_text = f"\nTarget length: at least {settings.target_word_count} non-whitespace characters."
+        if settings and settings.min_expansion_ratio:
+            target_text += f"\nMinimum expansion ratio: {settings.min_expansion_ratio:.2f}x the original chapter length."
         return [
             {"role": "system", "content": template.global_rules},
             {
                 "role": "user",
-                "content": f"{template.rewrite_rules}\n\nRewrite this chapter:\n# {chapter.title}\n{chapter.original_text}",
+                "content": (
+                    f"{template.rewrite_rules}{target_text}\n\n"
+                    f"Rewrite this chapter:\n# {chapter.title}\n{chapter.original_text}"
+                ),
             },
         ]
 
@@ -353,14 +361,22 @@ class PipelineService:
         template: PromptTemplate,
         response: AIResponse,
     ) -> None:
+        settings = self.project_service.get_project_settings(chapter.project_id)
+        target_word_count = settings.target_word_count if settings else None
+        min_expansion_ratio = settings.min_expansion_ratio if settings else None
         word_count = count_text_units(response.text)
         ratio = word_count / chapter.word_count if chapter.word_count else None
+        if target_word_count is not None and word_count < target_word_count:
+            raise ValueError(f"Rewrite is shorter than target length: {word_count} < {target_word_count}")
+        if min_expansion_ratio is not None and ratio is not None and ratio < min_expansion_ratio:
+            raise ValueError(f"Rewrite expansion ratio is below minimum: {ratio:.2f} < {min_expansion_ratio:.2f}")
         with session(self.database_path) as connection:
             connection.execute(
                 """
                 INSERT INTO chapter_rewrites (
                     chapter_id,
                     rewritten_text,
+                    target_word_count,
                     actual_word_count,
                     expansion_ratio,
                     model_id,
@@ -368,10 +384,11 @@ class PipelineService:
                     token_usage_json,
                     elapsed_ms,
                     updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(chapter_id)
                 DO UPDATE SET
                     rewritten_text = excluded.rewritten_text,
+                    target_word_count = excluded.target_word_count,
                     actual_word_count = excluded.actual_word_count,
                     expansion_ratio = excluded.expansion_ratio,
                     model_id = excluded.model_id,
@@ -383,6 +400,7 @@ class PipelineService:
                 (
                     chapter.id,
                     response.text,
+                    target_word_count,
                     word_count,
                     ratio,
                     model.id,

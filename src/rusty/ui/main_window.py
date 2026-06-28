@@ -482,7 +482,18 @@ class RustyMainWindow:
         return page
 
     def _build_ai_page(self):
-        from PySide6.QtWidgets import QComboBox, QFormLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit, QVBoxLayout, QWidget
+        from PySide6.QtWidgets import (
+            QComboBox,
+            QDoubleSpinBox,
+            QFormLayout,
+            QHBoxLayout,
+            QLabel,
+            QPushButton,
+            QSpinBox,
+            QTextEdit,
+            QVBoxLayout,
+            QWidget,
+        )
 
         page = QWidget()
         layout = QVBoxLayout(page)
@@ -493,9 +504,21 @@ class RustyMainWindow:
         settings_form = QFormLayout()
         self.ai_model_combo = QComboBox()
         self.ai_template_combo = QComboBox()
+        self.ai_concurrency_spin = QSpinBox()
+        self.ai_concurrency_spin.setRange(1, 32)
+        self.ai_concurrency_spin.setValue(1)
+        self.ai_target_word_count_spin = QSpinBox()
+        self.ai_target_word_count_spin.setRange(0, 10_000_000)
+        self.ai_min_expansion_ratio_spin = QDoubleSpinBox()
+        self.ai_min_expansion_ratio_spin.setRange(0, 20)
+        self.ai_min_expansion_ratio_spin.setSingleStep(0.1)
+        self.ai_min_expansion_ratio_spin.setDecimals(2)
         self.ai_save_settings_button = QPushButton("Save Project AI Settings")
         settings_form.addRow("Project model", self.ai_model_combo)
         settings_form.addRow("Prompt template", self.ai_template_combo)
+        settings_form.addRow("Concurrency", self.ai_concurrency_spin)
+        settings_form.addRow("Target chars (0 = unset)", self.ai_target_word_count_spin)
+        settings_form.addRow("Minimum expansion ratio (0 = unset)", self.ai_min_expansion_ratio_spin)
         settings_form.addRow("", self.ai_save_settings_button)
         layout.addLayout(settings_form)
 
@@ -832,6 +855,9 @@ class RustyMainWindow:
             project_id=project_id,
             model_id=self.ai_model_combo.currentData(),
             prompt_template_id=self.ai_template_combo.currentData(),
+            concurrency=self.ai_concurrency_spin.value(),
+            target_word_count=self.ai_target_word_count_spin.value() or None,
+            min_expansion_ratio=self.ai_min_expansion_ratio_spin.value() or None,
         )
         self.ai_status_label.setText("Project AI settings saved.")
 
@@ -839,10 +865,18 @@ class RustyMainWindow:
         if project_id is None:
             self.select_combo_value(self.ai_model_combo, None)
             self.select_combo_value(self.ai_template_combo, None)
+            self.ai_concurrency_spin.setValue(1)
+            self.ai_target_word_count_spin.setValue(0)
+            self.ai_min_expansion_ratio_spin.setValue(0)
             return
         settings = self.service.get_project_settings(project_id)
         self.select_combo_value(self.ai_model_combo, settings.model_id if settings else None)
         self.select_combo_value(self.ai_template_combo, settings.prompt_template_id if settings else None)
+        self.ai_concurrency_spin.setValue(settings.concurrency if settings else 1)
+        self.ai_target_word_count_spin.setValue(settings.target_word_count if settings and settings.target_word_count else 0)
+        self.ai_min_expansion_ratio_spin.setValue(
+            settings.min_expansion_ratio if settings and settings.min_expansion_ratio else 0
+        )
 
     def run_project_pipeline(self) -> None:
         project_id = self.active_project_id()
