@@ -27,25 +27,25 @@ class ProjectService:
         workspace = Path(workspace_path) if workspace_path is not None else Path(source_path).parent
         return self.create_project(parsed_book, workspace)
 
+    def preview_book(self, source_path: str | Path) -> ParsedBook:
+        return self._parse_book(source_path)
+
     def import_book(self, source_path: str | Path, workspace_path: str | Path | None = None) -> int:
         path = Path(source_path)
-        suffix = path.suffix.lower()
-        if suffix == ".txt":
-            parsed_book = parse_txt(path)
-        elif suffix == ".epub":
-            parsed_book = parse_epub(path)
-        elif suffix == ".docx":
-            parsed_book = parse_docx(path)
-        else:
-            raise ValueError(f"Unsupported import format: {suffix or path.name}")
-
+        parsed_book = self._parse_book(path)
         workspace = Path(workspace_path) if workspace_path is not None else path.parent
         return self.create_project(parsed_book, workspace)
 
-    def create_project(self, book: ParsedBook, workspace_path: str | Path) -> int:
+    def create_project(
+        self,
+        book: ParsedBook,
+        workspace_path: str | Path,
+        project_name: str | None = None,
+    ) -> int:
         source_bytes = book.source_path.read_bytes()
         content_hash = hashlib.sha256(source_bytes).hexdigest()
         metadata_json = json.dumps(book.metadata or {}, ensure_ascii=False)
+        name = project_name.strip() if project_name and project_name.strip() else book.title
 
         with session(self.database_path) as connection:
             cursor = connection.execute(
@@ -62,7 +62,7 @@ class ProjectService:
                 ) VALUES (?, 'imported', 'split', ?, ?, ?, ?, ?)
                 """,
                 (
-                    book.title,
+                    name,
                     book.source_format,
                     str(book.source_path),
                     str(workspace_path),
@@ -151,6 +151,18 @@ class ProjectService:
             )
 
         return project_id
+
+    @staticmethod
+    def _parse_book(source_path: str | Path) -> ParsedBook:
+        path = Path(source_path)
+        suffix = path.suffix.lower()
+        if suffix == ".txt":
+            return parse_txt(path)
+        if suffix == ".epub":
+            return parse_epub(path)
+        if suffix == ".docx":
+            return parse_docx(path)
+        raise ValueError(f"Unsupported import format: {suffix or path.name}")
 
     def get_project(self, project_id: int) -> ProjectSummary | None:
         with session(self.database_path) as connection:

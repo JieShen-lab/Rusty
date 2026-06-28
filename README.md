@@ -51,9 +51,11 @@ python -m rusty.db.schema rusty.db
 - `src/rusty/importers/`: TXT / EPUB / DOCX parsing
 - `src/rusty/exporters/`: TXT / EPUB export
 - `src/rusty/services/project_service.py`: project persistence and import/export workflow
+- `src/rusty/ui/main_window.py`: PySide6 main window, workbench, new-project dialog, and chapter preview
 - `src/rusty/db/connection.py`: SQLite connection defaults
 - `src/rusty/db/schema.py`: schema creation and seed data
 - `tests/test_schema.py`: schema smoke tests
 - `tests/test_txt_importer.py`: TXT parsing and export tests
 - `tests/test_epub_docx.py`: EPUB / DOCX parser and EPUB export tests
 - `tests/test_project_service.py`: persistence and metadata tests
+- `tests/test_ui_main_window.py`: offscreen UI smoke test

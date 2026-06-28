@@ -241,6 +241,8 @@ def main() -> int:
         ) from exc
 
     app = QApplication(sys.argv)
-    window = RustyMainWindow()
+    from rusty.ui import RustyMainWindow as MainWindow
+
+    window = MainWindow()
     window.show()
     return app.exec()
