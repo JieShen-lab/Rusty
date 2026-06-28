@@ -57,7 +57,7 @@ python -m rusty.db.schema rusty.db
 
 ## Current Structure
 
-- `src/rusty/app.py`: minimal PySide6 application entry point
+- `src/rusty/app.py`: PySide6 application launcher
 - `src/rusty/importers/`: TXT / EPUB / DOCX parsing
 - `src/rusty/exporters/`: TXT / EPUB export
 - `src/rusty/services/project_service.py`: project persistence and import/export workflow
