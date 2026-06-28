@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import sqlite3
 from pathlib import Path
+from typing import Iterator
 
 
 def connect(database_path: str | Path) -> sqlite3.Connection:
@@ -17,3 +19,15 @@ def connect(database_path: str | Path) -> sqlite3.Connection:
     connection.execute("PRAGMA synchronous = NORMAL")
     return connection
 
+
+@contextmanager
+def session(database_path: str | Path) -> Iterator[sqlite3.Connection]:
+    connection = connect(database_path)
+    try:
+        yield connection
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()

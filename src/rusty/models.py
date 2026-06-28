@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 from pathlib import Path
 
 
@@ -26,6 +27,10 @@ class ParsedBook:
     source_format: str
     source_encoding: str | None
     chapters: list[ParsedChapter]
+    publisher: str | None = None
+    description: str | None = None
+    source_identifier: str | None = None
+    metadata: dict[str, Any] | None = None
 
     @property
     def total_words(self) -> int:
@@ -66,4 +71,3 @@ class ChapterRecord:
 
 def count_text_units(text: str) -> int:
     return sum(1 for char in text if not char.isspace())
-

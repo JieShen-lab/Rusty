@@ -43,12 +43,14 @@ class RustyMainWindow:
         root_layout = QVBoxLayout(root)
 
         toolbar = QHBoxLayout()
-        self.import_button = QPushButton("Import TXT")
+        self.import_button = QPushButton("Import Book")
         self.export_button = QPushButton("Export TXT")
+        self.export_epub_button = QPushButton("Export EPUB")
         self.refresh_button = QPushButton("Refresh")
         self.status_label = QLabel("")
         toolbar.addWidget(self.import_button)
         toolbar.addWidget(self.export_button)
+        toolbar.addWidget(self.export_epub_button)
         toolbar.addWidget(self.refresh_button)
         toolbar.addStretch(1)
         toolbar.addWidget(self.status_label)
@@ -83,6 +85,7 @@ class RustyMainWindow:
 
         self.import_button.clicked.connect(self.import_txt)
         self.export_button.clicked.connect(self.export_txt)
+        self.export_epub_button.clicked.connect(self.export_epub)
         self.refresh_button.clicked.connect(self.load_projects)
         self.project_list.currentItemChanged.connect(self.project_selected)
         self.chapter_list.currentItemChanged.connect(self.chapter_selected)
@@ -111,7 +114,7 @@ class RustyMainWindow:
             self.chapter_list.clear()
             self.preview_title.setText("No projects yet")
             self.preview_meta.setText("")
-            self.preview_text.setPlainText("Import a TXT file to create the first project.")
+            self.preview_text.setPlainText("Import a TXT, EPUB, or DOCX file to create the first project.")
 
     def project_selected(self, current, previous) -> None:
         if current is None:
@@ -152,15 +155,15 @@ class RustyMainWindow:
     def import_txt(self) -> None:
         path, _ = self.QFileDialog.getOpenFileName(
             self.window,
-            "Import TXT",
+            "Import Book",
             str(Path.home()),
-            "Text files (*.txt);;All files (*)",
+            "Book files (*.txt *.epub *.docx);;Text files (*.txt);;EPUB files (*.epub);;Word files (*.docx);;All files (*)",
         )
         if not path:
             return
 
         try:
-            project_id = self.service.import_txt(path)
+            project_id = self.service.import_book(path)
         except Exception as exc:  # noqa: BLE001
             self.QMessageBox.critical(self.window, "Import failed", str(exc))
             return
@@ -190,6 +193,29 @@ class RustyMainWindow:
             return
 
         self.QMessageBox.information(self.window, "Export TXT", f"Exported to:\n{output}")
+
+    def export_epub(self) -> None:
+        if self.current_project_id is None:
+            self.QMessageBox.information(self.window, "Export EPUB", "Select a project first.")
+            return
+
+        default_name = self.current_project_name() or "rusty-export"
+        path, _ = self.QFileDialog.getSaveFileName(
+            self.window,
+            "Export EPUB",
+            str(Path.home() / f"{default_name}.epub"),
+            "EPUB files (*.epub);;All files (*)",
+        )
+        if not path:
+            return
+
+        try:
+            output = self.service.export_epub(self.current_project_id, path)
+        except Exception as exc:  # noqa: BLE001
+            self.QMessageBox.critical(self.window, "Export failed", str(exc))
+            return
+
+        self.QMessageBox.information(self.window, "Export EPUB", f"Exported to:\n{output}")
 
     def select_project(self, project_id: int) -> None:
         for row in range(self.project_list.count()):

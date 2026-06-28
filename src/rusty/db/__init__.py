@@ -1,6 +1,6 @@
-from .connection import connect
+from .connection import connect, session
 
-__all__ = ["CURRENT_SCHEMA_VERSION", "connect", "initialize_database"]
+__all__ = ["CURRENT_SCHEMA_VERSION", "connect", "initialize_database", "session"]
 
 
 def __getattr__(name: str):

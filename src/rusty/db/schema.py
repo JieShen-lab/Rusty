@@ -4,7 +4,7 @@ import argparse
 import sqlite3
 from pathlib import Path
 
-from .connection import connect
+from .connection import session
 
 CURRENT_SCHEMA_VERSION = 1
 
@@ -304,7 +304,7 @@ def initialize_database(connection: sqlite3.Connection) -> None:
 
 
 def initialize_database_file(database_path: str | Path) -> None:
-    with connect(database_path) as connection:
+    with session(database_path) as connection:
         initialize_database(connection)
 
 
