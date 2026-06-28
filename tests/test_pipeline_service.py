@@ -13,8 +13,9 @@ from rusty.services.ai_client import AIClient, AIResponse
 
 
 class FakeAIClient(AIClient):
-    def __init__(self, fail_on: str | None = None) -> None:
+    def __init__(self, fail_on: str | None = None, scene_needs_rewrite: bool = True) -> None:
         self.fail_on = fail_on
+        self.scene_needs_rewrite = scene_needs_rewrite
         self.calls = []
 
     def chat(self, model, api_key, messages):
@@ -23,7 +24,11 @@ class FakeAIClient(AIClient):
         if self.fail_on and self.fail_on in user_text:
             raise RuntimeError("fake failure")
         if "Return JSON" in user_text:
-            text = '{"needs_rewrite": true, "labels": ["expand"], "reasoning": "needs detail"}'
+            text = (
+                '{"needs_rewrite": true, "labels": ["expand"], "reasoning": "needs detail"}'
+                if self.scene_needs_rewrite
+                else '{"needs_rewrite": false, "labels": ["keep"], "reasoning": "preserve original"}'
+            )
         elif "Rewrite" in user_text:
             text = "Rewritten chapter text."
         else:
@@ -132,6 +137,44 @@ class PipelineServiceTests(unittest.TestCase):
         self.assertEqual("summary", historical_errors[0].stage)
         self.assertIsNotNone(historical_errors[0].resolved_at)
         self.assertTrue(any(status.stage == "summary" for status in diagnostics_statuses))
+
+    def test_run_project_marks_chapters_kept_original_when_scene_does_not_need_rewrite(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            database_path = root / "rusty.db"
+            source_path = root / "book.txt"
+            source_path.write_text("1. One\nOriginal text.", encoding="utf-8")
+
+            project_service = ProjectService(database_path)
+            project_id = project_service.import_book(source_path, root)
+            chapter_id = project_service.list_chapters(project_id)[0].id
+            ModelService(database_path).create_model(
+                display_name="Fake",
+                provider="openai_compatible",
+                base_url="https://api.example.test/v1",
+                model_name="fake-model",
+                is_default=True,
+            )
+            PromptService(database_path).create_template(
+                name="Default",
+                summary_rules="Summarize",
+                scene_detection_rules="Detect",
+                rewrite_rules="Rewrite",
+                is_default=True,
+            )
+
+            fake_client = FakeAIClient(scene_needs_rewrite=False)
+            pipeline = PipelineService(database_path, ai_client=fake_client)
+            result = pipeline.run_project(project_id)
+            chapter = project_service.get_chapter(chapter_id)
+
+        self.assertEqual(1, result.processed)
+        self.assertEqual(1, result.skipped)
+        self.assertEqual(0, result.failed)
+        self.assertIsNotNone(chapter)
+        self.assertEqual("kept_original", chapter.status)
+        self.assertIsNone(chapter.rewritten_text)
+        self.assertEqual(2, len(fake_client.calls))
 
     def test_pipeline_prefers_project_model_and_prompt_settings(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:

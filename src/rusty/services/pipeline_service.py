@@ -88,25 +88,29 @@ class PipelineService:
         should_pause: Callable[[], bool] | None = None,
     ) -> PipelineResult:
         processed = 0
+        skipped = 0
         failed = 0
         self.set_project_paused(project_id, False)
         self._set_project_status(project_id, "processing")
         for chapter in self.project_service.list_chapters(project_id):
             if should_pause and should_pause():
                 self.set_project_paused(project_id, True)
-                return PipelineResult(processed=processed, skipped=0, failed=failed, paused=True)
+                return PipelineResult(processed=processed, skipped=skipped, failed=failed, paused=True)
             if self.is_project_paused(project_id):
-                return PipelineResult(processed=processed, skipped=0, failed=failed, paused=True)
+                return PipelineResult(processed=processed, skipped=skipped, failed=failed, paused=True)
             try:
                 self.summarize_chapter(chapter.id, model_id, template_id)
                 scene_text = self.detect_scene(chapter.id, model_id, template_id)
                 if self._scene_needs_rewrite(scene_text):
                     self.rewrite_chapter(chapter.id, model_id, template_id)
+                else:
+                    self._mark_chapter_kept_original(chapter.id)
+                    skipped += 1
                 processed += 1
             except Exception:
                 failed += 1
         self._set_project_status(project_id, "processed" if failed == 0 else "partial")
-        return PipelineResult(processed=processed, skipped=0, failed=failed)
+        return PipelineResult(processed=processed, skipped=skipped, failed=failed)
 
     def retry_chapter_stage(
         self,
@@ -523,6 +527,17 @@ class PipelineService:
             connection.execute(
                 "UPDATE projects SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (status, project_id),
+            )
+
+    def _mark_chapter_kept_original(self, chapter_id: int) -> None:
+        with session(self.database_path) as connection:
+            connection.execute(
+                """
+                UPDATE chapters
+                SET status = 'kept_original', rewritten_text = NULL, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (chapter_id,),
             )
 
     @staticmethod
