@@ -260,6 +260,7 @@ class RustyMainWindow:
         self.ai_summary_button.clicked.connect(self.summarize_selected_chapter)
         self.ai_scene_button.clicked.connect(self.detect_selected_chapter_scene)
         self.ai_rewrite_button.clicked.connect(self.rewrite_selected_chapter)
+        self.ai_retry_stage_button.clicked.connect(self.retry_selected_chapter_stage)
 
         self.load_projects()
         self.load_models()
@@ -507,9 +508,16 @@ class RustyMainWindow:
         self.ai_summary_button = QPushButton("Summarize Chapter")
         self.ai_scene_button = QPushButton("Detect Scene")
         self.ai_rewrite_button = QPushButton("Rewrite Chapter")
+        self.ai_retry_stage_combo = QComboBox()
+        self.ai_retry_stage_combo.addItem("Summary", "summary")
+        self.ai_retry_stage_combo.addItem("Scene detection", "scene_detection")
+        self.ai_retry_stage_combo.addItem("Rewrite", "rewrite")
+        self.ai_retry_stage_button = QPushButton("Retry Stage")
         chapter_buttons.addWidget(self.ai_summary_button)
         chapter_buttons.addWidget(self.ai_scene_button)
         chapter_buttons.addWidget(self.ai_rewrite_button)
+        chapter_buttons.addWidget(self.ai_retry_stage_combo)
+        chapter_buttons.addWidget(self.ai_retry_stage_button)
         chapter_buttons.addStretch(1)
         layout.addLayout(chapter_buttons)
 
@@ -868,11 +876,18 @@ class RustyMainWindow:
         self._run_chapter_ai_action(self.pipeline_service.detect_scene, "Scene detection")
 
     def rewrite_selected_chapter(self) -> None:
-        self._run_chapter_ai_action(self.pipeline_service.rewrite_chapter, "Rewrite")
-        if self.current_project_id is not None:
-            self.open_project_preview(self.current_project_id)
+        self._run_chapter_ai_action(self.pipeline_service.rewrite_chapter, "Rewrite", refresh_preview=True)
 
-    def _run_chapter_ai_action(self, action, label: str) -> None:
+    def retry_selected_chapter_stage(self) -> None:
+        stage = self.ai_retry_stage_combo.currentData()
+        label = self.ai_retry_stage_combo.currentText()
+        self._run_chapter_ai_action(
+            lambda chapter_id: self.pipeline_service.retry_chapter_stage(chapter_id, stage),
+            f"Retry {label}",
+            refresh_preview=stage == "rewrite",
+        )
+
+    def _run_chapter_ai_action(self, action, label: str, refresh_preview: bool = False) -> None:
         chapter_id = self.selected_chapter_id()
         if chapter_id is None:
             self.QMessageBox.information(self.window, "AI Pipeline", "Select a chapter first.")
@@ -882,6 +897,8 @@ class RustyMainWindow:
             self.ai_output_text.setPlainText(text)
             self.ai_status_label.setText(f"{label} completed.")
             self.refresh_ai_diagnostics(chapter_id)
+            if refresh_preview and self.current_project_id is not None:
+                self.open_project_preview(self.current_project_id, chapter_id)
 
         self.run_background_task(
             f"{label} running...",
@@ -920,8 +937,10 @@ class RustyMainWindow:
             self.ai_summary_button,
             self.ai_scene_button,
             self.ai_rewrite_button,
+            self.ai_retry_stage_button,
         ):
             button.setEnabled(enabled)
+        self.ai_retry_stage_combo.setEnabled(enabled)
 
     def select_table_row(self, table, row_id: int) -> None:
         for row in range(table.rowCount()):
