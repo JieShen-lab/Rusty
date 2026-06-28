@@ -181,6 +181,32 @@ class ModelService:
             ).fetchall()
         return [self._from_row(row) for row in rows]
 
+    def get_model(self, model_id: int) -> ModelConfig | None:
+        with session(self.database_path) as connection:
+            row = connection.execute(
+                """
+                SELECT
+                    id,
+                    display_name,
+                    provider,
+                    base_url,
+                    model_name,
+                    api_key_secret_ref,
+                    temperature,
+                    max_tokens,
+                    timeout_seconds,
+                    is_default
+                FROM ai_models
+                WHERE id = ? AND deleted_at IS NULL
+                """,
+                (model_id,),
+            ).fetchone()
+        return self._from_row(row) if row is not None else None
+
+    def get_default_model(self) -> ModelConfig | None:
+        models = self.list_models()
+        return models[0] if models else None
+
     def get_api_key(self, model_id: int) -> str | None:
         with session(self.database_path) as connection:
             row = connection.execute(
@@ -205,4 +231,3 @@ class ModelService:
             is_default=bool(row["is_default"]),
             has_api_key=bool(row["api_key_secret_ref"]),
         )
-

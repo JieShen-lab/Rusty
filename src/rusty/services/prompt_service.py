@@ -137,6 +137,10 @@ class PromptService:
             ).fetchone()
         return self._from_row(row) if row is not None else None
 
+    def get_default_template(self) -> PromptTemplate | None:
+        templates = self.list_templates()
+        return templates[0] if templates else None
+
     def save_project_prompt(self, project_id: int, prompt_key: str, prompt_text: str) -> None:
         with session(self.database_path) as connection:
             connection.execute(

@@ -4,7 +4,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from rusty.models import ChapterRecord, ParsedBook, ProjectSummary
-from rusty.services import ModelService, ProjectService, PromptService
+from rusty.services import ModelService, PipelineService, ProjectService, PromptService
 
 
 class NewProjectDialog:
@@ -178,6 +178,7 @@ class RustyMainWindow:
         self.service = ProjectService()
         self.model_service = ModelService(self.service.database_path)
         self.prompt_service = PromptService(self.service.database_path)
+        self.pipeline_service = PipelineService(self.service.database_path)
         self.projects: list[ProjectSummary] = []
         self.chapters: list[ChapterRecord] = []
         self.current_project_id: int | None = None
@@ -200,11 +201,13 @@ class RustyMainWindow:
         self.preview_nav = QPushButton("Chapter Preview")
         self.models_nav = QPushButton("Models")
         self.prompts_nav = QPushButton("Prompts")
+        self.ai_nav = QPushButton("AI Pipeline")
         nav_layout.addWidget(nav_title)
         nav_layout.addWidget(self.workbench_nav)
         nav_layout.addWidget(self.preview_nav)
         nav_layout.addWidget(self.models_nav)
         nav_layout.addWidget(self.prompts_nav)
+        nav_layout.addWidget(self.ai_nav)
         nav_layout.addStretch(1)
         root_layout.addWidget(nav, 0)
 
@@ -214,16 +217,19 @@ class RustyMainWindow:
         self.preview_page = self._build_preview_page()
         self.models_page = self._build_models_page()
         self.prompts_page = self._build_prompts_page()
+        self.ai_page = self._build_ai_page()
         self.stack.addWidget(self.workbench_page)
         self.stack.addWidget(self.preview_page)
         self.stack.addWidget(self.models_page)
         self.stack.addWidget(self.prompts_page)
+        self.stack.addWidget(self.ai_page)
         self.window.setCentralWidget(root)
 
         self.workbench_nav.clicked.connect(lambda: self.stack.setCurrentWidget(self.workbench_page))
         self.preview_nav.clicked.connect(lambda: self.stack.setCurrentWidget(self.preview_page))
         self.models_nav.clicked.connect(lambda: self.stack.setCurrentWidget(self.models_page))
         self.prompts_nav.clicked.connect(lambda: self.stack.setCurrentWidget(self.prompts_page))
+        self.ai_nav.clicked.connect(lambda: self.stack.setCurrentWidget(self.ai_page))
         self.new_project_button.clicked.connect(self.new_project)
         self.open_preview_button.clicked.connect(self.open_selected_project_preview)
         self.export_txt_button.clicked.connect(self.export_txt)
@@ -243,6 +249,11 @@ class RustyMainWindow:
         self.template_save_button.clicked.connect(self.save_template)
         self.template_delete_button.clicked.connect(self.delete_template)
         self.project_prompt_save_button.clicked.connect(self.save_project_prompt)
+        self.ai_run_project_button.clicked.connect(self.run_project_pipeline)
+        self.ai_pause_project_button.clicked.connect(self.pause_current_project)
+        self.ai_summary_button.clicked.connect(self.summarize_selected_chapter)
+        self.ai_scene_button.clicked.connect(self.detect_selected_chapter_scene)
+        self.ai_rewrite_button.clicked.connect(self.rewrite_selected_chapter)
 
         self.load_projects()
         self.load_models()
@@ -448,6 +459,38 @@ class RustyMainWindow:
         project_form.addRow("Prompt text", self.project_prompt_text_edit)
         project_form.addRow("", self.project_prompt_save_button)
         layout.addLayout(project_form)
+        return page
+
+    def _build_ai_page(self):
+        from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QTextEdit, QVBoxLayout, QWidget
+
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        self.ai_status_label = QLabel("Select a project or chapter, then run an AI action.")
+        self.ai_status_label.setWordWrap(True)
+        layout.addWidget(self.ai_status_label)
+
+        project_buttons = QHBoxLayout()
+        self.ai_run_project_button = QPushButton("Run Project Pipeline")
+        self.ai_pause_project_button = QPushButton("Pause Project")
+        project_buttons.addWidget(self.ai_run_project_button)
+        project_buttons.addWidget(self.ai_pause_project_button)
+        project_buttons.addStretch(1)
+        layout.addLayout(project_buttons)
+
+        chapter_buttons = QHBoxLayout()
+        self.ai_summary_button = QPushButton("Summarize Chapter")
+        self.ai_scene_button = QPushButton("Detect Scene")
+        self.ai_rewrite_button = QPushButton("Rewrite Chapter")
+        chapter_buttons.addWidget(self.ai_summary_button)
+        chapter_buttons.addWidget(self.ai_scene_button)
+        chapter_buttons.addWidget(self.ai_rewrite_button)
+        chapter_buttons.addStretch(1)
+        layout.addLayout(chapter_buttons)
+
+        self.ai_output_text = QTextEdit()
+        self.ai_output_text.setReadOnly(True)
+        layout.addWidget(self.ai_output_text, 1)
         return page
 
     def show(self) -> None:
@@ -680,6 +723,55 @@ class RustyMainWindow:
             return
         self.QMessageBox.information(self.window, "Project prompt", "Project prompt saved.")
 
+    def run_project_pipeline(self) -> None:
+        project_id = self.active_project_id()
+        if project_id is None:
+            self.QMessageBox.information(self.window, "AI Pipeline", "Select a project first.")
+            return
+        try:
+            result = self.pipeline_service.run_project(project_id)
+        except Exception as exc:  # noqa: BLE001
+            self.QMessageBox.critical(self.window, "AI pipeline failed", str(exc))
+            return
+        self.ai_status_label.setText(
+            f"Processed: {result.processed} | Failed: {result.failed} | Paused: {result.paused}"
+        )
+        self.load_projects()
+        self.open_project_preview(project_id)
+
+    def pause_current_project(self) -> None:
+        project_id = self.active_project_id()
+        if project_id is None:
+            self.QMessageBox.information(self.window, "AI Pipeline", "Select a project first.")
+            return
+        self.pipeline_service.set_project_paused(project_id, True)
+        self.ai_status_label.setText("Project paused.")
+        self.load_projects()
+
+    def summarize_selected_chapter(self) -> None:
+        self._run_chapter_ai_action(self.pipeline_service.summarize_chapter, "Summary")
+
+    def detect_selected_chapter_scene(self) -> None:
+        self._run_chapter_ai_action(self.pipeline_service.detect_scene, "Scene detection")
+
+    def rewrite_selected_chapter(self) -> None:
+        self._run_chapter_ai_action(self.pipeline_service.rewrite_chapter, "Rewrite")
+        if self.current_project_id is not None:
+            self.open_project_preview(self.current_project_id)
+
+    def _run_chapter_ai_action(self, action, label: str) -> None:
+        chapter_id = self.selected_chapter_id()
+        if chapter_id is None:
+            self.QMessageBox.information(self.window, "AI Pipeline", "Select a chapter first.")
+            return
+        try:
+            text = action(chapter_id)
+        except Exception as exc:  # noqa: BLE001
+            self.QMessageBox.critical(self.window, f"{label} failed", str(exc))
+            return
+        self.ai_output_text.setPlainText(text)
+        self.ai_status_label.setText(f"{label} completed.")
+
     def select_table_row(self, table, row_id: int) -> None:
         for row in range(table.rowCount()):
             item = table.item(row, 0)
@@ -788,6 +880,12 @@ class RustyMainWindow:
         row = selected[0].row()
         item = self.project_table.item(row, 0)
         return int(item.data(self.Qt.ItemDataRole.UserRole))
+
+    def selected_chapter_id(self) -> int | None:
+        current = self.chapter_list.currentItem()
+        if current is None:
+            return None
+        return int(current.data(self.Qt.ItemDataRole.UserRole))
 
     def active_project_id(self) -> int | None:
         return self.selected_project_id() or self.current_project_id

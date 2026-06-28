@@ -36,6 +36,11 @@ Model API keys are not stored in the main SQLite database. Rusty stores a
 keyring reference in `ai_models.api_key_secret_ref` and writes the secret value
 to the operating system keyring through the `keyring` package.
 
+The AI pipeline uses OpenAI-compatible `/chat/completions` APIs through `httpx`.
+Current stages include chapter summary, scene detection, chapter rewrite,
+error recording, retry entry points, project pause status, and merged text
+output.
+
 Run tests without installing the package:
 
 ```powershell
@@ -57,6 +62,7 @@ python -m rusty.db.schema rusty.db
 - `src/rusty/services/project_service.py`: project persistence and import/export workflow
 - `src/rusty/services/model_service.py`: model CRUD and keyring-backed API key references
 - `src/rusty/services/prompt_service.py`: prompt template CRUD and project-level prompt overrides
+- `src/rusty/services/pipeline_service.py`: AI summary, scene detection, rewrite, retry, pause, and merge workflow
 - `src/rusty/ui/main_window.py`: PySide6 main window, workbench, new-project dialog, and chapter preview
 - `src/rusty/db/connection.py`: SQLite connection defaults
 - `src/rusty/db/schema.py`: schema creation and seed data
@@ -65,4 +71,5 @@ python -m rusty.db.schema rusty.db
 - `tests/test_epub_docx.py`: EPUB / DOCX parser and EPUB export tests
 - `tests/test_project_service.py`: persistence and metadata tests
 - `tests/test_model_prompt_services.py`: model, keyring-reference, prompt, and project-prompt tests
+- `tests/test_pipeline_service.py`: fake-client AI pipeline tests
 - `tests/test_ui_main_window.py`: offscreen UI smoke test

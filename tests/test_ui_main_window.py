@@ -29,15 +29,17 @@ class MainWindowTests(unittest.TestCase):
                     os.environ["LOCALAPPDATA"] = previous_local_appdata
 
         self.assertEqual("Rusty", window.window.windowTitle())
-        self.assertEqual(4, window.stack.count())
+        self.assertEqual(5, window.stack.count())
         self.assertEqual("Workbench", window.workbench_nav.text())
         self.assertEqual("Chapter Preview", window.preview_nav.text())
         self.assertEqual("Models", window.models_nav.text())
         self.assertEqual("Prompts", window.prompts_nav.text())
+        self.assertEqual("AI Pipeline", window.ai_nav.text())
         self.assertEqual("New Project", window.new_project_button.text())
         self.assertEqual("Export EPUB", window.export_epub_button.text())
         self.assertEqual("Save", window.model_save_button.text())
         self.assertEqual("Save", window.template_save_button.text())
+        self.assertEqual("Run Project Pipeline", window.ai_run_project_button.text())
         self.assertEqual(0, window.project_table.rowCount())
 
 
