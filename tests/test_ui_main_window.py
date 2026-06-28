@@ -57,6 +57,8 @@ class MainWindowTests(unittest.TestCase):
         self.assertTrue(hasattr(window, "run_background_task"))
         self.assertTrue(hasattr(window, "retry_selected_chapter_stage"))
         self.assertTrue(hasattr(window, "delete_selected_project"))
+        self.assertEqual("a b c", window.compact_text("a\n b\tc", 20))
+        self.assertEqual("ab...", window.compact_text("abcdef", 5))
         self.assertEqual([], window.running_tasks)
         self.assertEqual(0, window.project_table.rowCount())
 

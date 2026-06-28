@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Callable
 
 from rusty.db import initialize_database, session
-from rusty.models import ChapterError, ChapterRecord, StageStatus, count_text_units
+from rusty.models import ChapterAIOutputs, ChapterError, ChapterRecord, StageStatus, count_text_units
 from rusty.services.ai_client import AIClient, AIResponse, OpenAICompatibleClient
 from rusty.services.model_service import ModelConfig, ModelService
 from rusty.services.project_service import ProjectService, default_database_path
@@ -187,6 +187,44 @@ class PipelineService:
             )
             for row in rows
         ]
+
+    def get_chapter_ai_outputs(self, chapter_id: int) -> ChapterAIOutputs:
+        with session(self.database_path) as connection:
+            summary = connection.execute(
+                """
+                SELECT plot_summary
+                FROM chapter_summaries
+                WHERE chapter_id = ?
+                """,
+                (chapter_id,),
+            ).fetchone()
+            scene = connection.execute(
+                """
+                SELECT needs_rewrite, scene_labels_json, reasoning
+                FROM chapter_scene_analysis
+                WHERE chapter_id = ?
+                """,
+                (chapter_id,),
+            ).fetchone()
+            rewrite = connection.execute(
+                """
+                SELECT actual_word_count, expansion_ratio, elapsed_ms
+                FROM chapter_rewrites
+                WHERE chapter_id = ?
+                """,
+                (chapter_id,),
+            ).fetchone()
+
+        scene_labels = _parse_json_list(scene["scene_labels_json"]) if scene is not None else None
+        return ChapterAIOutputs(
+            plot_summary=summary["plot_summary"] if summary is not None else None,
+            needs_rewrite=bool(scene["needs_rewrite"]) if scene is not None else None,
+            scene_labels=scene_labels,
+            scene_reasoning=scene["reasoning"] if scene is not None else None,
+            rewritten_word_count=rewrite["actual_word_count"] if rewrite is not None else None,
+            expansion_ratio=rewrite["expansion_ratio"] if rewrite is not None else None,
+            rewrite_elapsed_ms=rewrite["elapsed_ms"] if rewrite is not None else None,
+        )
 
     def _run_chapter_stage(
         self,
@@ -568,3 +606,15 @@ def _append_prompt(base: str, override: str | None) -> str:
     if not base_text:
         return override_text
     return f"{base_text}\n\n{override_text}"
+
+
+def _parse_json_list(text: str) -> list[str]:
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError:
+        return []
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    if isinstance(value, str):
+        return [value]
+    return []

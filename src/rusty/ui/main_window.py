@@ -828,6 +828,7 @@ class RustyMainWindow:
 
         statuses = self.pipeline_service.list_chapter_stage_statuses(target_chapter_id)
         errors = self.pipeline_service.list_chapter_errors(target_chapter_id)
+        outputs = self.pipeline_service.get_chapter_ai_outputs(target_chapter_id)
         lines: list[str] = ["Stage status"]
         if statuses:
             for status in statuses:
@@ -835,6 +836,26 @@ class RustyMainWindow:
                 lines.append(f"- {status.stage}: {status.status} (retries: {status.retry_count}{elapsed})")
         else:
             lines.append("- No stage records yet.")
+
+        lines.append("")
+        lines.append("AI outputs")
+        if outputs.plot_summary:
+            lines.append(f"- Summary: {self.compact_text(outputs.plot_summary, 220)}")
+        else:
+            lines.append("- Summary: not generated.")
+        if outputs.needs_rewrite is None:
+            lines.append("- Scene: not detected.")
+        else:
+            labels = ", ".join(outputs.scene_labels or []) or "-"
+            decision = "needs rewrite" if outputs.needs_rewrite else "keep original"
+            reasoning = self.compact_text(outputs.scene_reasoning or "", 160)
+            lines.append(f"- Scene: {decision}; labels: {labels}; reason: {reasoning or '-'}")
+        if outputs.rewritten_word_count is None:
+            lines.append("- Rewrite: not generated.")
+        else:
+            ratio = f", ratio {outputs.expansion_ratio:.2f}" if outputs.expansion_ratio is not None else ""
+            elapsed = f", {outputs.rewrite_elapsed_ms} ms" if outputs.rewrite_elapsed_ms is not None else ""
+            lines.append(f"- Rewrite: {outputs.rewritten_word_count} chars{ratio}{elapsed}")
 
         lines.append("")
         lines.append("Open errors")
@@ -993,6 +1014,13 @@ class RustyMainWindow:
                 combo.setCurrentIndex(index)
                 return
         combo.setCurrentIndex(0)
+
+    @staticmethod
+    def compact_text(text: str, limit: int) -> str:
+        compacted = " ".join(text.split())
+        if len(compacted) <= limit:
+            return compacted
+        return f"{compacted[: max(0, limit - 3)]}..."
 
     def new_project(self) -> None:
         dialog = NewProjectDialog(self.window, self.service)

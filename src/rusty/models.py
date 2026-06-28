@@ -101,5 +101,16 @@ class ChapterError:
     resolved_at: str | None
 
 
+@dataclass(frozen=True)
+class ChapterAIOutputs:
+    plot_summary: str | None = None
+    needs_rewrite: bool | None = None
+    scene_labels: list[str] | None = None
+    scene_reasoning: str | None = None
+    rewritten_word_count: int | None = None
+    expansion_ratio: float | None = None
+    rewrite_elapsed_ms: int | None = None
+
+
 def count_text_units(text: str) -> int:
     return sum(1 for char in text if not char.isspace())

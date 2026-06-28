@@ -67,6 +67,7 @@ class PipelineServiceTests(unittest.TestCase):
             scene = pipeline.detect_scene(chapter_id)
             rewrite = pipeline.rewrite_chapter(chapter_id)
             merged = pipeline.merge_project_text(project_id)
+            outputs = pipeline.get_chapter_ai_outputs(chapter_id)
 
             connection = sqlite3.connect(database_path)
             try:
@@ -81,6 +82,12 @@ class PipelineServiceTests(unittest.TestCase):
         self.assertIn("needs_rewrite", scene)
         self.assertEqual("Rewritten chapter text.", rewrite)
         self.assertIn("Rewritten chapter text.", merged)
+        self.assertEqual("Structured summary.", outputs.plot_summary)
+        self.assertTrue(outputs.needs_rewrite)
+        self.assertEqual(["expand"], outputs.scene_labels)
+        self.assertEqual("needs detail", outputs.scene_reasoning)
+        self.assertIsNotNone(outputs.rewritten_word_count)
+        self.assertGreater(outputs.rewritten_word_count, 0)
         self.assertEqual(0, errors)
         self.assertEqual(
             [("rewrite", "completed"), ("scene_detection", "completed"), ("summary", "completed")],
