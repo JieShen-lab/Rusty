@@ -39,7 +39,8 @@ to the operating system keyring through the `keyring` package.
 The AI pipeline uses OpenAI-compatible `/chat/completions` APIs through `httpx`.
 Current stages include chapter summary, scene detection, chapter rewrite,
 error recording, retry entry points, project pause status, and merged text
-output.
+output. Project-level AI settings can bind a model and prompt template, and the
+pipeline falls back to global defaults when a project has no explicit binding.
 
 Run tests without installing the package:
 

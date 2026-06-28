@@ -8,7 +8,7 @@ from pathlib import Path
 from rusty.db import initialize_database, session
 from rusty.exporters import build_txt_export, export_epub
 from rusty.importers import parse_docx, parse_epub, parse_txt
-from rusty.models import ChapterRecord, ParsedBook, ProjectSummary
+from rusty.models import ChapterRecord, ParsedBook, ProjectSettings, ProjectSummary
 
 
 def default_database_path() -> Path:
@@ -371,6 +371,69 @@ class ProjectService:
             "metadata_json": row["metadata_json"],
         }
 
+    def get_project_settings(self, project_id: int) -> ProjectSettings | None:
+        with session(self.database_path) as connection:
+            row = connection.execute(
+                """
+                SELECT
+                    project_id,
+                    model_id,
+                    prompt_template_id,
+                    txt_split_rule_id,
+                    processing_mode,
+                    concurrency,
+                    target_word_count,
+                    min_expansion_ratio
+                FROM project_settings
+                WHERE project_id = ?
+                """,
+                (project_id,),
+            ).fetchone()
+        return self._settings_from_row(row) if row is not None else None
+
+    def update_project_settings(
+        self,
+        project_id: int,
+        model_id: int | None = None,
+        prompt_template_id: int | None = None,
+        processing_mode: str = "manual",
+        concurrency: int = 1,
+        target_word_count: int | None = None,
+        min_expansion_ratio: float | None = None,
+    ) -> None:
+        with session(self.database_path) as connection:
+            connection.execute(
+                """
+                INSERT INTO project_settings (
+                    project_id,
+                    model_id,
+                    prompt_template_id,
+                    processing_mode,
+                    concurrency,
+                    target_word_count,
+                    min_expansion_ratio
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(project_id)
+                DO UPDATE SET
+                    model_id = excluded.model_id,
+                    prompt_template_id = excluded.prompt_template_id,
+                    processing_mode = excluded.processing_mode,
+                    concurrency = excluded.concurrency,
+                    target_word_count = excluded.target_word_count,
+                    min_expansion_ratio = excluded.min_expansion_ratio,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    project_id,
+                    model_id,
+                    prompt_template_id,
+                    processing_mode,
+                    concurrency,
+                    target_word_count,
+                    min_expansion_ratio,
+                ),
+            )
+
     @staticmethod
     def _project_from_row(row) -> ProjectSummary:
         return ProjectSummary(
@@ -403,4 +466,17 @@ class ProjectService:
             status=row["status"],
             start_line=row["source_start_line"],
             end_line=row["source_end_line"],
+        )
+
+    @staticmethod
+    def _settings_from_row(row) -> ProjectSettings:
+        return ProjectSettings(
+            project_id=row["project_id"],
+            model_id=row["model_id"],
+            prompt_template_id=row["prompt_template_id"],
+            txt_split_rule_id=row["txt_split_rule_id"],
+            processing_mode=row["processing_mode"],
+            concurrency=row["concurrency"],
+            target_word_count=row["target_word_count"],
+            min_expansion_ratio=row["min_expansion_ratio"],
         )

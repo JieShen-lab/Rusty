@@ -149,8 +149,8 @@ class PipelineService:
         chapter = self.project_service.get_chapter(chapter_id)
         if chapter is None:
             raise ValueError(f"Chapter not found: {chapter_id}")
-        model = self._resolve_model(model_id)
-        template = self._resolve_template(template_id)
+        model = self._resolve_model(model_id, chapter.project_id)
+        template = self._resolve_template(template_id, chapter.project_id)
         api_key = self.model_service.get_api_key(model.id)
         self._mark_stage(chapter_id, stage, "running")
         try:
@@ -163,16 +163,26 @@ class PipelineService:
             self._record_error(chapter_id, stage, exc)
             raise
 
-    def _resolve_model(self, model_id: int | None) -> ModelConfig:
-        model = self.model_service.get_model(model_id) if model_id is not None else self.model_service.get_default_model()
+    def _resolve_model(self, model_id: int | None, project_id: int) -> ModelConfig:
+        settings = self.project_service.get_project_settings(project_id)
+        effective_model_id = model_id if model_id is not None else (settings.model_id if settings else None)
+        model = (
+            self.model_service.get_model(effective_model_id)
+            if effective_model_id is not None
+            else self.model_service.get_default_model()
+        )
         if model is None:
             raise ValueError("No model configured.")
         return model
 
-    def _resolve_template(self, template_id: int | None) -> PromptTemplate:
+    def _resolve_template(self, template_id: int | None, project_id: int) -> PromptTemplate:
+        settings = self.project_service.get_project_settings(project_id)
+        effective_template_id = (
+            template_id if template_id is not None else (settings.prompt_template_id if settings else None)
+        )
         template = (
-            self.prompt_service.get_template(template_id)
-            if template_id is not None
+            self.prompt_service.get_template(effective_template_id)
+            if effective_template_id is not None
             else self.prompt_service.get_default_template()
         )
         if template is None:
@@ -427,4 +437,3 @@ def _parse_scene_response(text: str) -> dict:
         "labels": labels,
         "reasoning": str(data.get("reasoning", "")),
     }
-

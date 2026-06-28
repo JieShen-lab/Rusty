@@ -40,6 +40,7 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual("Save", window.model_save_button.text())
         self.assertEqual("Save", window.template_save_button.text())
         self.assertEqual("Run Project Pipeline", window.ai_run_project_button.text())
+        self.assertEqual("Save Project AI Settings", window.ai_save_settings_button.text())
         self.assertEqual(0, window.project_table.rowCount())
 
 

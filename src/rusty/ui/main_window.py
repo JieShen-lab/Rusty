@@ -249,6 +249,7 @@ class RustyMainWindow:
         self.template_save_button.clicked.connect(self.save_template)
         self.template_delete_button.clicked.connect(self.delete_template)
         self.project_prompt_save_button.clicked.connect(self.save_project_prompt)
+        self.ai_save_settings_button.clicked.connect(self.save_ai_project_settings)
         self.ai_run_project_button.clicked.connect(self.run_project_pipeline)
         self.ai_pause_project_button.clicked.connect(self.pause_current_project)
         self.ai_summary_button.clicked.connect(self.summarize_selected_chapter)
@@ -462,13 +463,22 @@ class RustyMainWindow:
         return page
 
     def _build_ai_page(self):
-        from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QTextEdit, QVBoxLayout, QWidget
+        from PySide6.QtWidgets import QComboBox, QFormLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit, QVBoxLayout, QWidget
 
         page = QWidget()
         layout = QVBoxLayout(page)
         self.ai_status_label = QLabel("Select a project or chapter, then run an AI action.")
         self.ai_status_label.setWordWrap(True)
         layout.addWidget(self.ai_status_label)
+
+        settings_form = QFormLayout()
+        self.ai_model_combo = QComboBox()
+        self.ai_template_combo = QComboBox()
+        self.ai_save_settings_button = QPushButton("Save Project AI Settings")
+        settings_form.addRow("Project model", self.ai_model_combo)
+        settings_form.addRow("Prompt template", self.ai_template_combo)
+        settings_form.addRow("", self.ai_save_settings_button)
+        layout.addLayout(settings_form)
 
         project_buttons = QHBoxLayout()
         self.ai_run_project_button = QPushButton("Run Project Pipeline")
@@ -528,10 +538,15 @@ class RustyMainWindow:
             self.select_project_row(self.current_project_id)
         else:
             self.clear_preview()
+        self.load_project_ai_settings(self.current_project_id)
 
     def load_models(self) -> None:
+        selected_model_id = self.ai_model_combo.currentData()
+        self.ai_model_combo.clear()
+        self.ai_model_combo.addItem("Use default model", None)
         self.model_table.setRowCount(0)
         for model in self.model_service.list_models():
+            self.ai_model_combo.addItem(model.display_name, model.id)
             row = self.model_table.rowCount()
             self.model_table.insertRow(row)
             values = [
@@ -548,6 +563,7 @@ class RustyMainWindow:
                 if column == 0:
                     item.setData(self.Qt.ItemDataRole.UserRole, model.id)
                 self.model_table.setItem(row, column, item)
+        self.select_combo_value(self.ai_model_combo, selected_model_id)
 
     def model_selection_changed(self) -> None:
         selected = self.model_table.selectedItems()
@@ -629,8 +645,12 @@ class RustyMainWindow:
         self.load_models()
 
     def load_templates(self) -> None:
+        selected_template_id = self.ai_template_combo.currentData()
+        self.ai_template_combo.clear()
+        self.ai_template_combo.addItem("Use default template", None)
         self.template_table.setRowCount(0)
         for template in self.prompt_service.list_templates():
+            self.ai_template_combo.addItem(template.name, template.id)
             row = self.template_table.rowCount()
             self.template_table.insertRow(row)
             values = [
@@ -644,6 +664,7 @@ class RustyMainWindow:
                 if column == 0:
                     item.setData(self.Qt.ItemDataRole.UserRole, template.id)
                 self.template_table.setItem(row, column, item)
+        self.select_combo_value(self.ai_template_combo, selected_template_id)
 
     def template_selection_changed(self) -> None:
         selected = self.template_table.selectedItems()
@@ -723,6 +744,27 @@ class RustyMainWindow:
             return
         self.QMessageBox.information(self.window, "Project prompt", "Project prompt saved.")
 
+    def save_ai_project_settings(self) -> None:
+        project_id = self.active_project_id()
+        if project_id is None:
+            self.QMessageBox.information(self.window, "AI settings", "Select a project first.")
+            return
+        self.service.update_project_settings(
+            project_id=project_id,
+            model_id=self.ai_model_combo.currentData(),
+            prompt_template_id=self.ai_template_combo.currentData(),
+        )
+        self.ai_status_label.setText("Project AI settings saved.")
+
+    def load_project_ai_settings(self, project_id: int | None) -> None:
+        if project_id is None:
+            self.select_combo_value(self.ai_model_combo, None)
+            self.select_combo_value(self.ai_template_combo, None)
+            return
+        settings = self.service.get_project_settings(project_id)
+        self.select_combo_value(self.ai_model_combo, settings.model_id if settings else None)
+        self.select_combo_value(self.ai_template_combo, settings.prompt_template_id if settings else None)
+
     def run_project_pipeline(self) -> None:
         project_id = self.active_project_id()
         if project_id is None:
@@ -779,6 +821,14 @@ class RustyMainWindow:
                 table.selectRow(row)
                 return
 
+    @staticmethod
+    def select_combo_value(combo, value) -> None:
+        for index in range(combo.count()):
+            if combo.itemData(index) == value:
+                combo.setCurrentIndex(index)
+                return
+        combo.setCurrentIndex(0)
+
     def new_project(self) -> None:
         dialog = NewProjectDialog(self.window, self.service)
         result = dialog.exec()
@@ -791,6 +841,7 @@ class RustyMainWindow:
         project_id = self.selected_project_id()
         if project_id is not None:
             self.current_project_id = project_id
+            self.load_project_ai_settings(project_id)
 
     def open_selected_project_preview(self) -> None:
         project_id = self.selected_project_id()
@@ -802,6 +853,7 @@ class RustyMainWindow:
     def open_project_preview(self, project_id: int) -> None:
         self.current_project_id = project_id
         self.chapters = self.service.list_chapters(project_id)
+        self.load_project_ai_settings(project_id)
         project = self.service.get_project(project_id)
         self.preview_project_label.setText(project.name if project is not None else f"Project {project_id}")
         self.chapter_list.clear()

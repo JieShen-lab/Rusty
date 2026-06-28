@@ -56,6 +56,18 @@ class ProjectSummary:
 
 
 @dataclass(frozen=True)
+class ProjectSettings:
+    project_id: int
+    model_id: int | None
+    prompt_template_id: int | None
+    txt_split_rule_id: int | None
+    processing_mode: str
+    concurrency: int
+    target_word_count: int | None
+    min_expansion_ratio: float | None
+
+
+@dataclass(frozen=True)
 class ChapterRecord:
     id: int
     project_id: int

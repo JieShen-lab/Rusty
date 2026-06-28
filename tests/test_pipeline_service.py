@@ -15,8 +15,10 @@ from rusty.services.ai_client import AIClient, AIResponse
 class FakeAIClient(AIClient):
     def __init__(self, fail_on: str | None = None) -> None:
         self.fail_on = fail_on
+        self.calls = []
 
     def chat(self, model, api_key, messages):
+        self.calls.append((model, messages))
         user_text = messages[-1]["content"]
         if self.fail_on and self.fail_on in user_text:
             raise RuntimeError("fake failure")
@@ -123,7 +125,47 @@ class PipelineServiceTests(unittest.TestCase):
         self.assertEqual(1, errors)
         self.assertTrue(result.paused)
 
+    def test_pipeline_prefers_project_model_and_prompt_settings(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            database_path = root / "rusty.db"
+            source_path = root / "book.txt"
+            source_path.write_text("1. One\nOriginal text.", encoding="utf-8")
+
+            project_service = ProjectService(database_path)
+            project_id = project_service.import_book(source_path, root)
+            chapter_id = project_service.list_chapters(project_id)[0].id
+            model_service = ModelService(database_path)
+            model_service.create_model(
+                display_name="Default",
+                provider="openai_compatible",
+                base_url="https://api.default.test/v1",
+                model_name="default-model",
+                is_default=True,
+            )
+            project_model_id = model_service.create_model(
+                display_name="Project",
+                provider="openai_compatible",
+                base_url="https://api.project.test/v1",
+                model_name="project-model",
+            )
+            prompt_service = PromptService(database_path)
+            prompt_service.create_template(name="Default", summary_rules="Default summary", is_default=True)
+            project_template_id = prompt_service.create_template(name="Project", summary_rules="Project summary")
+            project_service.update_project_settings(
+                project_id=project_id,
+                model_id=project_model_id,
+                prompt_template_id=project_template_id,
+            )
+
+            fake_client = FakeAIClient()
+            pipeline = PipelineService(database_path, ai_client=fake_client)
+            pipeline.summarize_chapter(chapter_id)
+
+        used_model, messages = fake_client.calls[0]
+        self.assertEqual("project-model", used_model.model_name)
+        self.assertIn("Project summary", messages[-1]["content"])
+
 
 if __name__ == "__main__":
     unittest.main()
-
