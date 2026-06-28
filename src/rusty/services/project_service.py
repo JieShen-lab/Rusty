@@ -220,6 +220,19 @@ class ProjectService:
 
         return [self._project_from_row(row) for row in rows]
 
+    def delete_project(self, project_id: int) -> None:
+        with session(self.database_path) as connection:
+            cursor = connection.execute(
+                """
+                UPDATE projects
+                SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND deleted_at IS NULL
+                """,
+                (project_id,),
+            )
+        if cursor.rowcount == 0:
+            raise ValueError(f"Project not found: {project_id}")
+
     def list_chapters(self, project_id: int) -> list[ChapterRecord]:
         with session(self.database_path) as connection:
             rows = connection.execute(

@@ -36,6 +36,7 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual("Prompts", window.prompts_nav.text())
         self.assertEqual("AI Pipeline", window.ai_nav.text())
         self.assertEqual("New Project", window.new_project_button.text())
+        self.assertEqual("Delete Project", window.delete_project_button.text())
         self.assertEqual("Export EPUB", window.export_epub_button.text())
         self.assertEqual("Save Rewritten Text", window.save_rewrite_button.text())
         self.assertEqual("Clear Rewrite", window.clear_rewrite_button.text())
@@ -52,6 +53,7 @@ class MainWindowTests(unittest.TestCase):
         self.assertTrue(hasattr(window, "rewrite_text"))
         self.assertTrue(hasattr(window, "run_background_task"))
         self.assertTrue(hasattr(window, "retry_selected_chapter_stage"))
+        self.assertTrue(hasattr(window, "delete_selected_project"))
         self.assertEqual([], window.running_tasks)
         self.assertEqual(0, window.project_table.rowCount())
 

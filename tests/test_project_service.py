@@ -14,6 +14,27 @@ from rusty.services import ProjectService
 
 
 class ProjectServiceTests(unittest.TestCase):
+    def test_delete_project_soft_deletes_from_project_list(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            txt_path = root / "delete-me.txt"
+            database_path = root / "rusty.db"
+            txt_path.write_text("1. Opening\nOriginal text.\n", encoding="utf-8")
+
+            service = ProjectService(database_path)
+            project_id = service.import_book(txt_path, root)
+            chapters_before_delete = service.list_chapters(project_id)
+
+            service.delete_project(project_id)
+            projects_after_delete = service.list_projects()
+            project_after_delete = service.get_project(project_id)
+            chapters_after_delete = service.list_chapters(project_id)
+
+        self.assertEqual(1, len(chapters_before_delete))
+        self.assertEqual([], projects_after_delete)
+        self.assertIsNone(project_after_delete)
+        self.assertEqual(chapters_before_delete, chapters_after_delete)
+
     def test_save_chapter_rewrite_updates_export_text_and_can_clear(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)

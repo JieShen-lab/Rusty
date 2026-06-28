@@ -234,6 +234,7 @@ class RustyMainWindow:
         self.ai_nav.clicked.connect(lambda: self.stack.setCurrentWidget(self.ai_page))
         self.new_project_button.clicked.connect(self.new_project)
         self.open_preview_button.clicked.connect(self.open_selected_project_preview)
+        self.delete_project_button.clicked.connect(self.delete_selected_project)
         self.export_txt_button.clicked.connect(self.export_txt)
         self.export_epub_button.clicked.connect(self.export_epub)
         self.refresh_button.clicked.connect(self.load_projects)
@@ -274,12 +275,14 @@ class RustyMainWindow:
         toolbar = QHBoxLayout()
         self.new_project_button = QPushButton("New Project")
         self.open_preview_button = QPushButton("Open Preview")
+        self.delete_project_button = QPushButton("Delete Project")
         self.export_txt_button = QPushButton("Export TXT")
         self.export_epub_button = QPushButton("Export EPUB")
         self.refresh_button = QPushButton("Refresh")
         self.status_label = QLabel("")
         toolbar.addWidget(self.new_project_button)
         toolbar.addWidget(self.open_preview_button)
+        toolbar.addWidget(self.delete_project_button)
         toolbar.addWidget(self.export_txt_button)
         toolbar.addWidget(self.export_epub_button)
         toolbar.addWidget(self.refresh_button)
@@ -977,6 +980,34 @@ class RustyMainWindow:
             self.QMessageBox.information(self.window, "Chapter Preview", "Select a project first.")
             return
         self.open_project_preview(project_id)
+
+    def delete_selected_project(self) -> None:
+        project_id = self.selected_project_id()
+        if project_id is None:
+            self.QMessageBox.information(self.window, "Delete Project", "Select a project first.")
+            return
+
+        project_name = self.project_name(project_id) or f"Project {project_id}"
+        answer = self.QMessageBox.question(
+            self.window,
+            "Delete Project",
+            f"Delete project '{project_name}' from the workbench?",
+            self.QMessageBox.StandardButton.Yes | self.QMessageBox.StandardButton.No,
+            self.QMessageBox.StandardButton.No,
+        )
+        if answer != self.QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            self.service.delete_project(project_id)
+        except Exception as exc:  # noqa: BLE001
+            self.QMessageBox.critical(self.window, "Delete project failed", str(exc))
+            return
+
+        if self.current_project_id == project_id:
+            self.clear_preview()
+        self.load_projects()
+        self.QMessageBox.information(self.window, "Delete Project", "Project removed from the workbench.")
 
     def open_project_preview(self, project_id: int, focus_chapter_id: int | None = None) -> None:
         self.current_project_id = project_id
