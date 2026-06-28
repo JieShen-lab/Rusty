@@ -112,5 +112,16 @@ class ChapterAIOutputs:
     rewrite_elapsed_ms: int | None = None
 
 
+@dataclass(frozen=True)
+class ExportRecord:
+    id: int
+    project_id: int
+    export_format: str
+    output_path: str
+    chapter_count: int
+    word_count: int
+    created_at: str
+
+
 def count_text_units(text: str) -> int:
     return sum(1 for char in text if not char.isspace())

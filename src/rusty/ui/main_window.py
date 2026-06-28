@@ -336,12 +336,17 @@ class RustyMainWindow:
         self.preview_text = QTextEdit()
         self.preview_text.setReadOnly(True)
         self.rewrite_text = QTextEdit()
+        self.export_history_text = QTextEdit()
+        self.export_history_text.setReadOnly(True)
+        self.export_history_text.setMaximumHeight(120)
         preview_panel_layout.addWidget(self.preview_title)
         preview_panel_layout.addWidget(self.preview_meta)
         preview_panel_layout.addWidget(QLabel("Original"))
         preview_panel_layout.addWidget(self.preview_text, 1)
         preview_panel_layout.addWidget(QLabel("Rewritten"))
         preview_panel_layout.addWidget(self.rewrite_text, 1)
+        preview_panel_layout.addWidget(QLabel("Export history"))
+        preview_panel_layout.addWidget(self.export_history_text)
         splitter.addWidget(preview_panel)
         splitter.setSizes([360, 840])
         layout.addWidget(splitter, 1)
@@ -1077,6 +1082,7 @@ class RustyMainWindow:
         self.load_project_ai_settings(project_id)
         project = self.service.get_project(project_id)
         self.preview_project_label.setText(project.name if project is not None else f"Project {project_id}")
+        self.refresh_export_history(project_id)
         self.chapter_list.clear()
         for chapter in self.chapters:
             item = self.QListWidgetItem(
@@ -1179,7 +1185,25 @@ class RustyMainWindow:
         except Exception as exc:  # noqa: BLE001
             self.QMessageBox.critical(self.window, "Export failed", str(exc))
             return
+        if self.current_project_id is not None:
+            self.refresh_export_history(self.current_project_id)
         self.QMessageBox.information(self.window, title, f"Exported to:\n{output}")
+
+    def refresh_export_history(self, project_id: int | None = None) -> None:
+        target_project_id = project_id if project_id is not None else self.current_project_id
+        if target_project_id is None:
+            self.export_history_text.clear()
+            return
+        exports = self.service.list_exports(target_project_id)
+        if not exports:
+            self.export_history_text.setPlainText("No exports yet.")
+            return
+        lines = [
+            f"{record.created_at} | {record.export_format.upper()} | {record.chapter_count} chapters | "
+            f"{record.word_count} chars | {record.output_path}"
+            for record in exports[:10]
+        ]
+        self.export_history_text.setPlainText("\n".join(lines))
 
     def selected_project_id(self) -> int | None:
         selected = self.project_table.selectedItems()
@@ -1228,3 +1252,4 @@ class RustyMainWindow:
         self.preview_meta.setText("")
         self.preview_text.setPlainText("Create a project to preview chapters.")
         self.rewrite_text.clear()
+        self.export_history_text.clear()

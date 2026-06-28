@@ -50,6 +50,7 @@ class ProjectServiceTests(unittest.TestCase):
             service.save_chapter_rewrite(chapter.id, "Manual rewrite.")
             updated = service.get_chapter(chapter.id)
             service.export_txt(project_id, export_path)
+            export_records = service.list_exports(project_id)
             exported_text = export_path.read_text(encoding="utf-8")
 
             service.save_chapter_rewrite(chapter.id, "")
@@ -58,6 +59,10 @@ class ProjectServiceTests(unittest.TestCase):
         self.assertIsNotNone(updated)
         self.assertEqual("Manual rewrite.", updated.rewritten_text)
         self.assertEqual("rewritten", updated.status)
+        self.assertEqual(1, len(export_records))
+        self.assertEqual("txt", export_records[0].export_format)
+        self.assertEqual(str(export_path), export_records[0].output_path)
+        self.assertEqual(14, export_records[0].word_count)
         self.assertIn("Manual rewrite.", exported_text)
         self.assertNotIn("Original text.", exported_text)
         self.assertIsNotNone(cleared)

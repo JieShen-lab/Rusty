@@ -8,7 +8,7 @@ from pathlib import Path
 from rusty.db import initialize_database, session
 from rusty.exporters import build_txt_export, export_epub
 from rusty.importers import parse_docx, parse_epub, parse_txt
-from rusty.models import ChapterRecord, ParsedBook, ProjectSettings, ProjectSummary, count_text_units
+from rusty.models import ChapterRecord, ExportRecord, ParsedBook, ProjectSettings, ProjectSummary, count_text_units
 
 
 def default_database_path() -> Path:
@@ -353,7 +353,7 @@ class ProjectService:
                     project_id,
                     str(output),
                     len(chapters),
-                    sum(chapter.word_count for chapter in chapters),
+                    self._export_word_count(chapters),
                 ),
             )
 
@@ -394,11 +394,42 @@ class ProjectService:
                     project_id,
                     str(output),
                     len(chapters),
-                    sum(chapter.word_count for chapter in chapters),
+                    self._export_word_count(chapters),
                 ),
             )
 
         return output
+
+    def list_exports(self, project_id: int) -> list[ExportRecord]:
+        with session(self.database_path) as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    id,
+                    project_id,
+                    export_format,
+                    output_path,
+                    chapter_count,
+                    word_count,
+                    created_at
+                FROM exports
+                WHERE project_id = ?
+                ORDER BY created_at DESC, id DESC
+                """,
+                (project_id,),
+            ).fetchall()
+        return [
+            ExportRecord(
+                id=row["id"],
+                project_id=row["project_id"],
+                export_format=row["export_format"],
+                output_path=row["output_path"],
+                chapter_count=row["chapter_count"],
+                word_count=row["word_count"],
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ]
 
     def get_book_metadata(self, project_id: int) -> dict[str, str | None]:
         with session(self.database_path) as connection:
@@ -528,6 +559,10 @@ class ProjectService:
             start_line=row["source_start_line"],
             end_line=row["source_end_line"],
         )
+
+    @staticmethod
+    def _export_word_count(chapters: list[ChapterRecord]) -> int:
+        return sum(count_text_units(chapter.rewritten_text or chapter.original_text) for chapter in chapters)
 
     @staticmethod
     def _settings_from_row(row) -> ProjectSettings:
