@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -53,6 +54,18 @@ class ProjectServiceTests(unittest.TestCase):
             service.export_txt(project_id, export_path)
             export_records = service.list_exports(project_id)
             exported_text = export_path.read_text(encoding="utf-8")
+            connection = sqlite3.connect(database_path)
+            try:
+                rewrite_source, prompt_snapshot_json, anchor_snapshot_json = connection.execute(
+                    """
+                    SELECT rewrite_source, prompt_snapshot_json, anchor_snapshot_json
+                    FROM chapter_rewrites
+                    WHERE chapter_id = ?
+                    """,
+                    (chapter.id,),
+                ).fetchone()
+            finally:
+                connection.close()
 
             service.save_chapter_rewrite(chapter.id, "")
             cleared = service.get_chapter(chapter.id)
@@ -67,6 +80,9 @@ class ProjectServiceTests(unittest.TestCase):
         self.assertEqual("txt", export_records[0].export_format)
         self.assertEqual(str(export_path), export_records[0].output_path)
         self.assertEqual(14, export_records[0].word_count)
+        self.assertEqual("manual", rewrite_source)
+        self.assertIn("manual_edit", prompt_snapshot_json)
+        self.assertEqual("{}", anchor_snapshot_json)
         self.assertIn("Manual rewrite.", exported_text)
         self.assertNotIn("Original text.", exported_text)
         self.assertIsNotNone(cleared)

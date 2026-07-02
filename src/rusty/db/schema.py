@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .connection import session
 
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 2
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -216,11 +216,14 @@ CREATE TABLE IF NOT EXISTS chapter_scene_analysis (
 CREATE TABLE IF NOT EXISTS chapter_rewrites (
     chapter_id INTEGER PRIMARY KEY,
     rewritten_text TEXT NOT NULL,
+    rewrite_source TEXT NOT NULL DEFAULT 'ai' CHECK (rewrite_source IN ('ai', 'manual', 'unknown')),
     target_word_count INTEGER,
     actual_word_count INTEGER NOT NULL DEFAULT 0,
     expansion_ratio REAL,
     model_id INTEGER,
     prompt_template_id INTEGER,
+    prompt_snapshot_json TEXT NOT NULL DEFAULT '{}',
+    anchor_snapshot_json TEXT NOT NULL DEFAULT '{}',
     token_usage_json TEXT NOT NULL DEFAULT '{}',
     elapsed_ms INTEGER,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -292,15 +295,57 @@ INSERT OR IGNORE INTO txt_split_rules (
 """
 
 
+def _column_exists(connection: sqlite3.Connection, table_name: str, column_name: str) -> bool:
+    rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return any(row[1] == column_name for row in rows)
+
+
+def _add_column_if_missing(connection: sqlite3.Connection, table_name: str, column_name: str, definition: str) -> None:
+    if not _column_exists(connection, table_name, column_name):
+        connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {definition}")
+
+
+def _migrate_to_v2(connection: sqlite3.Connection) -> None:
+    _add_column_if_missing(
+        connection,
+        "chapter_rewrites",
+        "rewrite_source",
+        "rewrite_source TEXT NOT NULL DEFAULT 'unknown' CHECK (rewrite_source IN ('ai', 'manual', 'unknown'))",
+    )
+    _add_column_if_missing(
+        connection,
+        "chapter_rewrites",
+        "prompt_snapshot_json",
+        "prompt_snapshot_json TEXT NOT NULL DEFAULT '{}'",
+    )
+    _add_column_if_missing(
+        connection,
+        "chapter_rewrites",
+        "anchor_snapshot_json",
+        "anchor_snapshot_json TEXT NOT NULL DEFAULT '{}'",
+    )
+
+
+MIGRATIONS = {
+    2: _migrate_to_v2,
+}
+
+
 def initialize_database(connection: sqlite3.Connection) -> None:
     """Create all database objects for the current schema version."""
     with connection:
         connection.executescript(SCHEMA_SQL)
         connection.executescript(DEFAULT_SEED_SQL)
-        connection.execute(
-            "INSERT OR IGNORE INTO schema_migrations(version) VALUES (?)",
-            (CURRENT_SCHEMA_VERSION,),
-        )
+        row = connection.execute("SELECT MAX(version) AS version FROM schema_migrations").fetchone()
+        applied_version = int(row[0]) if row is not None and row[0] is not None else 0
+        for version in range(applied_version + 1, CURRENT_SCHEMA_VERSION + 1):
+            migration = MIGRATIONS.get(version)
+            if migration is not None:
+                migration(connection)
+            connection.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version) VALUES (?)",
+                (version,),
+            )
 
 
 def initialize_database_file(database_path: str | Path) -> None:

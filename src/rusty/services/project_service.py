@@ -305,18 +305,30 @@ class ProjectService:
                     INSERT INTO chapter_rewrites (
                         chapter_id,
                         rewritten_text,
+                        rewrite_source,
                         actual_word_count,
                         expansion_ratio,
+                        prompt_snapshot_json,
+                        anchor_snapshot_json,
                         updated_at
-                    ) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    ) VALUES (?, ?, 'manual', ?, ?, ?, '{}', CURRENT_TIMESTAMP)
                     ON CONFLICT(chapter_id)
                     DO UPDATE SET
                         rewritten_text = excluded.rewritten_text,
+                        rewrite_source = excluded.rewrite_source,
                         actual_word_count = excluded.actual_word_count,
                         expansion_ratio = excluded.expansion_ratio,
+                        prompt_snapshot_json = excluded.prompt_snapshot_json,
+                        anchor_snapshot_json = excluded.anchor_snapshot_json,
                         updated_at = CURRENT_TIMESTAMP
                     """,
-                    (chapter_id, text, word_count, ratio),
+                    (
+                        chapter_id,
+                        text,
+                        word_count,
+                        ratio,
+                        json.dumps({"source": "manual_edit"}, ensure_ascii=False),
+                    ),
                 )
                 connection.execute(
                     """

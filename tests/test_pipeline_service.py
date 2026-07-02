@@ -74,6 +74,14 @@ class PipelineServiceTests(unittest.TestCase):
                 status_rows = connection.execute(
                     "SELECT stage, status FROM chapter_stage_status ORDER BY stage"
                 ).fetchall()
+                rewrite_row = connection.execute(
+                    """
+                    SELECT rewrite_source, prompt_snapshot_json, anchor_snapshot_json
+                    FROM chapter_rewrites
+                    WHERE chapter_id = ?
+                    """,
+                    (chapter_id,),
+                ).fetchone()
                 errors = connection.execute("SELECT COUNT(*) FROM chapter_errors").fetchone()[0]
             finally:
                 connection.close()
@@ -86,8 +94,12 @@ class PipelineServiceTests(unittest.TestCase):
         self.assertTrue(outputs.needs_rewrite)
         self.assertEqual(["expand"], outputs.scene_labels)
         self.assertEqual("needs detail", outputs.scene_reasoning)
+        self.assertEqual("ai", outputs.rewrite_source)
         self.assertIsNotNone(outputs.rewritten_word_count)
         self.assertGreater(outputs.rewritten_word_count, 0)
+        self.assertEqual("ai", rewrite_row[0])
+        self.assertIn("Rewrite this chapter", rewrite_row[1])
+        self.assertEqual("{}", rewrite_row[2])
         self.assertEqual(0, errors)
         self.assertEqual(
             [("rewrite", "completed"), ("scene_detection", "completed"), ("summary", "completed")],

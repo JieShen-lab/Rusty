@@ -34,7 +34,7 @@ class SchemaTests(unittest.TestCase):
         initialize_database(connection)
 
         version = connection.execute(
-            "SELECT version FROM schema_migrations"
+            "SELECT MAX(version) FROM schema_migrations"
         ).fetchone()[0]
         split_rule_count = connection.execute(
             "SELECT COUNT(*) FROM txt_split_rules WHERE is_default = 1"
@@ -42,6 +42,59 @@ class SchemaTests(unittest.TestCase):
 
         self.assertEqual(CURRENT_SCHEMA_VERSION, version)
         self.assertEqual(1, split_rule_count)
+
+    def test_initialize_database_upgrades_v1_rewrite_table(self) -> None:
+        connection = sqlite3.connect(":memory:")
+        connection.executescript(
+            """
+            CREATE TABLE schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            INSERT INTO schema_migrations(version) VALUES (1);
+
+            CREATE TABLE chapter_rewrites (
+                chapter_id INTEGER PRIMARY KEY,
+                rewritten_text TEXT NOT NULL,
+                target_word_count INTEGER,
+                actual_word_count INTEGER NOT NULL DEFAULT 0,
+                expansion_ratio REAL,
+                model_id INTEGER,
+                prompt_template_id INTEGER,
+                token_usage_json TEXT NOT NULL DEFAULT '{}',
+                elapsed_ms INTEGER,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            INSERT INTO chapter_rewrites (
+                chapter_id,
+                rewritten_text,
+                actual_word_count
+            ) VALUES (1, 'old rewrite', 11);
+            """
+        )
+
+        initialize_database(connection)
+        columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(chapter_rewrites)")
+        }
+        row = connection.execute(
+            """
+            SELECT rewrite_source, prompt_snapshot_json, anchor_snapshot_json
+            FROM chapter_rewrites
+            WHERE chapter_id = 1
+            """
+        ).fetchone()
+        version = connection.execute(
+            "SELECT MAX(version) FROM schema_migrations"
+        ).fetchone()[0]
+
+        self.assertIn("rewrite_source", columns)
+        self.assertIn("prompt_snapshot_json", columns)
+        self.assertIn("anchor_snapshot_json", columns)
+        self.assertEqual(("unknown", "{}", "{}"), row)
+        self.assertEqual(CURRENT_SCHEMA_VERSION, version)
 
     def test_connect_enables_foreign_keys(self) -> None:
         connection = connect(":memory:")

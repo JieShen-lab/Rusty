@@ -107,6 +107,7 @@ class ChapterAIOutputs:
     needs_rewrite: bool | None = None
     scene_labels: list[str] | None = None
     scene_reasoning: str | None = None
+    rewrite_source: str | None = None
     rewritten_word_count: int | None = None
     expansion_ratio: float | None = None
     rewrite_elapsed_ms: int | None = None

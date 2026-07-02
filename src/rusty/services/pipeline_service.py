@@ -208,7 +208,7 @@ class PipelineService:
             ).fetchone()
             rewrite = connection.execute(
                 """
-                SELECT actual_word_count, expansion_ratio, elapsed_ms
+                SELECT rewrite_source, actual_word_count, expansion_ratio, elapsed_ms
                 FROM chapter_rewrites
                 WHERE chapter_id = ?
                 """,
@@ -221,6 +221,7 @@ class PipelineService:
             needs_rewrite=bool(scene["needs_rewrite"]) if scene is not None else None,
             scene_labels=scene_labels,
             scene_reasoning=scene["reasoning"] if scene is not None else None,
+            rewrite_source=rewrite["rewrite_source"] if rewrite is not None else None,
             rewritten_word_count=rewrite["actual_word_count"] if rewrite is not None else None,
             expansion_ratio=rewrite["expansion_ratio"] if rewrite is not None else None,
             rewrite_elapsed_ms=rewrite["elapsed_ms"] if rewrite is not None else None,
@@ -442,28 +443,42 @@ class PipelineService:
         if min_expansion_ratio is not None and ratio is not None and ratio < min_expansion_ratio:
             raise ValueError(f"Rewrite expansion ratio is below minimum: {ratio:.2f} < {min_expansion_ratio:.2f}")
         with session(self.database_path) as connection:
+            prompt_snapshot = {
+                "messages": self._rewrite_messages(chapter, template),
+                "prompt_template": {
+                    "id": template.id,
+                    "name": template.name,
+                    "version": template.version,
+                },
+            }
             connection.execute(
                 """
                 INSERT INTO chapter_rewrites (
                     chapter_id,
                     rewritten_text,
+                    rewrite_source,
                     target_word_count,
                     actual_word_count,
                     expansion_ratio,
                     model_id,
                     prompt_template_id,
+                    prompt_snapshot_json,
+                    anchor_snapshot_json,
                     token_usage_json,
                     elapsed_ms,
                     updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ) VALUES (?, ?, 'ai', ?, ?, ?, ?, ?, ?, '{}', ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(chapter_id)
                 DO UPDATE SET
                     rewritten_text = excluded.rewritten_text,
+                    rewrite_source = excluded.rewrite_source,
                     target_word_count = excluded.target_word_count,
                     actual_word_count = excluded.actual_word_count,
                     expansion_ratio = excluded.expansion_ratio,
                     model_id = excluded.model_id,
                     prompt_template_id = excluded.prompt_template_id,
+                    prompt_snapshot_json = excluded.prompt_snapshot_json,
+                    anchor_snapshot_json = excluded.anchor_snapshot_json,
                     token_usage_json = excluded.token_usage_json,
                     elapsed_ms = excluded.elapsed_ms,
                     updated_at = CURRENT_TIMESTAMP
@@ -476,6 +491,7 @@ class PipelineService:
                     ratio,
                     model.id,
                     template.id,
+                    json.dumps(prompt_snapshot, ensure_ascii=False),
                     json.dumps(response.token_usage),
                     response.elapsed_ms,
                 ),

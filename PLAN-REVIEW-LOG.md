@@ -1,47 +1,44 @@
-# Plan Review Log: Rusty UI-R2 Electron + React + Python API Migration
+# Plan Review Log: Rusty structured style templates, anchors, and export sequencing
 Act 1 (grill) complete - plan locked with the user. MAX_ROUNDS=5.
 
 ## Round 1 - Codex
 Verdict: REVISE
 
-Findings:
-- Project-bound workspace was undercut by global chapter access; require project-bound chapter detail and ownership checks.
-- Soft-deleted projects can still expose chapters through legacy service behavior; API must hide deleted projects for reads/exports.
-- New Project preview/create needed a local file selection contract because `create_project()` re-reads the source path.
-- Export endpoints could become arbitrary filesystem writes if they accept renderer-controlled paths.
-- FastAPI/uvicorn dependency ownership was not declared.
-- SQLite concurrency and `busy_timeout` were not addressed for overlapping API requests.
-- Electron security constraints were not specific or testable.
-- Verification did not prove real migrated flows.
-- Error mapping from service exceptions to JSON responses was missing.
-- Models/Prompts placeholders risked implying fake persisted state.
+Findings accepted:
+- Existing DB initialization needed a real migration plan instead of insert-only schema version recording.
+- Project binding was ambiguous against the current strongly typed settings/API/client contract.
+- Rewrite outputs needed provenance snapshots once style/outline/character anchors affect generation.
+- Manual and AI rewrites needed an explicit source field before export sequencing could label them reliably.
+- Export sequencing needed a service-level effective export DTO instead of changing exporters ad hoc.
+- Legacy category prompt handling needed either explicit scene-label selection or informational-only behavior.
+- Extraction/import endpoints needed centralized file validation and size/token protections.
 
-Response:
-- Revised `PLAN.md` with project-bound and soft-delete API constraints, file/export safety rules, explicit HTTP error mapping, dependency declaration requirements, SQLite concurrency notes, Electron security acceptance criteria, and stronger verification requirements.
+Claude response:
+- Added phase 0 migration runner requirement, schema version bump, and v1 upgrade tests.
+- Chose dedicated project binding tables for styles/outlines/characters instead of overloading `project_settings`.
+- Listed required contracts across dataclasses, services, Pydantic schemas, API routes, client types, and UI refresh.
+- Added rewrite provenance requirements: source, selected ids, version hashes/snapshots, and final prompt snapshot.
+- Added `get_effective_export_chapters(project_id)` as the sole TXT/EPUB export sequencing service entry point.
+- Made legacy `categoryPrompts` informational by default unless explicit scene-label selection is implemented and tested.
+- Required extraction endpoints to reuse centralized path/format/size/token validation.
 
 ## Round 2 - Codex
 Verdict: REVISE
 
-Findings:
-- The plan promised `NewProjectPage` preview/create, but the route and backend endpoint inventory omitted `/new-project`, preview, and create.
-- Verification did not require exercising selected path -> preview -> create -> library/workspace visibility.
-- Export safety did not define generated filenames, collision handling, or overwrite behavior while using service-level path writes.
+Findings accepted:
+- Verification needed to include the Electron/React TypeScript build because the plan changes backend schemas/routes and desktop client types.
+- New style/binding/extraction/trial-writing endpoints needed explicit local API token policy.
+- Binding tables needed cardinality, uniqueness, ordering, and delete behavior before implementation.
 
-Response:
-- Revised `PLAN.md` to include `/new-project`, explicit `POST /api/projects/preview` and `POST /api/projects`, frontend/backend preview-create verification, and deterministic project export directory naming with no silent overwrite.
+Claude response:
+- Added `npm --prefix desktop run build` to verification whenever backend schemas/routes, desktop client types, or Electron/React UI code changes.
+- Required every create/update/delete/import/bind/extract/trial-writing endpoint to use the local API token, with read-only routes classified before implementation.
+- Defined binding constraints: one active style, one active outline, many unique character cards per project, optional sort order, no new binding to soft-deleted rows, inactive/ignored stale bindings, and guarded hard deletes when rewrite provenance exists.
 
 ## Round 3 - Codex
-Verdict: REVISE
-
-Findings:
-- Local FastAPI endpoints expose path preview/create, delete, and export without constraints for host binding, CORS, Origin handling, or a local session token.
-- Preview stores no state while create accepts a fresh source path, so the API does not enforce preview/create binding.
-
-Response:
-- Revised `PLAN.md` to require loopback-only binding, restricted CORS, app-generated local tokens for mutating/path-based endpoints, and a short-lived preview token tied to source path and file fingerprint that create must revalidate.
-
-## Round 4 - Codex
 Verdict: APPROVED
 
-Findings:
-- No material blockers remain. Codex accepted the updated New Project routing/API inventory, local API security constraints, preview/create binding, export collision behavior, and verification coverage.
+Codex conclusion:
+- Round 2 blockers are addressed at the plan level.
+- The plan now includes Electron/React build verification, explicit token policy for mutating/template/extraction endpoints, and concrete binding cardinality/delete rules.
+- No remaining material implementation risk blocks starting Phase 0, assuming implementation follows and tests the added constraints.
