@@ -17,9 +17,13 @@ dist/
 *.sqlite3
 *.log
 
+# Electron / React UI
+desktop/node_modules/
+desktop/dist/
+desktop/dist-electron/
+
 # IDE / OS
 .idea/
 .vscode/
 .DS_Store
 Thumbs.db
-
