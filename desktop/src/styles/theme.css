@@ -40,6 +40,16 @@
     repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.025) 0 1px, transparent 1px 16px);
 }
 
+.window-drag-region {
+  -webkit-app-region: drag;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 140px;
+  z-index: 60;
+  height: 36px;
+}
+
 .glass-card {
   border-color: var(--border-soft);
   background: var(--bg-panel);

@@ -23,6 +23,15 @@ input {
   font: inherit;
 }
 
+button,
+a,
+input,
+textarea,
+select,
+[role="button"] {
+  -webkit-app-region: no-drag;
+}
+
 button:focus-visible,
 input:focus-visible {
   outline: 2px solid var(--accent-blue);
