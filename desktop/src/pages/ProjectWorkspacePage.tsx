@@ -1,6 +1,19 @@
 import { useEffect, useState } from 'react';
-import { Download, FileText } from 'lucide-react';
-import { exportEpub, exportTxt, getChapters, getProject, getProjectChapter } from '../api/client';
+import { Download, FileText, Pause, Play, RefreshCcw, Save, Sparkles, Trash2 } from 'lucide-react';
+import {
+  detectScene,
+  exportEpub,
+  exportTxt,
+  getChapters,
+  getProject,
+  getProjectChapter,
+  pauseProjectPipeline,
+  retryChapterStage,
+  rewriteChapter,
+  runProjectPipeline,
+  saveChapterRewrite,
+  summarizeChapter,
+} from '../api/client';
 import type { Chapter, ChapterDetail, ProjectDetail } from '../api/types';
 import { EmptyState } from '../components/EmptyState';
 import { GlassCard } from '../components/GlassCard';
@@ -24,7 +37,10 @@ export function ProjectWorkspacePage({ projectId, onNavigate }: Props) {
   const [chapterDetail, setChapterDetail] = useState<ChapterDetail | null>(null);
   const [activeStage, setActiveStage] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
   const [exportMessage, setExportMessage] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [rewriteDraft, setRewriteDraft] = useState('');
 
   useEffect(() => {
     if (!projectId) return;
@@ -41,7 +57,10 @@ export function ProjectWorkspacePage({ projectId, onNavigate }: Props) {
   useEffect(() => {
     if (!projectId || !selectedChapterId) return;
     getProjectChapter(projectId, selectedChapterId)
-      .then(setChapterDetail)
+      .then((detail) => {
+        setChapterDetail(detail);
+        setRewriteDraft(detail.chapter.rewritten_text || '');
+      })
       .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
   }, [projectId, selectedChapterId]);
 
@@ -64,6 +83,36 @@ export function ProjectWorkspacePage({ projectId, onNavigate }: Props) {
     }
   }
 
+  async function reloadWorkspace(chapterId = selectedChapterId) {
+    if (!projectId) return;
+    const [project, items] = await Promise.all([getProject(projectId), getChapters(projectId)]);
+    setProjectDetail(project);
+    setChapters(items);
+    if (chapterId) {
+      const detail = await getProjectChapter(projectId, chapterId);
+      setChapterDetail(detail);
+      setRewriteDraft(detail.chapter.rewritten_text || '');
+    }
+  }
+
+  async function runAction(label: string, action: () => Promise<unknown>) {
+    setBusy(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const result = await action();
+      const text = typeof result === 'object' && result && 'text' in result ? String((result as { text: string }).text) : '';
+      setMessage(text ? `${label}完成：${text.slice(0, 160)}` : `${label}完成。`);
+      await reloadWorkspace();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const selectedChapterIdForAction = selected?.id;
+
   return (
     <div>
       <TopBar
@@ -72,6 +121,7 @@ export function ProjectWorkspacePage({ projectId, onNavigate }: Props) {
         onRefresh={() => window.location.reload()}
       />
       {error && <GlassCard className="mb-5 border-rose-300/25 text-rose-100">后端错误：{error}</GlassCard>}
+      {message && <GlassCard className="mb-5 border-emerald-300/25 text-emerald-100">{message}</GlassCard>}
       <div className="mb-5">
         <StageStepper stages={stages} activeStage={activeStage} completedStages={Array.from({ length: completed }, (_, index) => index).filter((index) => index < activeStage)} />
       </div>
@@ -103,10 +153,52 @@ export function ProjectWorkspacePage({ projectId, onNavigate }: Props) {
               </button>
             ))}
           </div>
-          {selected ? <StageContent activeStage={activeStage} detail={chapterDetail} /> : <EmptyState title="请选择章节" description="选择章节后可查看原文、总结、识别和改写结果。" />}
+          {selected ? <StageContent activeStage={activeStage} detail={chapterDetail} rewriteDraft={rewriteDraft} setRewriteDraft={setRewriteDraft} /> : <EmptyState title="请选择章节" description="选择章节后可查看原文、总结、识别和改写结果。" />}
         </GlassCard>
 
         <aside className="space-y-5 max-2xl:col-span-2 max-lg:col-span-1">
+          <GlassCard title="项目操作">
+            <div className="flex flex-col gap-3">
+              <PrimaryButton disabled={busy} onClick={() => runAction('项目流水线', () => runProjectPipeline(projectId))}>
+                <Play size={16} />
+                运行项目流水线
+              </PrimaryButton>
+              <SecondaryButton disabled={busy} onClick={() => runAction('暂停项目', () => pauseProjectPipeline(projectId))}>
+                <Pause size={16} />
+                暂停项目
+              </SecondaryButton>
+            </div>
+          </GlassCard>
+          <GlassCard title="章节 AI">
+            <div className="grid grid-cols-2 gap-3">
+              <SecondaryButton disabled={busy || !selectedChapterIdForAction} onClick={() => selectedChapterIdForAction && runAction('总结章节', () => summarizeChapter(selectedChapterIdForAction))}>
+                <Sparkles size={16} />
+                总结
+              </SecondaryButton>
+              <SecondaryButton disabled={busy || !selectedChapterIdForAction} onClick={() => selectedChapterIdForAction && runAction('识别场景', () => detectScene(selectedChapterIdForAction))}>
+                <Sparkles size={16} />
+                识别
+              </SecondaryButton>
+              <SecondaryButton disabled={busy || !selectedChapterIdForAction} onClick={() => selectedChapterIdForAction && runAction('改写章节', () => rewriteChapter(selectedChapterIdForAction))}>
+                <Sparkles size={16} />
+                改写
+              </SecondaryButton>
+              <SecondaryButton disabled={busy || !selectedChapterIdForAction} onClick={() => selectedChapterIdForAction && runAction('重试改写', () => retryChapterStage(selectedChapterIdForAction, 'rewrite'))}>
+                <RefreshCcw size={16} />
+                重试
+              </SecondaryButton>
+            </div>
+            <div className="mt-3 flex flex-col gap-3">
+              <PrimaryButton disabled={busy || !selectedChapterIdForAction} onClick={() => selectedChapterIdForAction && runAction('保存改写', () => saveChapterRewrite(selectedChapterIdForAction, rewriteDraft))}>
+                <Save size={16} />
+                保存改写文本
+              </PrimaryButton>
+              <SecondaryButton disabled={busy || !selectedChapterIdForAction} onClick={() => selectedChapterIdForAction && runAction('清空改写', () => saveChapterRewrite(selectedChapterIdForAction, ''))}>
+                <Trash2 size={16} />
+                清空改写
+              </SecondaryButton>
+            </div>
+          </GlassCard>
           <GlassCard title="项目统计">
             <div className="grid grid-cols-2 gap-3 text-sm">
               <Stat label="总字数" value={project?.total_words.toLocaleString() ?? '-'} />
@@ -147,7 +239,17 @@ export function ProjectWorkspacePage({ projectId, onNavigate }: Props) {
   );
 }
 
-function StageContent({ activeStage, detail }: { activeStage: number; detail: ChapterDetail | null }) {
+function StageContent({
+  activeStage,
+  detail,
+  rewriteDraft,
+  setRewriteDraft,
+}: {
+  activeStage: number;
+  detail: ChapterDetail | null;
+  rewriteDraft: string;
+  setRewriteDraft: (value: string) => void;
+}) {
   if (!detail) return null;
   const chapter = detail.chapter;
   const outputs = detail.ai_outputs;
@@ -166,7 +268,15 @@ function StageContent({ activeStage, detail }: { activeStage: number; detail: Ch
     return (
       <div className="grid grid-cols-2 gap-4 max-xl:grid-cols-1">
         <TextPanel title="原文" text={chapter.original_text} />
-        <TextPanel title="改写文" text={chapter.rewritten_text || '暂无改写文本。'} />
+        <div>
+          <h2 className="mb-4 text-2xl font-bold text-white">改写文</h2>
+          <textarea
+            className="chapter-text min-h-[520px] w-full resize-y whitespace-pre-wrap rounded-3xl border border-white/10 bg-slate-950/35 p-5 text-sm leading-8 text-slate-100 outline-none"
+            placeholder="暂无改写文本，可运行 AI 改写或手动输入后保存。"
+            value={rewriteDraft}
+            onChange={(event) => setRewriteDraft(event.target.value)}
+          />
+        </div>
       </div>
     );
   }

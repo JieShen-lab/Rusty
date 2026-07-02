@@ -30,14 +30,23 @@ from .schemas import (
     ErrorResponse,
     ExportResponse,
     HealthResponse,
+    ModelTestResponse,
     ModelOut,
+    ModelWriteRequest,
     PreviewChapterOut,
     PreviewRequest,
     PreviewResponse,
     ProjectDetailOut,
     ProjectOut,
+    ProjectPromptWriteRequest,
+    ProjectSettingsUpdateRequest,
     PromptTemplateOut,
+    PromptTemplateWriteRequest,
+    PipelineRunResponse,
+    RetryStageRequest,
+    RewriteTextRequest,
     StageStatusOut,
+    TextResultResponse,
 )
 
 APP_NAME = "Rusty"
@@ -190,25 +199,145 @@ def create_app(database_path: str | Path | None = None) -> FastAPI:
         exported = project_service.export_epub(project_id, output_path)
         return ExportResponse(ok=True, format="epub", output_path=str(exported))
 
-    @app.post("/api/chapters/{chapter_id}/summarize", dependencies=[Depends(_require_token)])
-    def summarize_chapter(chapter_id: int) -> None:
-        raise _http_error(501, "not_implemented", f"Chapter summarize API is reserved for UI-R3: {chapter_id}")
+    @app.post("/api/projects/{project_id}/settings", response_model=ProjectDetailOut, dependencies=[Depends(_require_token)])
+    def update_project_settings(project_id: int, payload: ProjectSettingsUpdateRequest) -> ProjectDetailOut:
+        _require_project(project_service, project_id)
+        project_service.update_project_settings(
+            project_id=project_id,
+            model_id=payload.model_id,
+            prompt_template_id=payload.prompt_template_id,
+            processing_mode=payload.processing_mode,
+            concurrency=payload.concurrency,
+            target_word_count=payload.target_word_count,
+            min_expansion_ratio=payload.min_expansion_ratio,
+        )
+        return get_project(project_id)
 
-    @app.post("/api/chapters/{chapter_id}/detect-scene", dependencies=[Depends(_require_token)])
-    def detect_scene(chapter_id: int) -> None:
-        raise _http_error(501, "not_implemented", f"Chapter scene detection API is reserved for UI-R3: {chapter_id}")
+    @app.post("/api/projects/{project_id}/prompts", response_model=dict[str, str], dependencies=[Depends(_require_token)])
+    def save_project_prompt(project_id: int, payload: ProjectPromptWriteRequest) -> dict[str, str]:
+        _require_project(project_service, project_id)
+        prompt_service.save_project_prompt(project_id, payload.prompt_key, payload.prompt_text)
+        return prompt_service.list_project_prompts(project_id)
 
-    @app.post("/api/chapters/{chapter_id}/rewrite", dependencies=[Depends(_require_token)])
-    def rewrite_chapter(chapter_id: int) -> None:
-        raise _http_error(501, "not_implemented", f"Chapter rewrite API is reserved for UI-R3: {chapter_id}")
+    @app.get("/api/projects/{project_id}/prompts", response_model=dict[str, str])
+    def list_project_prompts(project_id: int) -> dict[str, str]:
+        _require_project(project_service, project_id)
+        return prompt_service.list_project_prompts(project_id)
+
+    @app.post("/api/projects/{project_id}/pipeline/run", response_model=PipelineRunResponse, dependencies=[Depends(_require_token)])
+    def run_project_pipeline(project_id: int) -> PipelineRunResponse:
+        _require_project(project_service, project_id)
+        result = pipeline_service.run_project(project_id)
+        return PipelineRunResponse(
+            ok=True,
+            processed=result.processed,
+            skipped=result.skipped,
+            failed=result.failed,
+            paused=result.paused,
+        )
+
+    @app.post("/api/projects/{project_id}/pipeline/pause", response_model=dict[str, bool], dependencies=[Depends(_require_token)])
+    def pause_project_pipeline(project_id: int) -> dict[str, bool]:
+        _require_project(project_service, project_id)
+        pipeline_service.set_project_paused(project_id, True)
+        return {"ok": True}
+
+    @app.post("/api/chapters/{chapter_id}/summarize", response_model=TextResultResponse, dependencies=[Depends(_require_token)])
+    def summarize_chapter(chapter_id: int) -> TextResultResponse:
+        chapter = _require_existing_chapter(project_service, chapter_id)
+        _require_project(project_service, chapter.project_id)
+        text = pipeline_service.summarize_chapter(chapter_id)
+        return TextResultResponse(ok=True, text=text)
+
+    @app.post("/api/chapters/{chapter_id}/detect-scene", response_model=TextResultResponse, dependencies=[Depends(_require_token)])
+    def detect_scene(chapter_id: int) -> TextResultResponse:
+        chapter = _require_existing_chapter(project_service, chapter_id)
+        _require_project(project_service, chapter.project_id)
+        text = pipeline_service.detect_scene(chapter_id)
+        return TextResultResponse(ok=True, text=text)
+
+    @app.post("/api/chapters/{chapter_id}/rewrite", response_model=TextResultResponse, dependencies=[Depends(_require_token)])
+    def rewrite_chapter(chapter_id: int) -> TextResultResponse:
+        chapter = _require_existing_chapter(project_service, chapter_id)
+        _require_project(project_service, chapter.project_id)
+        text = pipeline_service.rewrite_chapter(chapter_id)
+        return TextResultResponse(ok=True, text=text)
+
+    @app.post("/api/chapters/{chapter_id}/retry", response_model=TextResultResponse, dependencies=[Depends(_require_token)])
+    def retry_chapter_stage(chapter_id: int, payload: RetryStageRequest) -> TextResultResponse:
+        chapter = _require_existing_chapter(project_service, chapter_id)
+        _require_project(project_service, chapter.project_id)
+        text = pipeline_service.retry_chapter_stage(chapter_id, payload.stage)
+        return TextResultResponse(ok=True, text=text)
+
+    @app.post("/api/chapters/{chapter_id}/rewrite-text", response_model=ChapterDetailOut, dependencies=[Depends(_require_token)])
+    def save_chapter_rewrite(chapter_id: int, payload: RewriteTextRequest) -> ChapterDetailOut:
+        chapter = _require_existing_chapter(project_service, chapter_id)
+        _require_project(project_service, chapter.project_id)
+        project_service.save_chapter_rewrite(chapter_id, payload.rewritten_text)
+        updated = _require_existing_chapter(project_service, chapter_id)
+        return _chapter_detail(updated, pipeline_service)
 
     @app.get("/api/models", response_model=list[ModelOut])
     def list_models() -> list[ModelOut]:
         return [ModelOut(**model.__dict__) for model in model_service.list_models()]
 
+    @app.post("/api/models", response_model=ModelOut, dependencies=[Depends(_require_token)])
+    def create_model(payload: ModelWriteRequest) -> ModelOut:
+        model_id = model_service.create_model(**payload.model_dump())
+        model = model_service.get_model(model_id)
+        if model is None:
+            raise _http_error(500, "model_create_failed", "Model was created but could not be loaded.")
+        return ModelOut(**model.__dict__)
+
+    @app.post("/api/models/{model_id}", response_model=ModelOut, dependencies=[Depends(_require_token)])
+    def update_model(model_id: int, payload: ModelWriteRequest) -> ModelOut:
+        model_service.update_model(model_id=model_id, **payload.model_dump())
+        model = model_service.get_model(model_id)
+        if model is None:
+            raise _http_error(404, "model_not_found", f"Model not found: {model_id}")
+        return ModelOut(**model.__dict__)
+
+    @app.post("/api/models/{model_id}/delete", response_model=dict[str, bool], dependencies=[Depends(_require_token)])
+    def delete_model(model_id: int) -> dict[str, bool]:
+        if model_service.get_model(model_id) is None:
+            raise _http_error(404, "model_not_found", f"Model not found: {model_id}")
+        model_service.delete_model(model_id)
+        return {"ok": True}
+
+    @app.post("/api/models/{model_id}/test", response_model=ModelTestResponse, dependencies=[Depends(_require_token)])
+    def test_model(model_id: int) -> ModelTestResponse:
+        if model_service.get_model(model_id) is None:
+            raise _http_error(404, "model_not_found", f"Model not found: {model_id}")
+        result = model_service.test_connection(model_id)
+        return ModelTestResponse(ok=result.ok, message=result.message, elapsed_ms=result.elapsed_ms)
+
     @app.get("/api/prompts", response_model=list[PromptTemplateOut])
     def list_prompts() -> list[PromptTemplateOut]:
         return [PromptTemplateOut(**template.__dict__) for template in prompt_service.list_templates()]
+
+    @app.post("/api/prompts", response_model=PromptTemplateOut, dependencies=[Depends(_require_token)])
+    def create_prompt(payload: PromptTemplateWriteRequest) -> PromptTemplateOut:
+        template_id = prompt_service.create_template(**payload.model_dump())
+        template = prompt_service.get_template(template_id)
+        if template is None:
+            raise _http_error(500, "prompt_create_failed", "Prompt template was created but could not be loaded.")
+        return PromptTemplateOut(**template.__dict__)
+
+    @app.post("/api/prompts/{template_id}", response_model=PromptTemplateOut, dependencies=[Depends(_require_token)])
+    def update_prompt(template_id: int, payload: PromptTemplateWriteRequest) -> PromptTemplateOut:
+        prompt_service.update_template(template_id=template_id, **payload.model_dump())
+        template = prompt_service.get_template(template_id)
+        if template is None:
+            raise _http_error(404, "prompt_not_found", f"Prompt template not found: {template_id}")
+        return PromptTemplateOut(**template.__dict__)
+
+    @app.post("/api/prompts/{template_id}/delete", response_model=dict[str, bool], dependencies=[Depends(_require_token)])
+    def delete_prompt(template_id: int) -> dict[str, bool]:
+        if prompt_service.get_template(template_id) is None:
+            raise _http_error(404, "prompt_not_found", f"Prompt template not found: {template_id}")
+        prompt_service.delete_template(template_id)
+        return {"ok": True}
 
     return app
 
@@ -237,6 +366,13 @@ def _require_project_chapter(service: ProjectService, project_id: int, chapter_i
     chapter = service.get_chapter(chapter_id)
     if chapter is None or chapter.project_id != project_id:
         raise _http_error(404, "chapter_not_found", f"Chapter not found in project: {chapter_id}")
+    return chapter
+
+
+def _require_existing_chapter(service: ProjectService, chapter_id: int) -> ChapterRecord:
+    chapter = service.get_chapter(chapter_id)
+    if chapter is None:
+        raise _http_error(404, "chapter_not_found", f"Chapter not found: {chapter_id}")
     return chapter
 
 

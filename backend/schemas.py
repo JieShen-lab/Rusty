@@ -124,6 +124,36 @@ class ExportResponse(BaseModel):
     output_path: str
 
 
+class TextResultResponse(BaseModel):
+    ok: bool
+    text: str
+
+
+class PipelineRunResponse(BaseModel):
+    ok: bool
+    processed: int
+    skipped: int
+    failed: int
+    paused: bool
+
+
+class RetryStageRequest(BaseModel):
+    stage: Literal["summary", "scene_detection", "rewrite"]
+
+
+class RewriteTextRequest(BaseModel):
+    rewritten_text: str = ""
+
+
+class ProjectSettingsUpdateRequest(BaseModel):
+    model_id: int | None = None
+    prompt_template_id: int | None = None
+    processing_mode: str = "auto"
+    concurrency: int = 1
+    target_word_count: int | None = None
+    min_expansion_ratio: float | None = None
+
+
 class ModelOut(BaseModel):
     id: int
     display_name: str
@@ -137,6 +167,24 @@ class ModelOut(BaseModel):
     has_api_key: bool
 
 
+class ModelWriteRequest(BaseModel):
+    display_name: str = Field(min_length=1)
+    provider: str = "openai_compatible"
+    base_url: str = Field(min_length=1)
+    model_name: str = Field(min_length=1)
+    api_key: str | None = None
+    temperature: float = 0.7
+    max_tokens: int | None = None
+    timeout_seconds: int = 60
+    is_default: bool = False
+
+
+class ModelTestResponse(BaseModel):
+    ok: bool
+    message: str
+    elapsed_ms: int | None = None
+
+
 class PromptTemplateOut(BaseModel):
     id: int
     name: str
@@ -146,3 +194,17 @@ class PromptTemplateOut(BaseModel):
     summary_rules: str
     scene_detection_rules: str
     rewrite_rules: str
+
+
+class PromptTemplateWriteRequest(BaseModel):
+    name: str = Field(min_length=1)
+    global_rules: str = ""
+    summary_rules: str = ""
+    scene_detection_rules: str = ""
+    rewrite_rules: str = ""
+    is_default: bool = False
+
+
+class ProjectPromptWriteRequest(BaseModel):
+    prompt_key: str = Field(min_length=1)
+    prompt_text: str = ""

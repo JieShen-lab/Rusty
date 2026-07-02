@@ -16,11 +16,13 @@ dist/
 *.sqlite
 *.sqlite3
 *.log
+tmp*/
 
 # Electron / React UI
 desktop/node_modules/
 desktop/dist/
 desktop/dist-electron/
+desktop/src/pages/*.readonly.tsx
 
 # IDE / OS
 .idea/

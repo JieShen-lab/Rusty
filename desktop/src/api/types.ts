@@ -100,6 +100,24 @@ export type ModelConfig = {
   has_api_key: boolean;
 };
 
+export type ModelWrite = {
+  display_name: string;
+  provider: string;
+  base_url: string;
+  model_name: string;
+  api_key?: string | null;
+  temperature: number;
+  max_tokens?: number | null;
+  timeout_seconds: number;
+  is_default: boolean;
+};
+
+export type ModelTestResult = {
+  ok: boolean;
+  message: string;
+  elapsed_ms: number | null;
+};
+
 export type PromptTemplate = {
   id: number;
   name: string;
@@ -109,4 +127,30 @@ export type PromptTemplate = {
   summary_rules: string;
   scene_detection_rules: string;
   rewrite_rules: string;
+};
+
+export type PromptTemplateWrite = {
+  name: string;
+  global_rules: string;
+  summary_rules: string;
+  scene_detection_rules: string;
+  rewrite_rules: string;
+  is_default: boolean;
+};
+
+export type ProjectSettingsWrite = {
+  model_id?: number | null;
+  prompt_template_id?: number | null;
+  processing_mode?: string;
+  concurrency?: number;
+  target_word_count?: number | null;
+  min_expansion_ratio?: number | null;
+};
+
+export type PipelineRunResult = {
+  ok: boolean;
+  processed: number;
+  skipped: number;
+  failed: number;
+  paused: boolean;
 };

@@ -2,10 +2,10 @@ import { useEffect, useState } from 'react';
 import { AppShell } from './components/AppShell';
 import type { RouteKey } from './components/Sidebar';
 import { HomePage } from './pages/HomePage';
-import { ModelsPage } from './pages/ModelsPage';
+import { ModelManagePage } from './pages/ModelManagePage';
 import { NewProjectPage } from './pages/NewProjectPage';
 import { ProjectWorkspacePage } from './pages/ProjectWorkspacePage';
-import { PromptsPage } from './pages/PromptsPage';
+import { PromptManagePage } from './pages/PromptManagePage';
 import { WorkbenchPage } from './pages/WorkbenchPage';
 
 type Route = {
@@ -49,8 +49,8 @@ export default function App() {
   if (route.key === 'library') page = <WorkbenchPage onNavigate={navigate} />;
   if (route.key === 'workspace') page = <ProjectWorkspacePage projectId={route.projectId} onNavigate={navigate} />;
   if (route.key === 'new-project') page = <NewProjectPage onNavigate={navigate} />;
-  if (route.key === 'models') page = <ModelsPage />;
-  if (route.key === 'prompts') page = <PromptsPage />;
+  if (route.key === 'models') page = <ModelManagePage />;
+  if (route.key === 'prompts') page = <PromptManagePage />;
 
   return (
     <AppShell active={route.key} onNavigate={navigate}>

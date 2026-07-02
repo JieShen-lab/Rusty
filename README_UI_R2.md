@@ -70,8 +70,18 @@ UI-R2 does not auto-launch the Python backend. Start `python -m backend.server` 
 - `/library`: project list, project detail, delete, workspace entry.
 - `/workspace/:projectId`: project-bound chapter workspace, AI output preview, TXT/EPUB export.
 - `/new-project`: local path preview/create minimal flow.
-- `/models`: list-only model configuration entry; API keys are never returned.
-- `/prompts`: list-only prompt template entry.
+- `/models`: model create/update/delete/test connection; API keys are accepted only as write-only inputs and are never returned.
+- `/prompts`: prompt template create/update/delete for global, summary, scene-detection, and rewrite rules.
+
+## Migrated Functional Entrypoints
+
+- Project library: list, detail, delete.
+- Project workspace: chapter list/detail, AI output diagnostics, TXT/EPUB export.
+- Chapter actions: summarize, detect scene, rewrite, retry rewrite, save manual rewrite, clear rewrite.
+- Project actions: run project pipeline, pause project pipeline.
+- Project settings API: model, prompt template, concurrency, target word count, and minimum expansion ratio.
+- Models: create, update, delete, test connection.
+- Prompts: create, update, delete.
 
 ## Security Notes
 - FastAPI binds to `127.0.0.1` by default.
