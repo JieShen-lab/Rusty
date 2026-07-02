@@ -19,9 +19,9 @@ The old PySide6 entry remains:
 python -m rusty
 ```
 
-## Start Backend
+## Start Backend Manually
 
-Use a shared local token for mutating/path-based endpoints:
+Electron starts the Python backend automatically. Use this manual mode only when debugging the API without Electron, or when you want to attach logs directly:
 
 ```powershell
 $env:RUSTY_API_TOKEN="local-dev-token"
@@ -40,7 +40,7 @@ $env:RUSTY_DATABASE_PATH="D:\path\to\rusty.db"
 $env:RUSTY_API_ALLOWED_ORIGINS="http://127.0.0.1:5173,http://localhost:5173"
 ```
 
-If `RUSTY_API_TOKEN` is not set, the backend prints a temporary token at startup. Set the same value as `VITE_RUSTY_API_TOKEN` before running the frontend if you need preview/create/delete/export.
+If `RUSTY_API_TOKEN` is not set, the backend prints a temporary token at startup. Set the same value as `VITE_RUSTY_API_TOKEN` before running the standalone frontend if you need preview/create/delete/export.
 
 ## Start Frontend
 
@@ -54,16 +54,28 @@ npm run dev
 
 ## Start Electron
 
-In another terminal:
+Electron will probe `http://127.0.0.1:8765/api/health`. If no Rusty backend is already running, it starts:
+
+```powershell
+.venv\Scripts\python.exe -m backend.server
+```
+
+from the repository root with an internal session token and closes that child process when Electron exits.
 
 ```powershell
 cd desktop
+npm run electron:dev
+```
+
+If you intentionally run the backend yourself, set the same token before launching Electron:
+
+```powershell
+cd desktop
+$env:RUSTY_API_TOKEN="local-dev-token"
 $env:VITE_RUSTY_API_URL="http://127.0.0.1:8765"
 $env:VITE_RUSTY_API_TOKEN="local-dev-token"
 npm run electron:dev
 ```
-
-UI-R2 does not auto-launch the Python backend. Start `python -m backend.server` manually first.
 
 ## UI-R2 Pages
 - `/home`: dashboard with project metrics and recent projects.

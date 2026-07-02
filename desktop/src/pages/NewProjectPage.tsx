@@ -8,16 +8,6 @@ import { PrimaryButton } from '../components/PrimaryButton';
 import { SecondaryButton } from '../components/SecondaryButton';
 import { TopBar } from '../components/TopBar';
 
-declare global {
-  interface Window {
-    rustyDesktop?: {
-      platform: string;
-      versions: Record<string, string>;
-      selectBookFile: () => Promise<string | null>;
-    };
-  }
-}
-
 type Props = {
   onNavigate: (path: string) => void;
 };

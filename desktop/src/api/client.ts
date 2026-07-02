@@ -13,8 +13,22 @@ import type {
   PipelineRunResult,
 } from './types';
 
-const API_BASE = import.meta.env.VITE_RUSTY_API_URL ?? 'http://127.0.0.1:8765';
-const API_TOKEN = import.meta.env.VITE_RUSTY_API_TOKEN ?? '';
+function queryValue(name: string): string {
+  return new URLSearchParams(window.location.search).get(name) ?? '';
+}
+
+function apiBase(): string {
+  return (
+    queryValue('apiBase') ||
+    window.rustyDesktop?.backend?.apiBase ||
+    import.meta.env.VITE_RUSTY_API_URL ||
+    'http://127.0.0.1:8765'
+  );
+}
+
+function apiToken(): string {
+  return queryValue('apiToken') || window.rustyDesktop?.backend?.apiToken || import.meta.env.VITE_RUSTY_API_TOKEN || '';
+}
 
 export class ApiError extends Error {
   status: number;
@@ -34,13 +48,14 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   if (options.body && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');
   }
-  if (API_TOKEN) {
-    headers.set('X-Rusty-Token', API_TOKEN);
+  const token = apiToken();
+  if (token) {
+    headers.set('X-Rusty-Token', token);
   }
 
   let response: Response;
   try {
-    response = await fetch(`${API_BASE}${path}`, { ...options, headers });
+    response = await fetch(`${apiBase()}${path}`, { ...options, headers });
   } catch (error) {
     throw new ApiError(0, `无法连接 Rusty 后端：${String(error)}`);
   }
