@@ -167,6 +167,20 @@ export type StyleTemplateWrite = {
   import_metadata: Record<string, unknown>;
 };
 
+export type StyleTemplateExtractWrite = {
+  name: string;
+  detail_level: StyleDetailLevel;
+  sample_text?: string | null;
+  source_path?: string | null;
+  model_id?: number | null;
+};
+
+export type StyleTrialWrite = {
+  sample_scene: string;
+  target_chars: number;
+  model_id?: number | null;
+};
+
 export type ProjectStyleBinding = {
   style_template: StyleTemplate | null;
 };

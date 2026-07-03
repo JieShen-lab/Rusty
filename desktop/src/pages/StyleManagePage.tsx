@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react';
-import { Copy, FileInput, Plus, Save, Trash2 } from 'lucide-react';
+import { Copy, FileInput, Plus, Save, Sparkles, Trash2 } from 'lucide-react';
 import {
   createStyleTemplate,
   deleteStyleTemplate,
+  extractStyleTemplate,
   exportStyleTemplate,
   getStyleTemplates,
   importStyleTemplate,
+  trialWriteStyleTemplate,
   updateStyleTemplate,
 } from '../api/client';
 import type { StyleDetailLevel, StyleTemplate, StyleTemplateWrite } from '../api/types';
@@ -46,6 +48,14 @@ export function StyleManagePage() {
   const [tab, setTab] = useState<StyleTab>('style_profile');
   const [importText, setImportText] = useState('');
   const [exportText, setExportText] = useState('');
+  const [extractMode, setExtractMode] = useState<'paste' | 'file'>('paste');
+  const [extractName, setExtractName] = useState('');
+  const [extractDetailLevel, setExtractDetailLevel] = useState<StyleDetailLevel>('standard');
+  const [extractSampleText, setExtractSampleText] = useState('');
+  const [extractSourcePath, setExtractSourcePath] = useState('');
+  const [trialScene, setTrialScene] = useState('角色在雨夜推开门，发现屋内还亮着一盏灯。');
+  const [trialTargetChars, setTrialTargetChars] = useState(300);
+  const [trialText, setTrialText] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -159,6 +169,48 @@ export function StyleManagePage() {
     }
   }
 
+  async function extractTemplate() {
+    if (!extractName.trim()) return;
+    setBusy(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const extracted = await extractStyleTemplate({
+        name: extractName,
+        detail_level: extractDetailLevel,
+        sample_text: extractMode === 'paste' ? extractSampleText : null,
+        source_path: extractMode === 'file' ? extractSourcePath : null,
+      });
+      setMessage('AI 风格模板已生成。');
+      setExtractSampleText('');
+      setExtractSourcePath('');
+      loadTemplates(extracted.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function trialWrite() {
+    if (!selectedId || !trialScene.trim()) return;
+    setBusy(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const result = await trialWriteStyleTemplate(selectedId, {
+        sample_scene: trialScene,
+        target_chars: trialTargetChars,
+      });
+      setTrialText(result.text);
+      setMessage('试写样例已生成。');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const activeValue =
     tab === 'style_profile'
       ? styleProfileText
@@ -252,6 +304,73 @@ export function StyleManagePage() {
               </DangerButton>
             </div>
           </GlassCard>
+
+          <div className="grid grid-cols-2 gap-5 max-xl:grid-cols-1">
+            <GlassCard title="AI 提取风格">
+              <div className="grid grid-cols-[1fr_150px] gap-3 max-md:grid-cols-1">
+                <label>
+                  <span className="form-label">新模板名称</span>
+                  <input className="form-input" value={extractName} onChange={(event) => setExtractName(event.target.value)} />
+                </label>
+                <label>
+                  <span className="form-label">细节等级</span>
+                  <select className="form-input" value={extractDetailLevel} onChange={(event) => setExtractDetailLevel(event.target.value as StyleDetailLevel)}>
+                    <option value="brief">brief</option>
+                    <option value="standard">standard</option>
+                    <option value="detailed">detailed</option>
+                  </select>
+                </label>
+              </div>
+              <div className="my-3 flex flex-wrap gap-2">
+                <button className={`rounded-full border px-3 py-1 text-xs ${extractMode === 'paste' ? 'border-sky-300/30 bg-sky-300/15 text-white' : 'border-white/10 bg-white/5 text-[var(--text-muted)]'}`} onClick={() => setExtractMode('paste')}>
+                  粘贴文本
+                </button>
+                <button className={`rounded-full border px-3 py-1 text-xs ${extractMode === 'file' ? 'border-sky-300/30 bg-sky-300/15 text-white' : 'border-white/10 bg-white/5 text-[var(--text-muted)]'}`} onClick={() => setExtractMode('file')}>
+                  本地文件
+                </button>
+              </div>
+              {extractMode === 'paste' ? (
+                <textarea
+                  className="chapter-text min-h-[220px] w-full resize-y rounded-3xl border border-white/10 bg-slate-950/35 p-4 text-sm leading-7 text-slate-100 outline-none"
+                  placeholder="粘贴一段用于提取风格的样本文字。"
+                  value={extractSampleText}
+                  onChange={(event) => setExtractSampleText(event.target.value)}
+                />
+              ) : (
+                <input
+                  className="form-input"
+                  placeholder="TXT / EPUB / DOCX 本地绝对路径"
+                  value={extractSourcePath}
+                  onChange={(event) => setExtractSourcePath(event.target.value)}
+                />
+              )}
+              <PrimaryButton
+                className="mt-4"
+                disabled={busy || !extractName.trim() || (extractMode === 'paste' ? !extractSampleText.trim() : !extractSourcePath.trim())}
+                onClick={extractTemplate}
+              >
+                <Sparkles size={16} />
+                AI 提取
+              </PrimaryButton>
+            </GlassCard>
+
+            <GlassCard title="试写验证">
+              <textarea
+                className="chapter-text min-h-[120px] w-full resize-y rounded-3xl border border-white/10 bg-slate-950/35 p-4 text-sm leading-7 text-slate-100 outline-none"
+                value={trialScene}
+                onChange={(event) => setTrialScene(event.target.value)}
+              />
+              <label className="mt-3 block">
+                <span className="form-label">目标字数</span>
+                <input className="form-input" min={80} max={2000} type="number" value={trialTargetChars} onChange={(event) => setTrialTargetChars(Number(event.target.value) || 300)} />
+              </label>
+              <SecondaryButton className="mt-4" disabled={busy || !selectedId || !trialScene.trim()} onClick={trialWrite}>
+                <Sparkles size={16} />
+                生成试写
+              </SecondaryButton>
+              {trialText && <pre className="chapter-text mt-4 whitespace-pre-wrap rounded-3xl border border-white/10 bg-slate-950/35 p-4 text-sm leading-7 text-slate-100">{trialText}</pre>}
+            </GlassCard>
+          </div>
 
           <div className="grid grid-cols-2 gap-5 max-xl:grid-cols-1">
             <GlassCard title="导入 JSON">

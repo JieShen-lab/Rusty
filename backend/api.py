@@ -21,6 +21,7 @@ from rusty.services.model_service import ModelService
 from rusty.services.pipeline_service import PipelineService
 from rusty.services.project_service import ProjectService, default_database_path
 from rusty.services.prompt_service import PromptService
+from rusty.services.style_extraction_service import StyleExtractionService
 from rusty.services.style_service import StyleTemplate, StyleTemplateService
 
 from .schemas import (
@@ -50,9 +51,11 @@ from .schemas import (
     RetryStageRequest,
     RewriteTextRequest,
     StageStatusOut,
+    StyleTemplateExtractRequest,
     StyleTemplateExportResponse,
     StyleTemplateImportRequest,
     StyleTemplateOut,
+    StyleTrialWriteRequest,
     StyleTemplateWriteRequest,
     TextResultResponse,
 )
@@ -61,6 +64,7 @@ APP_NAME = "Rusty"
 API_TOKEN_HEADER = "X-Rusty-Token"
 PREVIEW_TTL_SECONDS = 15 * 60
 SUPPORTED_IMPORT_SUFFIXES = {".txt", ".epub", ".docx"}
+STYLE_EXTRACTION_MAX_FILE_BYTES = 5 * 1024 * 1024
 DEFAULT_ALLOWED_ORIGINS = ("http://localhost:5173", "http://127.0.0.1:5173")
 _GENERATED_TOKEN = secrets.token_urlsafe(32)
 
@@ -80,13 +84,14 @@ def current_api_token() -> str:
     return os.environ.get("RUSTY_API_TOKEN") or _GENERATED_TOKEN
 
 
-def create_app(database_path: str | Path | None = None) -> FastAPI:
+def create_app(database_path: str | Path | None = None, style_ai_client=None) -> FastAPI:
     db_path = Path(os.environ.get("RUSTY_DATABASE_PATH", database_path or default_database_path()))
     project_service = ProjectService(db_path)
     pipeline_service = PipelineService(db_path)
     model_service = ModelService(db_path)
     prompt_service = PromptService(db_path)
     style_service = StyleTemplateService(db_path)
+    style_extraction_service = StyleExtractionService(db_path, ai_client=style_ai_client)
 
     app = FastAPI(
         title="Rusty UI-R2 API",
@@ -352,6 +357,32 @@ def create_app(database_path: str | Path | None = None) -> FastAPI:
     def list_style_templates() -> list[StyleTemplateOut]:
         return [_style_out(template) for template in style_service.list_templates()]
 
+    @app.post("/api/styles/extract", response_model=StyleTemplateOut, dependencies=[Depends(_require_token)])
+    def extract_style_template(payload: StyleTemplateExtractRequest) -> StyleTemplateOut:
+        if bool(payload.sample_text and payload.sample_text.strip()) == bool(payload.source_path):
+            raise _http_error(400, "invalid_style_source", "Provide exactly one of sample_text or source_path.")
+        if payload.source_path:
+            source_path = _validate_source_path(payload.source_path)
+            if source_path.stat().st_size > STYLE_EXTRACTION_MAX_FILE_BYTES:
+                raise _http_error(400, "style_source_too_large", "Style extraction source file is too large.")
+            template_id = style_extraction_service.extract_from_file(
+                source_path,
+                name=payload.name,
+                detail_level=payload.detail_level,
+                model_id=payload.model_id,
+            )
+        else:
+            template_id = style_extraction_service.extract_from_text(
+                payload.sample_text or "",
+                name=payload.name,
+                detail_level=payload.detail_level,
+                model_id=payload.model_id,
+            )
+        template = style_service.get_template(template_id)
+        if template is None:
+            raise _http_error(500, "style_template_extract_failed", "Style template was extracted but could not be loaded.")
+        return _style_out(template)
+
     @app.get("/api/styles/{template_id}", response_model=StyleTemplateOut)
     def get_style_template(template_id: int) -> StyleTemplateOut:
         template = style_service.get_template(template_id)
@@ -393,6 +424,16 @@ def create_app(database_path: str | Path | None = None) -> FastAPI:
     @app.post("/api/styles/{template_id}/export", response_model=StyleTemplateExportResponse, dependencies=[Depends(_require_token)])
     def export_style_template(template_id: int) -> StyleTemplateExportResponse:
         return StyleTemplateExportResponse(content=style_service.export_template(template_id))
+
+    @app.post("/api/styles/{template_id}/trial-write", response_model=TextResultResponse, dependencies=[Depends(_require_token)])
+    def trial_write_style_template(template_id: int, payload: StyleTrialWriteRequest) -> TextResultResponse:
+        text = style_extraction_service.trial_write(
+            template_id,
+            sample_scene=payload.sample_scene,
+            target_chars=payload.target_chars,
+            model_id=payload.model_id,
+        )
+        return TextResultResponse(ok=True, text=text)
 
     @app.get("/api/projects/{project_id}/style", response_model=ProjectStyleBindingOut)
     def get_project_style(project_id: int) -> ProjectStyleBindingOut:

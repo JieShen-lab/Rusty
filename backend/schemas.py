@@ -241,6 +241,20 @@ class StyleTemplateImportRequest(BaseModel):
     content: str = Field(min_length=1)
 
 
+class StyleTemplateExtractRequest(BaseModel):
+    name: str = Field(min_length=1)
+    detail_level: Literal["brief", "standard", "detailed"] = "standard"
+    sample_text: str | None = None
+    source_path: str | None = None
+    model_id: int | None = None
+
+
+class StyleTrialWriteRequest(BaseModel):
+    sample_scene: str = Field(min_length=1)
+    target_chars: int = Field(default=300, ge=80, le=2000)
+    model_id: int | None = None
+
+
 class StyleTemplateExportResponse(BaseModel):
     content: str
 

@@ -10,10 +10,29 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from rusty.services.ai_client import AIClient, AIResponse
+
 try:
     from fastapi.testclient import TestClient
 except ModuleNotFoundError:  # pragma: no cover - depends on optional extra
     TestClient = None
+
+
+class FakeStyleAIClient(AIClient):
+    def chat(self, model, api_key, messages):
+        user_text = messages[-1]["content"]
+        if "Write a short validation sample" in user_text:
+            return AIResponse(text="Styled trial text.", token_usage={"total_tokens": 3}, elapsed_ms=5)
+        return AIResponse(
+            text=(
+                '{"name":"API Extracted Style","description":"Extracted by API",'
+                '"global_prompt":"API global.","rewrite_prompt":"API rewrite.",'
+                '"generated_prompt":"API generated.",'
+                '"style_profile":{"sentence_rhythm":"short","dialogue_style":"direct"}}'
+            ),
+            token_usage={"total_tokens": 9},
+            elapsed_ms=8,
+        )
 
 
 @unittest.skipIf(TestClient is None, "FastAPI optional dependency is not installed")
@@ -214,6 +233,104 @@ class BackendApiTests(unittest.TestCase):
 
         self.assertEqual(400, response.status_code)
         self.assertEqual("validation_error", response.json()["error"])
+
+    def test_style_extraction_and_trial_write_api(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            os.environ["RUSTY_DATABASE_PATH"] = str(root / "rusty.db")
+            os.environ["RUSTY_API_TOKEN"] = "test-token"
+            api = importlib.import_module("backend.api")
+            app = api.create_app(root / "rusty.db", style_ai_client=FakeStyleAIClient())
+            client = TestClient(app)
+            headers = {"X-Rusty-Token": "test-token"}
+
+            model_payload = {
+                "display_name": "API Model",
+                "provider": "openai_compatible",
+                "base_url": "https://api.example.test/v1",
+                "model_name": "example-model",
+                "api_key": None,
+                "temperature": 0.7,
+                "max_tokens": None,
+                "timeout_seconds": 60,
+                "is_default": True,
+            }
+            client.post("/api/models", json=model_payload, headers=headers)
+            rejected = client.post(
+                "/api/styles/extract",
+                json={"name": "Rejected", "sample_text": "sample"},
+            )
+            invalid_source = client.post(
+                "/api/styles/extract",
+                json={"name": "Invalid", "sample_text": "sample", "source_path": str(root / "book.txt")},
+                headers=headers,
+            )
+            extracted = client.post(
+                "/api/styles/extract",
+                json={"name": "Seed", "detail_level": "detailed", "sample_text": "Sample style prose."},
+                headers=headers,
+            )
+            template_id = extracted.json()["id"]
+            trial = client.post(
+                f"/api/styles/{template_id}/trial-write",
+                json={"sample_scene": "A character opens a door.", "target_chars": 120},
+                headers=headers,
+            )
+            rejected_trial = client.post(
+                f"/api/styles/{template_id}/trial-write",
+                json={"sample_scene": "A character opens a door."},
+            )
+
+        self.assertEqual(403, rejected.status_code)
+        self.assertEqual(400, invalid_source.status_code)
+        self.assertEqual(200, extracted.status_code)
+        self.assertEqual("API Extracted Style", extracted.json()["name"])
+        self.assertEqual("detailed", extracted.json()["detail_level"])
+        self.assertEqual("short", extracted.json()["style_profile"]["sentence_rhythm"])
+        self.assertEqual("ai_style_extraction", extracted.json()["import_metadata"]["created_by"])
+        self.assertEqual(200, trial.status_code)
+        self.assertEqual({"ok": True, "text": "Styled trial text."}, trial.json())
+        self.assertEqual(403, rejected_trial.status_code)
+
+    def test_style_extraction_from_file_api_uses_validated_source_path(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            source = root / "style.txt"
+            source.write_text("1. One\nFile sample prose.", encoding="utf-8")
+            os.environ["RUSTY_DATABASE_PATH"] = str(root / "rusty.db")
+            os.environ["RUSTY_API_TOKEN"] = "test-token"
+            api = importlib.import_module("backend.api")
+            app = api.create_app(root / "rusty.db", style_ai_client=FakeStyleAIClient())
+            client = TestClient(app)
+            headers = {"X-Rusty-Token": "test-token"}
+            model_payload = {
+                "display_name": "API Model",
+                "provider": "openai_compatible",
+                "base_url": "https://api.example.test/v1",
+                "model_name": "example-model",
+                "api_key": None,
+                "temperature": 0.7,
+                "max_tokens": None,
+                "timeout_seconds": 60,
+                "is_default": True,
+            }
+            client.post("/api/models", json=model_payload, headers=headers)
+
+            unsupported = client.post(
+                "/api/styles/extract",
+                json={"name": "Bad", "source_path": str(root / "style.pdf")},
+                headers=headers,
+            )
+            extracted = client.post(
+                "/api/styles/extract",
+                json={"name": "File seed", "source_path": str(source)},
+                headers=headers,
+            )
+
+        self.assertEqual(400, unsupported.status_code)
+        self.assertEqual(200, extracted.status_code)
+        self.assertEqual("file", extracted.json()["source_metadata"]["source_type"])
+        self.assertEqual("style.txt", extracted.json()["source_metadata"]["source_file_name"])
 
 
 if __name__ == "__main__":

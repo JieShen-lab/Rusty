@@ -12,7 +12,9 @@ import type {
   PromptTemplate,
   PromptTemplateWrite,
   PipelineRunResult,
+  StyleTemplateExtractWrite,
   StyleTemplate,
+  StyleTrialWrite,
   StyleTemplateWrite,
 } from './types';
 
@@ -181,6 +183,10 @@ export function importStyleTemplate(content: string) {
   return request<StyleTemplate>('/api/styles/import', { method: 'POST', body: JSON.stringify({ content }) });
 }
 
+export function extractStyleTemplate(payload: StyleTemplateExtractWrite) {
+  return request<StyleTemplate>('/api/styles/extract', { method: 'POST', body: JSON.stringify(payload) });
+}
+
 export function updateStyleTemplate(templateId: number, payload: StyleTemplateWrite) {
   return request<StyleTemplate>(`/api/styles/${templateId}`, { method: 'POST', body: JSON.stringify(payload) });
 }
@@ -191,6 +197,13 @@ export function deleteStyleTemplate(templateId: number) {
 
 export function exportStyleTemplate(templateId: number) {
   return request<{ content: string }>(`/api/styles/${templateId}/export`, { method: 'POST' });
+}
+
+export function trialWriteStyleTemplate(templateId: number, payload: StyleTrialWrite) {
+  return request<{ ok: boolean; text: string }>(`/api/styles/${templateId}/trial-write`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
 }
 
 export function getProjectStyle(projectId: number) {
