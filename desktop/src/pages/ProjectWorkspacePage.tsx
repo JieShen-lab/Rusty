@@ -1,12 +1,15 @@
 import { useEffect, useState } from 'react';
 import { Download, FileText, Pause, Play, RefreshCcw, Save, Sparkles, Trash2 } from 'lucide-react';
 import {
+  bindProjectStyle,
   detectScene,
   exportEpub,
   exportTxt,
   getChapters,
   getProject,
   getProjectChapter,
+  getProjectStyle,
+  getStyleTemplates,
   pauseProjectPipeline,
   retryChapterStage,
   rewriteChapter,
@@ -14,7 +17,7 @@ import {
   saveChapterRewrite,
   summarizeChapter,
 } from '../api/client';
-import type { Chapter, ChapterDetail, ProjectDetail } from '../api/types';
+import type { Chapter, ChapterDetail, ProjectDetail, StyleTemplate } from '../api/types';
 import { EmptyState } from '../components/EmptyState';
 import { GlassCard } from '../components/GlassCard';
 import { PrimaryButton } from '../components/PrimaryButton';
@@ -39,16 +42,20 @@ export function ProjectWorkspacePage({ projectId, onNavigate }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [exportMessage, setExportMessage] = useState<string | null>(null);
+  const [styleTemplates, setStyleTemplates] = useState<StyleTemplate[]>([]);
+  const [boundStyleId, setBoundStyleId] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [rewriteDraft, setRewriteDraft] = useState('');
 
   useEffect(() => {
     if (!projectId) return;
     setError(null);
-    Promise.all([getProject(projectId), getChapters(projectId)])
-      .then(([project, items]) => {
+    Promise.all([getProject(projectId), getChapters(projectId), getStyleTemplates(), getProjectStyle(projectId)])
+      .then(([project, items, styles, binding]) => {
         setProjectDetail(project);
         setChapters(items);
+        setStyleTemplates(styles);
+        setBoundStyleId(binding.style_template?.id ?? null);
         setSelectedChapterId((current) => current ?? items[0]?.id ?? null);
       })
       .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
@@ -85,13 +92,31 @@ export function ProjectWorkspacePage({ projectId, onNavigate }: Props) {
 
   async function reloadWorkspace(chapterId = selectedChapterId) {
     if (!projectId) return;
-    const [project, items] = await Promise.all([getProject(projectId), getChapters(projectId)]);
+    const [project, items, styles, binding] = await Promise.all([getProject(projectId), getChapters(projectId), getStyleTemplates(), getProjectStyle(projectId)]);
     setProjectDetail(project);
     setChapters(items);
+    setStyleTemplates(styles);
+    setBoundStyleId(binding.style_template?.id ?? null);
     if (chapterId) {
       const detail = await getProjectChapter(projectId, chapterId);
       setChapterDetail(detail);
       setRewriteDraft(detail.chapter.rewritten_text || '');
+    }
+  }
+
+  async function handleStyleBinding(value: string) {
+    if (!projectId) return;
+    setBusy(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const binding = await bindProjectStyle(projectId, value ? Number(value) : null);
+      setBoundStyleId(binding.style_template?.id ?? null);
+      setMessage(binding.style_template ? `已绑定风格模板：${binding.style_template.name}` : '已取消风格模板绑定。');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -157,6 +182,24 @@ export function ProjectWorkspacePage({ projectId, onNavigate }: Props) {
         </GlassCard>
 
         <aside className="space-y-5 max-2xl:col-span-2 max-lg:col-span-1">
+          <GlassCard title="风格模板">
+            {styleTemplates.length === 0 ? (
+              <p className="text-sm text-[var(--text-muted)]">尚未创建风格模板。</p>
+            ) : (
+              <label>
+                <span className="form-label">改写时使用</span>
+                <select className="form-input" disabled={busy} value={boundStyleId ?? ''} onChange={(event) => handleStyleBinding(event.target.value)}>
+                  <option value="">不使用风格模板</option>
+                  {styleTemplates.map((template) => (
+                    <option key={template.id} value={template.id}>
+                      {template.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            <p className="mt-3 text-xs leading-5 text-[var(--text-soft)]">风格模板只进入 AI 改写阶段，不影响总结和场景识别。</p>
+          </GlassCard>
           <GlassCard title="项目操作">
             <div className="flex flex-col gap-3">
               <PrimaryButton disabled={busy} onClick={() => runAction('项目流水线', () => runProjectPipeline(projectId))}>

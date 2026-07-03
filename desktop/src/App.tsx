@@ -6,6 +6,7 @@ import { ModelManagePage } from './pages/ModelManagePage';
 import { NewProjectPage } from './pages/NewProjectPage';
 import { ProjectWorkspacePage } from './pages/ProjectWorkspacePage';
 import { PromptManagePage } from './pages/PromptManagePage';
+import { StyleManagePage } from './pages/StyleManagePage';
 import { WorkbenchPage } from './pages/WorkbenchPage';
 
 type Route = {
@@ -24,6 +25,7 @@ function parseRoute(pathname: string): Route {
   if (parts[0] === 'new-project') return { key: 'new-project', path: '/new-project' };
   if (parts[0] === 'models') return { key: 'models', path: '/models' };
   if (parts[0] === 'prompts') return { key: 'prompts', path: '/prompts' };
+  if (parts[0] === 'styles') return { key: 'styles', path: '/styles' };
   return { key: 'home', path: '/home' };
 }
 
@@ -51,6 +53,7 @@ export default function App() {
   if (route.key === 'new-project') page = <NewProjectPage onNavigate={navigate} />;
   if (route.key === 'models') page = <ModelManagePage />;
   if (route.key === 'prompts') page = <PromptManagePage />;
+  if (route.key === 'styles') page = <StyleManagePage />;
 
   return (
     <AppShell active={route.key} onNavigate={navigate}>
