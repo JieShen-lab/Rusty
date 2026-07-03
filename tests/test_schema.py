@@ -26,6 +26,8 @@ class SchemaTests(unittest.TestCase):
         self.assertIn("chapters", table_names)
         self.assertIn("ai_models", table_names)
         self.assertIn("prompt_templates", table_names)
+        self.assertIn("style_templates", table_names)
+        self.assertIn("project_style_bindings", table_names)
         self.assertIn("chapter_stage_status", table_names)
         self.assertIn("exports", table_names)
 

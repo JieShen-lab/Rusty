@@ -11,6 +11,7 @@ from rusty.services.ai_client import AIClient, AIResponse, OpenAICompatibleClien
 from rusty.services.model_service import ModelConfig, ModelService
 from rusty.services.project_service import ProjectService, default_database_path
 from rusty.services.prompt_service import PromptService, PromptTemplate
+from rusty.services.style_service import StyleTemplate, StyleTemplateService
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,7 @@ class PipelineService:
         self.project_service = ProjectService(self.database_path)
         self.model_service = ModelService(self.database_path)
         self.prompt_service = PromptService(self.database_path)
+        self.style_service = StyleTemplateService(self.database_path)
         self.ai_client = ai_client or OpenAICompatibleClient()
         with session(self.database_path) as connection:
             initialize_database(connection)
@@ -335,17 +337,20 @@ class PipelineService:
 
     def _rewrite_messages(self, chapter: ChapterRecord, template: PromptTemplate) -> list[dict[str, str]]:
         settings = self.project_service.get_project_settings(chapter.project_id)
+        style_template = self.style_service.get_project_style_template(chapter.project_id)
         target_text = ""
         if settings and settings.target_word_count:
             target_text = f"\nTarget length: at least {settings.target_word_count} non-whitespace characters."
         if settings and settings.min_expansion_ratio:
             target_text += f"\nMinimum expansion ratio: {settings.min_expansion_ratio:.2f}x the original chapter length."
+        style_text = self._style_rewrite_prompt(style_template)
+        style_section = f"\n\nStyle template ({style_template.name}):\n{style_text}" if style_template and style_text else ""
         return [
-            {"role": "system", "content": template.global_rules},
+            {"role": "system", "content": _append_prompt(template.global_rules, style_template.global_prompt if style_template else None)},
             {
                 "role": "user",
                 "content": (
-                    f"{template.rewrite_rules}{target_text}\n\n"
+                    f"{template.rewrite_rules}{target_text}{style_section}\n\n"
                     f"Rewrite this chapter:\n# {chapter.title}\n{chapter.original_text}"
                 ),
             },
@@ -443,6 +448,7 @@ class PipelineService:
         if min_expansion_ratio is not None and ratio is not None and ratio < min_expansion_ratio:
             raise ValueError(f"Rewrite expansion ratio is below minimum: {ratio:.2f} < {min_expansion_ratio:.2f}")
         with session(self.database_path) as connection:
+            style_snapshot = self._style_snapshot_for_project(chapter.project_id)
             prompt_snapshot = {
                 "messages": self._rewrite_messages(chapter, template),
                 "prompt_template": {
@@ -467,7 +473,7 @@ class PipelineService:
                     token_usage_json,
                     elapsed_ms,
                     updated_at
-                ) VALUES (?, ?, 'ai', ?, ?, ?, ?, ?, ?, '{}', ?, ?, CURRENT_TIMESTAMP)
+                ) VALUES (?, ?, 'ai', ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(chapter_id)
                 DO UPDATE SET
                     rewritten_text = excluded.rewritten_text,
@@ -492,6 +498,7 @@ class PipelineService:
                     model.id,
                     template.id,
                     json.dumps(prompt_snapshot, ensure_ascii=False),
+                    json.dumps(style_snapshot, ensure_ascii=False),
                     json.dumps(response.token_usage),
                     response.elapsed_ms,
                 ),
@@ -602,6 +609,26 @@ class PipelineService:
     @staticmethod
     def _scene_needs_rewrite(scene_text: str) -> bool:
         return bool(_parse_scene_response(scene_text)["needs_rewrite"])
+
+    @staticmethod
+    def _style_rewrite_prompt(style_template: StyleTemplate | None) -> str:
+        if style_template is None:
+            return ""
+        return (style_template.generated_prompt or style_template.rewrite_prompt).strip()
+
+    def _style_snapshot_for_project(self, project_id: int) -> dict:
+        style_template = self.style_service.get_project_style_template(project_id)
+        if style_template is None:
+            return {"style_template": None}
+        return {
+            "style_template": {
+                "id": style_template.id,
+                "name": style_template.name,
+                "version": style_template.version,
+                "detail_level": style_template.detail_level,
+                "style_profile_json": style_template.style_profile_json,
+            }
+        }
 
 
 def _parse_scene_response(text: str) -> dict:

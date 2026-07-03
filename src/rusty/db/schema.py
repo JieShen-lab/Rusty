@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .connection import session
 
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -168,6 +168,33 @@ CREATE TABLE IF NOT EXISTS project_custom_prompts (
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS style_templates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    detail_level TEXT NOT NULL DEFAULT 'standard' CHECK (detail_level IN ('brief', 'standard', 'detailed')),
+    global_prompt TEXT NOT NULL DEFAULT '',
+    rewrite_prompt TEXT NOT NULL DEFAULT '',
+    style_profile_json TEXT NOT NULL DEFAULT '{}',
+    generated_prompt TEXT NOT NULL DEFAULT '',
+    source_metadata_json TEXT NOT NULL DEFAULT '{}',
+    import_metadata_json TEXT NOT NULL DEFAULT '{}',
+    version INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    deleted_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS project_style_bindings (
+    project_id INTEGER PRIMARY KEY,
+    style_template_id INTEGER NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (style_template_id) REFERENCES style_templates(id) ON DELETE RESTRICT
+);
+
 CREATE TABLE IF NOT EXISTS chapter_stage_status (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     chapter_id INTEGER NOT NULL,
@@ -326,8 +353,42 @@ def _migrate_to_v2(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_to_v3(connection: sqlite3.Connection) -> None:
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS style_templates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            detail_level TEXT NOT NULL DEFAULT 'standard' CHECK (detail_level IN ('brief', 'standard', 'detailed')),
+            global_prompt TEXT NOT NULL DEFAULT '',
+            rewrite_prompt TEXT NOT NULL DEFAULT '',
+            style_profile_json TEXT NOT NULL DEFAULT '{}',
+            generated_prompt TEXT NOT NULL DEFAULT '',
+            source_metadata_json TEXT NOT NULL DEFAULT '{}',
+            import_metadata_json TEXT NOT NULL DEFAULT '{}',
+            version INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            deleted_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS project_style_bindings (
+            project_id INTEGER PRIMARY KEY,
+            style_template_id INTEGER NOT NULL,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (style_template_id) REFERENCES style_templates(id) ON DELETE RESTRICT
+        );
+        """
+    )
+
+
 MIGRATIONS = {
     2: _migrate_to_v2,
+    3: _migrate_to_v3,
 }
 
 

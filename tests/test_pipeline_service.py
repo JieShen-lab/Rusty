@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import json
 import sys
 import tempfile
 import unittest
@@ -8,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from rusty.services import ModelService, PipelineService, PromptService, ProjectService
+from rusty.services import ModelService, PipelineService, PromptService, ProjectService, StyleTemplateService
 from rusty.services.ai_client import AIClient, AIResponse
 
 
@@ -99,7 +100,7 @@ class PipelineServiceTests(unittest.TestCase):
         self.assertGreater(outputs.rewritten_word_count, 0)
         self.assertEqual("ai", rewrite_row[0])
         self.assertIn("Rewrite this chapter", rewrite_row[1])
-        self.assertEqual("{}", rewrite_row[2])
+        self.assertEqual({"style_template": None}, json.loads(rewrite_row[2]))
         self.assertEqual(0, errors)
         self.assertEqual(
             [("rewrite", "completed"), ("scene_detection", "completed"), ("summary", "completed")],
@@ -287,6 +288,66 @@ class PipelineServiceTests(unittest.TestCase):
         self.assertIn("Project scene", scene_messages[-1]["content"])
         self.assertIn("Base rewrite", rewrite_messages[-1]["content"])
         self.assertIn("Project rewrite", rewrite_messages[-1]["content"])
+
+    def test_rewrite_injects_bound_style_template_and_records_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            database_path = root / "rusty.db"
+            source_path = root / "book.txt"
+            source_path.write_text("1. One\nOriginal text.", encoding="utf-8")
+
+            project_service = ProjectService(database_path)
+            project_id = project_service.import_book(source_path, root)
+            chapter_id = project_service.list_chapters(project_id)[0].id
+            ModelService(database_path).create_model(
+                display_name="Fake",
+                provider="openai_compatible",
+                base_url="https://api.example.test/v1",
+                model_name="fake-model",
+                is_default=True,
+            )
+            PromptService(database_path).create_template(
+                name="Default",
+                global_rules="Base global",
+                rewrite_rules="Base rewrite",
+                is_default=True,
+            )
+            style_service = StyleTemplateService(database_path)
+            style_id = style_service.create_template(
+                name="Sharp style",
+                detail_level="detailed",
+                global_prompt="Style global rule.",
+                rewrite_prompt="Style rewrite rule.",
+                generated_prompt="Generated style instruction.",
+                style_profile={"sentence_rhythm": "short"},
+            )
+            style_service.bind_project_style(project_id, style_id)
+
+            fake_client = FakeAIClient()
+            pipeline = PipelineService(database_path, ai_client=fake_client)
+            pipeline.rewrite_chapter(chapter_id)
+
+            connection = sqlite3.connect(database_path)
+            try:
+                anchor_snapshot_json = connection.execute(
+                    """
+                    SELECT anchor_snapshot_json
+                    FROM chapter_rewrites
+                    WHERE chapter_id = ?
+                    """,
+                    (chapter_id,),
+                ).fetchone()[0]
+            finally:
+                connection.close()
+
+        messages = fake_client.calls[0][1]
+        anchor_snapshot = json.loads(anchor_snapshot_json)
+        self.assertIn("Base global", messages[0]["content"])
+        self.assertIn("Style global rule.", messages[0]["content"])
+        self.assertIn("Style template (Sharp style)", messages[-1]["content"])
+        self.assertIn("Generated style instruction.", messages[-1]["content"])
+        self.assertEqual(style_id, anchor_snapshot["style_template"]["id"])
+        self.assertEqual("Sharp style", anchor_snapshot["style_template"]["name"])
 
     def test_rewrite_uses_project_targets_and_records_target_word_count(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
