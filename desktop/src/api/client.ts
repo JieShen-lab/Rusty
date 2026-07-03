@@ -8,9 +8,12 @@ import type {
   Project,
   ProjectDetail,
   ProjectSettingsWrite,
+  ProjectStyleBinding,
   PromptTemplate,
   PromptTemplateWrite,
   PipelineRunResult,
+  StyleTemplate,
+  StyleTemplateWrite,
 } from './types';
 
 function queryValue(name: string): string {
@@ -160,6 +163,45 @@ export function updatePrompt(templateId: number, payload: PromptTemplateWrite) {
 
 export function deletePrompt(templateId: number) {
   return request<{ ok: boolean }>(`/api/prompts/${templateId}/delete`, { method: 'POST' });
+}
+
+export function getStyleTemplates() {
+  return request<StyleTemplate[]>('/api/styles');
+}
+
+export function getStyleTemplate(templateId: number) {
+  return request<StyleTemplate>(`/api/styles/${templateId}`);
+}
+
+export function createStyleTemplate(payload: StyleTemplateWrite) {
+  return request<StyleTemplate>('/api/styles', { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export function importStyleTemplate(content: string) {
+  return request<StyleTemplate>('/api/styles/import', { method: 'POST', body: JSON.stringify({ content }) });
+}
+
+export function updateStyleTemplate(templateId: number, payload: StyleTemplateWrite) {
+  return request<StyleTemplate>(`/api/styles/${templateId}`, { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export function deleteStyleTemplate(templateId: number) {
+  return request<{ ok: boolean }>(`/api/styles/${templateId}/delete`, { method: 'POST' });
+}
+
+export function exportStyleTemplate(templateId: number) {
+  return request<{ content: string }>(`/api/styles/${templateId}/export`, { method: 'POST' });
+}
+
+export function getProjectStyle(projectId: number) {
+  return request<ProjectStyleBinding>(`/api/projects/${projectId}/style`);
+}
+
+export function bindProjectStyle(projectId: number, styleTemplateId: number | null) {
+  return request<ProjectStyleBinding>(`/api/projects/${projectId}/style`, {
+    method: 'POST',
+    body: JSON.stringify({ style_template_id: styleTemplateId }),
+  });
 }
 
 export function updateProjectSettings(projectId: number, payload: ProjectSettingsWrite) {

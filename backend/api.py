@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import secrets
@@ -20,6 +21,7 @@ from rusty.services.model_service import ModelService
 from rusty.services.pipeline_service import PipelineService
 from rusty.services.project_service import ProjectService, default_database_path
 from rusty.services.prompt_service import PromptService
+from rusty.services.style_service import StyleTemplate, StyleTemplateService
 
 from .schemas import (
     ChapterAIOutputsOut,
@@ -40,12 +42,18 @@ from .schemas import (
     ProjectOut,
     ProjectPromptWriteRequest,
     ProjectSettingsUpdateRequest,
+    ProjectStyleBindingOut,
+    ProjectStyleBindingRequest,
     PromptTemplateOut,
     PromptTemplateWriteRequest,
     PipelineRunResponse,
     RetryStageRequest,
     RewriteTextRequest,
     StageStatusOut,
+    StyleTemplateExportResponse,
+    StyleTemplateImportRequest,
+    StyleTemplateOut,
+    StyleTemplateWriteRequest,
     TextResultResponse,
 )
 
@@ -78,6 +86,7 @@ def create_app(database_path: str | Path | None = None) -> FastAPI:
     pipeline_service = PipelineService(db_path)
     model_service = ModelService(db_path)
     prompt_service = PromptService(db_path)
+    style_service = StyleTemplateService(db_path)
 
     app = FastAPI(
         title="Rusty UI-R2 API",
@@ -339,6 +348,68 @@ def create_app(database_path: str | Path | None = None) -> FastAPI:
         prompt_service.delete_template(template_id)
         return {"ok": True}
 
+    @app.get("/api/styles", response_model=list[StyleTemplateOut])
+    def list_style_templates() -> list[StyleTemplateOut]:
+        return [_style_out(template) for template in style_service.list_templates()]
+
+    @app.get("/api/styles/{template_id}", response_model=StyleTemplateOut)
+    def get_style_template(template_id: int) -> StyleTemplateOut:
+        template = style_service.get_template(template_id)
+        if template is None:
+            raise _http_error(404, "style_template_not_found", f"Style template not found: {template_id}")
+        return _style_out(template)
+
+    @app.post("/api/styles", response_model=StyleTemplateOut, dependencies=[Depends(_require_token)])
+    def create_style_template(payload: StyleTemplateWriteRequest) -> StyleTemplateOut:
+        template_id = style_service.create_template(**payload.model_dump())
+        template = style_service.get_template(template_id)
+        if template is None:
+            raise _http_error(500, "style_template_create_failed", "Style template was created but could not be loaded.")
+        return _style_out(template)
+
+    @app.post("/api/styles/import", response_model=StyleTemplateOut, dependencies=[Depends(_require_token)])
+    def import_style_template(payload: StyleTemplateImportRequest) -> StyleTemplateOut:
+        template_id = style_service.import_template_text(payload.content)
+        template = style_service.get_template(template_id)
+        if template is None:
+            raise _http_error(500, "style_template_import_failed", "Style template was imported but could not be loaded.")
+        return _style_out(template)
+
+    @app.post("/api/styles/{template_id}", response_model=StyleTemplateOut, dependencies=[Depends(_require_token)])
+    def update_style_template(template_id: int, payload: StyleTemplateWriteRequest) -> StyleTemplateOut:
+        style_service.update_template(template_id=template_id, **payload.model_dump())
+        template = style_service.get_template(template_id)
+        if template is None:
+            raise _http_error(404, "style_template_not_found", f"Style template not found: {template_id}")
+        return _style_out(template)
+
+    @app.post("/api/styles/{template_id}/delete", response_model=dict[str, bool], dependencies=[Depends(_require_token)])
+    def delete_style_template(template_id: int) -> dict[str, bool]:
+        if style_service.get_template(template_id) is None:
+            raise _http_error(404, "style_template_not_found", f"Style template not found: {template_id}")
+        style_service.delete_template(template_id)
+        return {"ok": True}
+
+    @app.post("/api/styles/{template_id}/export", response_model=StyleTemplateExportResponse, dependencies=[Depends(_require_token)])
+    def export_style_template(template_id: int) -> StyleTemplateExportResponse:
+        return StyleTemplateExportResponse(content=style_service.export_template(template_id))
+
+    @app.get("/api/projects/{project_id}/style", response_model=ProjectStyleBindingOut)
+    def get_project_style(project_id: int) -> ProjectStyleBindingOut:
+        _require_project(project_service, project_id)
+        template = style_service.get_project_style_template(project_id)
+        return ProjectStyleBindingOut(style_template=_style_out(template) if template else None)
+
+    @app.post("/api/projects/{project_id}/style", response_model=ProjectStyleBindingOut, dependencies=[Depends(_require_token)])
+    def bind_project_style(project_id: int, payload: ProjectStyleBindingRequest) -> ProjectStyleBindingOut:
+        _require_project(project_service, project_id)
+        if payload.style_template_id is None:
+            style_service.unbind_project_style(project_id)
+        else:
+            style_service.bind_project_style(project_id, payload.style_template_id)
+        template = style_service.get_project_style_template(project_id)
+        return ProjectStyleBindingOut(style_template=_style_out(template) if template else None)
+
     return app
 
 
@@ -490,6 +561,30 @@ def _chapter_detail(chapter: ChapterRecord, pipeline_service: PipelineService) -
         stage_statuses=[StageStatusOut(**status.__dict__) for status in statuses],
         errors=[ChapterErrorOut(**error.__dict__) for error in errors],
     )
+
+
+def _style_out(template: StyleTemplate) -> StyleTemplateOut:
+    return StyleTemplateOut(
+        id=template.id,
+        name=template.name,
+        description=template.description,
+        detail_level=template.detail_level,
+        global_prompt=template.global_prompt,
+        rewrite_prompt=template.rewrite_prompt,
+        style_profile=_json_object(template.style_profile_json),
+        generated_prompt=template.generated_prompt,
+        source_metadata=_json_object(template.source_metadata_json),
+        import_metadata=_json_object(template.import_metadata_json),
+        version=template.version,
+    )
+
+
+def _json_object(text: str) -> dict[str, Any]:
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError:
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
 def _http_error(status_code: int, error: str, message: str, details: dict[str, Any] | None = None) -> HTTPException:

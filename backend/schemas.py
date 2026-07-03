@@ -68,6 +68,7 @@ class ChapterAIOutputsOut(BaseModel):
     needs_rewrite: bool | None = None
     scene_labels: list[str] | None = None
     scene_reasoning: str | None = None
+    rewrite_source: str | None = None
     rewritten_word_count: int | None = None
     expansion_ratio: float | None = None
     rewrite_elapsed_ms: int | None = None
@@ -208,3 +209,45 @@ class PromptTemplateWriteRequest(BaseModel):
 class ProjectPromptWriteRequest(BaseModel):
     prompt_key: str = Field(min_length=1)
     prompt_text: str = ""
+
+
+class StyleTemplateOut(BaseModel):
+    id: int
+    name: str
+    description: str
+    detail_level: Literal["brief", "standard", "detailed"]
+    global_prompt: str
+    rewrite_prompt: str
+    style_profile: dict[str, Any]
+    generated_prompt: str
+    source_metadata: dict[str, Any]
+    import_metadata: dict[str, Any]
+    version: int
+
+
+class StyleTemplateWriteRequest(BaseModel):
+    name: str = Field(min_length=1)
+    description: str = ""
+    detail_level: Literal["brief", "standard", "detailed"] = "standard"
+    global_prompt: str = ""
+    rewrite_prompt: str = ""
+    style_profile: dict[str, Any] = Field(default_factory=dict)
+    generated_prompt: str = ""
+    source_metadata: dict[str, Any] = Field(default_factory=dict)
+    import_metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class StyleTemplateImportRequest(BaseModel):
+    content: str = Field(min_length=1)
+
+
+class StyleTemplateExportResponse(BaseModel):
+    content: str
+
+
+class ProjectStyleBindingRequest(BaseModel):
+    style_template_id: int | None = None
+
+
+class ProjectStyleBindingOut(BaseModel):
+    style_template: StyleTemplateOut | None = None

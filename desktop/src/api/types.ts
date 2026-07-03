@@ -32,6 +32,7 @@ export type ChapterAIOutputs = {
   needs_rewrite: boolean | null;
   scene_labels: string[] | null;
   scene_reasoning: string | null;
+  rewrite_source: string | null;
   rewritten_word_count: number | null;
   expansion_ratio: number | null;
   rewrite_elapsed_ms: number | null;
@@ -136,6 +137,38 @@ export type PromptTemplateWrite = {
   scene_detection_rules: string;
   rewrite_rules: string;
   is_default: boolean;
+};
+
+export type StyleDetailLevel = 'brief' | 'standard' | 'detailed';
+
+export type StyleTemplate = {
+  id: number;
+  name: string;
+  description: string;
+  detail_level: StyleDetailLevel;
+  global_prompt: string;
+  rewrite_prompt: string;
+  style_profile: Record<string, unknown>;
+  generated_prompt: string;
+  source_metadata: Record<string, unknown>;
+  import_metadata: Record<string, unknown>;
+  version: number;
+};
+
+export type StyleTemplateWrite = {
+  name: string;
+  description: string;
+  detail_level: StyleDetailLevel;
+  global_prompt: string;
+  rewrite_prompt: string;
+  style_profile: Record<string, unknown>;
+  generated_prompt: string;
+  source_metadata: Record<string, unknown>;
+  import_metadata: Record<string, unknown>;
+};
+
+export type ProjectStyleBinding = {
+  style_template: StyleTemplate | null;
 };
 
 export type ProjectSettingsWrite = {
