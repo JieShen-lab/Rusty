@@ -242,6 +242,14 @@ export type CharacterCardWrite = {
   import_metadata: Record<string, unknown>;
 };
 
+export type AnchorExtractWrite = {
+  name?: string | null;
+  detail_level: StyleDetailLevel;
+  sample_text?: string | null;
+  source_path?: string | null;
+  model_id?: number | null;
+};
+
 export type ProjectOutlineBinding = {
   outline_template: OutlineTemplate | null;
 };

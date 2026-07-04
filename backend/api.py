@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 
 from rusty.db import session
 from rusty.models import ChapterRecord, ParsedBook, ProjectSummary
+from rusty.services.anchor_extraction_service import AnchorExtractionService
 from rusty.services.anchor_service import AnchorService, CharacterCard, OutlineTemplate
 from rusty.services.model_service import ModelService
 from rusty.services.pipeline_service import PipelineService
@@ -27,7 +28,9 @@ from rusty.services.style_service import StyleTemplate, StyleTemplateService
 
 from .schemas import (
     ChapterAIOutputsOut,
+    AnchorExtractRequest,
     CharacterCardOut,
+    CharacterCardsExtractOut,
     CharacterCardWriteRequest,
     ChapterDetailOut,
     ChapterErrorOut,
@@ -93,7 +96,7 @@ def current_api_token() -> str:
     return os.environ.get("RUSTY_API_TOKEN") or _GENERATED_TOKEN
 
 
-def create_app(database_path: str | Path | None = None, style_ai_client=None) -> FastAPI:
+def create_app(database_path: str | Path | None = None, style_ai_client=None, anchor_ai_client=None) -> FastAPI:
     db_path = Path(os.environ.get("RUSTY_DATABASE_PATH", database_path or default_database_path()))
     project_service = ProjectService(db_path)
     pipeline_service = PipelineService(db_path)
@@ -102,6 +105,7 @@ def create_app(database_path: str | Path | None = None, style_ai_client=None) ->
     style_service = StyleTemplateService(db_path)
     style_extraction_service = StyleExtractionService(db_path, ai_client=style_ai_client)
     anchor_service = AnchorService(db_path)
+    anchor_extraction_service = AnchorExtractionService(db_path, ai_client=anchor_ai_client or style_ai_client)
 
     app = FastAPI(
         title="Rusty UI-R2 API",
@@ -465,6 +469,33 @@ def create_app(database_path: str | Path | None = None, style_ai_client=None) ->
     def list_outline_templates() -> list[OutlineTemplateOut]:
         return [_outline_out(template) for template in anchor_service.list_outline_templates()]
 
+    @app.post("/api/outlines/extract", response_model=OutlineTemplateOut, dependencies=[Depends(_require_token)])
+    def extract_outline_template(payload: AnchorExtractRequest) -> OutlineTemplateOut:
+        if bool(payload.sample_text and payload.sample_text.strip()) == bool(payload.source_path):
+            raise _http_error(400, "invalid_anchor_source", "Provide exactly one of sample_text or source_path.")
+        name = payload.name or "AI extracted outline"
+        if payload.source_path:
+            source_path = _validate_source_path(payload.source_path)
+            if source_path.stat().st_size > STYLE_EXTRACTION_MAX_FILE_BYTES:
+                raise _http_error(400, "anchor_source_too_large", "Anchor extraction source file is too large.")
+            template_id = anchor_extraction_service.extract_outline_from_file(
+                source_path,
+                name=name,
+                detail_level=payload.detail_level,
+                model_id=payload.model_id,
+            )
+        else:
+            template_id = anchor_extraction_service.extract_outline_from_text(
+                payload.sample_text or "",
+                name=name,
+                detail_level=payload.detail_level,
+                model_id=payload.model_id,
+            )
+        template = anchor_service.get_outline_template(template_id)
+        if template is None:
+            raise _http_error(500, "outline_template_extract_failed", "Outline template was extracted but could not be loaded.")
+        return _outline_out(template)
+
     @app.get("/api/outlines/{template_id}", response_model=OutlineTemplateOut)
     def get_outline_template(template_id: int) -> OutlineTemplateOut:
         template = anchor_service.get_outline_template(template_id)
@@ -498,6 +529,28 @@ def create_app(database_path: str | Path | None = None, style_ai_client=None) ->
     @app.get("/api/characters", response_model=list[CharacterCardOut])
     def list_character_cards() -> list[CharacterCardOut]:
         return [_character_out(card) for card in anchor_service.list_character_cards()]
+
+    @app.post("/api/characters/extract", response_model=CharacterCardsExtractOut, dependencies=[Depends(_require_token)])
+    def extract_character_cards(payload: AnchorExtractRequest) -> CharacterCardsExtractOut:
+        if bool(payload.sample_text and payload.sample_text.strip()) == bool(payload.source_path):
+            raise _http_error(400, "invalid_anchor_source", "Provide exactly one of sample_text or source_path.")
+        if payload.source_path:
+            source_path = _validate_source_path(payload.source_path)
+            if source_path.stat().st_size > STYLE_EXTRACTION_MAX_FILE_BYTES:
+                raise _http_error(400, "anchor_source_too_large", "Anchor extraction source file is too large.")
+            card_ids = anchor_extraction_service.extract_characters_from_file(
+                source_path,
+                detail_level=payload.detail_level,
+                model_id=payload.model_id,
+            )
+        else:
+            card_ids = anchor_extraction_service.extract_characters_from_text(
+                payload.sample_text or "",
+                detail_level=payload.detail_level,
+                model_id=payload.model_id,
+            )
+        cards = [anchor_service.get_character_card(card_id) for card_id in card_ids]
+        return CharacterCardsExtractOut(character_cards=[_character_out(card) for card in cards if card is not None])
 
     @app.get("/api/characters/{card_id}", response_model=CharacterCardOut)
     def get_character_card(card_id: int) -> CharacterCardOut:

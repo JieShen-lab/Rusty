@@ -23,6 +23,32 @@ class FakeStyleAIClient(AIClient):
         user_text = messages[-1]["content"]
         if "Write a short validation sample" in user_text:
             return AIResponse(text="Styled trial text.", token_usage={"total_tokens": 3}, elapsed_ms=5)
+        if "structured outline template" in user_text:
+            return AIResponse(
+                text=(
+                    '{"name":"API Extracted Outline","description":"Extracted outline",'
+                    '"anchor_prompt":"Keep the fixed beats.",'
+                    '"outline":{"fixed_plot_beats":["choice","fallout"],"must_keep_details":["lamp"]}}'
+                ),
+                token_usage={"total_tokens": 12},
+                elapsed_ms=6,
+            )
+        if "structured character cards" in user_text:
+            return AIResponse(
+                text=(
+                    '{"characters":['
+                    '{"name":"Alice","aliases":["A"],"description":"Main role","priority":90,"is_main":true,'
+                    '"relationship_notes":"Protects Bob.","personality":"Direct.","speech_style":"Short.",'
+                    '"action_constraints":"Acts quickly.","anti_ooc_rules":"Do not make her passive.",'
+                    '"profile":{"role":"lead"}},'
+                    '{"name":"Bob","aliases":["Bobby"],"description":"Support role","priority":40,"is_main":false,'
+                    '"relationship_notes":"Trusts Alice.","personality":"Careful.","speech_style":"Plain.",'
+                    '"action_constraints":"Avoids rash action.","anti_ooc_rules":"Do not make him reckless.",'
+                    '"profile":{"role":"support"}}]}'
+                ),
+                token_usage={"total_tokens": 18},
+                elapsed_ms=7,
+            )
         return AIResponse(
             text=(
                 '{"name":"API Extracted Style","description":"Extracted by API",'
@@ -470,6 +496,67 @@ class BackendApiTests(unittest.TestCase):
         self.assertIsNone(unbound_outline.json()["outline_template"])
         self.assertEqual(200, deleted_outline.status_code)
         self.assertEqual(200, deleted_alice.status_code)
+
+    def test_anchor_extraction_api_from_text_and_file(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            source = root / "anchor.txt"
+            source.write_text("1. One\nAlice protects Bobby near a lamp.", encoding="utf-8")
+            os.environ["RUSTY_DATABASE_PATH"] = str(root / "rusty.db")
+            os.environ["RUSTY_API_TOKEN"] = "test-token"
+            api = importlib.import_module("backend.api")
+            app = api.create_app(root / "rusty.db", anchor_ai_client=FakeStyleAIClient())
+            client = TestClient(app)
+            headers = {"X-Rusty-Token": "test-token"}
+            model_payload = {
+                "display_name": "API Model",
+                "provider": "openai_compatible",
+                "base_url": "https://api.example.test/v1",
+                "model_name": "example-model",
+                "api_key": None,
+                "temperature": 0.7,
+                "max_tokens": None,
+                "timeout_seconds": 60,
+                "is_default": True,
+            }
+            client.post("/api/models", json=model_payload, headers=headers)
+
+            rejected_outline = client.post(
+                "/api/outlines/extract",
+                json={"name": "Rejected", "sample_text": "sample"},
+            )
+            invalid_source = client.post(
+                "/api/outlines/extract",
+                json={"name": "Invalid", "sample_text": "sample", "source_path": str(source)},
+                headers=headers,
+            )
+            extracted_outline = client.post(
+                "/api/outlines/extract",
+                json={"name": "Seed outline", "detail_level": "detailed", "sample_text": "Alice chooses."},
+                headers=headers,
+            )
+            rejected_characters = client.post(
+                "/api/characters/extract",
+                json={"sample_text": "Alice protects Bob."},
+            )
+            extracted_characters = client.post(
+                "/api/characters/extract",
+                json={"detail_level": "standard", "source_path": str(source)},
+                headers=headers,
+            )
+
+        self.assertEqual(403, rejected_outline.status_code)
+        self.assertEqual(400, invalid_source.status_code)
+        self.assertEqual(200, extracted_outline.status_code)
+        self.assertEqual("API Extracted Outline", extracted_outline.json()["name"])
+        self.assertEqual("detailed", extracted_outline.json()["detail_level"])
+        self.assertEqual(["choice", "fallout"], extracted_outline.json()["outline"]["fixed_plot_beats"])
+        self.assertEqual("ai_outline_extraction", extracted_outline.json()["import_metadata"]["created_by"])
+        self.assertEqual(403, rejected_characters.status_code)
+        self.assertEqual(200, extracted_characters.status_code)
+        self.assertEqual(["Alice", "Bob"], [item["name"] for item in extracted_characters.json()["character_cards"]])
+        self.assertEqual("file", extracted_characters.json()["character_cards"][0]["source_metadata"]["source_type"])
+        self.assertEqual("anchor.txt", extracted_characters.json()["character_cards"][0]["source_metadata"]["source_file_name"])
 
 
 if __name__ == "__main__":

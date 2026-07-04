@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
-import { Plus, Save, Trash2 } from 'lucide-react';
+import { Plus, Save, Sparkles, Trash2 } from 'lucide-react';
 import {
   createCharacterCard,
   createOutlineTemplate,
   deleteCharacterCard,
   deleteOutlineTemplate,
+  extractCharacterCards,
+  extractOutlineTemplate,
   getCharacterCards,
   getOutlineTemplates,
   updateCharacterCard,
@@ -69,6 +71,11 @@ export function AnchorManagePage() {
   const [characterAliases, setCharacterAliases] = useState('');
   const [characterProfileText, setCharacterProfileText] = useState('{}');
   const [characterField, setCharacterField] = useState<CharacterField>('description');
+  const [extractMode, setExtractMode] = useState<'paste' | 'file'>('paste');
+  const [extractName, setExtractName] = useState('');
+  const [extractDetailLevel, setExtractDetailLevel] = useState<StyleDetailLevel>('standard');
+  const [extractSampleText, setExtractSampleText] = useState('');
+  const [extractSourcePath, setExtractSourcePath] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -218,6 +225,54 @@ export function AnchorManagePage() {
     }
   }
 
+  async function extractOutline() {
+    if (!extractName.trim()) return;
+    setBusy(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const outline = await extractOutlineTemplate({
+        name: extractName,
+        detail_level: extractDetailLevel,
+        sample_text: extractMode === 'paste' ? extractSampleText : null,
+        source_path: extractMode === 'file' ? extractSourcePath : null,
+      });
+      setMessage('AI 大纲模板已生成。');
+      setExtractSampleText('');
+      setExtractSourcePath('');
+      await loadAnchors(outline.id, selectedCharacterId);
+      setTab('outlines');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function extractCharacters() {
+    setBusy(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const result = await extractCharacterCards({
+        name: extractName || null,
+        detail_level: extractDetailLevel,
+        sample_text: extractMode === 'paste' ? extractSampleText : null,
+        source_path: extractMode === 'file' ? extractSourcePath : null,
+      });
+      const first = result.character_cards[0];
+      setMessage(`AI 角色卡已生成：${result.character_cards.length} 张。`);
+      setExtractSampleText('');
+      setExtractSourcePath('');
+      await loadAnchors(selectedOutlineId, first?.id ?? selectedCharacterId);
+      setTab('characters');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div>
       <TopBar title="锚点" subtitle="管理剧情大纲和角色卡，供 AI 改写阶段保持剧情与人物一致。" onRefresh={() => loadAnchors(selectedOutlineId, selectedCharacterId)} />
@@ -232,6 +287,60 @@ export function AnchorManagePage() {
           角色卡
         </button>
       </div>
+
+      <GlassCard className="mb-5" title="AI 抽取锚点">
+        <div className="grid grid-cols-[1fr_160px_150px] gap-3 max-xl:grid-cols-1">
+          <label>
+            <span className="form-label">大纲模板名，抽取角色可留空</span>
+            <input className="form-input" value={extractName} onChange={(event) => setExtractName(event.target.value)} />
+          </label>
+          <label>
+            <span className="form-label">细节等级</span>
+            <select className="form-input" value={extractDetailLevel} onChange={(event) => setExtractDetailLevel(event.target.value as StyleDetailLevel)}>
+              <option value="brief">brief</option>
+              <option value="standard">standard</option>
+              <option value="detailed">detailed</option>
+            </select>
+          </label>
+          <label>
+            <span className="form-label">来源</span>
+            <select className="form-input" value={extractMode} onChange={(event) => setExtractMode(event.target.value as 'paste' | 'file')}>
+              <option value="paste">粘贴文本</option>
+              <option value="file">本地文件</option>
+            </select>
+          </label>
+        </div>
+        <div className="mt-4">
+          {extractMode === 'paste' ? (
+            <textarea
+              className="chapter-text min-h-[180px] w-full resize-y rounded-3xl border border-white/10 bg-slate-950/35 p-4 text-sm leading-7 text-slate-100 outline-none"
+              placeholder="粘贴用于抽取剧情大纲或角色卡的样本文字。"
+              value={extractSampleText}
+              onChange={(event) => setExtractSampleText(event.target.value)}
+            />
+          ) : (
+            <input
+              className="form-input"
+              placeholder="TXT / EPUB / DOCX 本地绝对路径"
+              value={extractSourcePath}
+              onChange={(event) => setExtractSourcePath(event.target.value)}
+            />
+          )}
+        </div>
+        <div className="mt-4 flex flex-wrap gap-3">
+          <PrimaryButton
+            disabled={busy || !extractName.trim() || (extractMode === 'paste' ? !extractSampleText.trim() : !extractSourcePath.trim())}
+            onClick={extractOutline}
+          >
+            <Sparkles size={16} />
+            生成大纲模板
+          </PrimaryButton>
+          <SecondaryButton disabled={busy || (extractMode === 'paste' ? !extractSampleText.trim() : !extractSourcePath.trim())} onClick={extractCharacters}>
+            <Sparkles size={16} />
+            生成角色卡
+          </SecondaryButton>
+        </div>
+      </GlassCard>
 
       {tab === 'outlines' ? (
         <div className="grid grid-cols-[360px_1fr] gap-5 max-lg:grid-cols-1">

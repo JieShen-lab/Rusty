@@ -9,7 +9,71 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from rusty.db import session
-from rusty.services import AnchorService
+from rusty.services import AnchorExtractionService, AnchorService, ModelService
+from rusty.services.ai_client import AIClient, AIResponse
+
+
+class FakeAnchorAIClient(AIClient):
+    def __init__(self, invalid_json: bool = False) -> None:
+        self.invalid_json = invalid_json
+        self.calls = []
+
+    def chat(self, model, api_key, messages):
+        self.calls.append((model, api_key, messages))
+        user_text = messages[-1]["content"]
+        if self.invalid_json:
+            return AIResponse(text="not json", token_usage={}, elapsed_ms=1)
+        if "structured character cards" in user_text:
+            return AIResponse(
+                text=json.dumps(
+                    {
+                        "characters": [
+                            {
+                                "name": "Alice",
+                                "aliases": ["A"],
+                                "description": "Main character.",
+                                "priority": 90,
+                                "is_main": True,
+                                "relationship_notes": "Protects Bob.",
+                                "personality": "Decisive.",
+                                "speech_style": "Short sentences.",
+                                "action_constraints": "Acts quickly.",
+                                "anti_ooc_rules": "Do not make her passive.",
+                                "profile": {"role": "lead"},
+                            },
+                            {
+                                "name": "Bob",
+                                "aliases": ["Bobby"],
+                                "description": "Secondary character.",
+                                "priority": 40,
+                                "is_main": False,
+                                "relationship_notes": "Trusts Alice.",
+                                "personality": "Careful.",
+                                "speech_style": "Plain.",
+                                "action_constraints": "Avoids rash action.",
+                                "anti_ooc_rules": "Do not make him reckless.",
+                                "profile": {"role": "support"},
+                            },
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                token_usage={"total_tokens": 17},
+                elapsed_ms=11,
+            )
+        return AIResponse(
+            text=json.dumps(
+                {
+                    "name": "Extracted outline",
+                    "description": "Extracted plot anchor.",
+                    "anchor_prompt": "Keep the choice and its fallout.",
+                    "outline": {"fixed_plot_beats": ["choice", "fallout"]},
+                },
+                ensure_ascii=False,
+            ),
+            token_usage={"total_tokens": 13},
+            elapsed_ms=9,
+        )
 
 
 class AnchorServiceTests(unittest.TestCase):
@@ -98,6 +162,116 @@ class AnchorServiceTests(unittest.TestCase):
                 service.bind_project_character(project_id, card_id)
             with self.assertRaises(ValueError):
                 service.bind_project_character(project_id + 100, card_id)
+
+    def test_ai_outline_extraction_from_text_creates_structured_template(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            database_path = Path(directory) / "rusty.db"
+            ModelService(database_path).create_model(
+                display_name="Fake",
+                provider="openai_compatible",
+                base_url="https://api.example.test/v1",
+                model_name="fake-model",
+                is_default=True,
+            )
+            fake_client = FakeAnchorAIClient()
+            extraction = AnchorExtractionService(database_path, ai_client=fake_client)
+
+            outline_id = extraction.extract_outline_from_text(
+                "Alice makes a choice and Bob reacts.",
+                name="Seed outline",
+                detail_level="detailed",
+            )
+            outline = AnchorService(database_path).get_outline_template(outline_id)
+            metadata = json.loads(outline.import_metadata_json) if outline else {}
+            source_metadata = json.loads(outline.source_metadata_json) if outline else {}
+            outline_json = json.loads(outline.outline_json) if outline else {}
+
+        self.assertIsNotNone(outline)
+        self.assertEqual("Extracted outline", outline.name)
+        self.assertEqual("detailed", outline.detail_level)
+        self.assertEqual("Keep the choice and its fallout.", outline.anchor_prompt)
+        self.assertEqual(["choice", "fallout"], outline_json["fixed_plot_beats"])
+        self.assertEqual("ai_outline_extraction", metadata["created_by"])
+        self.assertEqual("paste", source_metadata["source_type"])
+        self.assertIn("Required outline dimensions", fake_client.calls[0][2][-1]["content"])
+
+    def test_ai_character_extraction_from_text_creates_character_cards(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            database_path = Path(directory) / "rusty.db"
+            ModelService(database_path).create_model(
+                display_name="Fake",
+                provider="openai_compatible",
+                base_url="https://api.example.test/v1",
+                model_name="fake-model",
+                is_default=True,
+            )
+            fake_client = FakeAnchorAIClient()
+            extraction = AnchorExtractionService(database_path, ai_client=fake_client)
+
+            card_ids = extraction.extract_characters_from_text(
+                "Alice protects Bob. Bobby answers carefully.",
+                detail_level="standard",
+            )
+            service = AnchorService(database_path)
+            cards = [service.get_character_card(card_id) for card_id in card_ids]
+            alice_metadata = json.loads(cards[0].import_metadata_json) if cards[0] else {}
+            alice_source = json.loads(cards[0].source_metadata_json) if cards[0] else {}
+
+        self.assertEqual(2, len(card_ids))
+        self.assertEqual(["Alice", "Bob"], [card.name for card in cards if card])
+        self.assertEqual(["A"], cards[0].aliases)
+        self.assertTrue(cards[0].is_main)
+        self.assertEqual(90, cards[0].priority)
+        self.assertEqual("Protects Bob.", cards[0].relationship_notes)
+        self.assertEqual("ai_character_extraction", alice_metadata["created_by"])
+        self.assertEqual("paste", alice_source["source_type"])
+        self.assertIn("Required character dimensions", fake_client.calls[0][2][-1]["content"])
+
+    def test_ai_anchor_extraction_from_file_uses_import_parser_sample(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            database_path = root / "rusty.db"
+            source_path = root / "anchor.txt"
+            source_path.write_text("1. One\nAlice meets Bob.", encoding="utf-8")
+            ModelService(database_path).create_model(
+                display_name="Fake",
+                provider="openai_compatible",
+                base_url="https://api.example.test/v1",
+                model_name="fake-model",
+                is_default=True,
+            )
+            extraction = AnchorExtractionService(database_path, ai_client=FakeAnchorAIClient())
+
+            outline_id = extraction.extract_outline_from_file(source_path, name="File outline")
+            card_ids = extraction.extract_characters_from_file(source_path)
+            service = AnchorService(database_path)
+            outline = service.get_outline_template(outline_id)
+            card = service.get_character_card(card_ids[0])
+            outline_source = json.loads(outline.source_metadata_json) if outline else {}
+            card_source = json.loads(card.source_metadata_json) if card else {}
+
+        self.assertEqual("file", outline_source["source_type"])
+        self.assertEqual("txt", outline_source["source_format"])
+        self.assertEqual("anchor.txt", outline_source["source_file_name"])
+        self.assertEqual("file", card_source["source_type"])
+        self.assertEqual("anchor.txt", card_source["source_file_name"])
+
+    def test_ai_anchor_extraction_rejects_invalid_json_response(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            database_path = Path(directory) / "rusty.db"
+            ModelService(database_path).create_model(
+                display_name="Fake",
+                provider="openai_compatible",
+                base_url="https://api.example.test/v1",
+                model_name="fake-model",
+                is_default=True,
+            )
+            extraction = AnchorExtractionService(database_path, ai_client=FakeAnchorAIClient(invalid_json=True))
+
+            with self.assertRaises(ValueError):
+                extraction.extract_outline_from_text("Sample prose.", name="Bad")
+            with self.assertRaises(ValueError):
+                extraction.extract_characters_from_text("Sample prose.")
 
 
 def _create_project(database_path: Path) -> int:

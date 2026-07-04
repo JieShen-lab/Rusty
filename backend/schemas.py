@@ -289,6 +289,14 @@ class OutlineTemplateWriteRequest(BaseModel):
     import_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class AnchorExtractRequest(BaseModel):
+    name: str | None = None
+    detail_level: Literal["brief", "standard", "detailed"] = "standard"
+    sample_text: str | None = None
+    source_path: str | None = None
+    model_id: int | None = None
+
+
 class CharacterCardOut(BaseModel):
     id: int
     name: str
@@ -338,4 +346,8 @@ class ProjectCharacterBindingRequest(BaseModel):
 
 
 class ProjectCharacterBindingsOut(BaseModel):
+    character_cards: list[CharacterCardOut]
+
+
+class CharacterCardsExtractOut(BaseModel):
     character_cards: list[CharacterCardOut]

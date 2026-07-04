@@ -1,4 +1,5 @@
 import type {
+  AnchorExtractWrite,
   Chapter,
   ChapterDetail,
   CharacterCard,
@@ -239,6 +240,10 @@ export function deleteOutlineTemplate(templateId: number) {
   return request<{ ok: boolean }>(`/api/outlines/${templateId}/delete`, { method: 'POST' });
 }
 
+export function extractOutlineTemplate(payload: AnchorExtractWrite) {
+  return request<OutlineTemplate>('/api/outlines/extract', { method: 'POST', body: JSON.stringify(payload) });
+}
+
 export function getCharacterCards() {
   return request<CharacterCard[]>('/api/characters');
 }
@@ -253,6 +258,10 @@ export function updateCharacterCard(cardId: number, payload: CharacterCardWrite)
 
 export function deleteCharacterCard(cardId: number) {
   return request<{ ok: boolean }>(`/api/characters/${cardId}/delete`, { method: 'POST' });
+}
+
+export function extractCharacterCards(payload: AnchorExtractWrite) {
+  return request<ProjectCharacterBindings>('/api/characters/extract', { method: 'POST', body: JSON.stringify(payload) });
 }
 
 export function getProjectOutline(projectId: number) {
