@@ -28,6 +28,10 @@ class SchemaTests(unittest.TestCase):
         self.assertIn("prompt_templates", table_names)
         self.assertIn("style_templates", table_names)
         self.assertIn("project_style_bindings", table_names)
+        self.assertIn("outline_templates", table_names)
+        self.assertIn("character_cards", table_names)
+        self.assertIn("project_outline_bindings", table_names)
+        self.assertIn("project_character_bindings", table_names)
         self.assertIn("chapter_stage_status", table_names)
         self.assertIn("exports", table_names)
 

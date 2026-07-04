@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from rusty.services import ModelService, PipelineService, PromptService, ProjectService, StyleTemplateService
+from rusty.services import AnchorService, ModelService, PipelineService, PromptService, ProjectService, StyleTemplateService
 from rusty.services.ai_client import AIClient, AIResponse
 
 
@@ -100,7 +100,10 @@ class PipelineServiceTests(unittest.TestCase):
         self.assertGreater(outputs.rewritten_word_count, 0)
         self.assertEqual("ai", rewrite_row[0])
         self.assertIn("Rewrite this chapter", rewrite_row[1])
-        self.assertEqual({"style_template": None}, json.loads(rewrite_row[2]))
+        self.assertEqual(
+            {"style_template": None, "outline_template": None, "character_cards": []},
+            json.loads(rewrite_row[2]),
+        )
         self.assertEqual(0, errors)
         self.assertEqual(
             [("rewrite", "completed"), ("scene_detection", "completed"), ("summary", "completed")],
@@ -348,6 +351,95 @@ class PipelineServiceTests(unittest.TestCase):
         self.assertIn("Generated style instruction.", messages[-1]["content"])
         self.assertEqual(style_id, anchor_snapshot["style_template"]["id"])
         self.assertEqual("Sharp style", anchor_snapshot["style_template"]["name"])
+
+    def test_rewrite_injects_outline_and_relevant_character_cards_only(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            database_path = root / "rusty.db"
+            source_path = root / "book.txt"
+            source_path.write_text("1. One\nBobby makes a choice. Original text.", encoding="utf-8")
+
+            project_service = ProjectService(database_path)
+            project_id = project_service.import_book(source_path, root)
+            chapter_id = project_service.list_chapters(project_id)[0].id
+            ModelService(database_path).create_model(
+                display_name="Fake",
+                provider="openai_compatible",
+                base_url="https://api.example.test/v1",
+                model_name="fake-model",
+                is_default=True,
+            )
+            PromptService(database_path).create_template(
+                name="Default",
+                global_rules="Base global",
+                summary_rules="Summarize",
+                scene_detection_rules="Detect",
+                rewrite_rules="Base rewrite",
+                is_default=True,
+            )
+            anchor_service = AnchorService(database_path)
+            outline_id = anchor_service.create_outline_template(
+                name="Arc outline",
+                detail_level="detailed",
+                outline={"fixed_beats": ["Bobby chooses"]},
+                anchor_prompt="Keep the choice as the chapter pivot.",
+            )
+            main_id = anchor_service.create_character_card(
+                name="Alice",
+                priority=90,
+                is_main=True,
+                personality="Direct and protective.",
+            )
+            matched_id = anchor_service.create_character_card(
+                name="Bob",
+                aliases=["Bobby"],
+                priority=40,
+                speech_style="Careful, plain speech.",
+            )
+            ignored_id = anchor_service.create_character_card(
+                name="Carol",
+                priority=40,
+                speech_style="Should not appear.",
+            )
+            anchor_service.bind_project_outline(project_id, outline_id)
+            anchor_service.bind_project_character(project_id, main_id, sort_order=1)
+            anchor_service.bind_project_character(project_id, matched_id, sort_order=2)
+            anchor_service.bind_project_character(project_id, ignored_id, sort_order=3)
+
+            fake_client = FakeAIClient()
+            pipeline = PipelineService(database_path, ai_client=fake_client)
+            pipeline.summarize_chapter(chapter_id)
+            pipeline.detect_scene(chapter_id)
+            pipeline.rewrite_chapter(chapter_id)
+
+            connection = sqlite3.connect(database_path)
+            try:
+                anchor_snapshot_json = connection.execute(
+                    """
+                    SELECT anchor_snapshot_json
+                    FROM chapter_rewrites
+                    WHERE chapter_id = ?
+                    """,
+                    (chapter_id,),
+                ).fetchone()[0]
+            finally:
+                connection.close()
+
+        summary_messages = fake_client.calls[0][1]
+        scene_messages = fake_client.calls[1][1]
+        rewrite_messages = fake_client.calls[2][1]
+        rewrite_user_text = rewrite_messages[-1]["content"]
+        anchor_snapshot = json.loads(anchor_snapshot_json)
+
+        self.assertNotIn("Arc outline", summary_messages[-1]["content"])
+        self.assertNotIn("Character anchors", scene_messages[-1]["content"])
+        self.assertIn("Plot outline anchor (Arc outline)", rewrite_user_text)
+        self.assertIn("Keep the choice as the chapter pivot.", rewrite_user_text)
+        self.assertIn("Name: Alice", rewrite_user_text)
+        self.assertIn("Name: Bob", rewrite_user_text)
+        self.assertNotIn("Name: Carol", rewrite_user_text)
+        self.assertEqual(outline_id, anchor_snapshot["outline_template"]["id"])
+        self.assertEqual(["Alice", "Bob"], [card["name"] for card in anchor_snapshot["character_cards"]])
 
     def test_rewrite_uses_project_targets_and_records_target_word_count(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:

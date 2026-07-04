@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .connection import session
 
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 4
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -193,6 +193,64 @@ CREATE TABLE IF NOT EXISTS project_style_bindings (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
     FOREIGN KEY (style_template_id) REFERENCES style_templates(id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS outline_templates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    detail_level TEXT NOT NULL DEFAULT 'standard' CHECK (detail_level IN ('brief', 'standard', 'detailed')),
+    outline_json TEXT NOT NULL DEFAULT '{}',
+    anchor_prompt TEXT NOT NULL DEFAULT '',
+    source_metadata_json TEXT NOT NULL DEFAULT '{}',
+    import_metadata_json TEXT NOT NULL DEFAULT '{}',
+    version INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    deleted_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS character_cards (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    aliases_json TEXT NOT NULL DEFAULT '[]',
+    description TEXT NOT NULL DEFAULT '',
+    priority INTEGER NOT NULL DEFAULT 50,
+    is_main INTEGER NOT NULL DEFAULT 0,
+    relationship_notes TEXT NOT NULL DEFAULT '',
+    personality TEXT NOT NULL DEFAULT '',
+    speech_style TEXT NOT NULL DEFAULT '',
+    action_constraints TEXT NOT NULL DEFAULT '',
+    anti_ooc_rules TEXT NOT NULL DEFAULT '',
+    profile_json TEXT NOT NULL DEFAULT '{}',
+    source_metadata_json TEXT NOT NULL DEFAULT '{}',
+    import_metadata_json TEXT NOT NULL DEFAULT '{}',
+    version INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    deleted_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS project_outline_bindings (
+    project_id INTEGER PRIMARY KEY,
+    outline_template_id INTEGER NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (outline_template_id) REFERENCES outline_templates(id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS project_character_bindings (
+    project_id INTEGER NOT NULL,
+    character_card_id INTEGER NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (project_id, character_card_id),
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (character_card_id) REFERENCES character_cards(id) ON DELETE RESTRICT
 );
 
 CREATE TABLE IF NOT EXISTS chapter_stage_status (
@@ -386,9 +444,74 @@ def _migrate_to_v3(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_to_v4(connection: sqlite3.Connection) -> None:
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS outline_templates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            detail_level TEXT NOT NULL DEFAULT 'standard' CHECK (detail_level IN ('brief', 'standard', 'detailed')),
+            outline_json TEXT NOT NULL DEFAULT '{}',
+            anchor_prompt TEXT NOT NULL DEFAULT '',
+            source_metadata_json TEXT NOT NULL DEFAULT '{}',
+            import_metadata_json TEXT NOT NULL DEFAULT '{}',
+            version INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            deleted_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS character_cards (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            aliases_json TEXT NOT NULL DEFAULT '[]',
+            description TEXT NOT NULL DEFAULT '',
+            priority INTEGER NOT NULL DEFAULT 50,
+            is_main INTEGER NOT NULL DEFAULT 0,
+            relationship_notes TEXT NOT NULL DEFAULT '',
+            personality TEXT NOT NULL DEFAULT '',
+            speech_style TEXT NOT NULL DEFAULT '',
+            action_constraints TEXT NOT NULL DEFAULT '',
+            anti_ooc_rules TEXT NOT NULL DEFAULT '',
+            profile_json TEXT NOT NULL DEFAULT '{}',
+            source_metadata_json TEXT NOT NULL DEFAULT '{}',
+            import_metadata_json TEXT NOT NULL DEFAULT '{}',
+            version INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            deleted_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS project_outline_bindings (
+            project_id INTEGER PRIMARY KEY,
+            outline_template_id INTEGER NOT NULL,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (outline_template_id) REFERENCES outline_templates(id) ON DELETE RESTRICT
+        );
+
+        CREATE TABLE IF NOT EXISTS project_character_bindings (
+            project_id INTEGER NOT NULL,
+            character_card_id INTEGER NOT NULL,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (project_id, character_card_id),
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (character_card_id) REFERENCES character_cards(id) ON DELETE RESTRICT
+        );
+        """
+    )
+
+
 MIGRATIONS = {
     2: _migrate_to_v2,
     3: _migrate_to_v3,
+    4: _migrate_to_v4,
 }
 
 

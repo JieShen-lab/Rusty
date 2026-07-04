@@ -8,6 +8,7 @@ from typing import Callable
 from rusty.db import initialize_database, session
 from rusty.models import ChapterAIOutputs, ChapterError, ChapterRecord, StageStatus, count_text_units
 from rusty.services.ai_client import AIClient, AIResponse, OpenAICompatibleClient
+from rusty.services.anchor_service import AnchorService, CharacterCard, OutlineTemplate
 from rusty.services.model_service import ModelConfig, ModelService
 from rusty.services.project_service import ProjectService, default_database_path
 from rusty.services.prompt_service import PromptService, PromptTemplate
@@ -33,6 +34,7 @@ class PipelineService:
         self.model_service = ModelService(self.database_path)
         self.prompt_service = PromptService(self.database_path)
         self.style_service = StyleTemplateService(self.database_path)
+        self.anchor_service = AnchorService(self.database_path)
         self.ai_client = ai_client or OpenAICompatibleClient()
         with session(self.database_path) as connection:
             initialize_database(connection)
@@ -338,6 +340,11 @@ class PipelineService:
     def _rewrite_messages(self, chapter: ChapterRecord, template: PromptTemplate) -> list[dict[str, str]]:
         settings = self.project_service.get_project_settings(chapter.project_id)
         style_template = self.style_service.get_project_style_template(chapter.project_id)
+        outline_template = self.anchor_service.get_project_outline_template(chapter.project_id)
+        character_cards = self.anchor_service.list_relevant_project_character_cards(
+            chapter.project_id,
+            chapter.original_text,
+        )
         target_text = ""
         if settings and settings.target_word_count:
             target_text = f"\nTarget length: at least {settings.target_word_count} non-whitespace characters."
@@ -345,12 +352,14 @@ class PipelineService:
             target_text += f"\nMinimum expansion ratio: {settings.min_expansion_ratio:.2f}x the original chapter length."
         style_text = self._style_rewrite_prompt(style_template)
         style_section = f"\n\nStyle template ({style_template.name}):\n{style_text}" if style_template and style_text else ""
+        outline_section = self._outline_section(outline_template)
+        character_section = self._character_cards_section(character_cards)
         return [
             {"role": "system", "content": _append_prompt(template.global_rules, style_template.global_prompt if style_template else None)},
             {
                 "role": "user",
                 "content": (
-                    f"{template.rewrite_rules}{target_text}{style_section}\n\n"
+                    f"{template.rewrite_rules}{target_text}{style_section}{outline_section}{character_section}\n\n"
                     f"Rewrite this chapter:\n# {chapter.title}\n{chapter.original_text}"
                 ),
             },
@@ -448,7 +457,7 @@ class PipelineService:
         if min_expansion_ratio is not None and ratio is not None and ratio < min_expansion_ratio:
             raise ValueError(f"Rewrite expansion ratio is below minimum: {ratio:.2f} < {min_expansion_ratio:.2f}")
         with session(self.database_path) as connection:
-            style_snapshot = self._style_snapshot_for_project(chapter.project_id)
+            anchor_snapshot = self._anchor_snapshot_for_chapter(chapter)
             prompt_snapshot = {
                 "messages": self._rewrite_messages(chapter, template),
                 "prompt_template": {
@@ -498,7 +507,7 @@ class PipelineService:
                     model.id,
                     template.id,
                     json.dumps(prompt_snapshot, ensure_ascii=False),
-                    json.dumps(style_snapshot, ensure_ascii=False),
+                    json.dumps(anchor_snapshot, ensure_ascii=False),
                     json.dumps(response.token_usage),
                     response.elapsed_ms,
                 ),
@@ -629,6 +638,77 @@ class PipelineService:
                 "style_profile_json": style_template.style_profile_json,
             }
         }
+
+    @staticmethod
+    def _outline_section(outline_template: OutlineTemplate | None) -> str:
+        if outline_template is None:
+            return ""
+        parts = [outline_template.anchor_prompt.strip()]
+        outline_text = outline_template.outline_json.strip()
+        if outline_text and outline_text != "{}":
+            parts.append(f"Structured outline JSON:\n{outline_text}")
+        text = "\n\n".join(part for part in parts if part)
+        return f"\n\nPlot outline anchor ({outline_template.name}):\n{text}" if text else ""
+
+    @staticmethod
+    def _character_cards_section(character_cards: list[CharacterCard]) -> str:
+        if not character_cards:
+            return ""
+        sections = []
+        for card in character_cards:
+            details = [
+                f"Name: {card.name}",
+                f"Aliases: {', '.join(card.aliases)}" if card.aliases else "",
+                f"Priority: {card.priority}",
+                f"Main character: {'yes' if card.is_main else 'no'}",
+                f"Description: {card.description}" if card.description else "",
+                f"Relationships: {card.relationship_notes}" if card.relationship_notes else "",
+                f"Personality: {card.personality}" if card.personality else "",
+                f"Speech style: {card.speech_style}" if card.speech_style else "",
+                f"Action constraints: {card.action_constraints}" if card.action_constraints else "",
+                f"Anti-OOC rules: {card.anti_ooc_rules}" if card.anti_ooc_rules else "",
+                f"Structured profile JSON:\n{card.profile_json}" if card.profile_json and card.profile_json != "{}" else "",
+            ]
+            sections.append("\n".join(item for item in details if item))
+        return "\n\nCharacter anchors:\n" + "\n\n".join(sections)
+
+    def _anchor_snapshot_for_chapter(self, chapter: ChapterRecord) -> dict:
+        snapshot = self._style_snapshot_for_project(chapter.project_id)
+        outline_template = self.anchor_service.get_project_outline_template(chapter.project_id)
+        character_cards = self.anchor_service.list_relevant_project_character_cards(
+            chapter.project_id,
+            chapter.original_text,
+        )
+        snapshot["outline_template"] = (
+            {
+                "id": outline_template.id,
+                "name": outline_template.name,
+                "version": outline_template.version,
+                "detail_level": outline_template.detail_level,
+                "outline_json": outline_template.outline_json,
+                "anchor_prompt": outline_template.anchor_prompt,
+            }
+            if outline_template is not None
+            else None
+        )
+        snapshot["character_cards"] = [
+            {
+                "id": card.id,
+                "name": card.name,
+                "aliases_json": card.aliases_json,
+                "version": card.version,
+                "priority": card.priority,
+                "is_main": card.is_main,
+                "relationship_notes": card.relationship_notes,
+                "personality": card.personality,
+                "speech_style": card.speech_style,
+                "action_constraints": card.action_constraints,
+                "anti_ooc_rules": card.anti_ooc_rules,
+                "profile_json": card.profile_json,
+            }
+            for card in character_cards
+        ]
+        return snapshot
 
 
 def _parse_scene_response(text: str) -> dict:

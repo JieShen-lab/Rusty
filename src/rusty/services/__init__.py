@@ -1,3 +1,4 @@
+from .anchor_service import AnchorService, CharacterCard, OutlineTemplate
 from .model_service import ModelConfig, ModelService, ModelTestResult
 from .pipeline_service import PipelineResult, PipelineService
 from .prompt_service import PromptService, PromptTemplate
@@ -7,6 +8,8 @@ from .style_service import StyleTemplate, StyleTemplateService
 
 __all__ = [
     "ModelConfig",
+    "AnchorService",
+    "CharacterCard",
     "ModelService",
     "ModelTestResult",
     "PipelineResult",
@@ -14,6 +17,7 @@ __all__ = [
     "ProjectService",
     "PromptService",
     "PromptTemplate",
+    "OutlineTemplate",
     "StyleTemplate",
     "StyleExtractionService",
     "StyleTemplateService",
