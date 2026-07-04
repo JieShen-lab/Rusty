@@ -34,6 +34,7 @@ class SchemaTests(unittest.TestCase):
         self.assertIn("project_character_bindings", table_names)
         self.assertIn("chapter_stage_status", table_names)
         self.assertIn("exports", table_names)
+        self.assertIn("export_chapter_plan", table_names)
 
     def test_initialize_database_records_schema_version_and_seed_rule(self) -> None:
         connection = sqlite3.connect(":memory:")

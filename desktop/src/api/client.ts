@@ -4,6 +4,8 @@ import type {
   ChapterDetail,
   CharacterCard,
   CharacterCardWrite,
+  ExportPlanItem,
+  ExportPlanUpdate,
   ModelConfig,
   ModelTestResult,
   OutlineTemplate,
@@ -102,6 +104,17 @@ export function getChapter(chapterId: number) {
 
 export function getProjectChapter(projectId: number, chapterId: number) {
   return request<ChapterDetail>(`/api/projects/${projectId}/chapters/${chapterId}`);
+}
+
+export function getProjectExportPlan(projectId: number) {
+  return request<ExportPlanItem[]>(`/api/projects/${projectId}/export-plan`);
+}
+
+export function saveProjectExportPlan(projectId: number, payload: ExportPlanUpdate) {
+  return request<ExportPlanItem[]>(`/api/projects/${projectId}/export-plan`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
 }
 
 export function deleteProject(projectId: number) {

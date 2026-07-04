@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from docx import Document
 
 from rusty.importers.epub import parse_epub
+from rusty.models import ExportPlanItem
 from rusty.services import ProjectService
 
 
@@ -90,6 +91,121 @@ class ProjectServiceTests(unittest.TestCase):
         self.assertEqual("imported", cleared.status)
         self.assertIsNotNone(project_after_clear)
         self.assertEqual(0, project_after_clear.completed_chapters)
+
+    def test_export_plan_reorders_renames_excludes_and_drives_exports(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            txt_path = root / "planned.txt"
+            database_path = root / "rusty.db"
+            txt_export_path = root / "planned-export.txt"
+            epub_export_path = root / "planned-export.epub"
+            txt_path.write_text(
+                "1. One\nAlpha original.\n\n2. Two\nBeta original.\n\n3. Three\nGamma original.\n",
+                encoding="utf-8",
+            )
+
+            service = ProjectService(database_path)
+            project_id = service.import_book(txt_path, root)
+            chapters = service.list_chapters(project_id)
+            service.save_chapter_rewrite(chapters[1].id, "Manual beta rewrite.")
+            connection = sqlite3.connect(database_path)
+            try:
+                connection.execute(
+                    "UPDATE chapters SET status = 'kept_original' WHERE id = ?",
+                    (chapters[2].id,),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            default_plan = service.list_export_plan(project_id)
+            service.save_export_plan(
+                project_id,
+                [
+                    ExportPlanItem(
+                        chapter_id=chapters[1].id,
+                        export_order=1,
+                        export_title="Renamed Two",
+                        include_in_export=True,
+                    ),
+                    ExportPlanItem(
+                        chapter_id=chapters[0].id,
+                        export_order=2,
+                        export_title="Hidden One",
+                        include_in_export=False,
+                    ),
+                    ExportPlanItem(
+                        chapter_id=chapters[2].id,
+                        export_order=3,
+                        export_title="Renamed Three",
+                        include_in_export=True,
+                    ),
+                ],
+            )
+            effective = service.get_effective_export_chapters(project_id)
+            service.export_txt(project_id, txt_export_path)
+            service.export_epub(project_id, epub_export_path)
+            txt_export = txt_export_path.read_text(encoding="utf-8")
+            parsed_epub = parse_epub(epub_export_path)
+            export_records = service.list_exports(project_id)
+
+        self.assertEqual(["1. One", "2. Two", "3. Three"], [item.export_title for item in default_plan])
+        self.assertEqual(["Renamed Two", "Renamed Three"], [chapter.title for chapter in effective])
+        self.assertEqual(["manual_rewrite", "kept_original"], [chapter.source_status for chapter in effective])
+        self.assertIn("Renamed Two", txt_export)
+        self.assertIn("Manual beta rewrite.", txt_export)
+        self.assertIn("Renamed Three", txt_export)
+        self.assertNotIn("Alpha original.", txt_export)
+        self.assertEqual(["Renamed Two", "Renamed Three"], [chapter.title for chapter in parsed_epub.chapters])
+        self.assertEqual(2, export_records[0].chapter_count)
+        self.assertEqual(2, export_records[1].chapter_count)
+        self.assertEqual(32, export_records[0].word_count)
+
+    def test_save_export_plan_rejects_missing_or_foreign_chapters(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            first_path = root / "first.txt"
+            second_path = root / "second.txt"
+            database_path = root / "rusty.db"
+            first_path.write_text("1. One\nAlpha.\n\n2. Two\nBeta.\n", encoding="utf-8")
+            second_path.write_text("1. Other\nOther.\n", encoding="utf-8")
+
+            service = ProjectService(database_path)
+            first_project_id = service.import_book(first_path, root)
+            second_project_id = service.import_book(second_path, root)
+            first_chapters = service.list_chapters(first_project_id)
+            foreign_chapter = service.list_chapters(second_project_id)[0]
+
+            with self.assertRaises(ValueError):
+                service.save_export_plan(
+                    first_project_id,
+                    [
+                        ExportPlanItem(
+                            chapter_id=first_chapters[0].id,
+                            export_order=1,
+                            export_title="Only one",
+                            include_in_export=True,
+                        )
+                    ],
+                )
+            with self.assertRaises(ValueError):
+                service.save_export_plan(
+                    first_project_id,
+                    [
+                        ExportPlanItem(
+                            chapter_id=first_chapters[0].id,
+                            export_order=1,
+                            export_title="One",
+                            include_in_export=True,
+                        ),
+                        ExportPlanItem(
+                            chapter_id=foreign_chapter.id,
+                            export_order=2,
+                            export_title="Foreign",
+                            include_in_export=True,
+                        ),
+                    ],
+                )
 
     def test_import_docx_persists_metadata_and_exports_epub(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:

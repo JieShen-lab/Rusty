@@ -125,6 +125,25 @@ class ExportResponse(BaseModel):
     output_path: str
 
 
+class ExportPlanItemOut(BaseModel):
+    chapter_id: int
+    export_order: int
+    export_title: str
+    include_in_export: bool
+    source_status: Literal["original", "manual_rewrite", "ai_rewrite", "kept_original"] = "original"
+
+
+class ExportPlanItemWrite(BaseModel):
+    chapter_id: int
+    export_order: int
+    export_title: str = ""
+    include_in_export: bool = True
+
+
+class ExportPlanUpdateRequest(BaseModel):
+    items: list[ExportPlanItemWrite] = Field(min_length=1)
+
+
 class TextResultResponse(BaseModel):
     ok: bool
     text: str

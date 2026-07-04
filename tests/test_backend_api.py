@@ -103,6 +103,73 @@ class BackendApiTests(unittest.TestCase):
         self.assertEqual(1, len(projects.json()))
         self.assertEqual(1, len(chapters.json()))
 
+    def test_export_plan_api_controls_export_order_titles_and_exclusions(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            source = root / "book.txt"
+            source.write_text(
+                "1. One\nAlpha text.\n\n2. Two\nBeta text.\n\n3. Three\nGamma text.",
+                encoding="utf-8",
+            )
+            os.environ["RUSTY_DATABASE_PATH"] = str(root / "rusty.db")
+            os.environ["RUSTY_API_TOKEN"] = "test-token"
+            api = importlib.import_module("backend.api")
+            app = api.create_app(root / "rusty.db")
+            client = TestClient(app)
+            headers = {"X-Rusty-Token": "test-token"}
+
+            preview = client.post("/api/projects/preview", json={"source_path": str(source)}, headers=headers)
+            created = client.post(
+                "/api/projects",
+                json={"preview_token": preview.json()["preview_token"], "project_name": "Export Book"},
+                headers=headers,
+            )
+            project_id = created.json()["id"]
+            chapters = client.get(f"/api/projects/{project_id}/chapters").json()
+            default_plan = client.get(f"/api/projects/{project_id}/export-plan")
+            save_without_token = client.post(
+                f"/api/projects/{project_id}/export-plan",
+                json={"items": default_plan.json()},
+            )
+            updated_plan = [
+                {
+                    "chapter_id": chapters[1]["id"],
+                    "export_order": 1,
+                    "export_title": "Renamed Two",
+                    "include_in_export": True,
+                },
+                {
+                    "chapter_id": chapters[0]["id"],
+                    "export_order": 2,
+                    "export_title": chapters[0]["title"],
+                    "include_in_export": False,
+                },
+                {
+                    "chapter_id": chapters[2]["id"],
+                    "export_order": 3,
+                    "export_title": "Renamed Three",
+                    "include_in_export": True,
+                },
+            ]
+            saved_plan = client.post(
+                f"/api/projects/{project_id}/export-plan",
+                json={"items": updated_plan},
+                headers=headers,
+            )
+            exported = client.post(f"/api/projects/{project_id}/export/txt", headers=headers)
+            exported_text = Path(exported.json()["output_path"]).read_text(encoding="utf-8")
+
+        self.assertEqual(200, default_plan.status_code)
+        self.assertEqual(["1. One", "2. Two", "3. Three"], [item["export_title"] for item in default_plan.json()])
+        self.assertEqual(["original", "original", "original"], [item["source_status"] for item in default_plan.json()])
+        self.assertEqual(403, save_without_token.status_code)
+        self.assertEqual(200, saved_plan.status_code)
+        self.assertEqual(["Renamed Two", "1. One", "Renamed Three"], [item["export_title"] for item in saved_plan.json()])
+        self.assertEqual([True, False, True], [item["include_in_export"] for item in saved_plan.json()])
+        self.assertIn("Renamed Two", exported_text)
+        self.assertIn("Renamed Three", exported_text)
+        self.assertNotIn("Alpha text.", exported_text)
+
     def test_model_and_prompt_crud_do_not_expose_api_key(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)

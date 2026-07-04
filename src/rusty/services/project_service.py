@@ -8,7 +8,16 @@ from pathlib import Path
 from rusty.db import initialize_database, session
 from rusty.exporters import build_txt_export, export_epub
 from rusty.importers import parse_docx, parse_epub, parse_txt
-from rusty.models import ChapterRecord, ExportRecord, ParsedBook, ProjectSettings, ProjectSummary, count_text_units
+from rusty.models import (
+    ChapterRecord,
+    EffectiveExportChapter,
+    ExportPlanItem,
+    ExportRecord,
+    ParsedBook,
+    ProjectSettings,
+    ProjectSummary,
+    count_text_units,
+)
 
 
 def default_database_path() -> Path:
@@ -123,6 +132,18 @@ class ProjectService:
                 "INSERT INTO project_settings (project_id, txt_split_rule_id) VALUES (?, 1)",
                 (project_id,),
             )
+            chapter_rows = [
+                (
+                    project_id,
+                    chapter.index,
+                    chapter.title,
+                    chapter.text,
+                    chapter.start_line,
+                    chapter.end_line,
+                    chapter.word_count,
+                )
+                for chapter in book.chapters
+            ]
             connection.executemany(
                 """
                 INSERT INTO chapters (
@@ -136,17 +157,30 @@ class ProjectService:
                     status
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, 'imported')
                 """,
+                chapter_rows,
+            )
+            chapter_plan_rows = connection.execute(
+                """
+                SELECT id, chapter_index, title
+                FROM chapters
+                WHERE project_id = ?
+                ORDER BY chapter_index
+                """,
+                (project_id,),
+            ).fetchall()
+            connection.executemany(
+                """
+                INSERT INTO export_chapter_plan (
+                    project_id,
+                    chapter_id,
+                    export_order,
+                    export_title,
+                    include_in_export
+                ) VALUES (?, ?, ?, ?, 1)
+                """,
                 [
-                    (
-                        project_id,
-                        chapter.index,
-                        chapter.title,
-                        chapter.text,
-                        chapter.start_line,
-                        chapter.end_line,
-                        chapter.word_count,
-                    )
-                    for chapter in book.chapters
+                    (project_id, row["id"], row["chapter_index"], row["title"])
+                    for row in chapter_plan_rows
                 ],
             )
 
@@ -377,7 +411,7 @@ class ProjectService:
             )
 
     def export_txt(self, project_id: int, output_path: str | Path) -> Path:
-        chapters = self.list_chapters(project_id)
+        chapters = self.get_effective_export_chapters(project_id)
         if not chapters:
             raise ValueError("Project has no chapters to export.")
 
@@ -408,7 +442,7 @@ class ProjectService:
         return output
 
     def export_epub(self, project_id: int, output_path: str | Path) -> Path:
-        chapters = self.list_chapters(project_id)
+        chapters = self.get_effective_export_chapters(project_id)
         if not chapters:
             raise ValueError("Project has no chapters to export.")
 
@@ -447,6 +481,110 @@ class ProjectService:
             )
 
         return output
+
+    def list_export_plan(self, project_id: int) -> list[ExportPlanItem]:
+        self._ensure_export_plan(project_id)
+        with session(self.database_path) as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    p.chapter_id,
+                    p.export_order,
+                    COALESCE(NULLIF(p.export_title, ''), c.title) AS export_title,
+                    p.include_in_export,
+                    c.status,
+                    r.rewrite_source
+                FROM export_chapter_plan p
+                JOIN chapters c ON c.id = p.chapter_id
+                LEFT JOIN chapter_rewrites r ON r.chapter_id = c.id
+                WHERE p.project_id = ?
+                ORDER BY p.export_order, c.chapter_index, c.id
+                """,
+                (project_id,),
+            ).fetchall()
+        return [
+            ExportPlanItem(
+                chapter_id=row["chapter_id"],
+                export_order=row["export_order"],
+                export_title=row["export_title"],
+                include_in_export=bool(row["include_in_export"]),
+                source_status=_export_source_status(row["status"], row["rewrite_source"]),
+            )
+            for row in rows
+        ]
+
+    def save_export_plan(self, project_id: int, items: list[ExportPlanItem]) -> None:
+        project = self.get_project(project_id)
+        if project is None:
+            raise ValueError(f"Project not found: {project_id}")
+        if not items:
+            raise ValueError("Export plan cannot be empty.")
+        chapter_ids = {chapter.id for chapter in self.list_chapters(project_id)}
+        seen: set[int] = set()
+        rows = []
+        for position, item in enumerate(items, start=1):
+            if item.chapter_id not in chapter_ids:
+                raise ValueError(f"Chapter not found in project export plan: {item.chapter_id}")
+            if item.chapter_id in seen:
+                raise ValueError(f"Duplicate chapter in export plan: {item.chapter_id}")
+            seen.add(item.chapter_id)
+            rows.append(
+                (
+                    project_id,
+                    item.chapter_id,
+                    item.export_order if item.export_order > 0 else position,
+                    item.export_title.strip(),
+                    1 if item.include_in_export else 0,
+                )
+            )
+        missing = chapter_ids - seen
+        if missing:
+            raise ValueError(f"Export plan is missing project chapters: {sorted(missing)}")
+
+        with session(self.database_path) as connection:
+            connection.execute("DELETE FROM export_chapter_plan WHERE project_id = ?", (project_id,))
+            connection.executemany(
+                """
+                INSERT INTO export_chapter_plan (
+                    project_id,
+                    chapter_id,
+                    export_order,
+                    export_title,
+                    include_in_export
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+
+    def get_effective_export_chapters(self, project_id: int) -> list[EffectiveExportChapter]:
+        self._ensure_export_plan(project_id)
+        with session(self.database_path) as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    c.id,
+                    c.project_id,
+                    p.export_order,
+                    COALESCE(NULLIF(p.export_title, ''), c.title) AS export_title,
+                    c.title AS original_title,
+                    c.original_text,
+                    c.rewritten_text,
+                    c.word_count,
+                    c.status,
+                    c.source_start_line,
+                    c.source_end_line,
+                    p.include_in_export,
+                    r.rewrite_source
+                FROM export_chapter_plan p
+                JOIN chapters c ON c.id = p.chapter_id
+                LEFT JOIN chapter_rewrites r ON r.chapter_id = c.id
+                WHERE p.project_id = ?
+                  AND p.include_in_export = 1
+                ORDER BY p.export_order, c.chapter_index, c.id
+                """,
+                (project_id,),
+            ).fetchall()
+        return [self._effective_export_chapter_from_row(row) for row in rows]
 
     def list_exports(self, project_id: int) -> list[ExportRecord]:
         with session(self.database_path) as connection:
@@ -612,6 +750,42 @@ class ProjectService:
     def _export_word_count(chapters: list[ChapterRecord]) -> int:
         return sum(count_text_units(chapter.rewritten_text or chapter.original_text) for chapter in chapters)
 
+    def _ensure_export_plan(self, project_id: int) -> None:
+        project = self.get_project(project_id)
+        if project is None:
+            raise ValueError(f"Project not found: {project_id}")
+        with session(self.database_path) as connection:
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO export_chapter_plan (
+                    project_id,
+                    chapter_id,
+                    export_order,
+                    export_title,
+                    include_in_export
+                )
+                SELECT
+                    c.project_id,
+                    c.id,
+                    c.chapter_index,
+                    c.title,
+                    1
+                FROM chapters c
+                WHERE c.project_id = ?
+                """,
+                (project_id,),
+            )
+            connection.execute(
+                """
+                DELETE FROM export_chapter_plan
+                WHERE project_id = ?
+                  AND chapter_id NOT IN (
+                    SELECT id FROM chapters WHERE project_id = ?
+                  )
+                """,
+                (project_id, project_id),
+            )
+
     @staticmethod
     def _settings_from_row(row) -> ProjectSettings:
         return ProjectSettings(
@@ -624,3 +798,32 @@ class ProjectService:
             target_word_count=row["target_word_count"],
             min_expansion_ratio=row["min_expansion_ratio"],
         )
+
+    @staticmethod
+    def _effective_export_chapter_from_row(row) -> EffectiveExportChapter:
+        source_status = _export_source_status(row["status"], row["rewrite_source"])
+        return EffectiveExportChapter(
+            id=row["id"],
+            project_id=row["project_id"],
+            index=row["export_order"],
+            title=row["export_title"],
+            original_title=row["original_title"],
+            original_text=row["original_text"],
+            rewritten_text=row["rewritten_text"],
+            word_count=row["word_count"],
+            status=row["status"],
+            source_status=source_status,
+            include_in_export=bool(row["include_in_export"]),
+            start_line=row["source_start_line"],
+            end_line=row["source_end_line"],
+        )
+
+
+def _export_source_status(chapter_status: str, rewrite_source: str | None) -> str:
+    if chapter_status == "kept_original":
+        return "kept_original"
+    if rewrite_source == "manual":
+        return "manual_rewrite"
+    if rewrite_source == "ai":
+        return "ai_rewrite"
+    return "original"

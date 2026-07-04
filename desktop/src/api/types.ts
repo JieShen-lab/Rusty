@@ -70,6 +70,27 @@ export type ProjectDetail = {
   exports: Array<Record<string, unknown>>;
 };
 
+export type ExportSourceStatus = 'original' | 'manual_rewrite' | 'ai_rewrite' | 'kept_original';
+
+export type ExportPlanItem = {
+  chapter_id: number;
+  export_order: number;
+  export_title: string;
+  include_in_export: boolean;
+  source_status: ExportSourceStatus;
+};
+
+export type ExportPlanItemWrite = {
+  chapter_id: number;
+  export_order: number;
+  export_title: string;
+  include_in_export: boolean;
+};
+
+export type ExportPlanUpdate = {
+  items: ExportPlanItemWrite[];
+};
+
 export type PreviewResponse = {
   preview_token: string;
   title: string;

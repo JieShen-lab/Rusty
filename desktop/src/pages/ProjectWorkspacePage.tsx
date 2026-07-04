@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Download, FileText, Pause, Play, RefreshCcw, Save, Sparkles, Trash2 } from 'lucide-react';
+import { ArrowDown, ArrowUp, Download, FileText, Pause, Play, RefreshCcw, Save, Sparkles, Trash2 } from 'lucide-react';
 import {
   bindProjectCharacter,
   bindProjectOutline,
@@ -13,6 +13,7 @@ import {
   getProject,
   getProjectCharacters,
   getProjectChapter,
+  getProjectExportPlan,
   getProjectOutline,
   getProjectStyle,
   getStyleTemplates,
@@ -21,10 +22,11 @@ import {
   rewriteChapter,
   runProjectPipeline,
   saveChapterRewrite,
+  saveProjectExportPlan,
   summarizeChapter,
   unbindProjectCharacter,
 } from '../api/client';
-import type { Chapter, ChapterDetail, CharacterCard, OutlineTemplate, ProjectDetail, StyleTemplate } from '../api/types';
+import type { Chapter, ChapterDetail, CharacterCard, ExportPlanItem, OutlineTemplate, ProjectDetail, StyleTemplate } from '../api/types';
 import { EmptyState } from '../components/EmptyState';
 import { GlassCard } from '../components/GlassCard';
 import { PrimaryButton } from '../components/PrimaryButton';
@@ -55,6 +57,7 @@ export function ProjectWorkspacePage({ projectId, onNavigate }: Props) {
   const [boundOutlineId, setBoundOutlineId] = useState<number | null>(null);
   const [characterCards, setCharacterCards] = useState<CharacterCard[]>([]);
   const [boundCharacterIds, setBoundCharacterIds] = useState<number[]>([]);
+  const [exportPlan, setExportPlan] = useState<ExportPlanItem[]>([]);
   const [busy, setBusy] = useState(false);
   const [rewriteDraft, setRewriteDraft] = useState('');
 
@@ -70,8 +73,9 @@ export function ProjectWorkspacePage({ projectId, onNavigate }: Props) {
       getProjectOutline(projectId),
       getCharacterCards(),
       getProjectCharacters(projectId),
+      getProjectExportPlan(projectId),
     ])
-      .then(([project, items, styles, styleBinding, outlines, outlineBinding, cards, characterBinding]) => {
+      .then(([project, items, styles, styleBinding, outlines, outlineBinding, cards, characterBinding, plan]) => {
         setProjectDetail(project);
         setChapters(items);
         setStyleTemplates(styles);
@@ -80,6 +84,7 @@ export function ProjectWorkspacePage({ projectId, onNavigate }: Props) {
         setBoundOutlineId(outlineBinding.outline_template?.id ?? null);
         setCharacterCards(cards);
         setBoundCharacterIds(characterBinding.character_cards.map((card) => card.id));
+        setExportPlan(plan);
         setSelectedChapterId((current) => current ?? items[0]?.id ?? null);
       })
       .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
@@ -114,9 +119,46 @@ export function ProjectWorkspacePage({ projectId, onNavigate }: Props) {
     }
   }
 
+  function moveExportPlanItem(index: number, delta: -1 | 1) {
+    setExportPlan((current) => {
+      const nextIndex = index + delta;
+      if (nextIndex < 0 || nextIndex >= current.length) return current;
+      const next = [...current];
+      [next[index], next[nextIndex]] = [next[nextIndex], next[index]];
+      return next.map((item, itemIndex) => ({ ...item, export_order: itemIndex + 1 }));
+    });
+  }
+
+  function updateExportPlanItem(chapterId: number, patch: Partial<ExportPlanItem>) {
+    setExportPlan((current) => current.map((item) => (item.chapter_id === chapterId ? { ...item, ...patch } : item)));
+  }
+
+  async function handleSaveExportPlan() {
+    if (!projectId) return;
+    setBusy(true);
+    setError(null);
+    setExportMessage(null);
+    try {
+      const saved = await saveProjectExportPlan(projectId, {
+        items: exportPlan.map((item, index) => ({
+          chapter_id: item.chapter_id,
+          export_order: index + 1,
+          export_title: item.export_title,
+          include_in_export: item.include_in_export,
+        })),
+      });
+      setExportPlan(saved);
+      setExportMessage('导出章节设置已保存。');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function reloadWorkspace(chapterId = selectedChapterId) {
     if (!projectId) return;
-    const [project, items, styles, styleBinding, outlines, outlineBinding, cards, characterBinding] = await Promise.all([
+    const [project, items, styles, styleBinding, outlines, outlineBinding, cards, characterBinding, plan] = await Promise.all([
       getProject(projectId),
       getChapters(projectId),
       getStyleTemplates(),
@@ -125,6 +167,7 @@ export function ProjectWorkspacePage({ projectId, onNavigate }: Props) {
       getProjectOutline(projectId),
       getCharacterCards(),
       getProjectCharacters(projectId),
+      getProjectExportPlan(projectId),
     ]);
     setProjectDetail(project);
     setChapters(items);
@@ -134,6 +177,7 @@ export function ProjectWorkspacePage({ projectId, onNavigate }: Props) {
     setBoundOutlineId(outlineBinding.outline_template?.id ?? null);
     setCharacterCards(cards);
     setBoundCharacterIds(characterBinding.character_cards.map((card) => card.id));
+    setExportPlan(plan);
     if (chapterId) {
       const detail = await getProjectChapter(projectId, chapterId);
       setChapterDetail(detail);
@@ -377,6 +421,59 @@ export function ProjectWorkspacePage({ projectId, onNavigate }: Props) {
             </div>
             {exportMessage && <p className="mt-4 break-all text-xs text-emerald-200">{exportMessage}</p>}
           </GlassCard>
+          <GlassCard title="导出章节">
+            {exportPlan.length === 0 ? (
+              <p className="text-sm text-[var(--text-muted)]">暂无章节导出计划。</p>
+            ) : (
+              <div className="space-y-3">
+                <div className="max-h-[360px] space-y-2 overflow-auto pr-1">
+                  {exportPlan.map((item, index) => (
+                    <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3" key={item.chapter_id}>
+                      <div className="mb-2 flex items-center gap-2">
+                        <input
+                          checked={item.include_in_export}
+                          disabled={busy}
+                          onChange={(event) => updateExportPlanItem(item.chapter_id, { include_in_export: event.target.checked })}
+                          type="checkbox"
+                        />
+                        <span className="min-w-0 flex-1 truncate text-xs text-[var(--text-soft)]">
+                          #{index + 1} · {exportSourceLabel(item.source_status)}
+                        </span>
+                        <button
+                          className="rounded-full border border-white/10 bg-white/[0.05] p-1 text-white disabled:opacity-40"
+                          disabled={busy || index === 0}
+                          onClick={() => moveExportPlanItem(index, -1)}
+                          title="上移"
+                          type="button"
+                        >
+                          <ArrowUp size={14} />
+                        </button>
+                        <button
+                          className="rounded-full border border-white/10 bg-white/[0.05] p-1 text-white disabled:opacity-40"
+                          disabled={busy || index === exportPlan.length - 1}
+                          onClick={() => moveExportPlanItem(index, 1)}
+                          title="下移"
+                          type="button"
+                        >
+                          <ArrowDown size={14} />
+                        </button>
+                      </div>
+                      <input
+                        className="form-input py-2 text-sm"
+                        disabled={busy}
+                        value={item.export_title}
+                        onChange={(event) => updateExportPlanItem(item.chapter_id, { export_title: event.target.value })}
+                      />
+                    </div>
+                  ))}
+                </div>
+                <PrimaryButton disabled={busy} onClick={handleSaveExportPlan}>
+                  <Save size={16} />
+                  保存导出设置
+                </PrimaryButton>
+              </div>
+            )}
+          </GlassCard>
           <GlassCard title="错误信息">
             {chapterDetail?.errors.length ? (
               <div className="space-y-2">
@@ -450,6 +547,13 @@ function TextPanel({ title, text }: { title: string; text: string }) {
       <pre className="chapter-text whitespace-pre-wrap rounded-3xl border border-white/10 bg-slate-950/35 p-5 text-sm leading-8 text-slate-100">{text}</pre>
     </div>
   );
+}
+
+function exportSourceLabel(status: ExportPlanItem['source_status']) {
+  if (status === 'manual_rewrite') return '手动改写';
+  if (status === 'ai_rewrite') return 'AI 改写';
+  if (status === 'kept_original') return '保留原文';
+  return '原文';
 }
 
 function Stat({ label, value }: { label: string; value: string | number }) {

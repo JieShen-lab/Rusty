@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from rusty.db import session
-from rusty.models import ChapterRecord, ParsedBook, ProjectSummary
+from rusty.models import ChapterRecord, ExportPlanItem, ParsedBook, ProjectSummary
 from rusty.services.anchor_extraction_service import AnchorExtractionService
 from rusty.services.anchor_service import AnchorService, CharacterCard, OutlineTemplate
 from rusty.services.model_service import ModelService
@@ -37,6 +37,8 @@ from .schemas import (
     ChapterOut,
     CreateProjectRequest,
     ErrorResponse,
+    ExportPlanItemOut,
+    ExportPlanUpdateRequest,
     ExportResponse,
     HealthResponse,
     ModelTestResponse,
@@ -199,6 +201,32 @@ def create_app(database_path: str | Path | None = None, style_ai_client=None, an
     def list_chapters(project_id: int) -> list[ChapterOut]:
         _require_project(project_service, project_id)
         return [_chapter_out(chapter) for chapter in project_service.list_chapters(project_id)]
+
+    @app.get("/api/projects/{project_id}/export-plan", response_model=list[ExportPlanItemOut])
+    def get_project_export_plan(project_id: int) -> list[ExportPlanItemOut]:
+        _require_project(project_service, project_id)
+        return [_export_plan_item_out(item) for item in project_service.list_export_plan(project_id)]
+
+    @app.post(
+        "/api/projects/{project_id}/export-plan",
+        response_model=list[ExportPlanItemOut],
+        dependencies=[Depends(_require_token)],
+    )
+    def save_project_export_plan(project_id: int, payload: ExportPlanUpdateRequest) -> list[ExportPlanItemOut]:
+        _require_project(project_service, project_id)
+        project_service.save_export_plan(
+            project_id,
+            [
+                ExportPlanItem(
+                    chapter_id=item.chapter_id,
+                    export_order=item.export_order,
+                    export_title=item.export_title,
+                    include_in_export=item.include_in_export,
+                )
+                for item in payload.items
+            ],
+        )
+        return [_export_plan_item_out(item) for item in project_service.list_export_plan(project_id)]
 
     @app.get("/api/projects/{project_id}/chapters/{chapter_id}", response_model=ChapterDetailOut)
     def get_project_chapter(project_id: int, chapter_id: int) -> ChapterDetailOut:
@@ -756,6 +784,10 @@ def _project_out(project: ProjectSummary) -> ProjectOut:
 
 def _chapter_out(chapter: ChapterRecord) -> ChapterOut:
     return ChapterOut(**chapter.__dict__)
+
+
+def _export_plan_item_out(item: ExportPlanItem) -> ExportPlanItemOut:
+    return ExportPlanItemOut(**item.__dict__)
 
 
 def _chapter_detail(chapter: ChapterRecord, pipeline_service: PipelineService) -> ChapterDetailOut:

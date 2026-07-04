@@ -82,6 +82,32 @@ class ChapterRecord:
 
 
 @dataclass(frozen=True)
+class ExportPlanItem:
+    chapter_id: int
+    export_order: int
+    export_title: str
+    include_in_export: bool
+    source_status: str = "original"
+
+
+@dataclass(frozen=True)
+class EffectiveExportChapter:
+    id: int
+    project_id: int
+    index: int
+    title: str
+    original_title: str
+    original_text: str
+    rewritten_text: str | None
+    word_count: int
+    status: str
+    source_status: str
+    include_in_export: bool
+    start_line: int | None
+    end_line: int | None
+
+
+@dataclass(frozen=True)
 class StageStatus:
     stage: str
     status: str
