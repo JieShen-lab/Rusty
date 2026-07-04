@@ -332,6 +332,145 @@ class BackendApiTests(unittest.TestCase):
         self.assertEqual("file", extracted.json()["source_metadata"]["source_type"])
         self.assertEqual("style.txt", extracted.json()["source_metadata"]["source_file_name"])
 
+    def test_outline_and_character_anchor_api_crud_and_project_binding(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            source = root / "book.txt"
+            source.write_text("1. One\nBobby makes a choice.", encoding="utf-8")
+            os.environ["RUSTY_DATABASE_PATH"] = str(root / "rusty.db")
+            os.environ["RUSTY_API_TOKEN"] = "test-token"
+            api = importlib.import_module("backend.api")
+            app = api.create_app(root / "rusty.db")
+            client = TestClient(app)
+            headers = {"X-Rusty-Token": "test-token"}
+
+            preview = client.post("/api/projects/preview", json={"source_path": str(source)}, headers=headers)
+            created_project = client.post(
+                "/api/projects",
+                json={"preview_token": preview.json()["preview_token"], "project_name": "Anchor Book"},
+                headers=headers,
+            )
+            project_id = created_project.json()["id"]
+
+            outline_payload = {
+                "name": "API Outline",
+                "description": "Plot anchor",
+                "detail_level": "detailed",
+                "outline": {"beats": ["choice"]},
+                "anchor_prompt": "Keep Bobby's choice.",
+                "source_metadata": {},
+                "import_metadata": {},
+            }
+            rejected_outline = client.post("/api/outlines", json=outline_payload)
+            created_outline = client.post("/api/outlines", json=outline_payload, headers=headers)
+            outline_id = created_outline.json()["id"]
+            listed_outlines = client.get("/api/outlines")
+            updated_outline = client.post(
+                f"/api/outlines/{outline_id}",
+                json={**outline_payload, "name": "API Outline v2", "detail_level": "standard"},
+                headers=headers,
+            )
+            rejected_outline_bind = client.post(
+                f"/api/projects/{project_id}/outline",
+                json={"outline_template_id": outline_id},
+            )
+            bound_outline = client.post(
+                f"/api/projects/{project_id}/outline",
+                json={"outline_template_id": outline_id},
+                headers=headers,
+            )
+            project_outline = client.get(f"/api/projects/{project_id}/outline")
+
+            alice_payload = {
+                "name": "Alice",
+                "aliases": ["A"],
+                "description": "Main role",
+                "priority": 90,
+                "is_main": True,
+                "relationship_notes": "",
+                "personality": "Direct.",
+                "speech_style": "",
+                "action_constraints": "",
+                "anti_ooc_rules": "",
+                "profile": {"role": "main"},
+                "source_metadata": {},
+                "import_metadata": {},
+            }
+            bob_payload = {
+                "name": "Bob",
+                "aliases": ["Bobby"],
+                "description": "",
+                "priority": 40,
+                "is_main": False,
+                "relationship_notes": "",
+                "personality": "",
+                "speech_style": "Plain.",
+                "action_constraints": "",
+                "anti_ooc_rules": "",
+                "profile": {},
+                "source_metadata": {},
+                "import_metadata": {},
+            }
+            rejected_character = client.post("/api/characters", json=alice_payload)
+            alice = client.post("/api/characters", json=alice_payload, headers=headers)
+            bob = client.post("/api/characters", json=bob_payload, headers=headers)
+            alice_id = alice.json()["id"]
+            bob_id = bob.json()["id"]
+            listed_characters = client.get("/api/characters")
+            updated_bob = client.post(
+                f"/api/characters/{bob_id}",
+                json={**bob_payload, "aliases": ["Robert"], "priority": 45},
+                headers=headers,
+            )
+            rejected_character_bind = client.post(
+                f"/api/projects/{project_id}/characters",
+                json={"character_card_id": alice_id, "sort_order": 1},
+            )
+            client.post(
+                f"/api/projects/{project_id}/characters",
+                json={"character_card_id": alice_id, "sort_order": 1},
+                headers=headers,
+            )
+            bound_characters = client.post(
+                f"/api/projects/{project_id}/characters",
+                json={"character_card_id": bob_id, "sort_order": 2},
+                headers=headers,
+            )
+            unbound_characters = client.post(
+                f"/api/projects/{project_id}/characters/{bob_id}/unbind",
+                headers=headers,
+            )
+            unbound_outline = client.post(
+                f"/api/projects/{project_id}/outline",
+                json={"outline_template_id": None},
+                headers=headers,
+            )
+            deleted_outline = client.post(f"/api/outlines/{outline_id}/delete", headers=headers)
+            deleted_alice = client.post(f"/api/characters/{alice_id}/delete", headers=headers)
+
+        self.assertEqual(403, rejected_outline.status_code)
+        self.assertEqual(200, created_outline.status_code)
+        self.assertEqual("API Outline", created_outline.json()["name"])
+        self.assertEqual({"beats": ["choice"]}, created_outline.json()["outline"])
+        self.assertEqual(1, len(listed_outlines.json()))
+        self.assertEqual("API Outline v2", updated_outline.json()["name"])
+        self.assertEqual("standard", updated_outline.json()["detail_level"])
+        self.assertEqual(403, rejected_outline_bind.status_code)
+        self.assertEqual(outline_id, bound_outline.json()["outline_template"]["id"])
+        self.assertEqual(outline_id, project_outline.json()["outline_template"]["id"])
+        self.assertEqual(403, rejected_character.status_code)
+        self.assertEqual("Alice", alice.json()["name"])
+        self.assertEqual(["A"], alice.json()["aliases"])
+        self.assertEqual(2, len(listed_characters.json()))
+        self.assertEqual(["Robert"], updated_bob.json()["aliases"])
+        self.assertEqual(45, updated_bob.json()["priority"])
+        self.assertEqual(403, rejected_character_bind.status_code)
+        self.assertEqual(["Alice", "Bob"], [item["name"] for item in bound_characters.json()["character_cards"]])
+        self.assertEqual(["Alice"], [item["name"] for item in unbound_characters.json()["character_cards"]])
+        self.assertIsNone(unbound_outline.json()["outline_template"])
+        self.assertEqual(200, deleted_outline.status_code)
+        self.assertEqual(200, deleted_alice.status_code)
+
 
 if __name__ == "__main__":
     unittest.main()

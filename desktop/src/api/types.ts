@@ -185,6 +185,71 @@ export type ProjectStyleBinding = {
   style_template: StyleTemplate | null;
 };
 
+export type OutlineTemplate = {
+  id: number;
+  name: string;
+  description: string;
+  detail_level: StyleDetailLevel;
+  outline: Record<string, unknown>;
+  anchor_prompt: string;
+  source_metadata: Record<string, unknown>;
+  import_metadata: Record<string, unknown>;
+  version: number;
+};
+
+export type OutlineTemplateWrite = {
+  name: string;
+  description: string;
+  detail_level: StyleDetailLevel;
+  outline: Record<string, unknown>;
+  anchor_prompt: string;
+  source_metadata: Record<string, unknown>;
+  import_metadata: Record<string, unknown>;
+};
+
+export type CharacterCard = {
+  id: number;
+  name: string;
+  aliases: string[];
+  description: string;
+  priority: number;
+  is_main: boolean;
+  relationship_notes: string;
+  personality: string;
+  speech_style: string;
+  action_constraints: string;
+  anti_ooc_rules: string;
+  profile: Record<string, unknown>;
+  source_metadata: Record<string, unknown>;
+  import_metadata: Record<string, unknown>;
+  version: number;
+  sort_order: number;
+};
+
+export type CharacterCardWrite = {
+  name: string;
+  aliases: string[];
+  description: string;
+  priority: number;
+  is_main: boolean;
+  relationship_notes: string;
+  personality: string;
+  speech_style: string;
+  action_constraints: string;
+  anti_ooc_rules: string;
+  profile: Record<string, unknown>;
+  source_metadata: Record<string, unknown>;
+  import_metadata: Record<string, unknown>;
+};
+
+export type ProjectOutlineBinding = {
+  outline_template: OutlineTemplate | null;
+};
+
+export type ProjectCharacterBindings = {
+  character_cards: CharacterCard[];
+};
+
 export type ProjectSettingsWrite = {
   model_id?: number | null;
   prompt_template_id?: number | null;

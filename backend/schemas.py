@@ -265,3 +265,77 @@ class ProjectStyleBindingRequest(BaseModel):
 
 class ProjectStyleBindingOut(BaseModel):
     style_template: StyleTemplateOut | None = None
+
+
+class OutlineTemplateOut(BaseModel):
+    id: int
+    name: str
+    description: str
+    detail_level: Literal["brief", "standard", "detailed"]
+    outline: dict[str, Any]
+    anchor_prompt: str
+    source_metadata: dict[str, Any]
+    import_metadata: dict[str, Any]
+    version: int
+
+
+class OutlineTemplateWriteRequest(BaseModel):
+    name: str = Field(min_length=1)
+    description: str = ""
+    detail_level: Literal["brief", "standard", "detailed"] = "standard"
+    outline: dict[str, Any] = Field(default_factory=dict)
+    anchor_prompt: str = ""
+    source_metadata: dict[str, Any] = Field(default_factory=dict)
+    import_metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class CharacterCardOut(BaseModel):
+    id: int
+    name: str
+    aliases: list[str]
+    description: str
+    priority: int
+    is_main: bool
+    relationship_notes: str
+    personality: str
+    speech_style: str
+    action_constraints: str
+    anti_ooc_rules: str
+    profile: dict[str, Any]
+    source_metadata: dict[str, Any]
+    import_metadata: dict[str, Any]
+    version: int
+    sort_order: int = 0
+
+
+class CharacterCardWriteRequest(BaseModel):
+    name: str = Field(min_length=1)
+    aliases: list[str] = Field(default_factory=list)
+    description: str = ""
+    priority: int = Field(default=50, ge=0, le=100)
+    is_main: bool = False
+    relationship_notes: str = ""
+    personality: str = ""
+    speech_style: str = ""
+    action_constraints: str = ""
+    anti_ooc_rules: str = ""
+    profile: dict[str, Any] = Field(default_factory=dict)
+    source_metadata: dict[str, Any] = Field(default_factory=dict)
+    import_metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ProjectOutlineBindingRequest(BaseModel):
+    outline_template_id: int | None = None
+
+
+class ProjectOutlineBindingOut(BaseModel):
+    outline_template: OutlineTemplateOut | None = None
+
+
+class ProjectCharacterBindingRequest(BaseModel):
+    character_card_id: int
+    sort_order: int = 0
+
+
+class ProjectCharacterBindingsOut(BaseModel):
+    character_cards: list[CharacterCardOut]

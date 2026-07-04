@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { AppShell } from './components/AppShell';
 import type { RouteKey } from './components/Sidebar';
+import { AnchorManagePage } from './pages/AnchorManagePage';
 import { HomePage } from './pages/HomePage';
 import { ModelManagePage } from './pages/ModelManagePage';
 import { NewProjectPage } from './pages/NewProjectPage';
@@ -26,6 +27,7 @@ function parseRoute(pathname: string): Route {
   if (parts[0] === 'models') return { key: 'models', path: '/models' };
   if (parts[0] === 'prompts') return { key: 'prompts', path: '/prompts' };
   if (parts[0] === 'styles') return { key: 'styles', path: '/styles' };
+  if (parts[0] === 'anchors') return { key: 'anchors', path: '/anchors' };
   return { key: 'home', path: '/home' };
 }
 
@@ -54,6 +56,7 @@ export default function App() {
   if (route.key === 'models') page = <ModelManagePage />;
   if (route.key === 'prompts') page = <PromptManagePage />;
   if (route.key === 'styles') page = <StyleManagePage />;
+  if (route.key === 'anchors') page = <AnchorManagePage />;
 
   return (
     <AppShell active={route.key} onNavigate={navigate}>

@@ -1,6 +1,6 @@
-import { BookOpen, Bot, Home, Library, Palette, PenTool } from 'lucide-react';
+import { BookOpen, Bot, Home, Library, MapPinned, Palette, PenTool } from 'lucide-react';
 
-export type RouteKey = 'home' | 'library' | 'workspace' | 'models' | 'prompts' | 'styles' | 'new-project';
+export type RouteKey = 'home' | 'library' | 'workspace' | 'models' | 'prompts' | 'styles' | 'anchors' | 'new-project';
 
 type SidebarProps = {
   active: RouteKey;
@@ -14,6 +14,7 @@ const items = [
   { key: 'models', label: 'Models', cn: '模型', path: '/models', icon: Bot },
   { key: 'prompts', label: 'Prompts', cn: '提示词', path: '/prompts', icon: BookOpen },
   { key: 'styles', label: 'Styles', cn: '风格', path: '/styles', icon: Palette },
+  { key: 'anchors', label: 'Anchors', cn: '锚点', path: '/anchors', icon: MapPinned },
 ] as const;
 
 export function Sidebar({ active, onNavigate }: SidebarProps) {

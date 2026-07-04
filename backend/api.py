@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 
 from rusty.db import session
 from rusty.models import ChapterRecord, ParsedBook, ProjectSummary
+from rusty.services.anchor_service import AnchorService, CharacterCard, OutlineTemplate
 from rusty.services.model_service import ModelService
 from rusty.services.pipeline_service import PipelineService
 from rusty.services.project_service import ProjectService, default_database_path
@@ -26,6 +27,8 @@ from rusty.services.style_service import StyleTemplate, StyleTemplateService
 
 from .schemas import (
     ChapterAIOutputsOut,
+    CharacterCardOut,
+    CharacterCardWriteRequest,
     ChapterDetailOut,
     ChapterErrorOut,
     ChapterOut,
@@ -40,6 +43,10 @@ from .schemas import (
     PreviewRequest,
     PreviewResponse,
     ProjectDetailOut,
+    ProjectCharacterBindingRequest,
+    ProjectCharacterBindingsOut,
+    ProjectOutlineBindingOut,
+    ProjectOutlineBindingRequest,
     ProjectOut,
     ProjectPromptWriteRequest,
     ProjectSettingsUpdateRequest,
@@ -47,6 +54,8 @@ from .schemas import (
     ProjectStyleBindingRequest,
     PromptTemplateOut,
     PromptTemplateWriteRequest,
+    OutlineTemplateOut,
+    OutlineTemplateWriteRequest,
     PipelineRunResponse,
     RetryStageRequest,
     RewriteTextRequest,
@@ -92,6 +101,7 @@ def create_app(database_path: str | Path | None = None, style_ai_client=None) ->
     prompt_service = PromptService(db_path)
     style_service = StyleTemplateService(db_path)
     style_extraction_service = StyleExtractionService(db_path, ai_client=style_ai_client)
+    anchor_service = AnchorService(db_path)
 
     app = FastAPI(
         title="Rusty UI-R2 API",
@@ -451,6 +461,109 @@ def create_app(database_path: str | Path | None = None, style_ai_client=None) ->
         template = style_service.get_project_style_template(project_id)
         return ProjectStyleBindingOut(style_template=_style_out(template) if template else None)
 
+    @app.get("/api/outlines", response_model=list[OutlineTemplateOut])
+    def list_outline_templates() -> list[OutlineTemplateOut]:
+        return [_outline_out(template) for template in anchor_service.list_outline_templates()]
+
+    @app.get("/api/outlines/{template_id}", response_model=OutlineTemplateOut)
+    def get_outline_template(template_id: int) -> OutlineTemplateOut:
+        template = anchor_service.get_outline_template(template_id)
+        if template is None:
+            raise _http_error(404, "outline_template_not_found", f"Outline template not found: {template_id}")
+        return _outline_out(template)
+
+    @app.post("/api/outlines", response_model=OutlineTemplateOut, dependencies=[Depends(_require_token)])
+    def create_outline_template(payload: OutlineTemplateWriteRequest) -> OutlineTemplateOut:
+        template_id = anchor_service.create_outline_template(**payload.model_dump())
+        template = anchor_service.get_outline_template(template_id)
+        if template is None:
+            raise _http_error(500, "outline_template_create_failed", "Outline template was created but could not be loaded.")
+        return _outline_out(template)
+
+    @app.post("/api/outlines/{template_id}", response_model=OutlineTemplateOut, dependencies=[Depends(_require_token)])
+    def update_outline_template(template_id: int, payload: OutlineTemplateWriteRequest) -> OutlineTemplateOut:
+        anchor_service.update_outline_template(template_id=template_id, **payload.model_dump())
+        template = anchor_service.get_outline_template(template_id)
+        if template is None:
+            raise _http_error(404, "outline_template_not_found", f"Outline template not found: {template_id}")
+        return _outline_out(template)
+
+    @app.post("/api/outlines/{template_id}/delete", response_model=dict[str, bool], dependencies=[Depends(_require_token)])
+    def delete_outline_template(template_id: int) -> dict[str, bool]:
+        if anchor_service.get_outline_template(template_id) is None:
+            raise _http_error(404, "outline_template_not_found", f"Outline template not found: {template_id}")
+        anchor_service.delete_outline_template(template_id)
+        return {"ok": True}
+
+    @app.get("/api/characters", response_model=list[CharacterCardOut])
+    def list_character_cards() -> list[CharacterCardOut]:
+        return [_character_out(card) for card in anchor_service.list_character_cards()]
+
+    @app.get("/api/characters/{card_id}", response_model=CharacterCardOut)
+    def get_character_card(card_id: int) -> CharacterCardOut:
+        card = anchor_service.get_character_card(card_id)
+        if card is None:
+            raise _http_error(404, "character_card_not_found", f"Character card not found: {card_id}")
+        return _character_out(card)
+
+    @app.post("/api/characters", response_model=CharacterCardOut, dependencies=[Depends(_require_token)])
+    def create_character_card(payload: CharacterCardWriteRequest) -> CharacterCardOut:
+        card_id = anchor_service.create_character_card(**payload.model_dump())
+        card = anchor_service.get_character_card(card_id)
+        if card is None:
+            raise _http_error(500, "character_card_create_failed", "Character card was created but could not be loaded.")
+        return _character_out(card)
+
+    @app.post("/api/characters/{card_id}", response_model=CharacterCardOut, dependencies=[Depends(_require_token)])
+    def update_character_card(card_id: int, payload: CharacterCardWriteRequest) -> CharacterCardOut:
+        anchor_service.update_character_card(card_id=card_id, **payload.model_dump())
+        card = anchor_service.get_character_card(card_id)
+        if card is None:
+            raise _http_error(404, "character_card_not_found", f"Character card not found: {card_id}")
+        return _character_out(card)
+
+    @app.post("/api/characters/{card_id}/delete", response_model=dict[str, bool], dependencies=[Depends(_require_token)])
+    def delete_character_card(card_id: int) -> dict[str, bool]:
+        if anchor_service.get_character_card(card_id) is None:
+            raise _http_error(404, "character_card_not_found", f"Character card not found: {card_id}")
+        anchor_service.delete_character_card(card_id)
+        return {"ok": True}
+
+    @app.get("/api/projects/{project_id}/outline", response_model=ProjectOutlineBindingOut)
+    def get_project_outline(project_id: int) -> ProjectOutlineBindingOut:
+        _require_project(project_service, project_id)
+        template = anchor_service.get_project_outline_template(project_id)
+        return ProjectOutlineBindingOut(outline_template=_outline_out(template) if template else None)
+
+    @app.post("/api/projects/{project_id}/outline", response_model=ProjectOutlineBindingOut, dependencies=[Depends(_require_token)])
+    def bind_project_outline(project_id: int, payload: ProjectOutlineBindingRequest) -> ProjectOutlineBindingOut:
+        _require_project(project_service, project_id)
+        if payload.outline_template_id is None:
+            anchor_service.unbind_project_outline(project_id)
+        else:
+            anchor_service.bind_project_outline(project_id, payload.outline_template_id)
+        template = anchor_service.get_project_outline_template(project_id)
+        return ProjectOutlineBindingOut(outline_template=_outline_out(template) if template else None)
+
+    @app.get("/api/projects/{project_id}/characters", response_model=ProjectCharacterBindingsOut)
+    def list_project_characters(project_id: int) -> ProjectCharacterBindingsOut:
+        _require_project(project_service, project_id)
+        return ProjectCharacterBindingsOut(
+            character_cards=[_character_out(card) for card in anchor_service.list_project_character_cards(project_id)]
+        )
+
+    @app.post("/api/projects/{project_id}/characters", response_model=ProjectCharacterBindingsOut, dependencies=[Depends(_require_token)])
+    def bind_project_character(project_id: int, payload: ProjectCharacterBindingRequest) -> ProjectCharacterBindingsOut:
+        _require_project(project_service, project_id)
+        anchor_service.bind_project_character(project_id, payload.character_card_id, payload.sort_order)
+        return list_project_characters(project_id)
+
+    @app.post("/api/projects/{project_id}/characters/{card_id}/unbind", response_model=ProjectCharacterBindingsOut, dependencies=[Depends(_require_token)])
+    def unbind_project_character(project_id: int, card_id: int) -> ProjectCharacterBindingsOut:
+        _require_project(project_service, project_id)
+        anchor_service.unbind_project_character(project_id, card_id)
+        return list_project_characters(project_id)
+
     return app
 
 
@@ -620,12 +733,57 @@ def _style_out(template: StyleTemplate) -> StyleTemplateOut:
     )
 
 
+def _outline_out(template: OutlineTemplate) -> OutlineTemplateOut:
+    return OutlineTemplateOut(
+        id=template.id,
+        name=template.name,
+        description=template.description,
+        detail_level=template.detail_level,
+        outline=_json_object(template.outline_json),
+        anchor_prompt=template.anchor_prompt,
+        source_metadata=_json_object(template.source_metadata_json),
+        import_metadata=_json_object(template.import_metadata_json),
+        version=template.version,
+    )
+
+
+def _character_out(card: CharacterCard) -> CharacterCardOut:
+    return CharacterCardOut(
+        id=card.id,
+        name=card.name,
+        aliases=_json_list(card.aliases_json),
+        description=card.description,
+        priority=card.priority,
+        is_main=card.is_main,
+        relationship_notes=card.relationship_notes,
+        personality=card.personality,
+        speech_style=card.speech_style,
+        action_constraints=card.action_constraints,
+        anti_ooc_rules=card.anti_ooc_rules,
+        profile=_json_object(card.profile_json),
+        source_metadata=_json_object(card.source_metadata_json),
+        import_metadata=_json_object(card.import_metadata_json),
+        version=card.version,
+        sort_order=card.sort_order,
+    )
+
+
 def _json_object(text: str) -> dict[str, Any]:
     try:
         value = json.loads(text)
     except json.JSONDecodeError:
         return {}
     return value if isinstance(value, dict) else {}
+
+
+def _json_list(text: str) -> list[str]:
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value]
 
 
 def _http_error(status_code: int, error: str, message: str, details: dict[str, Any] | None = None) -> HTTPException:

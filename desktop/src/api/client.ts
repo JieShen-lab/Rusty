@@ -1,12 +1,18 @@
 import type {
   Chapter,
   ChapterDetail,
+  CharacterCard,
+  CharacterCardWrite,
   ModelConfig,
   ModelTestResult,
+  OutlineTemplate,
+  OutlineTemplateWrite,
   ModelWrite,
   PreviewResponse,
   Project,
+  ProjectCharacterBindings,
   ProjectDetail,
+  ProjectOutlineBinding,
   ProjectSettingsWrite,
   ProjectStyleBinding,
   PromptTemplate,
@@ -214,6 +220,66 @@ export function bindProjectStyle(projectId: number, styleTemplateId: number | nu
   return request<ProjectStyleBinding>(`/api/projects/${projectId}/style`, {
     method: 'POST',
     body: JSON.stringify({ style_template_id: styleTemplateId }),
+  });
+}
+
+export function getOutlineTemplates() {
+  return request<OutlineTemplate[]>('/api/outlines');
+}
+
+export function createOutlineTemplate(payload: OutlineTemplateWrite) {
+  return request<OutlineTemplate>('/api/outlines', { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export function updateOutlineTemplate(templateId: number, payload: OutlineTemplateWrite) {
+  return request<OutlineTemplate>(`/api/outlines/${templateId}`, { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export function deleteOutlineTemplate(templateId: number) {
+  return request<{ ok: boolean }>(`/api/outlines/${templateId}/delete`, { method: 'POST' });
+}
+
+export function getCharacterCards() {
+  return request<CharacterCard[]>('/api/characters');
+}
+
+export function createCharacterCard(payload: CharacterCardWrite) {
+  return request<CharacterCard>('/api/characters', { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export function updateCharacterCard(cardId: number, payload: CharacterCardWrite) {
+  return request<CharacterCard>(`/api/characters/${cardId}`, { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export function deleteCharacterCard(cardId: number) {
+  return request<{ ok: boolean }>(`/api/characters/${cardId}/delete`, { method: 'POST' });
+}
+
+export function getProjectOutline(projectId: number) {
+  return request<ProjectOutlineBinding>(`/api/projects/${projectId}/outline`);
+}
+
+export function bindProjectOutline(projectId: number, outlineTemplateId: number | null) {
+  return request<ProjectOutlineBinding>(`/api/projects/${projectId}/outline`, {
+    method: 'POST',
+    body: JSON.stringify({ outline_template_id: outlineTemplateId }),
+  });
+}
+
+export function getProjectCharacters(projectId: number) {
+  return request<ProjectCharacterBindings>(`/api/projects/${projectId}/characters`);
+}
+
+export function bindProjectCharacter(projectId: number, characterCardId: number, sortOrder = 0) {
+  return request<ProjectCharacterBindings>(`/api/projects/${projectId}/characters`, {
+    method: 'POST',
+    body: JSON.stringify({ character_card_id: characterCardId, sort_order: sortOrder }),
+  });
+}
+
+export function unbindProjectCharacter(projectId: number, characterCardId: number) {
+  return request<ProjectCharacterBindings>(`/api/projects/${projectId}/characters/${characterCardId}/unbind`, {
+    method: 'POST',
   });
 }
 

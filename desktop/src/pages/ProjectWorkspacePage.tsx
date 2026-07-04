@@ -1,13 +1,19 @@
 import { useEffect, useState } from 'react';
 import { Download, FileText, Pause, Play, RefreshCcw, Save, Sparkles, Trash2 } from 'lucide-react';
 import {
+  bindProjectCharacter,
+  bindProjectOutline,
   bindProjectStyle,
   detectScene,
   exportEpub,
   exportTxt,
   getChapters,
+  getCharacterCards,
+  getOutlineTemplates,
   getProject,
+  getProjectCharacters,
   getProjectChapter,
+  getProjectOutline,
   getProjectStyle,
   getStyleTemplates,
   pauseProjectPipeline,
@@ -16,8 +22,9 @@ import {
   runProjectPipeline,
   saveChapterRewrite,
   summarizeChapter,
+  unbindProjectCharacter,
 } from '../api/client';
-import type { Chapter, ChapterDetail, ProjectDetail, StyleTemplate } from '../api/types';
+import type { Chapter, ChapterDetail, CharacterCard, OutlineTemplate, ProjectDetail, StyleTemplate } from '../api/types';
 import { EmptyState } from '../components/EmptyState';
 import { GlassCard } from '../components/GlassCard';
 import { PrimaryButton } from '../components/PrimaryButton';
@@ -44,18 +51,35 @@ export function ProjectWorkspacePage({ projectId, onNavigate }: Props) {
   const [exportMessage, setExportMessage] = useState<string | null>(null);
   const [styleTemplates, setStyleTemplates] = useState<StyleTemplate[]>([]);
   const [boundStyleId, setBoundStyleId] = useState<number | null>(null);
+  const [outlineTemplates, setOutlineTemplates] = useState<OutlineTemplate[]>([]);
+  const [boundOutlineId, setBoundOutlineId] = useState<number | null>(null);
+  const [characterCards, setCharacterCards] = useState<CharacterCard[]>([]);
+  const [boundCharacterIds, setBoundCharacterIds] = useState<number[]>([]);
   const [busy, setBusy] = useState(false);
   const [rewriteDraft, setRewriteDraft] = useState('');
 
   useEffect(() => {
     if (!projectId) return;
     setError(null);
-    Promise.all([getProject(projectId), getChapters(projectId), getStyleTemplates(), getProjectStyle(projectId)])
-      .then(([project, items, styles, binding]) => {
+    Promise.all([
+      getProject(projectId),
+      getChapters(projectId),
+      getStyleTemplates(),
+      getProjectStyle(projectId),
+      getOutlineTemplates(),
+      getProjectOutline(projectId),
+      getCharacterCards(),
+      getProjectCharacters(projectId),
+    ])
+      .then(([project, items, styles, styleBinding, outlines, outlineBinding, cards, characterBinding]) => {
         setProjectDetail(project);
         setChapters(items);
         setStyleTemplates(styles);
-        setBoundStyleId(binding.style_template?.id ?? null);
+        setBoundStyleId(styleBinding.style_template?.id ?? null);
+        setOutlineTemplates(outlines);
+        setBoundOutlineId(outlineBinding.outline_template?.id ?? null);
+        setCharacterCards(cards);
+        setBoundCharacterIds(characterBinding.character_cards.map((card) => card.id));
         setSelectedChapterId((current) => current ?? items[0]?.id ?? null);
       })
       .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
@@ -92,11 +116,24 @@ export function ProjectWorkspacePage({ projectId, onNavigate }: Props) {
 
   async function reloadWorkspace(chapterId = selectedChapterId) {
     if (!projectId) return;
-    const [project, items, styles, binding] = await Promise.all([getProject(projectId), getChapters(projectId), getStyleTemplates(), getProjectStyle(projectId)]);
+    const [project, items, styles, styleBinding, outlines, outlineBinding, cards, characterBinding] = await Promise.all([
+      getProject(projectId),
+      getChapters(projectId),
+      getStyleTemplates(),
+      getProjectStyle(projectId),
+      getOutlineTemplates(),
+      getProjectOutline(projectId),
+      getCharacterCards(),
+      getProjectCharacters(projectId),
+    ]);
     setProjectDetail(project);
     setChapters(items);
     setStyleTemplates(styles);
-    setBoundStyleId(binding.style_template?.id ?? null);
+    setBoundStyleId(styleBinding.style_template?.id ?? null);
+    setOutlineTemplates(outlines);
+    setBoundOutlineId(outlineBinding.outline_template?.id ?? null);
+    setCharacterCards(cards);
+    setBoundCharacterIds(characterBinding.character_cards.map((card) => card.id));
     if (chapterId) {
       const detail = await getProjectChapter(projectId, chapterId);
       setChapterDetail(detail);
@@ -113,6 +150,40 @@ export function ProjectWorkspacePage({ projectId, onNavigate }: Props) {
       const binding = await bindProjectStyle(projectId, value ? Number(value) : null);
       setBoundStyleId(binding.style_template?.id ?? null);
       setMessage(binding.style_template ? `已绑定风格模板：${binding.style_template.name}` : '已取消风格模板绑定。');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleOutlineBinding(value: string) {
+    if (!projectId) return;
+    setBusy(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const binding = await bindProjectOutline(projectId, value ? Number(value) : null);
+      setBoundOutlineId(binding.outline_template?.id ?? null);
+      setMessage(binding.outline_template ? `已绑定剧情大纲：${binding.outline_template.name}` : '已取消剧情大纲绑定。');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function toggleCharacterBinding(cardId: number, checked: boolean) {
+    if (!projectId) return;
+    setBusy(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const binding = checked
+        ? await bindProjectCharacter(projectId, cardId, boundCharacterIds.length + 1)
+        : await unbindProjectCharacter(projectId, cardId);
+      setBoundCharacterIds(binding.character_cards.map((card) => card.id));
+      setMessage('项目角色卡绑定已更新。');
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -182,6 +253,49 @@ export function ProjectWorkspacePage({ projectId, onNavigate }: Props) {
         </GlassCard>
 
         <aside className="space-y-5 max-2xl:col-span-2 max-lg:col-span-1">
+          <GlassCard title="剧情大纲">
+            {outlineTemplates.length === 0 ? (
+              <p className="text-sm text-[var(--text-muted)]">尚未创建大纲模板。</p>
+            ) : (
+              <label>
+                <span className="form-label">改写时固定剧情</span>
+                <select className="form-input" disabled={busy} value={boundOutlineId ?? ''} onChange={(event) => handleOutlineBinding(event.target.value)}>
+                  <option value="">不使用剧情大纲</option>
+                  {outlineTemplates.map((template) => (
+                    <option key={template.id} value={template.id}>
+                      {template.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            <p className="mt-3 text-xs leading-5 text-[var(--text-soft)]">大纲只进入 AI 改写阶段，用于保持剧情节点和因果关系。</p>
+          </GlassCard>
+          <GlassCard title="角色卡">
+            {characterCards.length === 0 ? (
+              <p className="text-sm text-[var(--text-muted)]">尚未创建角色卡。</p>
+            ) : (
+              <div className="space-y-3">
+                {characterCards.map((card) => (
+                  <label className="flex items-start gap-3 rounded-2xl border border-white/10 bg-white/[0.04] p-3 text-sm text-[var(--text-muted)]" key={card.id}>
+                    <input
+                      checked={boundCharacterIds.includes(card.id)}
+                      className="mt-1"
+                      disabled={busy}
+                      onChange={(event) => toggleCharacterBinding(card.id, event.target.checked)}
+                      type="checkbox"
+                    />
+                    <span>
+                      <span className="font-semibold text-white">{card.name}</span>
+                      <span className="ml-2 text-xs text-[var(--text-soft)]">优先级 {card.priority}</span>
+                      {card.aliases.length > 0 && <span className="mt-1 block text-xs text-[var(--text-soft)]">{card.aliases.join(', ')}</span>}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            )}
+            <p className="mt-3 text-xs leading-5 text-[var(--text-soft)]">主角/高优先级角色默认注入；普通角色按章节原文中姓名或别名命中注入。</p>
+          </GlassCard>
           <GlassCard title="风格模板">
             {styleTemplates.length === 0 ? (
               <p className="text-sm text-[var(--text-muted)]">尚未创建风格模板。</p>
