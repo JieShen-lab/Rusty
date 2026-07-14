@@ -26,7 +26,7 @@ import {
   summarizeChapter,
   unbindProjectCharacter,
 } from '../api/client';
-import type { Chapter, ChapterDetail, CharacterCard, ExportPlanItem, OutlineTemplate, ProjectDetail, StyleTemplate } from '../api/types';
+import type { Chapter, ChapterDetail, CharacterCard, ExportPlanItem, OutlineTemplate, PipelineRunResult, ProjectDetail, StyleTemplate } from '../api/types';
 import { EmptyState } from '../components/EmptyState';
 import { GlassCard } from '../components/GlassCard';
 import { PrimaryButton } from '../components/PrimaryButton';
@@ -241,6 +241,16 @@ export function ProjectWorkspacePage({ projectId, onNavigate }: Props) {
     setMessage(null);
     try {
       const result = await action();
+      if (isPipelineRunResult(result)) {
+        const summary = `流水线结果：成功 ${result.processed} 章，失败 ${result.failed} 章，保留原文 ${result.skipped} 章${result.paused ? '，已暂停' : ''}。`;
+        if (result.failed > 0) {
+          setError(`${summary} 请查看当前章节的错误信息。`);
+        } else {
+          setMessage(summary);
+        }
+        await reloadWorkspace();
+        return;
+      }
       const text = typeof result === 'object' && result && 'text' in result ? String((result as { text: string }).text) : '';
       setMessage(text ? `${label}完成：${text.slice(0, 160)}` : `${label}完成。`);
       await reloadWorkspace();
@@ -490,6 +500,17 @@ export function ProjectWorkspacePage({ projectId, onNavigate }: Props) {
         </aside>
       </div>
     </div>
+  );
+}
+
+function isPipelineRunResult(result: unknown): result is PipelineRunResult {
+  return Boolean(
+    result &&
+      typeof result === 'object' &&
+      'processed' in result &&
+      'failed' in result &&
+      'skipped' in result &&
+      'paused' in result,
   );
 }
 

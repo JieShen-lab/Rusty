@@ -94,6 +94,8 @@ class PipelineService:
         processed = 0
         skipped = 0
         failed = 0
+        resolved_model = self._resolve_model(model_id, project_id)
+        resolved_template = self._resolve_template(template_id, project_id)
         self.set_project_paused(project_id, False)
         self._set_project_status(project_id, "processing")
         for chapter in self.project_service.list_chapters(project_id):
@@ -103,10 +105,10 @@ class PipelineService:
             if self.is_project_paused(project_id):
                 return PipelineResult(processed=processed, skipped=skipped, failed=failed, paused=True)
             try:
-                self.summarize_chapter(chapter.id, model_id, template_id)
-                scene_text = self.detect_scene(chapter.id, model_id, template_id)
+                self.summarize_chapter(chapter.id, resolved_model.id, resolved_template.id)
+                scene_text = self.detect_scene(chapter.id, resolved_model.id, resolved_template.id)
                 if self._scene_needs_rewrite(scene_text):
-                    self.rewrite_chapter(chapter.id, model_id, template_id)
+                    self.rewrite_chapter(chapter.id, resolved_model.id, resolved_template.id)
                 else:
                     self._mark_chapter_kept_original(chapter.id)
                     skipped += 1
@@ -243,11 +245,11 @@ class PipelineService:
         chapter = self.project_service.get_chapter(chapter_id)
         if chapter is None:
             raise ValueError(f"Chapter not found: {chapter_id}")
-        model = self._resolve_model(model_id, chapter.project_id)
-        template = self._resolve_template(template_id, chapter.project_id)
-        api_key = self.model_service.get_api_key(model.id)
         self._mark_stage(chapter_id, stage, "running")
         try:
+            model = self._resolve_model(model_id, chapter.project_id)
+            template = self._resolve_template(template_id, chapter.project_id)
+            api_key = self.model_service.get_api_key(model.id)
             response = self.ai_client.chat(model, api_key, message_builder(chapter, template))
             saver(chapter, model, template, response)
             self._mark_stage(chapter_id, stage, "completed", response.elapsed_ms, response.token_usage)

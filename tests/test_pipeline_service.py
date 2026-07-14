@@ -38,6 +38,62 @@ class FakeAIClient(AIClient):
 
 
 class PipelineServiceTests(unittest.TestCase):
+    def test_project_pipeline_rejects_missing_prompt_before_processing(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            database_path = root / "rusty.db"
+            source_path = root / "book.txt"
+            source_path.write_text("1. One\nOriginal text.", encoding="utf-8")
+
+            project_service = ProjectService(database_path)
+            project_id = project_service.import_book(source_path, root)
+            ModelService(database_path).create_model(
+                display_name="Fake",
+                provider="openai_compatible",
+                base_url="https://api.example.test/v1",
+                model_name="fake-model",
+                is_default=True,
+            )
+            pipeline = PipelineService(database_path, ai_client=FakeAIClient())
+
+            with self.assertRaisesRegex(ValueError, "No prompt template configured"):
+                pipeline.run_project(project_id)
+
+            project = project_service.get_project(project_id)
+
+        self.assertIsNotNone(project)
+        self.assertEqual("imported", project.status)
+
+    def test_manual_stage_records_missing_prompt_error(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            database_path = root / "rusty.db"
+            source_path = root / "book.txt"
+            source_path.write_text("1. One\nOriginal text.", encoding="utf-8")
+
+            project_service = ProjectService(database_path)
+            project_id = project_service.import_book(source_path, root)
+            chapter_id = project_service.list_chapters(project_id)[0].id
+            ModelService(database_path).create_model(
+                display_name="Fake",
+                provider="openai_compatible",
+                base_url="https://api.example.test/v1",
+                model_name="fake-model",
+                is_default=True,
+            )
+            pipeline = PipelineService(database_path, ai_client=FakeAIClient())
+
+            with self.assertRaisesRegex(ValueError, "No prompt template configured"):
+                pipeline.summarize_chapter(chapter_id)
+
+            errors = pipeline.list_chapter_errors(chapter_id)
+            statuses = pipeline.list_chapter_stage_statuses(chapter_id)
+
+        self.assertEqual(1, len(errors))
+        self.assertEqual("summary", errors[0].stage)
+        self.assertIn("No prompt template configured", errors[0].message)
+        self.assertEqual("failed", statuses[0].status)
+
     def test_chapter_pipeline_persists_outputs_and_merge(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)
