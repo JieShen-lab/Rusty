@@ -16,6 +16,7 @@ import type {
   ProjectCharacterBindings,
   ProjectDetail,
   ProjectOutlineBinding,
+  ProjectPurpose,
   ProjectSettingsWrite,
   ProjectStyleBinding,
   PromptTemplate,
@@ -140,13 +141,14 @@ export function previewProject(sourcePath: string, workspacePath?: string) {
   });
 }
 
-export function createProject(previewToken: string, projectName?: string, workspacePath?: string) {
+export function createProject(previewToken: string, projectName?: string, workspacePath?: string, purpose: ProjectPurpose = 'rewrite') {
   return request<Project>('/api/projects', {
     method: 'POST',
     body: JSON.stringify({
       preview_token: previewToken,
       project_name: projectName || null,
       workspace_path: workspacePath || null,
+      purpose,
     }),
   });
 }
@@ -311,6 +313,10 @@ export function updateProjectSettings(projectId: number, payload: ProjectSetting
 
 export function runProjectPipeline(projectId: number) {
   return request<PipelineRunResult>(`/api/projects/${projectId}/pipeline/run`, { method: 'POST' });
+}
+
+export function runProjectSummary(projectId: number) {
+  return request<PipelineRunResult>(`/api/projects/${projectId}/pipeline/summarize`, { method: 'POST' });
 }
 
 export function pauseProjectPipeline(projectId: number) {

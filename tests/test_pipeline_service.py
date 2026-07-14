@@ -38,6 +38,48 @@ class FakeAIClient(AIClient):
 
 
 class PipelineServiceTests(unittest.TestCase):
+    def test_summary_project_only_runs_summary_stage(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            database_path = root / "rusty.db"
+            source_path = root / "book.txt"
+            source_path.write_text("1. One\nAlpha.\n\n2. Two\nBeta.", encoding="utf-8")
+
+            project_service = ProjectService(database_path)
+            project_id = project_service.import_book(source_path, root)
+            project_service.update_project_settings(project_id, processing_mode="summary")
+            ModelService(database_path).create_model(
+                display_name="Fake",
+                provider="openai_compatible",
+                base_url="https://api.example.test/v1",
+                model_name="fake-model",
+                is_default=True,
+            )
+            PromptService(database_path).create_template(
+                name="Default",
+                summary_rules="Summarize",
+                scene_detection_rules="Detect",
+                rewrite_rules="Rewrite",
+                is_default=True,
+            )
+            fake_client = FakeAIClient()
+            pipeline = PipelineService(database_path, ai_client=fake_client)
+
+            result = pipeline.run_summary_project(project_id)
+            chapters = project_service.list_chapters(project_id)
+            outputs = [pipeline.get_chapter_ai_outputs(chapter.id) for chapter in chapters]
+            project = project_service.get_project(project_id)
+
+        self.assertEqual(2, result.processed)
+        self.assertEqual(0, result.failed)
+        self.assertEqual(2, len(fake_client.calls))
+        self.assertTrue(all(output.plot_summary == "Structured summary." for output in outputs))
+        self.assertTrue(all(output.needs_rewrite is None for output in outputs))
+        self.assertTrue(all(chapter.rewritten_text is None for chapter in chapters))
+        self.assertIsNotNone(project)
+        self.assertEqual("summarized", project.status)
+        self.assertEqual(2, project.completed_chapters)
+
     def test_project_pipeline_rejects_missing_prompt_before_processing(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)

@@ -118,6 +118,33 @@ class PipelineService:
         self._set_project_status(project_id, "processed" if failed == 0 else "partial")
         return PipelineResult(processed=processed, skipped=skipped, failed=failed)
 
+    def run_summary_project(
+        self,
+        project_id: int,
+        model_id: int | None = None,
+        template_id: int | None = None,
+        should_pause: Callable[[], bool] | None = None,
+    ) -> PipelineResult:
+        processed = 0
+        failed = 0
+        resolved_model = self._resolve_model(model_id, project_id)
+        resolved_template = self._resolve_template(template_id, project_id)
+        self.set_project_paused(project_id, False)
+        self._set_project_status(project_id, "processing")
+        for chapter in self.project_service.list_chapters(project_id):
+            if should_pause and should_pause():
+                self.set_project_paused(project_id, True)
+                return PipelineResult(processed=processed, skipped=0, failed=failed, paused=True)
+            if self.is_project_paused(project_id):
+                return PipelineResult(processed=processed, skipped=0, failed=failed, paused=True)
+            try:
+                self.summarize_chapter(chapter.id, resolved_model.id, resolved_template.id)
+                processed += 1
+            except Exception:
+                failed += 1
+        self._set_project_status(project_id, "summarized" if failed == 0 else "partial")
+        return PipelineResult(processed=processed, skipped=0, failed=failed)
+
     def retry_chapter_stage(
         self,
         chapter_id: int,
@@ -253,6 +280,8 @@ class PipelineService:
             response = self.ai_client.chat(model, api_key, message_builder(chapter, template))
             saver(chapter, model, template, response)
             self._mark_stage(chapter_id, stage, "completed", response.elapsed_ms, response.token_usage)
+            if stage == "summary":
+                self.project_service.refresh_project_progress(chapter.project_id)
             self._resolve_stage_errors(chapter_id, stage)
             return response.text
         except Exception as exc:

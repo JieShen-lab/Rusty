@@ -50,6 +50,7 @@ class ProjectService:
         book: ParsedBook,
         workspace_path: str | Path,
         project_name: str | None = None,
+        processing_mode: str = "rewrite",
     ) -> int:
         source_bytes = book.source_path.read_bytes()
         content_hash = hashlib.sha256(source_bytes).hexdigest()
@@ -129,8 +130,11 @@ class ProjectService:
                 ),
             )
             connection.execute(
-                "INSERT INTO project_settings (project_id, txt_split_rule_id) VALUES (?, 1)",
-                (project_id,),
+                """
+                INSERT INTO project_settings (project_id, txt_split_rule_id, processing_mode)
+                VALUES (?, 1, ?)
+                """,
+                (project_id, processing_mode),
             )
             chapter_rows = [
                 (
@@ -376,15 +380,32 @@ class ProjectService:
 
     def refresh_project_progress(self, project_id: int) -> None:
         with session(self.database_path) as connection:
-            row = connection.execute(
+            settings = connection.execute(
+                "SELECT processing_mode FROM project_settings WHERE project_id = ?",
+                (project_id,),
+            ).fetchone()
+            summary_project = settings is not None and settings["processing_mode"] == "summary"
+            completed_expression = (
                 """
+                SUM(
+                    CASE WHEN EXISTS (
+                        SELECT 1
+                        FROM chapter_stage_status stage_status
+                        WHERE stage_status.chapter_id = chapters.id
+                          AND stage_status.stage = 'summary'
+                          AND stage_status.status = 'completed'
+                    ) THEN 1 ELSE 0 END
+                )
+                """
+                if summary_project
+                else "SUM(CASE WHEN status IN ('rewritten', 'kept_original') THEN 1 ELSE 0 END)"
+            )
+            row = connection.execute(
+                f"""
                 SELECT
                     COUNT(*) AS total_chapters,
                     COALESCE(SUM(word_count), 0) AS total_words,
-                    COALESCE(
-                        SUM(CASE WHEN status IN ('rewritten', 'kept_original') THEN 1 ELSE 0 END),
-                        0
-                    ) AS completed_chapters
+                    COALESCE({completed_expression}, 0) AS completed_chapters
                 FROM chapters
                 WHERE project_id = ?
                 """,

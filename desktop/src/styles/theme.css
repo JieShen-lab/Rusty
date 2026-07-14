@@ -160,10 +160,20 @@
   }
 
   .glass-sidebar nav {
+    overflow-x: auto;
     flex-direction: row;
+  }
+
+  .glass-sidebar nav > .mt-auto {
+    margin-top: 0;
+    margin-left: auto;
   }
 
   main {
     padding-bottom: 110px !important;
+  }
+
+  .workspace-page {
+    padding-bottom: 72px;
   }
 }

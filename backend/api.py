@@ -188,7 +188,12 @@ def create_app(database_path: str | Path | None = None, style_ai_client=None, an
             raise _http_error(400, "preview_mismatch", "源文件已变化，请重新预览后再创建工程。")
         workspace = _optional_workspace_path(payload.workspace_path) or state.workspace_path or state.source_path.parent
         parsed = project_service.preview_book(state.source_path)
-        project_id = project_service.create_project(parsed, workspace, payload.project_name)
+        project_id = project_service.create_project(
+            parsed,
+            workspace,
+            payload.project_name,
+            processing_mode=payload.purpose,
+        )
         return _project_out(_require_project(project_service, project_id))
 
     @app.post("/api/projects/{project_id}/delete", dependencies=[Depends(_require_token)])
@@ -283,7 +288,24 @@ def create_app(database_path: str | Path | None = None, style_ai_client=None, an
     @app.post("/api/projects/{project_id}/pipeline/run", response_model=PipelineRunResponse, dependencies=[Depends(_require_token)])
     def run_project_pipeline(project_id: int) -> PipelineRunResponse:
         _require_project(project_service, project_id)
-        result = pipeline_service.run_project(project_id)
+        settings = project_service.get_project_settings(project_id)
+        result = (
+            pipeline_service.run_summary_project(project_id)
+            if settings and settings.processing_mode == "summary"
+            else pipeline_service.run_project(project_id)
+        )
+        return PipelineRunResponse(
+            ok=True,
+            processed=result.processed,
+            skipped=result.skipped,
+            failed=result.failed,
+            paused=result.paused,
+        )
+
+    @app.post("/api/projects/{project_id}/pipeline/summarize", response_model=PipelineRunResponse, dependencies=[Depends(_require_token)])
+    def run_project_summary(project_id: int) -> PipelineRunResponse:
+        _require_project(project_service, project_id)
+        result = pipeline_service.run_summary_project(project_id)
         return PipelineRunResponse(
             ok=True,
             processed=result.processed,

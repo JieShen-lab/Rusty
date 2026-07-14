@@ -117,6 +117,7 @@ class CreateProjectRequest(BaseModel):
     preview_token: str = Field(min_length=1)
     project_name: str | None = None
     workspace_path: str | None = None
+    purpose: Literal["rewrite", "summary"] = "rewrite"
 
 
 class ExportResponse(BaseModel):

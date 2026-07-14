@@ -70,6 +70,8 @@ export type ProjectDetail = {
   exports: Array<Record<string, unknown>>;
 };
 
+export type ProjectPurpose = 'rewrite' | 'summary';
+
 export type ExportSourceStatus = 'original' | 'manual_rewrite' | 'ai_rewrite' | 'kept_original';
 
 export type ExportPlanItem = {

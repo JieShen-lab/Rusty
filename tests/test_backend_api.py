@@ -93,15 +93,21 @@ class BackendApiTests(unittest.TestCase):
 
             preview = client.post("/api/projects/preview", json={"source_path": str(source)}, headers=headers)
             token = preview.json()["preview_token"]
-            created = client.post("/api/projects", json={"preview_token": token, "project_name": "API Book"}, headers=headers)
+            created = client.post(
+                "/api/projects",
+                json={"preview_token": token, "project_name": "API Book", "purpose": "summary"},
+                headers=headers,
+            )
             projects = client.get("/api/projects")
             chapters = client.get(f"/api/projects/{created.json()['id']}/chapters")
+            detail = client.get(f"/api/projects/{created.json()['id']}")
 
         self.assertEqual(200, preview.status_code)
         self.assertEqual(200, created.status_code)
         self.assertEqual("API Book", created.json()["name"])
         self.assertEqual(1, len(projects.json()))
         self.assertEqual(1, len(chapters.json()))
+        self.assertEqual("summary", detail.json()["settings"]["processing_mode"])
 
     def test_export_plan_api_controls_export_order_titles_and_exclusions(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
