@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 
 from rusty.db import initialize_database, session
 from rusty.secrets import SecretStore, default_secret_store
@@ -230,11 +231,19 @@ class ModelService:
         model = self.get_model(model_id)
         if model is None:
             raise ValueError(f"Model not found: {model_id}")
+        api_key = self.get_api_key(model_id)
+        hostname = (urlparse(model.base_url).hostname or "").lower()
+        if not api_key and hostname not in {"localhost", "127.0.0.1", "::1"}:
+            return ModelTestResult(
+                ok=False,
+                message="No API key is available in the system keyring. Enter and save the API key again.",
+                elapsed_ms=None,
+            )
         client = ai_client or OpenAICompatibleClient()
         try:
             response = client.chat(
                 model,
-                self.get_api_key(model_id),
+                api_key,
                 [
                     {
                         "role": "user",
@@ -246,8 +255,12 @@ class ModelService:
             return ModelTestResult(ok=False, message=str(exc), elapsed_ms=None)
         return ModelTestResult(ok=True, message=response.text.strip(), elapsed_ms=response.elapsed_ms)
 
-    @staticmethod
-    def _from_row(row) -> ModelConfig:
+    def _from_row(self, row) -> ModelConfig:
+        secret_ref = row["api_key_secret_ref"]
+        try:
+            has_api_key = bool(secret_ref and self.secret_store.get_secret(secret_ref))
+        except Exception:  # noqa: BLE001
+            has_api_key = False
         return ModelConfig(
             id=row["id"],
             display_name=row["display_name"],
@@ -258,5 +271,5 @@ class ModelService:
             max_tokens=row["max_tokens"],
             timeout_seconds=row["timeout_seconds"],
             is_default=bool(row["is_default"]),
-            has_api_key=bool(row["api_key_secret_ref"]),
+            has_api_key=has_api_key,
         )

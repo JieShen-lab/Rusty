@@ -99,6 +99,33 @@ class ModelPromptServiceTests(unittest.TestCase):
         self.assertFalse(failure.ok)
         self.assertEqual("connection failed", failure.message)
 
+    def test_model_reports_missing_key_when_secret_reference_is_stale(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            database_path = Path(directory) / "rusty.db"
+            secret_store = InMemorySecretStore()
+            service = ModelService(database_path, secret_store=secret_store)
+            model_id = service.create_model(
+                display_name="OpenAI",
+                provider="openai_compatible",
+                base_url="https://api.example.test/v1",
+                model_name="gpt-test",
+                api_key="secret-value",
+            )
+
+            configured = service.get_model(model_id)
+            secret_store.delete_secret(f"memory:model:{model_id}:api_key")
+            missing = service.get_model(model_id)
+            client = FakeModelTestClient()
+            connection_result = service.test_connection(model_id, ai_client=client)
+
+        self.assertIsNotNone(configured)
+        self.assertTrue(configured.has_api_key)
+        self.assertIsNotNone(missing)
+        self.assertFalse(missing.has_api_key)
+        self.assertFalse(connection_result.ok)
+        self.assertIn("No API key", connection_result.message)
+        self.assertEqual([], client.calls)
+
     def test_prompt_template_and_project_prompt_crud(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             database_path = Path(directory) / "rusty.db"
