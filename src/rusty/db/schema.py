@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .connection import session
 
-CURRENT_SCHEMA_VERSION = 5
+CURRENT_SCHEMA_VERSION = 6
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -113,6 +113,11 @@ CREATE TABLE IF NOT EXISTS prompt_templates (
     summary_rules TEXT NOT NULL DEFAULT '',
     scene_detection_rules TEXT NOT NULL DEFAULT '',
     rewrite_rules TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    story_anchor_json TEXT NOT NULL DEFAULT '{}',
+    characters_json TEXT NOT NULL DEFAULT '[]',
+    package_metadata_json TEXT NOT NULL DEFAULT '{}',
+    source_project_id INTEGER,
     version INTEGER NOT NULL DEFAULT 1,
     is_default INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -291,6 +296,22 @@ CREATE TABLE IF NOT EXISTS chapter_scene_analysis (
     model_id INTEGER,
     prompt_template_id INTEGER,
     token_usage_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE,
+    FOREIGN KEY (model_id) REFERENCES ai_models(id) ON DELETE SET NULL,
+    FOREIGN KEY (prompt_template_id) REFERENCES prompt_templates(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS chapter_plot_expansions (
+    chapter_id INTEGER PRIMARY KEY,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    expanded_plot TEXT NOT NULL DEFAULT '',
+    model_id INTEGER,
+    prompt_template_id INTEGER,
+    prompt_snapshot_json TEXT NOT NULL DEFAULT '{}',
+    token_usage_json TEXT NOT NULL DEFAULT '{}',
+    elapsed_ms INTEGER,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE,
@@ -546,11 +567,54 @@ def _migrate_to_v5(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_to_v6(connection: sqlite3.Connection) -> None:
+    _add_column_if_missing(connection, "prompt_templates", "description", "description TEXT NOT NULL DEFAULT ''")
+    _add_column_if_missing(
+        connection,
+        "prompt_templates",
+        "story_anchor_json",
+        "story_anchor_json TEXT NOT NULL DEFAULT '{}'",
+    )
+    _add_column_if_missing(
+        connection,
+        "prompt_templates",
+        "characters_json",
+        "characters_json TEXT NOT NULL DEFAULT '[]'",
+    )
+    _add_column_if_missing(
+        connection,
+        "prompt_templates",
+        "package_metadata_json",
+        "package_metadata_json TEXT NOT NULL DEFAULT '{}'",
+    )
+    _add_column_if_missing(connection, "prompt_templates", "source_project_id", "source_project_id INTEGER")
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS chapter_plot_expansions (
+            chapter_id INTEGER PRIMARY KEY,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            expanded_plot TEXT NOT NULL DEFAULT '',
+            model_id INTEGER,
+            prompt_template_id INTEGER,
+            prompt_snapshot_json TEXT NOT NULL DEFAULT '{}',
+            token_usage_json TEXT NOT NULL DEFAULT '{}',
+            elapsed_ms INTEGER,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE,
+            FOREIGN KEY (model_id) REFERENCES ai_models(id) ON DELETE SET NULL,
+            FOREIGN KEY (prompt_template_id) REFERENCES prompt_templates(id) ON DELETE SET NULL
+        );
+        """
+    )
+
+
 MIGRATIONS = {
     2: _migrate_to_v2,
     3: _migrate_to_v3,
     4: _migrate_to_v4,
     5: _migrate_to_v5,
+    6: _migrate_to_v6,
 }
 
 

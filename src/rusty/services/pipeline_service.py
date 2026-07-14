@@ -84,6 +84,35 @@ class PipelineService:
             self._save_rewrite,
         )
 
+    def expand_chapter_plot(
+        self,
+        chapter_id: int,
+        enabled: bool = True,
+        model_id: int | None = None,
+        template_id: int | None = None,
+    ) -> str:
+        if not enabled:
+            with session(self.database_path) as connection:
+                connection.execute(
+                    """
+                    INSERT INTO chapter_plot_expansions (chapter_id, enabled, expanded_plot, updated_at)
+                    VALUES (?, 0, '', CURRENT_TIMESTAMP)
+                    ON CONFLICT(chapter_id)
+                    DO UPDATE SET enabled = 0, expanded_plot = '', updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (chapter_id,),
+                )
+            self._mark_stage(chapter_id, "plot_expansion", "completed", metadata={"enabled": False})
+            return ""
+        return self._run_chapter_stage(
+            chapter_id,
+            "plot_expansion",
+            model_id,
+            template_id,
+            self._plot_expansion_messages,
+            self._save_plot_expansion,
+        )
+
     def run_project(
         self,
         project_id: int,
@@ -156,6 +185,8 @@ class PipelineService:
             return self.summarize_chapter(chapter_id, model_id, template_id)
         if stage == "scene_detection":
             return self.detect_scene(chapter_id, model_id, template_id)
+        if stage == "plot_expansion":
+            return self.expand_chapter_plot(chapter_id, True, model_id, template_id)
         if stage == "rewrite":
             return self.rewrite_chapter(chapter_id, model_id, template_id)
         raise ValueError(f"Unsupported retry stage: {stage}")
@@ -239,6 +270,14 @@ class PipelineService:
                 """,
                 (chapter_id,),
             ).fetchone()
+            plot_expansion = connection.execute(
+                """
+                SELECT enabled, expanded_plot
+                FROM chapter_plot_expansions
+                WHERE chapter_id = ?
+                """,
+                (chapter_id,),
+            ).fetchone()
             rewrite = connection.execute(
                 """
                 SELECT rewrite_source, actual_word_count, expansion_ratio, elapsed_ms
@@ -254,6 +293,8 @@ class PipelineService:
             needs_rewrite=bool(scene["needs_rewrite"]) if scene is not None else None,
             scene_labels=scene_labels,
             scene_reasoning=scene["reasoning"] if scene is not None else None,
+            plot_expansion_enabled=bool(plot_expansion["enabled"]) if plot_expansion is not None else None,
+            expanded_plot=plot_expansion["expanded_plot"] if plot_expansion is not None else None,
             rewrite_source=rewrite["rewrite_source"] if rewrite is not None else None,
             rewritten_word_count=rewrite["actual_word_count"] if rewrite is not None else None,
             expansion_ratio=rewrite["expansion_ratio"] if rewrite is not None else None,
@@ -356,13 +397,41 @@ class PipelineService:
 
     @staticmethod
     def _scene_messages(chapter: ChapterRecord, template: PromptTemplate) -> list[dict[str, str]]:
+        categories = "\n".join(
+            f"- {rule.scene_key}（{rule.display_name}）：{rule.description}\n  识别规则：{rule.detection_prompt}"
+            for rule in template.scene_rules
+        )
+        category_section = f"\n\n可用场景分类（labels 只能使用其中的 key）：\n{categories}" if categories else ""
         return [
             {"role": "system", "content": template.global_rules},
             {
                 "role": "user",
                 "content": (
-                    f"{template.scene_detection_rules}\n\n"
-                    "Return JSON with needs_rewrite, labels, and reasoning.\n"
+                    f"{template.scene_detection_rules}{category_section}\n\n"
+                    "Return JSON with needs_rewrite, labels, and reasoning. 仅返回 JSON。\n"
+                    f"# {chapter.title}\n{chapter.original_text}"
+                ),
+            },
+        ]
+
+    def _plot_expansion_messages(self, chapter: ChapterRecord, template: PromptTemplate) -> list[dict[str, str]]:
+        with session(self.database_path) as connection:
+            scene = connection.execute(
+                "SELECT scene_labels_json, reasoning FROM chapter_scene_analysis WHERE chapter_id = ?",
+                (chapter.id,),
+            ).fetchone()
+        labels = _parse_json_list(scene["scene_labels_json"]) if scene is not None else []
+        reasoning = scene["reasoning"] if scene is not None else ""
+        return [
+            {"role": "system", "content": template.global_rules},
+            {
+                "role": "user",
+                "content": (
+                    "在保持既有事实、时间线和人物设定的前提下，为本章增加或强化剧情线。"
+                    "只输出可供后续改写使用的剧情扩展方案，不要直接改写正文。\n\n"
+                    f"故事锚点：\n{json.dumps(template.story_anchor, ensure_ascii=False, indent=2)}\n\n"
+                    f"人物锚点：\n{json.dumps(self._relevant_package_characters(template, chapter.original_text), ensure_ascii=False, indent=2)}\n\n"
+                    f"场景标签：{', '.join(labels) or '未识别'}\n识别说明：{reasoning or '无'}\n\n"
                     f"# {chapter.title}\n{chapter.original_text}"
                 ),
             },
@@ -385,16 +454,62 @@ class PipelineService:
         style_section = f"\n\nStyle template ({style_template.name}):\n{style_text}" if style_template and style_text else ""
         outline_section = self._outline_section(outline_template)
         character_section = self._character_cards_section(character_cards)
+        package_sections = self._prompt_package_rewrite_sections(chapter, template)
         return [
             {"role": "system", "content": _append_prompt(template.global_rules, style_template.global_prompt if style_template else None)},
             {
                 "role": "user",
                 "content": (
-                    f"{template.rewrite_rules}{target_text}{style_section}{outline_section}{character_section}\n\n"
+                    f"{template.rewrite_rules}{target_text}{package_sections}{style_section}{outline_section}{character_section}\n\n"
                     f"Rewrite this chapter:\n# {chapter.title}\n{chapter.original_text}"
                 ),
             },
         ]
+
+    def _prompt_package_rewrite_sections(self, chapter: ChapterRecord, template: PromptTemplate) -> str:
+        with session(self.database_path) as connection:
+            scene = connection.execute(
+                "SELECT scene_labels_json FROM chapter_scene_analysis WHERE chapter_id = ?",
+                (chapter.id,),
+            ).fetchone()
+            expansion = connection.execute(
+                "SELECT enabled, expanded_plot FROM chapter_plot_expansions WHERE chapter_id = ?",
+                (chapter.id,),
+            ).fetchone()
+        labels = set(_parse_json_list(scene["scene_labels_json"]) if scene is not None else [])
+        specific_rules = [
+            f"[{rule.display_name}]\n{rule.rewrite_prompt.strip()}"
+            for rule in template.scene_rules
+            if rule.scene_key in labels and rule.rewrite_prompt.strip()
+        ]
+        sections: list[str] = []
+        if specific_rules:
+            sections.append("场景具体改写规则：\n" + "\n\n".join(specific_rules))
+        if template.story_anchor:
+            sections.append("故事发展锚点：\n" + json.dumps(template.story_anchor, ensure_ascii=False, indent=2))
+        relevant_characters = self._relevant_package_characters(template, chapter.original_text)
+        if relevant_characters:
+            sections.append("人物锚点：\n" + json.dumps(relevant_characters, ensure_ascii=False, indent=2))
+        if expansion is not None and bool(expansion["enabled"]) and expansion["expanded_plot"].strip():
+            sections.append("本章剧情扩展方案：\n" + expansion["expanded_plot"].strip())
+        return "\n\n" + "\n\n".join(sections) if sections else ""
+
+    @staticmethod
+    def _relevant_package_characters(template: PromptTemplate, text: str) -> list[dict]:
+        relevant: list[dict] = []
+        for character in template.characters:
+            names = [str(character.get("name") or "")]
+            aliases = character.get("aliases")
+            if isinstance(aliases, list):
+                names.extend(str(alias) for alias in aliases)
+            is_main = bool(character.get("is_main")) or str(character.get("role") or "").lower() in {
+                "main",
+                "protagonist",
+                "主角",
+            }
+            if is_main or any(name and name in text for name in names):
+                relevant.append(character)
+        return relevant
 
     def _save_summary(
         self,
@@ -469,6 +584,42 @@ class PipelineService:
             connection.execute(
                 "UPDATE chapters SET needs_rewrite = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (1 if parsed["needs_rewrite"] else 0, chapter.id),
+            )
+
+    def _save_plot_expansion(
+        self,
+        chapter: ChapterRecord,
+        model: ModelConfig,
+        template: PromptTemplate,
+        response: AIResponse,
+    ) -> None:
+        prompt_snapshot = {
+            "messages": self._plot_expansion_messages(chapter, template),
+            "prompt_package": {"id": template.id, "name": template.name, "version": template.version},
+        }
+        with session(self.database_path) as connection:
+            connection.execute(
+                """
+                INSERT INTO chapter_plot_expansions (
+                    chapter_id, enabled, expanded_plot, model_id, prompt_template_id,
+                    prompt_snapshot_json, token_usage_json, elapsed_ms, updated_at
+                ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(chapter_id)
+                DO UPDATE SET enabled = 1, expanded_plot = excluded.expanded_plot,
+                    model_id = excluded.model_id, prompt_template_id = excluded.prompt_template_id,
+                    prompt_snapshot_json = excluded.prompt_snapshot_json,
+                    token_usage_json = excluded.token_usage_json, elapsed_ms = excluded.elapsed_ms,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    chapter.id,
+                    response.text,
+                    model.id,
+                    template.id,
+                    json.dumps(prompt_snapshot, ensure_ascii=False),
+                    json.dumps(response.token_usage),
+                    response.elapsed_ms,
+                ),
             )
 
     def _save_rewrite(

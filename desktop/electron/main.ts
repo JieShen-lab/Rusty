@@ -100,6 +100,18 @@ function stopBackend(): void {
   backendProcess = null;
 }
 
+async function restartBackend(): Promise<boolean> {
+  const currentProcess = backendProcess;
+  if (currentProcess && !currentProcess.killed) {
+    const exited = new Promise<void>((resolve) => currentProcess.once('exit', () => resolve()));
+    currentProcess.kill();
+    await Promise.race([exited, new Promise<void>((resolve) => setTimeout(resolve, 2000))]);
+  }
+  backendProcess = null;
+  await ensureBackend();
+  return waitForHealth(1500);
+}
+
 function createWindow(): void {
   process.env.RUSTY_RENDERER_API_URL = API_BASE;
   process.env.RUSTY_RENDERER_API_TOKEN = API_TOKEN;
@@ -156,6 +168,12 @@ ipcMain.handle('rusty:select-book-file', async () => {
 });
 
 ipcMain.handle('rusty:get-backend-config', () => ({
+  apiBase: API_BASE,
+  apiToken: API_TOKEN,
+}));
+
+ipcMain.handle('rusty:restart-backend', async () => ({
+  ok: await restartBackend(),
   apiBase: API_BASE,
   apiToken: API_TOKEN,
 }));

@@ -32,6 +32,8 @@ export type ChapterAIOutputs = {
   needs_rewrite: boolean | null;
   scene_labels: string[] | null;
   scene_reasoning: string | null;
+  plot_expansion_enabled: boolean | null;
+  expanded_plot: string | null;
   rewrite_source: string | null;
   rewritten_word_count: number | null;
   expansion_ratio: number | null;
@@ -151,6 +153,21 @@ export type PromptTemplate = {
   summary_rules: string;
   scene_detection_rules: string;
   rewrite_rules: string;
+  description: string;
+  story_anchor: Record<string, unknown>;
+  characters: Array<Record<string, unknown>>;
+  scene_rules: PromptSceneRule[];
+  package_metadata: Record<string, unknown>;
+  source_project_id: number | null;
+};
+
+export type PromptSceneRule = {
+  scene_key: string;
+  display_name: string;
+  description: string;
+  detection_prompt: string;
+  rewrite_prompt: string;
+  sort_order: number;
 };
 
 export type PromptTemplateWrite = {
@@ -159,6 +176,12 @@ export type PromptTemplateWrite = {
   summary_rules: string;
   scene_detection_rules: string;
   rewrite_rules: string;
+  description: string;
+  story_anchor: Record<string, unknown>;
+  characters: Array<Record<string, unknown>>;
+  scene_rules: PromptSceneRule[];
+  package_metadata: Record<string, unknown>;
+  source_project_id: number | null;
   is_default: boolean;
 };
 

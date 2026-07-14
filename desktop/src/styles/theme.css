@@ -144,6 +144,24 @@
   font-family: "Microsoft YaHei UI", "Segoe UI", "PingFang SC", system-ui, sans-serif;
 }
 
+.prompt-editor {
+  width: 100%;
+  min-height: 220px;
+  resize: vertical;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 0.75rem;
+  background: rgba(2, 6, 23, 0.42);
+  padding: 0.9rem 1rem;
+  color: rgb(241 245 249);
+  font-size: 0.875rem;
+  line-height: 1.75;
+  outline: none;
+}
+
+.prompt-editor:focus {
+  border-color: rgba(125, 211, 252, 0.38);
+}
+
 @media (max-width: 760px) {
   .glass-sidebar {
     position: fixed;

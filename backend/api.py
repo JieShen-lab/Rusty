@@ -23,6 +23,7 @@ from rusty.services.model_service import ModelService
 from rusty.services.pipeline_service import PipelineService
 from rusty.services.project_service import ProjectService, default_database_path
 from rusty.services.prompt_service import PromptService
+from rusty.services.prompt_package_extraction_service import PromptPackageExtractionService
 from rusty.services.style_extraction_service import StyleExtractionService
 from rusty.services.style_service import StyleTemplate, StyleTemplateService
 
@@ -59,6 +60,9 @@ from .schemas import (
     ProjectStyleBindingRequest,
     PromptTemplateOut,
     PromptTemplateWriteRequest,
+    PromptPackageExtractRequest,
+    PromptPackageImportRequest,
+    PlotExpansionRequest,
     OutlineTemplateOut,
     OutlineTemplateWriteRequest,
     PipelineRunResponse,
@@ -98,12 +102,21 @@ def current_api_token() -> str:
     return os.environ.get("RUSTY_API_TOKEN") or _GENERATED_TOKEN
 
 
-def create_app(database_path: str | Path | None = None, style_ai_client=None, anchor_ai_client=None) -> FastAPI:
+def create_app(
+    database_path: str | Path | None = None,
+    style_ai_client=None,
+    anchor_ai_client=None,
+    prompt_package_ai_client=None,
+) -> FastAPI:
     db_path = Path(os.environ.get("RUSTY_DATABASE_PATH", database_path or default_database_path()))
     project_service = ProjectService(db_path)
     pipeline_service = PipelineService(db_path)
     model_service = ModelService(db_path)
     prompt_service = PromptService(db_path)
+    prompt_package_extraction_service = PromptPackageExtractionService(
+        db_path,
+        ai_client=prompt_package_ai_client or style_ai_client,
+    )
     style_service = StyleTemplateService(db_path)
     style_extraction_service = StyleExtractionService(db_path, ai_client=style_ai_client)
     anchor_service = AnchorService(db_path)
@@ -341,6 +354,13 @@ def create_app(database_path: str | Path | None = None, style_ai_client=None, an
         text = pipeline_service.rewrite_chapter(chapter_id)
         return TextResultResponse(ok=True, text=text)
 
+    @app.post("/api/chapters/{chapter_id}/expand-plot", response_model=TextResultResponse, dependencies=[Depends(_require_token)])
+    def expand_chapter_plot(chapter_id: int, payload: PlotExpansionRequest) -> TextResultResponse:
+        chapter = _require_existing_chapter(project_service, chapter_id)
+        _require_project(project_service, chapter.project_id)
+        text = pipeline_service.expand_chapter_plot(chapter_id, enabled=payload.enabled)
+        return TextResultResponse(ok=True, text=text)
+
     @app.post("/api/chapters/{chapter_id}/retry", response_model=TextResultResponse, dependencies=[Depends(_require_token)])
     def retry_chapter_stage(chapter_id: int, payload: RetryStageRequest) -> TextResultResponse:
         chapter = _require_existing_chapter(project_service, chapter_id)
@@ -400,6 +420,31 @@ def create_app(database_path: str | Path | None = None, style_ai_client=None, an
         template = prompt_service.get_template(template_id)
         if template is None:
             raise _http_error(500, "prompt_create_failed", "Prompt template was created but could not be loaded.")
+        return PromptTemplateOut(**template.__dict__)
+
+    @app.post("/api/prompts/import", response_model=PromptTemplateOut, dependencies=[Depends(_require_token)])
+    def import_prompt_package(payload: PromptPackageImportRequest) -> PromptTemplateOut:
+        template_id = prompt_service.import_template_text(payload.content)
+        template = prompt_service.get_template(template_id)
+        if template is None:
+            raise _http_error(500, "prompt_import_failed", "Prompt package was imported but could not be loaded.")
+        return PromptTemplateOut(**template.__dict__)
+
+    @app.post("/api/prompts/{template_id}/export", response_model=StyleTemplateExportResponse, dependencies=[Depends(_require_token)])
+    def export_prompt_package(template_id: int) -> StyleTemplateExportResponse:
+        return StyleTemplateExportResponse(content=prompt_service.export_template(template_id))
+
+    @app.post(
+        "/api/projects/{project_id}/prompt-package/extract",
+        response_model=PromptTemplateOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def extract_project_prompt_package(project_id: int, payload: PromptPackageExtractRequest) -> PromptTemplateOut:
+        _require_project(project_service, project_id)
+        template_id = prompt_package_extraction_service.extract_from_project(project_id, model_id=payload.model_id)
+        template = prompt_service.get_template(template_id)
+        if template is None:
+            raise _http_error(500, "prompt_extract_failed", "Prompt package was extracted but could not be loaded.")
         return PromptTemplateOut(**template.__dict__)
 
     @app.post("/api/prompts/{template_id}", response_model=PromptTemplateOut, dependencies=[Depends(_require_token)])

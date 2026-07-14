@@ -22,15 +22,15 @@ const purposes: Array<{
   {
     value: 'rewrite',
     title: '改写项目',
-    description: '保留原文结构，按章节总结、识别并改写。',
-    steps: '原文 · 总结 · 识别 · 改写 · 导出',
+    description: '绑定一个提示词包，按章节识别，可选扩展剧情线，再执行 AI 改写。',
+    steps: '原文 · 总结 · 识别 · 剧情扩展 · 改写 · 导出',
     icon: FilePenLine,
   },
   {
     value: 'summary',
-    title: '总结项目',
-    description: '只生成章节总结与全书汇总，不进入改写。',
-    steps: '原文 · 章节总结 · 全书汇总',
+    title: '分析项目',
+    description: '分析原作并提取统一提示词包：改写规则、故事发展和人物锚点。',
+    steps: '原文 · 章节总结 · 提示词包提取 · 审核导出',
     icon: BookOpenText,
   },
 ];
@@ -134,7 +134,7 @@ export function NewProjectPage({ onNavigate }: Props) {
               <Wand2 size={16} />
               预览
             </SecondaryButton>
-            <PrimaryButton disabled={!preview || busy} onClick={handleCreate}>创建{purpose === 'summary' ? '总结' : '改写'}项目</PrimaryButton>
+            <PrimaryButton disabled={!preview || busy} onClick={handleCreate}>创建{purpose === 'summary' ? '分析' : '改写'}项目</PrimaryButton>
           </div>
         </GlassCard>
 

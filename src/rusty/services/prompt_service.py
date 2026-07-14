@@ -1,10 +1,25 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from rusty.db import initialize_database, session
 from rusty.services.project_service import default_database_path
+
+PROMPT_PACKAGE_SCHEMA = "rusty.prompt_package"
+PROMPT_PACKAGE_SCHEMA_VERSION = 1
+
+
+@dataclass(frozen=True)
+class SceneRule:
+    scene_key: str
+    display_name: str
+    description: str = ""
+    detection_prompt: str = ""
+    rewrite_prompt: str = ""
+    sort_order: int = 0
 
 
 @dataclass(frozen=True)
@@ -15,8 +30,47 @@ class PromptTemplate:
     summary_rules: str
     scene_detection_rules: str
     rewrite_rules: str
+    description: str
+    story_anchor: dict[str, Any]
+    characters: list[dict[str, Any]]
+    scene_rules: list[SceneRule]
+    package_metadata: dict[str, Any]
+    source_project_id: int | None
     version: int
     is_default: bool
+
+    def to_package(self) -> dict[str, Any]:
+        return {
+            "schema": PROMPT_PACKAGE_SCHEMA,
+            "schema_version": PROMPT_PACKAGE_SCHEMA_VERSION,
+            "name": self.name,
+            "description": self.description,
+            "system_rules": self.global_rules,
+            "summary_rules": self.summary_rules,
+            "scene_recognition": {
+                "general_rules": self.scene_detection_rules,
+                "categories": [
+                    {
+                        "key": rule.scene_key,
+                        "name": rule.display_name,
+                        "description": rule.description,
+                        "detection_prompt": rule.detection_prompt,
+                    }
+                    for rule in self.scene_rules
+                ],
+            },
+            "rewrite_rules": {
+                "general": self.rewrite_rules,
+                "specific": [
+                    {"scene_key": rule.scene_key, "rewrite_prompt": rule.rewrite_prompt}
+                    for rule in self.scene_rules
+                    if rule.rewrite_prompt.strip()
+                ],
+            },
+            "story_anchor": self.story_anchor,
+            "characters": self.characters,
+            "metadata": self.package_metadata,
+        }
 
 
 class PromptService:
@@ -33,6 +87,12 @@ class PromptService:
         scene_detection_rules: str = "",
         rewrite_rules: str = "",
         is_default: bool = False,
+        description: str = "",
+        story_anchor: dict[str, Any] | None = None,
+        characters: list[dict[str, Any]] | None = None,
+        scene_rules: list[SceneRule | dict[str, Any]] | None = None,
+        package_metadata: dict[str, Any] | None = None,
+        source_project_id: int | None = None,
     ) -> int:
         with session(self.database_path) as connection:
             if is_default:
@@ -40,17 +100,28 @@ class PromptService:
             cursor = connection.execute(
                 """
                 INSERT INTO prompt_templates (
+                    name, global_rules, summary_rules, scene_detection_rules, rewrite_rules,
+                    description, story_anchor_json, characters_json, package_metadata_json,
+                    source_project_id, is_default
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
                     name,
                     global_rules,
                     summary_rules,
                     scene_detection_rules,
                     rewrite_rules,
-                    is_default
-                ) VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (name, global_rules, summary_rules, scene_detection_rules, rewrite_rules, 1 if is_default else 0),
+                    description,
+                    _dump_object(story_anchor),
+                    _dump_list(characters),
+                    _dump_object(package_metadata),
+                    source_project_id,
+                    1 if is_default else 0,
+                ),
             )
-            return int(cursor.lastrowid)
+            template_id = int(cursor.lastrowid)
+            self._replace_scene_rules(connection, template_id, scene_rules or [])
+            return template_id
 
     def update_template(
         self,
@@ -61,22 +132,23 @@ class PromptService:
         scene_detection_rules: str,
         rewrite_rules: str,
         is_default: bool = False,
+        description: str = "",
+        story_anchor: dict[str, Any] | None = None,
+        characters: list[dict[str, Any]] | None = None,
+        scene_rules: list[SceneRule | dict[str, Any]] | None = None,
+        package_metadata: dict[str, Any] | None = None,
+        source_project_id: int | None = None,
     ) -> None:
         with session(self.database_path) as connection:
             if is_default:
                 connection.execute("UPDATE prompt_templates SET is_default = 0 WHERE deleted_at IS NULL")
-            connection.execute(
+            cursor = connection.execute(
                 """
                 UPDATE prompt_templates
-                SET
-                    name = ?,
-                    global_rules = ?,
-                    summary_rules = ?,
-                    scene_detection_rules = ?,
-                    rewrite_rules = ?,
-                    version = version + 1,
-                    is_default = ?,
-                    updated_at = CURRENT_TIMESTAMP
+                SET name = ?, global_rules = ?, summary_rules = ?, scene_detection_rules = ?,
+                    rewrite_rules = ?, description = ?, story_anchor_json = ?, characters_json = ?,
+                    package_metadata_json = ?, source_project_id = ?, version = version + 1,
+                    is_default = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ? AND deleted_at IS NULL
                 """,
                 (
@@ -85,10 +157,18 @@ class PromptService:
                     summary_rules,
                     scene_detection_rules,
                     rewrite_rules,
+                    description,
+                    _dump_object(story_anchor),
+                    _dump_list(characters),
+                    _dump_object(package_metadata),
+                    source_project_id,
                     1 if is_default else 0,
                     template_id,
                 ),
             )
+            if cursor.rowcount == 0:
+                raise ValueError(f"Prompt package not found: {template_id}")
+            self._replace_scene_rules(connection, template_id, scene_rules or [])
 
     def delete_template(self, template_id: int) -> None:
         with session(self.database_path) as connection:
@@ -99,47 +179,35 @@ class PromptService:
 
     def list_templates(self) -> list[PromptTemplate]:
         with session(self.database_path) as connection:
-            rows = connection.execute(
-                """
-                SELECT
-                    id,
-                    name,
-                    global_rules,
-                    summary_rules,
-                    scene_detection_rules,
-                    rewrite_rules,
-                    version,
-                    is_default
-                FROM prompt_templates
-                WHERE deleted_at IS NULL
-                ORDER BY is_default DESC, updated_at DESC, id DESC
-                """
-            ).fetchall()
-        return [self._from_row(row) for row in rows]
+            rows = connection.execute(self._select_sql() + " ORDER BY is_default DESC, updated_at DESC, id DESC").fetchall()
+            return [self._from_row(connection, row) for row in rows]
 
     def get_template(self, template_id: int) -> PromptTemplate | None:
         with session(self.database_path) as connection:
-            row = connection.execute(
-                """
-                SELECT
-                    id,
-                    name,
-                    global_rules,
-                    summary_rules,
-                    scene_detection_rules,
-                    rewrite_rules,
-                    version,
-                    is_default
-                FROM prompt_templates
-                WHERE id = ? AND deleted_at IS NULL
-                """,
-                (template_id,),
-            ).fetchone()
-        return self._from_row(row) if row is not None else None
+            row = connection.execute(self._select_sql("id = ?"), (template_id,)).fetchone()
+            return self._from_row(connection, row) if row is not None else None
 
     def get_default_template(self) -> PromptTemplate | None:
         templates = self.list_templates()
         return templates[0] if templates else None
+
+    def export_template(self, template_id: int) -> str:
+        template = self.get_template(template_id)
+        if template is None:
+            raise ValueError(f"Prompt package not found: {template_id}")
+        return json.dumps(template.to_package(), ensure_ascii=False, indent=2)
+
+    def import_template_text(self, content: str) -> int:
+        try:
+            package = json.loads(content)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Prompt package is not valid JSON: {exc}") from exc
+        if not isinstance(package, dict):
+            raise ValueError("Prompt package must be a JSON object.")
+        if package.get("schema") not in (None, PROMPT_PACKAGE_SCHEMA):
+            raise ValueError("Unsupported prompt package schema.")
+        payload = _normalize_package(package)
+        return self.create_template(**payload)
 
     def save_project_prompt(self, project_id: int, prompt_key: str, prompt_text: str) -> None:
         with session(self.database_path) as connection:
@@ -156,18 +224,63 @@ class PromptService:
     def list_project_prompts(self, project_id: int) -> dict[str, str]:
         with session(self.database_path) as connection:
             rows = connection.execute(
-                """
-                SELECT prompt_key, prompt_text
-                FROM project_custom_prompts
-                WHERE project_id = ?
-                ORDER BY prompt_key
-                """,
+                "SELECT prompt_key, prompt_text FROM project_custom_prompts WHERE project_id = ? ORDER BY prompt_key",
                 (project_id,),
             ).fetchall()
         return {row["prompt_key"]: row["prompt_text"] for row in rows}
 
     @staticmethod
-    def _from_row(row) -> PromptTemplate:
+    def _select_sql(where: str | None = None) -> str:
+        sql = """
+            SELECT id, name, global_rules, summary_rules, scene_detection_rules, rewrite_rules,
+                   description, story_anchor_json, characters_json, package_metadata_json,
+                   source_project_id, version, is_default, updated_at
+            FROM prompt_templates
+            WHERE deleted_at IS NULL
+        """
+        return sql + (f" AND {where}" if where else "")
+
+    @staticmethod
+    def _replace_scene_rules(connection, template_id: int, rules: list[SceneRule | dict[str, Any]]) -> None:
+        connection.execute("DELETE FROM prompt_rewrite_rules WHERE template_id = ?", (template_id,))
+        connection.execute("DELETE FROM prompt_scene_rules WHERE template_id = ?", (template_id,))
+        for index, raw in enumerate(rules):
+            rule = raw if isinstance(raw, SceneRule) else SceneRule(
+                scene_key=str(raw.get("scene_key") or raw.get("key") or f"scene_{index + 1}"),
+                display_name=str(raw.get("display_name") or raw.get("name") or f"场景 {index + 1}"),
+                description=str(raw.get("description") or ""),
+                detection_prompt=str(raw.get("detection_prompt") or ""),
+                rewrite_prompt=str(raw.get("rewrite_prompt") or ""),
+                sort_order=int(raw.get("sort_order", index)),
+            )
+            connection.execute(
+                """
+                INSERT INTO prompt_scene_rules
+                    (template_id, scene_key, display_name, description, detection_prompt, sort_order)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (template_id, rule.scene_key, rule.display_name, rule.description, rule.detection_prompt, rule.sort_order),
+            )
+            if rule.rewrite_prompt.strip():
+                connection.execute(
+                    "INSERT INTO prompt_rewrite_rules (template_id, scene_key, rewrite_prompt) VALUES (?, ?, ?)",
+                    (template_id, rule.scene_key, rule.rewrite_prompt),
+                )
+
+    @staticmethod
+    def _from_row(connection, row) -> PromptTemplate:
+        rule_rows = connection.execute(
+            """
+            SELECT s.scene_key, s.display_name, s.description, s.detection_prompt, s.sort_order,
+                   COALESCE(r.rewrite_prompt, '') AS rewrite_prompt
+            FROM prompt_scene_rules AS s
+            LEFT JOIN prompt_rewrite_rules AS r
+                ON r.template_id = s.template_id AND r.scene_key = s.scene_key
+            WHERE s.template_id = ?
+            ORDER BY s.sort_order, s.id
+            """,
+            (row["id"],),
+        ).fetchall()
         return PromptTemplate(
             id=row["id"],
             name=row["name"],
@@ -175,6 +288,77 @@ class PromptService:
             summary_rules=row["summary_rules"],
             scene_detection_rules=row["scene_detection_rules"],
             rewrite_rules=row["rewrite_rules"],
+            description=row["description"],
+            story_anchor=_parse_object(row["story_anchor_json"]),
+            characters=_parse_list(row["characters_json"]),
+            scene_rules=[SceneRule(**dict(rule)) for rule in rule_rows],
+            package_metadata=_parse_object(row["package_metadata_json"]),
+            source_project_id=row["source_project_id"],
             version=row["version"],
             is_default=bool(row["is_default"]),
         )
+
+
+def _normalize_package(package: dict[str, Any]) -> dict[str, Any]:
+    recognition = package.get("scene_recognition") if isinstance(package.get("scene_recognition"), dict) else {}
+    rewrite = package.get("rewrite_rules") if isinstance(package.get("rewrite_rules"), dict) else {}
+    categories = recognition.get("categories") if isinstance(recognition.get("categories"), list) else []
+    specifics = rewrite.get("specific") if isinstance(rewrite.get("specific"), list) else []
+    rewrite_by_key = {
+        str(item.get("scene_key")): str(item.get("rewrite_prompt") or "")
+        for item in specifics
+        if isinstance(item, dict) and item.get("scene_key")
+    }
+    scene_rules = []
+    for index, item in enumerate(categories):
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("key") or item.get("scene_key") or f"scene_{index + 1}")
+        scene_rules.append(
+            {
+                "scene_key": key,
+                "display_name": str(item.get("name") or item.get("display_name") or key),
+                "description": str(item.get("description") or ""),
+                "detection_prompt": str(item.get("detection_prompt") or ""),
+                "rewrite_prompt": rewrite_by_key.get(key, str(item.get("rewrite_prompt") or "")),
+                "sort_order": index,
+            }
+        )
+    return {
+        "name": str(package.get("name") or "导入的提示词包"),
+        "description": str(package.get("description") or ""),
+        "global_rules": str(package.get("system_rules") or package.get("global_rules") or ""),
+        "summary_rules": str(package.get("summary_rules") or ""),
+        "scene_detection_rules": str(recognition.get("general_rules") or package.get("scene_detection_rules") or ""),
+        "rewrite_rules": str(rewrite.get("general") or package.get("rewrite_rules_text") or ""),
+        "story_anchor": package.get("story_anchor") if isinstance(package.get("story_anchor"), dict) else {},
+        "characters": package.get("characters") if isinstance(package.get("characters"), list) else [],
+        "scene_rules": scene_rules,
+        "package_metadata": package.get("metadata") if isinstance(package.get("metadata"), dict) else {},
+        "source_project_id": None,
+        "is_default": False,
+    }
+
+
+def _dump_object(value: dict[str, Any] | None) -> str:
+    return json.dumps(value or {}, ensure_ascii=False)
+
+
+def _dump_list(value: list[dict[str, Any]] | None) -> str:
+    return json.dumps(value or [], ensure_ascii=False)
+
+
+def _parse_object(value: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _parse_list(value: str) -> list[dict[str, Any]]:
+    try:
+        parsed = json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    return [item for item in parsed if isinstance(item, dict)] if isinstance(parsed, list) else []

@@ -12,5 +12,7 @@ contextBridge.exposeInMainWorld('rustyDesktop', {
   },
   getBackendConfig: () =>
     ipcRenderer.invoke('rusty:get-backend-config') as Promise<{ apiBase: string; apiToken: string }>,
+  restartBackend: () =>
+    ipcRenderer.invoke('rusty:restart-backend') as Promise<{ ok: boolean; apiBase: string; apiToken: string }>,
   selectBookFile: () => ipcRenderer.invoke('rusty:select-book-file') as Promise<string | null>,
 });

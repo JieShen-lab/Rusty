@@ -4,6 +4,17 @@ _Locked via grill by Codex + user_
 ## Goal
 Extend Rusty from a local novel import/rewrite/export MVP into a structured fanfic/expansion workflow where users can create and reuse style templates, optionally extract those templates from sample prose, bind style/outline/character anchors to a project, inject them into the rewrite stage without affecting summary or scene detection, and arrange chapter export order before TXT/EPUB output. DOCX remains import-only and is explicitly out of scope for export.
 
+## 2026-07-14 unified prompt-package decision (supersedes the separate-resource UI)
+- The user-facing domain is one project-named prompt package, not separate style, outline, and character libraries.
+- The canonical versioned JSON contains system rules, summary rules, scene-recognition categories, general rewrite rules, scene-specific rewrite rules, story-development anchors, character anchors, and metadata.
+- "Style" is represented by the general and scene-specific rewrite rules. Story and character anchors live in the same package because they all serve prompt assembly.
+- Analysis projects run: source -> chapter summaries -> AI prompt-package extraction -> review/export. Extraction persists and binds the resulting package to the source project.
+- Rewrite projects bind one prompt package and run: source -> chapter summary -> scene recognition -> optional AI plot expansion -> AI rewrite -> export.
+- Plot expansion may revise or add mainline/key nodes, but must remain inside the package's story and character constraints. Its result is stored separately and injected into the subsequent rewrite.
+- Scene recognition returns configured category keys; rewrite injects only the specific rules matching those keys, plus the package's general rewrite rules and relevant character anchors.
+- Legacy `style_templates`, outline templates, character cards, and their bindings remain readable for compatibility, but they are no longer separate primary navigation concepts.
+- Reference screenshots determine information architecture only. Rusty never generates or enables jailbreak, policy-bypass, "breakthrough", or privileged hidden instructions.
+
 ## Approach
 0. Add a schema migration foundation before any feature tables.
    - Bump `CURRENT_SCHEMA_VERSION` from 1 and replace insert-only version recording with an idempotent migration runner.

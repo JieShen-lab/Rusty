@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ErrorResponse(BaseModel):
@@ -68,6 +68,8 @@ class ChapterAIOutputsOut(BaseModel):
     needs_rewrite: bool | None = None
     scene_labels: list[str] | None = None
     scene_reasoning: str | None = None
+    plot_expansion_enabled: bool | None = None
+    expanded_plot: str | None = None
     rewrite_source: str | None = None
     rewritten_word_count: int | None = None
     expansion_ratio: float | None = None
@@ -206,6 +208,17 @@ class ModelTestResponse(BaseModel):
     elapsed_ms: int | None = None
 
 
+class PromptSceneRule(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    scene_key: str
+    display_name: str
+    description: str = ""
+    detection_prompt: str = ""
+    rewrite_prompt: str = ""
+    sort_order: int = 0
+
+
 class PromptTemplateOut(BaseModel):
     id: int
     name: str
@@ -215,6 +228,12 @@ class PromptTemplateOut(BaseModel):
     summary_rules: str
     scene_detection_rules: str
     rewrite_rules: str
+    description: str = ""
+    story_anchor: dict[str, Any] = Field(default_factory=dict)
+    characters: list[dict[str, Any]] = Field(default_factory=list)
+    scene_rules: list[PromptSceneRule] = Field(default_factory=list)
+    package_metadata: dict[str, Any] = Field(default_factory=dict)
+    source_project_id: int | None = None
 
 
 class PromptTemplateWriteRequest(BaseModel):
@@ -223,7 +242,25 @@ class PromptTemplateWriteRequest(BaseModel):
     summary_rules: str = ""
     scene_detection_rules: str = ""
     rewrite_rules: str = ""
+    description: str = ""
+    story_anchor: dict[str, Any] = Field(default_factory=dict)
+    characters: list[dict[str, Any]] = Field(default_factory=list)
+    scene_rules: list[PromptSceneRule] = Field(default_factory=list)
+    package_metadata: dict[str, Any] = Field(default_factory=dict)
+    source_project_id: int | None = None
     is_default: bool = False
+
+
+class PromptPackageImportRequest(BaseModel):
+    content: str = Field(min_length=1)
+
+
+class PromptPackageExtractRequest(BaseModel):
+    model_id: int | None = None
+
+
+class PlotExpansionRequest(BaseModel):
+    enabled: bool = True
 
 
 class ProjectPromptWriteRequest(BaseModel):

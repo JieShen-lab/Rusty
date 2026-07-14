@@ -48,7 +48,7 @@ export function WorkbenchPage({ onNavigate }: Props) {
       {projects.length === 0 && !loading ? (
         <EmptyState
           title="还没有作品"
-          description="导入 TXT / EPUB / DOCX，创建改写或总结项目。"
+          description="导入 TXT / EPUB / DOCX，创建改写或分析项目。"
           action={<PrimaryButton onClick={() => onNavigate('/new-project')}>新建项目</PrimaryButton>}
         />
       ) : (

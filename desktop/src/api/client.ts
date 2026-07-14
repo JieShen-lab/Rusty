@@ -57,6 +57,22 @@ export class ApiError extends Error {
   }
 }
 
+let backendRecovery: Promise<boolean> | null = null;
+
+async function recoverBackend(): Promise<boolean> {
+  const restart = window.rustyDesktop?.restartBackend;
+  if (!restart) return false;
+  if (!backendRecovery) {
+    backendRecovery = restart()
+      .then((result) => result.ok)
+      .catch(() => false)
+      .finally(() => {
+        backendRecovery = null;
+      });
+  }
+  return backendRecovery;
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers = new Headers(options.headers);
   headers.set('Accept', 'application/json');
@@ -72,7 +88,15 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   try {
     response = await fetch(`${apiBase()}${path}`, { ...options, headers });
   } catch (error) {
-    throw new ApiError(0, `无法连接 Rusty 后端：${String(error)}`);
+    const recovered = await recoverBackend();
+    if (!recovered) {
+      throw new ApiError(0, `Rusty 后端已停止且自动重启失败：${String(error)}`);
+    }
+    try {
+      response = await fetch(`${apiBase()}${path}`, { ...options, headers });
+    } catch (retryError) {
+      throw new ApiError(0, `Rusty 后端重启后仍无法连接：${String(retryError)}`);
+    }
   }
 
   const text = await response.text();
@@ -187,6 +211,21 @@ export function updatePrompt(templateId: number, payload: PromptTemplateWrite) {
 
 export function deletePrompt(templateId: number) {
   return request<{ ok: boolean }>(`/api/prompts/${templateId}/delete`, { method: 'POST' });
+}
+
+export function importPromptPackage(content: string) {
+  return request<PromptTemplate>('/api/prompts/import', { method: 'POST', body: JSON.stringify({ content }) });
+}
+
+export function exportPromptPackage(templateId: number) {
+  return request<{ content: string }>(`/api/prompts/${templateId}/export`, { method: 'POST' });
+}
+
+export function extractProjectPromptPackage(projectId: number, modelId?: number | null) {
+  return request<PromptTemplate>(`/api/projects/${projectId}/prompt-package/extract`, {
+    method: 'POST',
+    body: JSON.stringify({ model_id: modelId ?? null }),
+  });
 }
 
 export function getStyleTemplates() {
@@ -335,7 +374,14 @@ export function rewriteChapter(chapterId: number) {
   return request<{ ok: boolean; text: string }>(`/api/chapters/${chapterId}/rewrite`, { method: 'POST' });
 }
 
-export function retryChapterStage(chapterId: number, stage: 'summary' | 'scene_detection' | 'rewrite') {
+export function expandChapterPlot(chapterId: number, enabled: boolean) {
+  return request<{ ok: boolean; text: string }>(`/api/chapters/${chapterId}/expand-plot`, {
+    method: 'POST',
+    body: JSON.stringify({ enabled }),
+  });
+}
+
+export function retryChapterStage(chapterId: number, stage: 'summary' | 'scene_detection' | 'plot_expansion' | 'rewrite') {
   return request<{ ok: boolean; text: string }>(`/api/chapters/${chapterId}/retry`, {
     method: 'POST',
     body: JSON.stringify({ stage }),

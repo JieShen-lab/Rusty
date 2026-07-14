@@ -8,14 +8,14 @@ type AppShellProps = {
 };
 
 export function AppShell({ active, children, onNavigate }: AppShellProps) {
-  const workspace = active === 'workspace';
+  const constrained = active === 'workspace' || active === 'prompts';
   return (
-    <div className={`app-shell text-[var(--text-main)] ${workspace ? 'h-screen overflow-hidden' : 'min-h-screen'}`}>
+    <div className={`app-shell text-[var(--text-main)] ${constrained ? 'h-screen overflow-hidden' : 'min-h-screen'}`}>
       <div className="window-drag-region" />
       <div className="ambient-layer" />
-      <div className={`relative z-10 flex pt-9 ${workspace ? 'h-screen min-h-0' : 'min-h-screen'}`}>
+      <div className={`relative z-10 flex pt-9 ${constrained ? 'h-screen min-h-0' : 'min-h-screen'}`}>
         <Sidebar active={active} onNavigate={onNavigate} />
-        <main className={`min-w-0 flex-1 px-7 py-6 max-lg:px-4 ${workspace ? 'h-full min-h-0 overflow-hidden' : ''}`}>{children}</main>
+        <main className={`min-w-0 flex-1 px-7 py-6 max-lg:px-4 ${constrained ? 'h-full min-h-0 overflow-hidden' : ''}`}>{children}</main>
       </div>
     </div>
   );

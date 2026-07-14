@@ -10,6 +10,7 @@ declare global {
         apiToken?: string;
       };
       getBackendConfig?: () => Promise<{ apiBase: string; apiToken: string }>;
+      restartBackend?: () => Promise<{ ok: boolean; apiBase: string; apiToken: string }>;
       selectBookFile?: () => Promise<string | null>;
     };
   }

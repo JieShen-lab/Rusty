@@ -1,13 +1,11 @@
 import { useEffect, useState } from 'react';
 import { AppShell } from './components/AppShell';
 import type { RouteKey } from './components/Sidebar';
-import { AnchorManagePage } from './pages/AnchorManagePage';
 import { HomePage } from './pages/HomePage';
 import { ModelManagePage } from './pages/ModelManagePage';
 import { NewProjectPage } from './pages/NewProjectPage';
 import { ProjectWorkspacePage } from './pages/ProjectWorkspacePage';
 import { PromptManagePage } from './pages/PromptManagePage';
-import { StyleManagePage } from './pages/StyleManagePage';
 import { WorkbenchPage } from './pages/WorkbenchPage';
 
 type Route = {
@@ -26,8 +24,7 @@ function parseRoute(pathname: string): Route {
   if (parts[0] === 'new-project') return { key: 'new-project', path: '/new-project' };
   if (parts[0] === 'models') return { key: 'models', path: '/models' };
   if (parts[0] === 'prompts') return { key: 'prompts', path: '/prompts' };
-  if (parts[0] === 'styles') return { key: 'styles', path: '/styles' };
-  if (parts[0] === 'anchors') return { key: 'anchors', path: '/anchors' };
+  if (parts[0] === 'styles' || parts[0] === 'anchors') return { key: 'prompts', path: '/prompts' };
   return { key: 'home', path: '/home' };
 }
 
@@ -55,8 +52,6 @@ export default function App() {
   if (route.key === 'new-project') page = <NewProjectPage onNavigate={navigate} />;
   if (route.key === 'models') page = <ModelManagePage />;
   if (route.key === 'prompts') page = <PromptManagePage />;
-  if (route.key === 'styles') page = <StyleManagePage />;
-  if (route.key === 'anchors') page = <AnchorManagePage />;
 
   return (
     <AppShell active={route.key} onNavigate={navigate}>
