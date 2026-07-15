@@ -29,6 +29,7 @@ export type Chapter = {
 
 export type ChapterAIOutputs = {
   plot_summary: string | null;
+  plot_characters: Array<Record<string, unknown>> | null;
   needs_rewrite: boolean | null;
   scene_labels: string[] | null;
   scene_reasoning: string | null;
@@ -38,6 +39,9 @@ export type ChapterAIOutputs = {
   rewritten_word_count: number | null;
   expansion_ratio: number | null;
   rewrite_elapsed_ms: number | null;
+  style_analysis: Record<string, unknown> | null;
+  reviewed_style_analysis: Record<string, unknown> | null;
+  style_analysis_status: string | null;
 };
 
 export type StageStatus = {
@@ -72,7 +76,7 @@ export type ProjectDetail = {
   exports: Array<Record<string, unknown>>;
 };
 
-export type ProjectPurpose = 'rewrite' | 'summary';
+export type ProjectPurpose = 'rewrite' | 'extract';
 
 export type ExportSourceStatus = 'original' | 'manual_rewrite' | 'ai_rewrite' | 'kept_original';
 
@@ -154,8 +158,6 @@ export type PromptTemplate = {
   scene_detection_rules: string;
   rewrite_rules: string;
   description: string;
-  story_anchor: Record<string, unknown>;
-  characters: Array<Record<string, unknown>>;
   scene_rules: PromptSceneRule[];
   package_metadata: Record<string, unknown>;
   source_project_id: number | null;
@@ -177,12 +179,36 @@ export type PromptTemplateWrite = {
   scene_detection_rules: string;
   rewrite_rules: string;
   description: string;
-  story_anchor: Record<string, unknown>;
-  characters: Array<Record<string, unknown>>;
   scene_rules: PromptSceneRule[];
   package_metadata: Record<string, unknown>;
   source_project_id: number | null;
   is_default: boolean;
+};
+
+export type AnalysisPromptTemplate = {
+  id: number;
+  name: string;
+  description: string;
+  analysis_dimensions: string;
+  evidence_rules: string;
+  synthesis_rules: string;
+  output_requirements: string;
+  version: number;
+  is_default: boolean;
+};
+
+export type AnalysisPromptTemplateWrite = Omit<AnalysisPromptTemplate, 'id' | 'version'>;
+
+export type StyleAnalysis = {
+  chapter_id: number;
+  analysis: Record<string, unknown>;
+  reviewed: Record<string, unknown>;
+  status: string;
+  analysis_prompt_template_id: number | null;
+  model_id: number | null;
+  elapsed_ms: number | null;
+  updated_at: string | null;
+  reviewed_at: string | null;
 };
 
 export type StyleDetailLevel = 'brief' | 'standard' | 'detailed';
@@ -307,6 +333,7 @@ export type ProjectCharacterBindings = {
 export type ProjectSettingsWrite = {
   model_id?: number | null;
   prompt_template_id?: number | null;
+  analysis_prompt_template_id?: number | null;
   processing_mode?: string;
   concurrency?: number;
   target_word_count?: number | null;

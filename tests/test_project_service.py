@@ -12,7 +12,7 @@ from docx import Document
 
 from rusty.importers.epub import parse_epub
 from rusty.models import ExportPlanItem
-from rusty.services import ProjectService
+from rusty.services import PipelineService, ProjectService
 
 
 class ProjectServiceTests(unittest.TestCase):
@@ -52,6 +52,8 @@ class ProjectServiceTests(unittest.TestCase):
             service.save_chapter_rewrite(chapter.id, "Manual rewrite.")
             updated = service.get_chapter(chapter.id)
             project_after_rewrite = service.get_project(project_id)
+            unconfirmed_export = service.get_effective_export_chapters(project_id)[0]
+            PipelineService(database_path).confirm_rewrite(chapter.id)
             service.export_txt(project_id, export_path)
             export_records = service.list_exports(project_id)
             exported_text = export_path.read_text(encoding="utf-8")
@@ -75,6 +77,8 @@ class ProjectServiceTests(unittest.TestCase):
         self.assertIsNotNone(updated)
         self.assertEqual("Manual rewrite.", updated.rewritten_text)
         self.assertEqual("rewritten", updated.status)
+        self.assertIsNone(unconfirmed_export.rewritten_text)
+        self.assertEqual("original", unconfirmed_export.source_status)
         self.assertIsNotNone(project_after_rewrite)
         self.assertEqual(1, project_after_rewrite.completed_chapters)
         self.assertEqual(1, len(export_records))
@@ -108,6 +112,7 @@ class ProjectServiceTests(unittest.TestCase):
             project_id = service.import_book(txt_path, root)
             chapters = service.list_chapters(project_id)
             service.save_chapter_rewrite(chapters[1].id, "Manual beta rewrite.")
+            PipelineService(database_path).confirm_rewrite(chapters[1].id)
             connection = sqlite3.connect(database_path)
             try:
                 connection.execute(

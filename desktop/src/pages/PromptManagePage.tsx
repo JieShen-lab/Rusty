@@ -1,393 +1,210 @@
-import { useEffect, useRef, useState } from 'react';
-import type { ReactNode } from 'react';
-import { BookOpen, Download, Plus, Save, Trash2, Upload, Users } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { Dispatch, SetStateAction } from 'react';
+import { Copy, Download, Plus, Save, Search, Trash2, Upload } from 'lucide-react';
 import {
+  createAnalysisPrompt,
   createPrompt,
+  deleteAnalysisPrompt,
   deletePrompt,
   exportPromptPackage,
+  getAnalysisPrompts,
   getPrompts,
   importPromptPackage,
+  updateAnalysisPrompt,
   updatePrompt,
 } from '../api/client';
-import type { PromptSceneRule, PromptTemplate, PromptTemplateWrite } from '../api/types';
-import { DangerButton } from '../components/DangerButton';
-import { EmptyState } from '../components/EmptyState';
-import { GlassCard } from '../components/GlassCard';
-import { PrimaryButton } from '../components/PrimaryButton';
-import { SecondaryButton } from '../components/SecondaryButton';
-import { StatusPill } from '../components/StatusPill';
-import { TopBar } from '../components/TopBar';
+import type {
+  AnalysisPromptTemplate,
+  AnalysisPromptTemplateWrite,
+  PromptSceneRule,
+  PromptTemplate,
+  PromptTemplateWrite,
+} from '../api/types';
 
-type Tab = 'system' | 'scene' | 'rewrite' | 'story' | 'characters';
+type Mode = 'rewrite' | 'analysis';
+type RewriteTab = 'base' | 'recognition' | 'rewrite';
+type AnalysisTab = 'dimensions' | 'evidence' | 'synthesis';
 
-const emptyForm: PromptTemplateWrite = {
-  name: '',
-  description: '',
-  global_rules: '',
-  summary_rules: '',
-  scene_detection_rules: '',
-  rewrite_rules: '',
-  story_anchor: {},
-  characters: [],
-  scene_rules: [],
-  package_metadata: {},
-  source_project_id: null,
-  is_default: false,
+const emptyRewrite: PromptTemplateWrite = {
+  name: '', description: '', global_rules: '', summary_rules: '', scene_detection_rules: '', rewrite_rules: '',
+  scene_rules: [], package_metadata: {}, source_project_id: null, is_default: false,
+};
+const emptyAnalysis: AnalysisPromptTemplateWrite = {
+  name: '', description: '', analysis_dimensions: '', evidence_rules: '', synthesis_rules: '', output_requirements: '', is_default: false,
 };
 
-const tabs: Array<{ key: Tab; label: string }> = [
-  { key: 'system', label: '系统规则' },
-  { key: 'scene', label: '场景识别' },
-  { key: 'rewrite', label: '改写规则' },
-  { key: 'story', label: '故事锚点' },
-  { key: 'characters', label: '人物锚点' },
-];
-
 export function PromptManagePage() {
-  const [templates, setTemplates] = useState<PromptTemplate[]>([]);
-  const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [form, setForm] = useState<PromptTemplateWrite>(emptyForm);
-  const [tab, setTab] = useState<Tab>('system');
-  const [storyJson, setStoryJson] = useState('{}');
-  const [charactersJson, setCharactersJson] = useState('[]');
+  const [mode, setMode] = useState<Mode>('rewrite');
+  const [rewriteTemplates, setRewriteTemplates] = useState<PromptTemplate[]>([]);
+  const [analysisTemplates, setAnalysisTemplates] = useState<AnalysisPromptTemplate[]>([]);
+  const [rewriteId, setRewriteId] = useState<number | null>(null);
+  const [analysisId, setAnalysisId] = useState<number | null>(null);
+  const [rewriteForm, setRewriteForm] = useState<PromptTemplateWrite>(emptyRewrite);
+  const [analysisForm, setAnalysisForm] = useState<AnalysisPromptTemplateWrite>(emptyAnalysis);
+  const [rewriteTab, setRewriteTab] = useState<RewriteTab>('base');
+  const [analysisTab, setAnalysisTab] = useState<AnalysisTab>('dimensions');
+  const [query, setQuery] = useState('');
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
 
-  function fillForm(template: PromptTemplate) {
-    setForm({
-      name: template.name,
-      description: template.description,
-      global_rules: template.global_rules,
-      summary_rules: template.summary_rules,
-      scene_detection_rules: template.scene_detection_rules,
-      rewrite_rules: template.rewrite_rules,
-      story_anchor: template.story_anchor,
-      characters: template.characters,
-      scene_rules: template.scene_rules,
-      package_metadata: template.package_metadata,
-      source_project_id: template.source_project_id,
-      is_default: template.is_default,
-    });
-    setStoryJson(JSON.stringify(template.story_anchor, null, 2));
-    setCharactersJson(JSON.stringify(template.characters, null, 2));
-  }
+  useEffect(() => { void reload(); }, []);
 
-  function loadTemplates(nextSelectedId?: number | null) {
+  async function reload(nextRewrite?: number | null, nextAnalysis?: number | null) {
     setError(null);
-    getPrompts()
-      .then((items) => {
-        setTemplates(items);
-        const id = nextSelectedId ?? selectedId ?? items[0]?.id ?? null;
-        setSelectedId(id);
-        const selected = items.find((template) => template.id === id);
-        if (selected) fillForm(selected);
-      })
-      .catch((err: unknown) => setError(errorMessage(err)));
+    try {
+      const [rewrites, analyses] = await Promise.all([getPrompts(), getAnalysisPrompts()]);
+      setRewriteTemplates(rewrites);
+      setAnalysisTemplates(analyses);
+      const targetRewrite = nextRewrite === null ? rewrites[0]?.id ?? null : nextRewrite ?? rewriteId ?? rewrites[0]?.id ?? null;
+      const targetAnalysis = nextAnalysis === null ? analyses[0]?.id ?? null : nextAnalysis ?? analysisId ?? analyses[0]?.id ?? null;
+      setRewriteId(targetRewrite);
+      setAnalysisId(targetAnalysis);
+      const selectedRewrite = rewrites.find((item) => item.id === targetRewrite);
+      const selectedAnalysis = analyses.find((item) => item.id === targetAnalysis);
+      if (selectedRewrite) setRewriteForm(toRewriteWrite(selectedRewrite));
+      if (selectedAnalysis) setAnalysisForm(toAnalysisWrite(selectedAnalysis));
+    } catch (reason) { setError(messageOf(reason)); }
   }
 
-  useEffect(() => {
-    loadTemplates(null);
-    // Initial load only.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  const templates = mode === 'rewrite' ? rewriteTemplates : analysisTemplates;
+  const selectedId = mode === 'rewrite' ? rewriteId : analysisId;
+  const filtered = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    return normalized ? templates.filter((item) => `${item.name} ${item.description}`.toLowerCase().includes(normalized)) : templates;
+  }, [query, templates]);
+
+  function selectTemplate(id: number) {
+    setMessage(null); setError(null);
+    if (mode === 'rewrite') {
+      const item = rewriteTemplates.find((template) => template.id === id);
+      if (item) { setRewriteId(id); setRewriteForm(toRewriteWrite(item)); }
+    } else {
+      const item = analysisTemplates.find((template) => template.id === id);
+      if (item) { setAnalysisId(id); setAnalysisForm(toAnalysisWrite(item)); }
+    }
+  }
 
   function startNew() {
-    setSelectedId(null);
-    setForm(emptyForm);
-    setStoryJson('{}');
-    setCharactersJson('[]');
-    setMessage(null);
-    setTab('system');
-  }
-
-  function updateSceneRule(index: number, patch: Partial<PromptSceneRule>) {
-    setForm((current) => ({
-      ...current,
-      scene_rules: current.scene_rules.map((rule, ruleIndex) => ruleIndex === index ? { ...rule, ...patch } : rule),
-    }));
-  }
-
-  function addSceneRule() {
-    const index = form.scene_rules.length;
-    setForm((current) => ({
-      ...current,
-      scene_rules: [
-        ...current.scene_rules,
-        {
-          scene_key: `scene_${index + 1}`,
-          display_name: `新场景 ${index + 1}`,
-          description: '',
-          detection_prompt: '',
-          rewrite_prompt: '',
-          sort_order: index,
-        },
-      ],
-    }));
-  }
-
-  function removeSceneRule(index: number) {
-    setForm((current) => ({
-      ...current,
-      scene_rules: current.scene_rules
-        .filter((_, ruleIndex) => ruleIndex !== index)
-        .map((rule, ruleIndex) => ({ ...rule, sort_order: ruleIndex })),
-    }));
-  }
-
-  function payloadFromEditors(): PromptTemplateWrite {
-    const story = JSON.parse(storyJson) as unknown;
-    const characters = JSON.parse(charactersJson) as unknown;
-    if (!story || typeof story !== 'object' || Array.isArray(story)) throw new Error('故事锚点必须是 JSON 对象。');
-    if (!Array.isArray(characters)) throw new Error('人物锚点必须是 JSON 数组。');
-    return {
-      ...form,
-      story_anchor: story as Record<string, unknown>,
-      characters: characters.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object' && !Array.isArray(item))),
-    };
+    setMessage(null); setError(null);
+    if (mode === 'rewrite') { setRewriteId(null); setRewriteForm(emptyRewrite); setRewriteTab('base'); }
+    else { setAnalysisId(null); setAnalysisForm(emptyAnalysis); setAnalysisTab('dimensions'); }
   }
 
   async function save() {
-    setBusy(true);
-    setError(null);
-    setMessage(null);
+    setBusy(true); setError(null); setMessage(null);
     try {
-      const payload = payloadFromEditors();
-      const saved = selectedId ? await updatePrompt(selectedId, payload) : await createPrompt(payload);
-      setMessage('提示词包已保存。');
-      loadTemplates(saved.id);
-    } catch (err) {
-      setError(errorMessage(err));
-    } finally {
-      setBusy(false);
-    }
+      if (mode === 'rewrite') {
+        const item = rewriteId ? await updatePrompt(rewriteId, rewriteForm) : await createPrompt(rewriteForm);
+        await reload(item.id, analysisId);
+      } else {
+        const item = analysisId ? await updateAnalysisPrompt(analysisId, analysisForm) : await createAnalysisPrompt(analysisForm);
+        await reload(rewriteId, item.id);
+      }
+      setMessage('模板已保存。');
+    } catch (reason) { setError(messageOf(reason)); }
+    finally { setBusy(false); }
   }
 
   async function remove() {
-    if (!selectedId || !window.confirm('确认删除当前提示词包？')) return;
-    setBusy(true);
-    setError(null);
+    if (!selectedId || !window.confirm('确认删除当前模板？')) return;
+    setBusy(true); setError(null);
     try {
-      await deletePrompt(selectedId);
-      setMessage('提示词包已删除。');
-      startNew();
-      loadTemplates(null);
-    } catch (err) {
-      setError(errorMessage(err));
-    } finally {
-      setBusy(false);
-    }
+      if (mode === 'rewrite') await deletePrompt(selectedId); else await deleteAnalysisPrompt(selectedId);
+      if (mode === 'rewrite') { setRewriteId(null); setRewriteForm(emptyRewrite); }
+      else { setAnalysisId(null); setAnalysisForm(emptyAnalysis); }
+      await reload(mode === 'rewrite' ? null : rewriteId, mode === 'analysis' ? null : analysisId);
+      setMessage('模板已删除。');
+    } catch (reason) { setError(messageOf(reason)); }
+    finally { setBusy(false); }
   }
 
-  async function handleImport(file: File | undefined) {
+  async function importJson(file: File | undefined) {
     if (!file) return;
-    setBusy(true);
-    setError(null);
+    setBusy(true); setError(null);
     try {
       const imported = await importPromptPackage(await file.text());
-      setMessage(`已导入：${imported.name}`);
-      loadTemplates(imported.id);
-    } catch (err) {
-      setError(errorMessage(err));
-    } finally {
-      setBusy(false);
-      if (fileInputRef.current) fileInputRef.current.value = '';
-    }
+      await reload(imported.id, analysisId);
+      setMessage('改写提示词 JSON 已导入。');
+    } catch (reason) { setError(messageOf(reason)); }
+    finally { setBusy(false); if (fileInput.current) fileInput.current.value = ''; }
   }
 
-  async function handleExport() {
-    if (!selectedId) return;
-    setBusy(true);
-    setError(null);
+  async function exportJson() {
+    if (!rewriteId) return;
+    setBusy(true); setError(null);
     try {
-      const { content } = await exportPromptPackage(selectedId);
-      const url = URL.createObjectURL(new Blob([content], { type: 'application/json;charset=utf-8' }));
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `${safeFileName(form.name || 'prompt-package')}.json`;
-      link.click();
-      URL.revokeObjectURL(url);
-      setMessage('提示词包 JSON 已导出。');
-    } catch (err) {
-      setError(errorMessage(err));
-    } finally {
-      setBusy(false);
-    }
+      const { content } = await exportPromptPackage(rewriteId);
+      downloadJson(content, `${safeName(rewriteForm.name || 'rewrite-prompt')}.json`);
+      setMessage('改写提示词 JSON 已导出。');
+    } catch (reason) { setError(messageOf(reason)); }
+    finally { setBusy(false); }
   }
 
+  function addSceneRule() {
+    const index = rewriteForm.scene_rules.length;
+    setRewriteForm((current) => ({ ...current, scene_rules: [...current.scene_rules, {
+      scene_key: `scene_${index + 1}`, display_name: `场景 ${index + 1}`, description: '', detection_prompt: '', rewrite_prompt: '', sort_order: index,
+    }] }));
+  }
+
+  function updateSceneRule(index: number, patch: Partial<PromptSceneRule>) {
+    setRewriteForm((current) => ({ ...current, scene_rules: current.scene_rules.map((rule, itemIndex) => itemIndex === index ? { ...rule, ...patch } : rule) }));
+  }
+
+  const selectedVersion = mode === 'rewrite'
+    ? rewriteTemplates.find((item) => item.id === rewriteId)?.version
+    : analysisTemplates.find((item) => item.id === analysisId)?.version;
+
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <TopBar title="提示词包" subtitle="改写规则、故事发展与人物设定使用同一个项目级 JSON。" onRefresh={() => loadTemplates(selectedId)} />
-      {(error || message) && (
-        <div className={`mb-3 rounded-xl border px-4 py-2 text-sm ${error ? 'border-rose-300/25 bg-rose-400/10 text-rose-100' : 'border-emerald-300/25 bg-emerald-400/10 text-emerald-100'}`}>
-          {error || message}
-        </div>
-      )}
-      <div className="grid min-h-0 flex-1 grid-cols-[280px_1fr] gap-4 max-lg:grid-cols-1">
-        <GlassCard className="min-h-0 overflow-y-auto" title="提示词包" strong>
-          <div className="mb-4 grid grid-cols-2 gap-2">
-            <SecondaryButton onClick={startNew}><Plus size={15} />新建</SecondaryButton>
-            <SecondaryButton onClick={() => fileInputRef.current?.click()}><Upload size={15} />导入</SecondaryButton>
-            <input ref={fileInputRef} accept="application/json,.json" className="hidden" onChange={(event) => void handleImport(event.target.files?.[0])} type="file" />
+    <div className="prompt-workbench">
+      <header className="prompt-header"><h1>提示词管理</h1><div className="mode-tabs" role="tablist"><button aria-selected={mode === 'rewrite'} onClick={() => { setMode('rewrite'); setQuery(''); }} role="tab" type="button">改写提示词</button><button aria-selected={mode === 'analysis'} onClick={() => { setMode('analysis'); setQuery(''); }} role="tab" type="button">分析提示词</button></div></header>
+      {(error || message) ? <div className={`inline-alert ${error ? 'error' : 'success'}`}>{error || message}</div> : null}
+
+      <div className="prompt-layout">
+        <aside className="template-library">
+          <div className="panel-heading"><h2>模板库</h2><span>{templates.length} 个</span></div>
+          <div className="search-field"><Search size={16} /><input aria-label="搜索模板" placeholder="搜索名称或说明" value={query} onChange={(event) => setQuery(event.target.value)} /></div>
+          <div className="library-actions"><button className="button secondary" onClick={startNew} type="button"><Plus size={16} />新建</button>{mode === 'rewrite' ? <button className="button secondary" onClick={() => fileInput.current?.click()} type="button"><Upload size={16} />导入 JSON</button> : null}<input accept="application/json,.json" className="sr-only" ref={fileInput} onChange={(event) => void importJson(event.target.files?.[0])} type="file" /></div>
+          <div className="template-list">
+            {filtered.map((item) => <button aria-pressed={item.id === selectedId} className={`template-row ${item.id === selectedId ? 'selected' : ''}`} key={item.id} onClick={() => selectTemplate(item.id)} type="button"><span><strong>{item.name}</strong><small>{item.description || '暂无说明'}</small></span>{item.is_default ? <em>默认</em> : null}</button>)}
+            {filtered.length === 0 ? <div className="compact-empty">没有匹配的模板。</div> : null}
           </div>
-          {templates.length === 0 ? (
-            <EmptyState title="还没有提示词包" description="可以新建，也可以从分析项目提取或导入 JSON。" />
+        </aside>
+
+        <main className="prompt-editor-shell">
+          <div className="editor-title-row"><div><input aria-label="模板名称" className="title-input" placeholder={mode === 'rewrite' ? '改写提示词名称' : '分析提示词名称'} value={mode === 'rewrite' ? rewriteForm.name : analysisForm.name} onChange={(event) => mode === 'rewrite' ? setRewriteForm({ ...rewriteForm, name: event.target.value }) : setAnalysisForm({ ...analysisForm, name: event.target.value })} /><input aria-label="模板说明" className="description-input" placeholder="简短说明模板用途" value={mode === 'rewrite' ? rewriteForm.description : analysisForm.description} onChange={(event) => mode === 'rewrite' ? setRewriteForm({ ...rewriteForm, description: event.target.value }) : setAnalysisForm({ ...analysisForm, description: event.target.value })} /></div><label className="default-toggle"><input checked={mode === 'rewrite' ? rewriteForm.is_default : analysisForm.is_default} onChange={(event) => mode === 'rewrite' ? setRewriteForm({ ...rewriteForm, is_default: event.target.checked }) : setAnalysisForm({ ...analysisForm, is_default: event.target.checked })} type="checkbox" />设为默认</label></div>
+          {mode === 'rewrite' ? (
+            <RewriteEditor form={rewriteForm} tab={rewriteTab} onAdd={addSceneRule} onRemove={(index) => setRewriteForm((current) => ({ ...current, scene_rules: current.scene_rules.filter((_, itemIndex) => itemIndex !== index) }))} onTab={setRewriteTab} onUpdate={updateSceneRule} setForm={setRewriteForm} />
           ) : (
-            <div className="space-y-2">
-              {templates.map((template) => (
-                <button
-                  className={`w-full rounded-xl border p-3 text-left transition ${selectedId === template.id ? 'border-sky-300/35 bg-sky-300/12' : 'border-white/10 bg-white/[0.035] hover:bg-white/[0.07]'}`}
-                  key={template.id}
-                  onClick={() => { setSelectedId(template.id); fillForm(template); }}
-                  type="button"
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="truncate text-sm font-semibold text-white">{template.name}</span>
-                    {template.is_default && <StatusPill variant="warning">默认</StatusPill>}
-                  </div>
-                  <p className="mt-1 line-clamp-2 text-xs text-[var(--text-muted)]">{template.description || `${template.scene_rules.length} 个场景分类 · v${template.version}`}</p>
-                </button>
-              ))}
-            </div>
+            <AnalysisEditor form={analysisForm} tab={analysisTab} onTab={setAnalysisTab} setForm={setAnalysisForm} />
           )}
-        </GlassCard>
+        </main>
 
-        <section className="flex min-h-0 flex-col overflow-hidden rounded-2xl border border-white/10 bg-slate-950/35">
-          <header className="shrink-0 border-b border-white/10 px-5 py-4">
-            <div className="flex items-start justify-between gap-4">
-              <div className="grid min-w-0 flex-1 grid-cols-[minmax(220px,420px)_1fr] gap-3 max-xl:grid-cols-1">
-                <input className="form-input py-2" placeholder="提示词包名称" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
-                <input className="form-input py-2" placeholder="用途说明" value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} />
-              </div>
-              <label className="flex shrink-0 items-center gap-2 text-xs text-[var(--text-muted)]">
-                <input checked={form.is_default} onChange={(event) => setForm({ ...form, is_default: event.target.checked })} type="checkbox" />默认
-              </label>
-            </div>
-            <nav className="mt-4 flex gap-1 overflow-x-auto border-b border-white/10">
-              {tabs.map((item) => (
-                <button className={`shrink-0 border-b-2 px-4 py-2 text-sm transition ${tab === item.key ? 'border-sky-400 text-white' : 'border-transparent text-[var(--text-muted)] hover:text-white'}`} key={item.key} onClick={() => setTab(item.key)} type="button">
-                  {item.label}
-                </button>
-              ))}
-            </nav>
-          </header>
-
-          <div className="min-h-0 flex-1 overflow-y-auto p-5">
-            {tab === 'system' && <SystemEditor form={form} setForm={setForm} />}
-            {tab === 'scene' && <SceneEditor form={form} onAdd={addSceneRule} onRemove={removeSceneRule} onUpdate={updateSceneRule} setForm={setForm} />}
-            {tab === 'rewrite' && <RewriteEditor form={form} onUpdate={updateSceneRule} setForm={setForm} />}
-            {tab === 'story' && <JsonEditor icon={<BookOpen size={17} />} label="故事发展锚点" value={storyJson} onChange={setStoryJson} />}
-            {tab === 'characters' && <JsonEditor icon={<Users size={17} />} label="人物锚点数组" value={charactersJson} onChange={setCharactersJson} />}
-          </div>
-
-          <footer className="flex shrink-0 items-center justify-between border-t border-white/10 bg-slate-950/70 px-5 py-3">
-            <div className="text-xs text-[var(--text-muted)]">{form.scene_rules.length} 个场景分类 · {form.characters.length} 个人物锚点</div>
-            <div className="flex gap-2">
-              <SecondaryButton disabled={busy || !selectedId} onClick={() => void handleExport()}><Download size={15} />导出 JSON</SecondaryButton>
-              <DangerButton disabled={busy || !selectedId} onClick={() => void remove()}><Trash2 size={15} />删除</DangerButton>
-              <PrimaryButton disabled={busy || !form.name.trim()} onClick={() => void save()}><Save size={15} />保存全部</PrimaryButton>
-            </div>
-          </footer>
-        </section>
+        <aside className="template-inspector"><h2>模板概览</h2><Definition label="模板类型" value={mode === 'rewrite' ? '改写提示词' : '风格分析提示词'} /><Definition label="版本" value={`v${selectedVersion ?? 1}`} /><Definition label="默认模板" value={(mode === 'rewrite' ? rewriteForm.is_default : analysisForm.is_default) ? '是' : '否'} />{mode === 'rewrite' ? <><Definition label="场景类别" value={`${rewriteForm.scene_rules.length} 个`} /><Definition label="JSON 兼容" value="rusty.rewrite_prompt v2" /><div className="inspector-note"><strong>数据边界</strong><p>剧情骨架和人物卡属于改写工程，不会保存在此模板或导出的 JSON 中。</p></div></> : <div className="inspector-note"><strong>用途</strong><p>规定如何提取证据、跨章归纳，并生成可复用的改写提示词。</p></div>}<div className="inspector-actions">{mode === 'rewrite' ? <button className="button secondary full" disabled={!rewriteId} onClick={() => void exportJson()} type="button"><Download size={16} />导出 JSON</button> : null}<button className="button secondary full" disabled={!selectedId} onClick={() => void navigator.clipboard?.writeText(mode === 'rewrite' ? JSON.stringify(rewriteForm, null, 2) : JSON.stringify(analysisForm, null, 2))} type="button"><Copy size={16} />复制内容</button><button className="button danger full" disabled={!selectedId || busy} onClick={() => void remove()} type="button"><Trash2 size={16} />删除模板</button></div></aside>
       </div>
+
+      <footer className="prompt-save-bar"><span>{mode === 'rewrite' ? `改写模板 · ${rewriteForm.scene_rules.length} 个识别类别` : '分析模板 · 分析维度 / 证据规则 / 归纳输出'}</span><div><button className="button secondary wide" disabled={busy || !selectedId} onClick={() => selectTemplate(selectedId!)} type="button">还原修改</button><button className="button primary wide" disabled={busy || !(mode === 'rewrite' ? rewriteForm.name.trim() : analysisForm.name.trim())} onClick={() => void save()} type="button"><Save size={16} />{busy ? '保存中…' : '保存模板'}</button></div></footer>
     </div>
   );
 }
 
-function SystemEditor({ form, setForm }: { form: PromptTemplateWrite; setForm: (value: PromptTemplateWrite) => void }) {
-  return (
-    <div className="space-y-5">
-      <EditorBlock label="系统规则" hint="全局注入，但只写任务边界、事实约束和输出要求。">
-        <textarea className="prompt-editor" value={form.global_rules} onChange={(event) => setForm({ ...form, global_rules: event.target.value })} />
-      </EditorBlock>
-      <EditorBlock label="章节分析规则" hint="用于分析项目生成章节摘要，也是提取完整提示词包的材料。">
-        <textarea className="prompt-editor min-h-44" value={form.summary_rules} onChange={(event) => setForm({ ...form, summary_rules: event.target.value })} />
-      </EditorBlock>
-    </div>
-  );
+function RewriteEditor({ form, onAdd, onRemove, onTab, onUpdate, setForm, tab }: { form: PromptTemplateWrite; onAdd: () => void; onRemove: (index: number) => void; onTab: (tab: RewriteTab) => void; onUpdate: (index: number, patch: Partial<PromptSceneRule>) => void; setForm: Dispatch<SetStateAction<PromptTemplateWrite>>; tab: RewriteTab }) {
+  return <div className="editor-body"><div className="editor-tabs" role="tablist">{([['base', '基础规则'], ['recognition', '识别规则'], ['rewrite', '改写规则']] as const).map(([key, label]) => <button aria-selected={tab === key} key={key} onClick={() => onTab(key)} role="tab" type="button">{label}</button>)}</div>{tab === 'base' ? <PromptField hint="任务边界、事实保留和输出要求。" label="基础规则" value={form.global_rules} onChange={(value) => setForm({ ...form, global_rules: value })} /> : null}{tab === 'recognition' ? <div className="structured-editor"><PromptField hint="模型如何识别场景，以及如何返回类别。" label="通用识别规则" value={form.scene_detection_rules} onChange={(value) => setForm({ ...form, scene_detection_rules: value })} compact /><div className="section-heading"><div><strong>场景类别</strong><span>识别结果会匹配同 key 的具体改写规则</span></div><button className="button secondary" onClick={onAdd} type="button"><Plus size={16} />添加类别</button></div><div className="scene-table">{form.scene_rules.map((rule, index) => <SceneRuleEditor index={index} key={`${rule.scene_key}-${index}`} mode="recognition" onRemove={() => onRemove(index)} onUpdate={(patch) => onUpdate(index, patch)} rule={rule} />)}{form.scene_rules.length === 0 ? <div className="compact-empty">暂无类别。可添加对话推进、动作冲突、情绪转折等场景。</div> : null}</div></div> : null}{tab === 'rewrite' ? <div className="structured-editor"><PromptField hint="所有场景都执行的改写要求。" label="通用改写规则" value={form.rewrite_rules} onChange={(value) => setForm({ ...form, rewrite_rules: value })} compact /><div className="section-heading"><div><strong>场景具体改写规则</strong><span>只在识别到对应类别时注入</span></div></div><div className="scene-table">{form.scene_rules.map((rule, index) => <SceneRuleEditor index={index} key={`${rule.scene_key}-${index}`} mode="rewrite" onRemove={() => onRemove(index)} onUpdate={(patch) => onUpdate(index, patch)} rule={rule} />)}{form.scene_rules.length === 0 ? <div className="compact-empty">请先在“识别规则”中添加场景类别。</div> : null}</div></div> : null}</div>;
 }
 
-function SceneEditor({ form, onAdd, onRemove, onUpdate, setForm }: {
-  form: PromptTemplateWrite;
-  onAdd: () => void;
-  onRemove: (index: number) => void;
-  onUpdate: (index: number, patch: Partial<PromptSceneRule>) => void;
-  setForm: (value: PromptTemplateWrite) => void;
-}) {
-  return (
-    <div className="space-y-5">
-      <EditorBlock label="场景识别总规则" hint="定义模型如何判断场景与是否需要改写。">
-        <textarea className="prompt-editor min-h-40" value={form.scene_detection_rules} onChange={(event) => setForm({ ...form, scene_detection_rules: event.target.value })} />
-      </EditorBlock>
-      <div className="flex items-center justify-between">
-        <div><h3 className="text-sm font-semibold text-white">剧情场景分类</h3><p className="mt-1 text-xs text-[var(--text-muted)]">识别阶段只返回这些 key，后续自动匹配具体改写规则。</p></div>
-        <SecondaryButton onClick={onAdd}><Plus size={15} />添加分类</SecondaryButton>
-      </div>
-      {form.scene_rules.map((rule, index) => (
-        <div className="rounded-xl border border-white/10 bg-white/[0.025] p-4" key={`${rule.scene_key}-${index}`}>
-          <div className="grid grid-cols-[140px_220px_1fr_auto] gap-3 max-xl:grid-cols-2">
-            <input className="form-input py-2 text-sm" placeholder="scene_key" value={rule.scene_key} onChange={(event) => onUpdate(index, { scene_key: event.target.value })} />
-            <input className="form-input py-2 text-sm" placeholder="显示名称" value={rule.display_name} onChange={(event) => onUpdate(index, { display_name: event.target.value })} />
-            <input className="form-input py-2 text-sm" placeholder="分类说明" value={rule.description} onChange={(event) => onUpdate(index, { description: event.target.value })} />
-            <button className="stage-icon-button" onClick={() => onRemove(index)} title="删除分类" type="button"><Trash2 size={14} /></button>
-          </div>
-          <textarea className="prompt-editor mt-3 min-h-28" placeholder="识别此类场景的具体规则" value={rule.detection_prompt} onChange={(event) => onUpdate(index, { detection_prompt: event.target.value })} />
-        </div>
-      ))}
-      {form.scene_rules.length === 0 && <EmptyState title="还没有场景分类" description="添加战斗、情感、对话、过渡等分类，并为每类配置识别条件。" />}
-    </div>
-  );
+function AnalysisEditor({ form, onTab, setForm, tab }: { form: AnalysisPromptTemplateWrite; onTab: (tab: AnalysisTab) => void; setForm: Dispatch<SetStateAction<AnalysisPromptTemplateWrite>>; tab: AnalysisTab }) {
+  return <div className="editor-body"><div className="editor-tabs" role="tablist">{([['dimensions', '分析维度'], ['evidence', '证据规则'], ['synthesis', '归纳输出']] as const).map(([key, label]) => <button aria-selected={tab === key} key={key} onClick={() => onTab(key)} role="tab" type="button">{label}</button>)}</div>{tab === 'dimensions' ? <PromptField hint="例如动作、对话、人物关系、心理、节奏、视角、环境和转场。" label="需要观察的维度" value={form.analysis_dimensions} onChange={(value) => setForm({ ...form, analysis_dimensions: value })} /> : null}{tab === 'evidence' ? <PromptField hint="规定如何引用文本证据，以及如何区分稳定规律和偶然写法。" label="证据与去内容化规则" value={form.evidence_rules} onChange={(value) => setForm({ ...form, evidence_rules: value })} /> : null}{tab === 'synthesis' ? <div className="analysis-output-grid"><PromptField hint="跨章节如何去重、处理冲突并归纳稳定规律。" label="全书归纳规则" value={form.synthesis_rules} onChange={(value) => setForm({ ...form, synthesis_rules: value })} /><PromptField hint="最终如何输出基础、识别和改写规则 JSON。" label="输出要求" value={form.output_requirements} onChange={(value) => setForm({ ...form, output_requirements: value })} /></div> : null}</div>;
 }
 
-function RewriteEditor({ form, onUpdate, setForm }: {
-  form: PromptTemplateWrite;
-  onUpdate: (index: number, patch: Partial<PromptSceneRule>) => void;
-  setForm: (value: PromptTemplateWrite) => void;
-}) {
-  return (
-    <div className="grid grid-cols-2 gap-5 max-xl:grid-cols-1">
-      <EditorBlock label="通用改写规则" hint="所有场景统一执行。风格要求放在这里。">
-        <textarea className="prompt-editor min-h-[430px]" value={form.rewrite_rules} onChange={(event) => setForm({ ...form, rewrite_rules: event.target.value })} />
-      </EditorBlock>
-      <div>
-        <h3 className="text-sm font-semibold text-white">场景具体规则</h3>
-        <p className="mt-1 text-xs text-[var(--text-muted)]">只在识别到对应 scene_key 时注入。</p>
-        <div className="mt-4 space-y-4">
-          {form.scene_rules.map((rule, index) => (
-            <EditorBlock key={`${rule.scene_key}-${index}`} label={rule.display_name || rule.scene_key} hint={rule.scene_key}>
-              <textarea className="prompt-editor min-h-32" value={rule.rewrite_prompt} onChange={(event) => onUpdate(index, { rewrite_prompt: event.target.value })} />
-            </EditorBlock>
-          ))}
-          {form.scene_rules.length === 0 && <EmptyState title="暂无具体规则" description="先到“场景识别”添加分类。" />}
-        </div>
-      </div>
-    </div>
-  );
-}
+function PromptField({ compact = false, hint, label, onChange, value }: { compact?: boolean; hint: string; label: string; onChange: (value: string) => void; value: string }) { return <label className={`prompt-field ${compact ? 'compact' : ''}`}><span><strong>{label}</strong><small>{hint}</small></span><textarea value={value} onChange={(event) => onChange(event.target.value)} /></label>; }
 
-function JsonEditor({ icon, label, onChange, value }: { icon: ReactNode; label: string; onChange: (value: string) => void; value: string }) {
-  return (
-    <EditorBlock label={<span className="flex items-center gap-2">{icon}{label}</span>} hint="保存和导出时会校验 JSON 结构。">
-      <textarea className="prompt-editor min-h-[500px] font-mono text-xs" spellCheck={false} value={value} onChange={(event) => onChange(event.target.value)} />
-    </EditorBlock>
-  );
-}
+function SceneRuleEditor({ index, mode, onRemove, onUpdate, rule }: { index: number; mode: 'recognition' | 'rewrite'; onRemove: () => void; onUpdate: (patch: Partial<PromptSceneRule>) => void; rule: PromptSceneRule }) { return <section className="scene-rule"><div className="scene-rule-head"><span>{index + 1}</span><input aria-label="场景 key" value={rule.scene_key} onChange={(event) => onUpdate({ scene_key: event.target.value })} /><input aria-label="场景名称" value={rule.display_name} onChange={(event) => onUpdate({ display_name: event.target.value })} /><button aria-label="删除场景类别" className="icon-button danger-icon" onClick={onRemove} type="button"><Trash2 size={15} /></button></div>{mode === 'recognition' ? <><input className="text-input" placeholder="场景说明" value={rule.description} onChange={(event) => onUpdate({ description: event.target.value })} /><textarea className="rule-textarea" placeholder="具体识别条件" value={rule.detection_prompt} onChange={(event) => onUpdate({ detection_prompt: event.target.value })} /></> : <textarea className="rule-textarea large" placeholder="识别到此场景时执行的改写规则" value={rule.rewrite_prompt} onChange={(event) => onUpdate({ rewrite_prompt: event.target.value })} />}</section>; }
 
-function EditorBlock({ children, hint, label }: { children: ReactNode; hint?: string; label: ReactNode }) {
-  return (
-    <section>
-      <h3 className="text-sm font-semibold text-white">{label}</h3>
-      {hint && <p className="mt-1 text-xs text-[var(--text-muted)]">{hint}</p>}
-      <div className="mt-3">{children}</div>
-    </section>
-  );
-}
-
-function safeFileName(name: string) {
-  return name.replace(/[\\/:*?"<>|]/g, '_').trim() || 'prompt-package';
-}
-
-function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : String(error);
-}
+function Definition({ label, value }: { label: string; value: string }) { return <div className="definition"><span>{label}</span><strong>{value}</strong></div>; }
+function toRewriteWrite(item: PromptTemplate): PromptTemplateWrite { const { id: _id, version: _version, ...write } = item; return write; }
+function toAnalysisWrite(item: AnalysisPromptTemplate): AnalysisPromptTemplateWrite { const { id: _id, version: _version, ...write } = item; return write; }
+function messageOf(reason: unknown) { return reason instanceof Error ? reason.message : String(reason); }
+function safeName(value: string) { return value.replace(/[\\/:*?"<>|]/g, '_').trim() || 'rewrite-prompt'; }
+function downloadJson(content: string, fileName: string) { const url = URL.createObjectURL(new Blob([content], { type: 'application/json;charset=utf-8' })); const link = document.createElement('a'); link.href = url; link.download = fileName; link.click(); URL.revokeObjectURL(url); }

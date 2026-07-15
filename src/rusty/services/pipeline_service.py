@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from rusty.db import initialize_database, session
 from rusty.models import ChapterAIOutputs, ChapterError, ChapterRecord, StageStatus, count_text_units
@@ -112,6 +112,41 @@ class PipelineService:
             self._plot_expansion_messages,
             self._save_plot_expansion,
         )
+
+    def save_target_skeleton(self, chapter_id: int, text: str, enabled: bool = True) -> None:
+        chapter = self.project_service.get_chapter(chapter_id)
+        if chapter is None:
+            raise ValueError(f"Chapter not found: {chapter_id}")
+        with session(self.database_path) as connection:
+            connection.execute(
+                """
+                INSERT INTO chapter_plot_expansions (
+                    chapter_id, enabled, expanded_plot, prompt_snapshot_json, updated_at
+                ) VALUES (?, ?, ?, '{"source":"manual"}', CURRENT_TIMESTAMP)
+                ON CONFLICT(chapter_id)
+                DO UPDATE SET enabled = excluded.enabled, expanded_plot = excluded.expanded_plot,
+                    model_id = NULL, prompt_template_id = NULL,
+                    prompt_snapshot_json = excluded.prompt_snapshot_json,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (chapter_id, 1 if enabled else 0, text),
+            )
+
+    def confirm_rewrite(self, chapter_id: int) -> None:
+        chapter = self.project_service.get_chapter(chapter_id)
+        if chapter is None:
+            raise ValueError(f"Chapter not found: {chapter_id}")
+        if not (chapter.rewritten_text or "").strip():
+            raise ValueError("No rewritten text is available to confirm.")
+        with session(self.database_path) as connection:
+            connection.execute(
+                "UPDATE chapter_rewrites SET confirmed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE chapter_id = ?",
+                (chapter_id,),
+            )
+            connection.execute(
+                "UPDATE chapters SET status = 'confirmed', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (chapter_id,),
+            )
 
     def run_project(
         self,
@@ -256,7 +291,7 @@ class PipelineService:
         with session(self.database_path) as connection:
             summary = connection.execute(
                 """
-                SELECT plot_summary
+                SELECT plot_summary, characters_json
                 FROM chapter_summaries
                 WHERE chapter_id = ?
                 """,
@@ -286,10 +321,18 @@ class PipelineService:
                 """,
                 (chapter_id,),
             ).fetchone()
+            style_analysis = connection.execute(
+                """
+                SELECT analysis_json, reviewed_json, status
+                FROM chapter_style_analyses WHERE chapter_id = ?
+                """,
+                (chapter_id,),
+            ).fetchone()
 
         scene_labels = _parse_json_list(scene["scene_labels_json"]) if scene is not None else None
         return ChapterAIOutputs(
             plot_summary=summary["plot_summary"] if summary is not None else None,
+            plot_characters=_parse_json_dict_list(summary["characters_json"]) if summary is not None else None,
             needs_rewrite=bool(scene["needs_rewrite"]) if scene is not None else None,
             scene_labels=scene_labels,
             scene_reasoning=scene["reasoning"] if scene is not None else None,
@@ -299,6 +342,9 @@ class PipelineService:
             rewritten_word_count=rewrite["actual_word_count"] if rewrite is not None else None,
             expansion_ratio=rewrite["expansion_ratio"] if rewrite is not None else None,
             rewrite_elapsed_ms=rewrite["elapsed_ms"] if rewrite is not None else None,
+            style_analysis=_parse_json_object(style_analysis["analysis_json"]) if style_analysis is not None else None,
+            reviewed_style_analysis=_parse_json_object(style_analysis["reviewed_json"]) if style_analysis is not None else None,
+            style_analysis_status=style_analysis["status"] if style_analysis is not None else None,
         )
 
     def _run_chapter_stage(
@@ -391,7 +437,13 @@ class PipelineService:
             {"role": "system", "content": template.global_rules},
             {
                 "role": "user",
-                "content": f"{template.summary_rules}\n\nSummarize this chapter:\n# {chapter.title}\n{chapter.original_text}",
+                "content": (
+                    f"{template.summary_rules}\n\n"
+                    "提取本章可供后续改写使用的内容骨架和人物卡。只返回 JSON："
+                    '{"plot_skeleton":"...","key_events":[],"characters":[]}。'
+                    "人物卡只描述本项目人物的角色、性格、关系、语言和行为特点，不把这些内容写入改写提示词模板。\n\n"
+                    f"# {chapter.title}\n{chapter.original_text}"
+                ),
             },
         ]
 
@@ -420,6 +472,10 @@ class PipelineService:
                 "SELECT scene_labels_json, reasoning FROM chapter_scene_analysis WHERE chapter_id = ?",
                 (chapter.id,),
             ).fetchone()
+            summary = connection.execute(
+                "SELECT plot_summary, characters_json FROM chapter_summaries WHERE chapter_id = ?",
+                (chapter.id,),
+            ).fetchone()
         labels = _parse_json_list(scene["scene_labels_json"]) if scene is not None else []
         reasoning = scene["reasoning"] if scene is not None else ""
         return [
@@ -429,8 +485,8 @@ class PipelineService:
                 "content": (
                     "在保持既有事实、时间线和人物设定的前提下，为本章增加或强化剧情线。"
                     "只输出可供后续改写使用的剧情扩展方案，不要直接改写正文。\n\n"
-                    f"故事锚点：\n{json.dumps(template.story_anchor, ensure_ascii=False, indent=2)}\n\n"
-                    f"人物锚点：\n{json.dumps(self._relevant_package_characters(template, chapter.original_text), ensure_ascii=False, indent=2)}\n\n"
+                    f"原始剧情骨架：\n{summary['plot_summary'] if summary is not None else '尚未提取'}\n\n"
+                    f"本章人物卡：\n{summary['characters_json'] if summary is not None else '[]'}\n\n"
                     f"场景标签：{', '.join(labels) or '未识别'}\n识别说明：{reasoning or '无'}\n\n"
                     f"# {chapter.title}\n{chapter.original_text}"
                 ),
@@ -476,6 +532,10 @@ class PipelineService:
                 "SELECT enabled, expanded_plot FROM chapter_plot_expansions WHERE chapter_id = ?",
                 (chapter.id,),
             ).fetchone()
+            summary = connection.execute(
+                "SELECT plot_summary, characters_json FROM chapter_summaries WHERE chapter_id = ?",
+                (chapter.id,),
+            ).fetchone()
         labels = set(_parse_json_list(scene["scene_labels_json"]) if scene is not None else [])
         specific_rules = [
             f"[{rule.display_name}]\n{rule.rewrite_prompt.strip()}"
@@ -485,31 +545,14 @@ class PipelineService:
         sections: list[str] = []
         if specific_rules:
             sections.append("场景具体改写规则：\n" + "\n\n".join(specific_rules))
-        if template.story_anchor:
-            sections.append("故事发展锚点：\n" + json.dumps(template.story_anchor, ensure_ascii=False, indent=2))
-        relevant_characters = self._relevant_package_characters(template, chapter.original_text)
-        if relevant_characters:
-            sections.append("人物锚点：\n" + json.dumps(relevant_characters, ensure_ascii=False, indent=2))
+        if summary is not None and summary["plot_summary"].strip():
+            sections.append("本章原始剧情骨架：\n" + summary["plot_summary"].strip())
+        chapter_characters = _parse_json_dict_list(summary["characters_json"]) if summary is not None else []
+        if chapter_characters:
+            sections.append("本章人物卡：\n" + json.dumps(chapter_characters, ensure_ascii=False, indent=2))
         if expansion is not None and bool(expansion["enabled"]) and expansion["expanded_plot"].strip():
             sections.append("本章剧情扩展方案：\n" + expansion["expanded_plot"].strip())
         return "\n\n" + "\n\n".join(sections) if sections else ""
-
-    @staticmethod
-    def _relevant_package_characters(template: PromptTemplate, text: str) -> list[dict]:
-        relevant: list[dict] = []
-        for character in template.characters:
-            names = [str(character.get("name") or "")]
-            aliases = character.get("aliases")
-            if isinstance(aliases, list):
-                names.extend(str(alias) for alias in aliases)
-            is_main = bool(character.get("is_main")) or str(character.get("role") or "").lower() in {
-                "main",
-                "protagonist",
-                "主角",
-            }
-            if is_main or any(name and name in text for name in names):
-                relevant.append(character)
-        return relevant
 
     def _save_summary(
         self,
@@ -518,26 +561,37 @@ class PipelineService:
         template: PromptTemplate,
         response: AIResponse,
     ) -> None:
+        parsed = _parse_summary_response(response.text)
         with session(self.database_path) as connection:
             connection.execute(
                 """
                 INSERT INTO chapter_summaries (
                     chapter_id,
-                    plot_summary,
+                    plot_summary, characters_json, key_events_json,
                     model_id,
                     prompt_template_id,
                     token_usage_json,
                     updated_at
-                ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(chapter_id)
                 DO UPDATE SET
                     plot_summary = excluded.plot_summary,
+                    characters_json = excluded.characters_json,
+                    key_events_json = excluded.key_events_json,
                     model_id = excluded.model_id,
                     prompt_template_id = excluded.prompt_template_id,
                     token_usage_json = excluded.token_usage_json,
                     updated_at = CURRENT_TIMESTAMP
                 """,
-                (chapter.id, response.text, model.id, template.id, json.dumps(response.token_usage)),
+                (
+                    chapter.id,
+                    parsed["plot_skeleton"],
+                    json.dumps(parsed["characters"], ensure_ascii=False),
+                    json.dumps(parsed["key_events"], ensure_ascii=False),
+                    model.id,
+                    template.id,
+                    json.dumps(response.token_usage),
+                ),
             )
 
     def _save_scene_analysis(
@@ -678,6 +732,7 @@ class PipelineService:
                     anchor_snapshot_json = excluded.anchor_snapshot_json,
                     token_usage_json = excluded.token_usage_json,
                     elapsed_ms = excluded.elapsed_ms,
+                    confirmed_at = NULL,
                     updated_at = CURRENT_TIMESTAMP
                 """,
                 (
@@ -906,6 +961,44 @@ def _parse_scene_response(text: str) -> dict:
         "labels": labels,
         "reasoning": str(data.get("reasoning", "")),
     }
+
+
+def _parse_summary_response(text: str) -> dict[str, Any]:
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        stripped = stripped.strip("`").strip()
+        if stripped.lower().startswith("json"):
+            stripped = stripped[4:].strip()
+    try:
+        data = json.loads(stripped)
+    except json.JSONDecodeError:
+        return {"plot_skeleton": text.strip(), "key_events": [], "characters": []}
+    if not isinstance(data, dict):
+        return {"plot_skeleton": text.strip(), "key_events": [], "characters": []}
+    skeleton = data.get("plot_skeleton") or data.get("plot_summary") or data.get("skeleton") or ""
+    events = data.get("key_events") if isinstance(data.get("key_events"), list) else []
+    characters = data.get("characters") if isinstance(data.get("characters"), list) else []
+    return {
+        "plot_skeleton": str(skeleton),
+        "key_events": [item for item in events],
+        "characters": [item for item in characters if isinstance(item, dict)],
+    }
+
+
+def _parse_json_object(text: str) -> dict[str, Any]:
+    try:
+        value = json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _parse_json_dict_list(text: str) -> list[dict[str, Any]]:
+    try:
+        value = json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
 
 
 def _append_prompt(base: str, override: str | None) -> str:

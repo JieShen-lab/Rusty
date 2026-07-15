@@ -27,6 +27,7 @@ dev = [
 ]
 ui-r2 = [
     "fastapi>=0.115",
+    "httpx2>=2.7",
     "uvicorn[standard]>=0.30",
 ]
 

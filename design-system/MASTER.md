@@ -1,230 +1,189 @@
-# Rusty UI-R2 Design System
+# Rusty Text Workbench Design System
 
-## 1. Design Positioning
-Rusty UI-R2 is a local authoring command center for novel rewriting. The visual direction is Obsidian-inspired, dark, glassmorphic, calm, and information-rich. It should feel like a personal writing studio rather than an admin panel.
+## 1. Product position
 
-Primary keywords:
-- Obsidian-inspired
-- Glassmorphism
-- Dark creative workspace
-- Personal dashboard
-- Ambient background
-- Translucent cards
-- Author / writing studio
-- Command center
+Rusty is a desktop long-form text workbench, not a dashboard. The interface must keep chapter structure, manuscript text, project-derived material, and the next workflow action visible without turning every region into a decorative card.
 
-The UI must remain practical: clear hierarchy, readable text, obvious loading/error states, and no decorative effect that hides workflow state.
+Primary reference: Scrivener's Binder / Editor / Inspector information architecture. Rusty keeps an original visual identity and implements only the structures that serve its two workflows.
 
-## 2. Color Tokens
-Use CSS custom properties as the single source of truth.
+Concept sources:
+
+- `concepts/rusty-new-project-v1.png`
+- `concepts/rusty-rewrite-workspace-v1.png`
+- `concepts/rusty-extraction-workspace-v1.png`
+- `concepts/rusty-prompt-management-v1.png`
+
+## 2. Core layout
+
+### App shell
+
+- Window/title region: 48px.
+- Primary app rail: 64-72px desktop; icon plus short Chinese label.
+- Route content fills remaining width and height; do not center it inside a dashboard max-width container.
+- Status/action bars remain visible while their own content regions scroll.
+
+### Project workbench
+
+- Chapter Binder: default 240px; minimum 196px; collapsible below 1280px.
+- Center Editor: always the dominant flexible region; minimum 520px on desktop.
+- Inspector: default 300px; minimum 260px; collapsible below 1280px.
+- Dividers use an 8px interaction target with a 1px visible rule.
+- Each panel owns its vertical scrolling. Avoid whole-page scroll traps.
+
+### Prompt management
+
+- Template library: 280px.
+- Main editor: flexible, minimum 560px.
+- Template inspector: 300px and collapsible on narrower screens.
+- Stable bottom save bar: 64px.
+
+## 3. Color tokens
 
 ```css
 :root {
-  --bg-main: #07111f;
-  --bg-ink: #030712;
-  --bg-panel: rgba(15, 23, 42, 0.58);
-  --bg-panel-strong: rgba(15, 23, 42, 0.78);
-  --bg-panel-hover: rgba(30, 41, 59, 0.72);
-  --border-soft: rgba(255, 255, 255, 0.12);
-  --border-strong: rgba(255, 255, 255, 0.2);
-  --text-main: #f8fafc;
-  --text-muted: #94a3b8;
-  --text-soft: #64748b;
-  --accent-gold: #f0c36a;
-  --accent-blue: #60a5fa;
-  --accent-cyan: #67e8f9;
-  --accent-green: #34d399;
-  --accent-red: #fb7185;
-  --accent-violet: #a78bfa;
+  --canvas: #eef1f5;
+  --chrome: #f7f8fa;
+  --paper: #ffffff;
+  --paper-muted: #fafbfc;
+  --border: #d9dee7;
+  --border-strong: #c5ccd8;
+  --ink: #19202c;
+  --ink-muted: #5f6978;
+  --ink-soft: #8a94a3;
+  --accent: #2458d8;
+  --accent-hover: #1d49b9;
+  --accent-soft: #edf3ff;
+  --success: #23814b;
+  --warning: #c66a13;
+  --danger: #c93636;
+  --focus: #3f75f0;
 }
 ```
 
-Usage:
-- Gold is for authoring warmth, key highlights, and primary dashboard accents.
-- Blue/cyan is for active navigation, selected project state, and technical progress.
-- Green is for completed/success states only.
-- Red is for destructive or failed states only.
-- Never use pure black as the main surface.
+Rules:
 
-## 3. Typography
-No external font files. Do not depend on Google Fonts at runtime.
+- Paper surfaces are true white, not cream.
+- No ambient gradient, glass blur, neon glow, or colored shadow.
+- Accent blue marks selection and the primary next action only.
+- Green/orange/red are semantic states, never decoration.
 
-Font stack:
+## 4. Typography
+
+UI stack:
+
 ```css
 font-family: "Microsoft YaHei UI", "Segoe UI", "PingFang SC", system-ui, sans-serif;
 ```
 
-Type scale:
-- Hero clock: 64px / 700 / -0.04em
-- Page title: 34px / 700
-- Section title: 20px / 650
-- Card title: 16px / 650
-- Body: 14px / 400
-- Meta: 12px / 500
-- Label: 11px / 650 / 0.12em uppercase
+Manuscript stack:
 
-Rules:
-- Chinese labels are first-class; do not shrink Chinese text to fit English layouts.
-- Use numeric metrics with tabular alignment where practical.
-- Avoid long all-caps text except small technical labels.
-
-## 4. Spacing System
-Base spacing uses 4px increments.
-
-Tokens:
-- `--space-1`: 4px
-- `--space-2`: 8px
-- `--space-3`: 12px
-- `--space-4`: 16px
-- `--space-5`: 20px
-- `--space-6`: 24px
-- `--space-8`: 32px
-- `--space-10`: 40px
-- `--space-12`: 48px
-
-Layout rules:
-- App content padding: 28px desktop, 18px tablet, 14px mobile.
-- Card padding: 20-24px desktop, 16px mobile.
-- Dense lists use 10-12px row gaps.
-- Avoid cramming more than three columns below 1100px.
-
-## 5. Radius System
-- Small controls: 10px
-- Buttons: 12px
-- Cards: 18px
-- Feature panels: 24px
-- Full shells/dialog panels: 28px
-
-Use radius consistently. Do not mix sharp admin-table corners with glass cards.
-
-## 6. Shadow and Glass Rules
-Glass card base:
 ```css
-background: var(--bg-panel);
-border: 1px solid var(--border-soft);
-box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
-backdrop-filter: blur(22px);
+font-family: "Noto Serif CJK SC", "Source Han Serif SC", "Songti SC", SimSun, serif;
 ```
 
-Rules:
-- Use stronger panel opacity for text-heavy areas.
-- Do not place long text on weak blur over high-contrast background imagery.
-- Keep shadows soft and wide; avoid material-style hard elevation.
-- Hover lift is subtle: translateY(-1px) max.
+Scale:
 
-## 7. Background Rules
-The app shell uses an ambient generated CSS background, not a mandatory image asset.
+- Route/project title: 18px / 650.
+- Panel title: 16px / 650.
+- Section title: 14px / 650.
+- UI body and controls: 14px / 400-600.
+- Metadata: 12px / 400-550.
+- Manuscript: 16px / 400 / 1.8.
+- Prompt and structured analysis editor: 14px / 400 / 1.65.
 
-Required layers:
-- Deep navy radial base.
-- Warm gold orb near upper-right or lower-left.
-- Blue/cyan orb opposite the warm accent.
-- Dark overlay to preserve contrast.
-- Optional fine noise via CSS gradients only.
+Do not shrink Chinese labels to fit. Truncate list-row titles only when the full value remains available through title/accessible text.
 
-If a configurable background image is added later:
-- Always apply `linear-gradient(rgba(3,7,18,.68), rgba(3,7,18,.86))`.
-- Never render text directly over a bright photo.
+## 5. Spacing and geometry
 
-## 8. Card Components
-Glass cards are the primary building block.
+- 4px base spacing system.
+- Dense toolbars: 8px gaps.
+- Panel padding: 12-16px.
+- Editor page padding: 24-32px desktop, 16-20px narrow.
+- Small control radius: 6px.
+- Button/input radius: 8px.
+- Panel/section radius: 8-10px only when a contained group is needed.
+- Shadows: none for normal panels; one subtle `0 2px 8px rgb(20 30 50 / 8%)` for overlays only.
 
-Card variants:
-- `default`: dashboard and mixed content.
-- `strong`: text-heavy chapter/original/rewrite panels.
-- `interactive`: project cards and navigation cards.
-- `danger`: delete confirmations and error blocks.
+## 6. Controls
 
-Card content order:
-- Optional eyebrow/meta label.
-- Title.
-- Supporting copy or metric.
-- Actions at bottom or top-right, never floating randomly.
+- Common buttons: minimum 36px tall; primary workflow actions: 40-44px.
+- Icon-only controls: 36x36px with tooltip and accessible name.
+- Inputs/selects: 40px tall by default.
+- Textareas have visible labels, comfortable internal padding, and resizable or panel-filling behavior appropriate to context.
+- Focus ring: 2px accent outline with 2px offset.
+- Primary button: solid accent blue, white text.
+- Secondary: white or chrome surface, border, ink text.
+- Ghost: transparent, used only in toolbars.
+- Danger: red text/border; solid red only in confirmation dialog.
 
-## 9. Button Levels
-Primary:
-- Gold-to-blue subtle gradient or strong gold.
-- Used for creation, entering workspace, export success path.
+Avoid tiny pills. Status uses a colored dot plus short text in dense chapter lists; use compact labels only where a dot is insufficient.
 
-Secondary:
-- Transparent glass with soft border.
-- Used for navigation and non-destructive actions.
+## 7. Component families
 
-Danger:
-- Red border/text on dark glass, red fill only for final destructive confirmation.
+- `AppRail`: route navigation with selected rail indicator.
+- `ChapterBinder`: project heading, progress, chapter rows, stage status, collapse control.
+- `WorkbenchToolbar`: current chapter, previous/next, panel visibility, current prompt.
+- `WorkflowRail`: 40px stage tabs with completed/current/available states.
+- `ManuscriptPane`: header, word count, true-white scrolling text/editor surface.
+- `Inspector`: context tabs and project/chapter actions.
+- `StatusBar`: chapter position, words, save/generation status.
+- `TemplateLibrary`: search, create/import, selectable template rows.
+- `PromptEditor`: rewrite/analysis mode tabs plus mode-specific editor.
+- `ActionBar`: stable save/create/export actions; never floating over text.
 
-Ghost:
-- No border, low emphasis, used in sidebar/topbar utility controls.
+## 8. Workflow-specific layouts
 
-All clickable elements need `cursor: pointer`, visible focus states, and disabled states that remain readable.
+### Rewrite project
 
-## 10. Status Tags
-Status pill variants:
-- `default`: gray, neutral imported/idle.
-- `info`: blue, processing/current.
-- `success`: green, completed.
-- `warning`: gold/yellow, pending/needs rewrite.
-- `danger`: red, failed/deleted risk.
+- Stages: 原文 / 剧情与人物 / 目标骨架 / 改写对照 / 导出检查.
+- Comparison stage uses two equal panes on wide screens.
+- Inspector exposes skeleton, related characters, and generation provenance.
+- Generated text remains editable; accept/confirm is explicit.
 
-Pills should be compact, rounded, and include text labels. Icons are optional but must use Lucide, not emoji.
+### Extraction project
 
-## 11. Empty States
-Empty states should be calm and useful.
+- Stages: 原文 / 章节风格分析 / 人工审查 / 全书归纳 / 提示词预览 / 导出 JSON.
+- Review stage uses source evidence beside editable structured analysis.
+- Inspector exposes the selected analysis prompt and evidence completeness.
+- Never display story anchors or character cards as extraction output.
 
-Structure:
-- Small framed icon from Lucide.
-- Clear title.
-- One-line explanation.
-- Optional action button.
+### New project
 
-Tone:
-- No fake success.
-- No placeholder data pretending to be real.
-- State whether the backend is unavailable, no project exists, or a selection is missing.
+- Three visible setup regions: project type, file/preview, prompt/settings.
+- At 1280x720, content can scroll but the create/cancel action bar stays visible.
+- Rewrite chooses a rewrite prompt; extraction chooses an analysis prompt.
 
-## 12. Loading / Error / Success States
-Loading:
-- Skeleton panels for cards/lists.
-- Small spinner only for button-local operations.
+### Prompt management
 
-Error:
-- Red-accent glass card with exact user-actionable message.
-- Preserve debug detail in collapsible/preformatted block only when useful.
+- Top modes: 改写提示词 / 分析提示词.
+- Rewrite tabs: 基础规则 / 识别规则 / 改写规则.
+- Analysis tabs: 分析维度 / 证据规则 / 归纳输出.
+- Story and character anchors never appear as rewrite-template tabs.
 
-Success:
-- Green pill or compact toast.
-- Do not interrupt writing flow with blocking success dialogs.
+## 9. Responsive rules
 
-Backend unavailable:
-- Show request-level error in the affected page.
-- Do not replace the whole app with a startup gate in UI-R2.
+- `>= 1360px`: full Binder + Editor + Inspector.
+- `1100-1359px`: one auxiliary panel may collapse; center remains usable.
+- `800-1099px`: Binder becomes a drawer; Inspector becomes a drawer; comparison panes can remain split if each is at least 360px, otherwise stack.
+- `< 800px`: single active work panel, drawer navigation, sticky stage/action bars, no horizontal page overflow.
 
-## 13. Page Layout Rules
-App shell:
-- Left sidebar: 84px collapsed rail desktop, bottom nav or compact rail on mobile.
-- Topbar: project-aware command strip, translucent.
-- Main content: route page with max readable width where appropriate.
+Acceptance viewports: 1440x900, 1280x720, and one narrower browser viewport.
 
-Responsive:
-- Desktop: dashboard grids and three-column workspace.
-- Tablet: two-column workspace, right stats collapse below.
-- Mobile: single column, chapter list becomes a panel section.
+## 10. Accessibility and state
 
-Navigation model:
-- `/home`: dashboard.
-- `/library`: project library.
-- `/workspace/:projectId`: project-bound writing workspace.
-- `/new-project`: minimal preview/create flow.
-- `/models`: read-only or list-only model entry in UI-R2.
-- `/prompts`: read-only or list-only prompt entry in UI-R2.
+- Visible `:focus-visible` on every interactive element.
+- Controls have labels or `aria-label`; icon meaning is never color-only.
+- Loading is local to the affected action/panel.
+- Empty/error states explain the next action without replacing the entire shell.
+- Long generation errors preserve an optional technical detail section.
+- Respect `prefers-reduced-motion`; transitions are 120-180ms and functional.
 
-## 14. Forbidden UI Anti-Patterns
-- Do not make the UI look like a database admin form.
-- Do not use fake project data when backend returns empty.
-- Do not hide backend/API errors.
-- Do not expose API keys in frontend state, logs, or UI.
-- Do not use broad rainbow gradients or busy animation.
-- Do not use emoji as functional icons.
-- Do not put destructive actions next to primary actions without visual separation.
-- Do not make card transparency so high that long text becomes unreadable.
-- Do not implement a frontend-only business workflow that bypasses Python services.
+## 11. Forbidden patterns
+
+- Glassmorphism, ambient gradients, oversized rounded cards, bento dashboards.
+- Floating action docks that cover manuscript text.
+- Fixed panel widths with no collapse or narrow-screen strategy.
+- Buttons below 36px for frequent actions.
+- Story/person anchors inside reusable rewrite prompt templates.
+- Whole-page scrolling when a Binder, editor, or Inspector should scroll independently.
+- Decorative metrics, fake data, illustrations, or marketing copy in the workbench.

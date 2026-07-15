@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .connection import session
 
-CURRENT_SCHEMA_VERSION = 6
+CURRENT_SCHEMA_VERSION = 7
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -146,10 +146,26 @@ CREATE TABLE IF NOT EXISTS prompt_rewrite_rules (
     FOREIGN KEY (template_id) REFERENCES prompt_templates(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS analysis_prompt_templates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    analysis_dimensions TEXT NOT NULL DEFAULT '',
+    evidence_rules TEXT NOT NULL DEFAULT '',
+    synthesis_rules TEXT NOT NULL DEFAULT '',
+    output_requirements TEXT NOT NULL DEFAULT '',
+    version INTEGER NOT NULL DEFAULT 1,
+    is_default INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    deleted_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS project_settings (
     project_id INTEGER PRIMARY KEY,
     model_id INTEGER,
     prompt_template_id INTEGER,
+    analysis_prompt_template_id INTEGER,
     txt_split_rule_id INTEGER,
     processing_mode TEXT NOT NULL DEFAULT 'manual',
     concurrency INTEGER NOT NULL DEFAULT 1,
@@ -160,6 +176,7 @@ CREATE TABLE IF NOT EXISTS project_settings (
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
     FOREIGN KEY (model_id) REFERENCES ai_models(id) ON DELETE SET NULL,
     FOREIGN KEY (prompt_template_id) REFERENCES prompt_templates(id) ON DELETE SET NULL,
+    FOREIGN KEY (analysis_prompt_template_id) REFERENCES analysis_prompt_templates(id) ON DELETE SET NULL,
     FOREIGN KEY (txt_split_rule_id) REFERENCES txt_split_rules(id) ON DELETE SET NULL
 );
 
@@ -287,6 +304,43 @@ CREATE TABLE IF NOT EXISTS chapter_summaries (
     FOREIGN KEY (prompt_template_id) REFERENCES prompt_templates(id) ON DELETE SET NULL
 );
 
+CREATE TABLE IF NOT EXISTS chapter_style_analyses (
+    chapter_id INTEGER PRIMARY KEY,
+    analysis_json TEXT NOT NULL DEFAULT '{}',
+    reviewed_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'pending_review',
+    model_id INTEGER,
+    analysis_prompt_template_id INTEGER,
+    prompt_snapshot_json TEXT NOT NULL DEFAULT '{}',
+    token_usage_json TEXT NOT NULL DEFAULT '{}',
+    elapsed_ms INTEGER,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    reviewed_at TEXT,
+    FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE,
+    FOREIGN KEY (model_id) REFERENCES ai_models(id) ON DELETE SET NULL,
+    FOREIGN KEY (analysis_prompt_template_id) REFERENCES analysis_prompt_templates(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS project_style_syntheses (
+    project_id INTEGER PRIMARY KEY,
+    synthesis_json TEXT NOT NULL DEFAULT '{}',
+    reviewed_json TEXT NOT NULL DEFAULT '{}',
+    prompt_template_id INTEGER,
+    model_id INTEGER,
+    analysis_prompt_template_id INTEGER,
+    prompt_snapshot_json TEXT NOT NULL DEFAULT '{}',
+    token_usage_json TEXT NOT NULL DEFAULT '{}',
+    elapsed_ms INTEGER,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    reviewed_at TEXT,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (prompt_template_id) REFERENCES prompt_templates(id) ON DELETE SET NULL,
+    FOREIGN KEY (model_id) REFERENCES ai_models(id) ON DELETE SET NULL,
+    FOREIGN KEY (analysis_prompt_template_id) REFERENCES analysis_prompt_templates(id) ON DELETE SET NULL
+);
+
 CREATE TABLE IF NOT EXISTS chapter_scene_analysis (
     chapter_id INTEGER PRIMARY KEY,
     needs_rewrite INTEGER NOT NULL DEFAULT 0,
@@ -332,6 +386,7 @@ CREATE TABLE IF NOT EXISTS chapter_rewrites (
     anchor_snapshot_json TEXT NOT NULL DEFAULT '{}',
     token_usage_json TEXT NOT NULL DEFAULT '{}',
     elapsed_ms INTEGER,
+    confirmed_at TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE,
@@ -609,12 +664,97 @@ def _migrate_to_v6(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_to_v7(connection: sqlite3.Connection) -> None:
+    _add_column_if_missing(
+        connection,
+        "project_settings",
+        "analysis_prompt_template_id",
+        "analysis_prompt_template_id INTEGER",
+    )
+    _add_column_if_missing(connection, "chapter_rewrites", "confirmed_at", "confirmed_at TEXT")
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS analysis_prompt_templates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            analysis_dimensions TEXT NOT NULL DEFAULT '',
+            evidence_rules TEXT NOT NULL DEFAULT '',
+            synthesis_rules TEXT NOT NULL DEFAULT '',
+            output_requirements TEXT NOT NULL DEFAULT '',
+            version INTEGER NOT NULL DEFAULT 1,
+            is_default INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            deleted_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS chapter_style_analyses (
+            chapter_id INTEGER PRIMARY KEY,
+            analysis_json TEXT NOT NULL DEFAULT '{}',
+            reviewed_json TEXT NOT NULL DEFAULT '{}',
+            status TEXT NOT NULL DEFAULT 'pending_review',
+            model_id INTEGER,
+            analysis_prompt_template_id INTEGER,
+            prompt_snapshot_json TEXT NOT NULL DEFAULT '{}',
+            token_usage_json TEXT NOT NULL DEFAULT '{}',
+            elapsed_ms INTEGER,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            reviewed_at TEXT,
+            FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE,
+            FOREIGN KEY (model_id) REFERENCES ai_models(id) ON DELETE SET NULL,
+            FOREIGN KEY (analysis_prompt_template_id) REFERENCES analysis_prompt_templates(id) ON DELETE SET NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS project_style_syntheses (
+            project_id INTEGER PRIMARY KEY,
+            synthesis_json TEXT NOT NULL DEFAULT '{}',
+            reviewed_json TEXT NOT NULL DEFAULT '{}',
+            prompt_template_id INTEGER,
+            model_id INTEGER,
+            analysis_prompt_template_id INTEGER,
+            prompt_snapshot_json TEXT NOT NULL DEFAULT '{}',
+            token_usage_json TEXT NOT NULL DEFAULT '{}',
+            elapsed_ms INTEGER,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            reviewed_at TEXT,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (prompt_template_id) REFERENCES prompt_templates(id) ON DELETE SET NULL,
+            FOREIGN KEY (model_id) REFERENCES ai_models(id) ON DELETE SET NULL,
+            FOREIGN KEY (analysis_prompt_template_id) REFERENCES analysis_prompt_templates(id) ON DELETE SET NULL
+        );
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO analysis_prompt_templates (
+            name, description, analysis_dimensions, evidence_rules,
+            synthesis_rules, output_requirements, is_default
+        )
+        SELECT ?, ?, ?, ?, ?, ?, 1
+        WHERE NOT EXISTS (SELECT 1 FROM analysis_prompt_templates WHERE deleted_at IS NULL)
+        """,
+        (
+            "通用小说风格分析",
+            "逐章提取可迁移的表达规律，并汇总为改写提示词。",
+            "动作描写；对话与人物关系；心理活动；节奏与句式；叙事视角；环境与感官；转场与信息揭示。",
+            "每条观察必须附短文本证据；区分稳定规律与本章偶然写法；不把人物名、剧情事实或专有设定当作风格。",
+            "跨章节去重并处理冲突，只保留反复出现且可执行的规律；将观察转写为基础规则、识别规则和改写规则。",
+            "输出严格 JSON；保留 observations、evidence 和 confidence；最终改写提示词必须符合 rusty.rewrite_prompt schema v2。",
+        ),
+    )
+    connection.execute("UPDATE project_settings SET processing_mode = 'extract' WHERE processing_mode = 'summary'")
+
+
 MIGRATIONS = {
     2: _migrate_to_v2,
     3: _migrate_to_v3,
     4: _migrate_to_v4,
     5: _migrate_to_v5,
     6: _migrate_to_v6,
+    7: _migrate_to_v7,
 }
 
 

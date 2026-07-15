@@ -1,130 +1,164 @@
-# Plan: Rusty structured style templates, anchors, and export sequencing
-_Locked via grill by Codex + user_
+# Plan: Rusty 双工作流与文字工作台重构
 
-## Goal
-Extend Rusty from a local novel import/rewrite/export MVP into a structured fanfic/expansion workflow where users can create and reuse style templates, optionally extract those templates from sample prose, bind style/outline/character anchors to a project, inject them into the rewrite stage without affecting summary or scene detection, and arrange chapter export order before TXT/EPUB output. DOCX remains import-only and is explicitly out of scope for export.
+_2026-07-15 与用户对齐；本计划取代 2026-07-14 的“统一提示词包”结论。_
 
-## 2026-07-14 unified prompt-package decision (supersedes the separate-resource UI)
-- The user-facing domain is one project-named prompt package, not separate style, outline, and character libraries.
-- The canonical versioned JSON contains system rules, summary rules, scene-recognition categories, general rewrite rules, scene-specific rewrite rules, story-development anchors, character anchors, and metadata.
-- "Style" is represented by the general and scene-specific rewrite rules. Story and character anchors live in the same package because they all serve prompt assembly.
-- Analysis projects run: source -> chapter summaries -> AI prompt-package extraction -> review/export. Extraction persists and binds the resulting package to the source project.
-- Rewrite projects bind one prompt package and run: source -> chapter summary -> scene recognition -> optional AI plot expansion -> AI rewrite -> export.
-- Plot expansion may revise or add mainline/key nodes, but must remain inside the package's story and character constraints. Its result is stored separately and injected into the subsequent rewrite.
-- Scene recognition returns configured category keys; rewrite injects only the specific rules matching those keys, plus the package's general rewrite rules and relevant character anchors.
-- Legacy `style_templates`, outline templates, character cards, and their bindings remain readable for compatibility, but they are no longer separate primary navigation concepts.
-- Reference screenshots determine information architecture only. Rusty never generates or enables jailbreak, policy-bypass, "breakthrough", or privileged hidden instructions.
+## 最终目的
 
-## Approach
-0. Add a schema migration foundation before any feature tables.
-   - Bump `CURRENT_SCHEMA_VERSION` from 1 and replace insert-only version recording with an idempotent migration runner.
-   - Keep `CREATE TABLE IF NOT EXISTS` for fresh installs, but make existing databases upgrade through explicit versioned migrations.
-   - Add tests that create a v1-style database, run initialization, and assert new tables/columns/indexes exist with preserved data.
-   - Treat migration support as phase 0; do not add UI/API work until this is in place.
+Rusty 的最终目的不是保存一堆彼此混杂的提示词字段，而是形成两条可以首尾衔接的主流程：
 
-1. Add a first-class `style_templates` domain object.
-   - Store structured style data separately from existing `prompt_templates`.
-   - Include fields for name, description, detail level, global/rewrite additions, style profile JSON, generated prompt text, source metadata, compatibility/import metadata, timestamps, and soft delete.
-   - Use explicit project binding tables instead of overloading `project_settings`: `project_style_bindings`, `project_outline_bindings`, and `project_character_bindings`.
-   - Keep `project_settings` focused on model/prompt/target controls, avoiding a fragile dataclass/API contract expansion for every anchor type.
-   - Binding constraints: one active style template per project, one active outline per project, many character cards per project with unique `(project_id, character_card_id)`, optional character sort order, and priority/main flags stored on the card or binding.
-   - Soft-deleted templates/cards cannot be newly bound; existing bindings should become inactive or ignored rather than breaking project loads.
-   - Hard deletes must be guarded by foreign keys or converted to soft deletes when a template/card has rewrite provenance.
-   - Inject selected style templates only into the rewrite stage.
+1. **提取工程生产改写提示词**：从一篇或多篇目标风格文本中，逐章提取稳定、可迁移的表达规律，人工审查后导出标准 JSON。
+2. **改写工程消费改写提示词**：导入待改写文本，逐章提取项目内剧情骨架和人物卡，允许 AI 修改/扩充骨架，再结合改写提示词生成正文，逐章确认并合并导出。
 
-2. Implement style template manual management.
-   - Add service CRUD for style templates.
-   - Add backend schemas/routes and client/service adapters for CRUD and project binding instead of relying on generic settings updates.
-   - Required contracts: Python models/dataclasses, service methods, Pydantic request/response models, FastAPI routes, frontend/backend client types, and UI state refresh.
-   - Every create/update/delete/import/bind/extract/trial-writing endpoint must require the local API token; read-only list/get endpoints should be explicitly classified as public local reads or token-protected reads before implementation.
-   - Add UI for listing, creating, editing, deleting, and selecting style templates.
-   - Keep the first UI pass functional and Chinese-localized, consistent with the requested Apple-like direction.
+最终闭环必须成立：**提取工程导出的 JSON，可以直接导入提示词管理并被新的改写工程选择使用。**
 
-3. Implement style template import/export.
-   - Define Rusty's versioned JSON schema as the canonical exchange format.
-   - Allow `.json` files and `.txt` files whose content is JSON.
-   - On import, detect canonical Rusty schema first.
-   - Add compatibility mapping for legacy fields: `name`, `rewriteTemplate`, `identifyTemplate`, and `breakthroughTemplate`.
-   - Map `rewriteTemplate.commonPrompt` to common rewrite style/rules and `rewriteTemplate.categoryPrompts` to scene-specific rewrite rule metadata where possible.
-   - Map `identifyTemplate.categories` to informational scene metadata only unless phase 1 explicitly implements scene-specific rewrite selection.
-   - If scene-specific rewrite selection is implemented, use `chapter_scene_analysis.scene_labels_json` at rewrite time and add tests proving selected category rules enter rewrite prompts only for matching scenes.
-   - Store `breakthroughTemplate` only as a normal imported text field for compatibility; do not generate it, analyze it, enable it by default, or treat it as special privileged behavior.
-   - Fail loudly on malformed JSON or unrecoverable encoding/format errors.
+## 领域边界
 
-4. Implement AI style extraction.
-   - Support input by pasted text and local `TXT / EPUB / DOCX` files.
-   - Reuse existing import/parsing utilities for file input through centralized validation: suffix allowlist, existence checks, file size/sample size limits, API token protection, and clear unsupported-format errors.
-   - Extraction endpoints must not accept arbitrary unbounded paths or raw files without validation.
-   - Offer detail levels: brief, standard, detailed.
-   - Use a single AI call in the first version to produce a structured style template.
-   - Persist the extraction source type, source file name, sample character count, detail level, and generated structure.
+### 1. 改写提示词模板（跨项目复用）
 
-5. Add style test-writing validation as an enhancement after extraction.
-   - Provide a default trial-writing prompt with configurable target length and sample scene.
-   - Use the extracted style template to generate a short sample for human review.
-   - Store the trial output and optional user notes later as tuning history, but do not require that for the first extraction implementation.
+只保存改写前已经确定的规则，不保存某篇文章的剧情和人物事实：
 
-6. Add independent outline templates and character cards.
-   - Store outline anchors separately from prompt templates and style templates.
-   - Store character cards separately with name, aliases, priority, relationship/personality/speech/action constraints, and anti-OOC rules.
-   - Bind one outline and multiple character cards to a project.
-   - First version uses pasted text or local `TXT / EPUB / DOCX` sources and detail levels consistent with style extraction.
+- 基础规则：任务边界、事实保留、输出要求。
+- 识别规则：场景分类，以及每个分类的识别条件。
+- 改写规则：通用规则，以及与场景分类对应的具体规则。
 
-7. Inject outline and character anchors into rewrite only.
-   - Summary stays objective and does not use style/outline/character anchors.
-   - Scene detection does not use these anchors by default.
-   - Rewrite combines: global/safety rules, project prompt overrides, rewrite rules, selected style template, selected outline, relevant character cards, target length/expansion/output constraints, then current chapter source text.
-   - Character cards are filtered per chapter by simple deterministic matching: character name or alias in the source chapter, plus any high-priority/main characters that should always be included.
-   - AI-based relevant-character detection is deferred.
-   - Persist rewrite provenance for every rewrite: `rewrite_source` (`ai` or `manual`), selected prompt/style/outline/card ids, template/card version hashes or immutable prompt snapshots, and the final assembled prompt snapshot used by the model.
-   - Do not depend on mutable current template/card rows to explain prior generated text.
+### 2. 风格分析提示词模板（跨项目复用）
 
-8. Add export chapter sequencing.
-   - Do not implement full re-chaptering or text re-splitting.
-   - Add a persistent per-project export plan with chapter id, export order, export title, and include/exclude flag.
-   - Default export plan mirrors current chapter order.
-   - Add `get_effective_export_chapters(project_id)` as the single service entry point for TXT/EPUB export.
-   - The effective export DTO must filter excluded chapters, sort by saved export order, carry export titles, include source status, and compute counts only from included chapters.
-   - EPUB export must use order-based unique filenames rather than original `chapter_index` filenames after reordering/filtering.
-   - TXT/EPUB export should use the saved plan when present, otherwise current chapter order through the same service entry point.
-   - Show source status per chapter: original, manual rewrite, AI rewrite, or kept original.
+规定“如何从范文中提取风格”，至少可以描述：
 
-9. Sequence implementation in five phases.
-   - Phase 0: schema migration runner, upgrade tests, and rewrite provenance fields needed before later features.
-   - Phase 1: style template storage, CRUD, import/export, project binding, rewrite injection.
-   - Phase 2: AI style extraction and trial-writing validation.
-   - Phase 3: outline templates, character cards, project binding, and rewrite injection with deterministic character filtering.
-   - Phase 4: export chapter sequencing and export integration.
+- 要观察的维度，例如动作、对话、人物关系、心理、节奏、视角、环境和转场。
+- 如何保留文本证据、区分稳定规律与偶然写法。
+- 如何合并重复/冲突结论并去除人物名、剧情、世界观等不可迁移内容。
+- 如何生成符合改写提示词 JSON 契约的基础、识别和改写规则。
 
-10. Verification and release discipline.
-   - For each phase, add focused service tests plus UI smoke tests where relevant.
-   - Run `python -m unittest discover -s tests`, `python -m compileall src tests`, `git diff --check`, and a PySide offscreen smoke check when UI changes.
-   - Run `npm --prefix desktop run build` whenever backend schemas/routes, desktop client types, or Electron/React UI code changes.
-   - Commit and push after each verified phase.
+### 3. 改写项目材料（仅属于当前项目）
 
-## Key decisions & tradeoffs
-- Style templates are separate from `prompt_templates`, avoiding a mixed object that cannot be reused independently.
-- Style templates only affect rewrite, not summary or scene detection, keeping analysis stages more objective.
-- Outline and character anchors outrank style during rewrite because plot and character consistency are more important than imitation of prose surface.
-- Character-card selection starts with deterministic name/alias matching plus main-character priority; this is cheaper and more predictable than an extra AI call.
-- Project anchor bindings use dedicated tables instead of `project_settings` columns because the current settings contract is strongly typed and should remain narrow.
-- Project bindings are deliberately cardinality-limited: one active style, one active outline, many unique character cards.
-- Template import/export uses versioned JSON as the canonical format while allowing `.txt` containers that contain JSON for user convenience.
-- Legacy `categoryPrompts` are informational by default; executable scene-specific rewrite rules require explicit label-matching implementation and tests.
-- Legacy `breakthroughTemplate` is treated only as compatible imported text and is not a privileged or default prompt mechanism.
-- Export sequencing is saved per project, but full re-chaptering is out of scope for the first export-plan version.
-- Rewrite history must be auditable even after templates, styles, outlines, or character cards are edited or deleted.
+- 每章原始正文。
+- 每章原始剧情骨架。
+- 每章经人工或 AI 修改后的目标剧情骨架。
+- 项目人物卡，以及章节带来的特点/关系变化。
+- 每章场景识别结果、改写正文、确认状态和生成记录。
 
-## Risks / open questions
-- Style/outline/character prompt assembly can grow large; later phases may need truncation, summaries, or token-budget management.
-- Imported legacy JSON may be mojibake or partially invalid; the importer needs clear error reporting and should not silently corrupt templates.
-- Apple-style Chinese UI work is requested, but broad UI redesign should be staged separately from the first style-template data model changes to keep risk contained.
-- Trial-writing validation needs default prompts and storage decisions, but it can follow the first extraction implementation.
+人物特点模板可以跨项目复用，但旧项目中的姓名、关系和剧情身份不能随模板一起带入；复用时必须绑定到当前项目人物。
 
-## Out of scope
-- DOCX export.
-- Full re-chaptering or automatic splitting of rewritten full text.
-- URL/web article extraction.
-- AI-based relevant-character detection in the first character-card version.
-- Automatically generating, enabling, or analyzing sensitive legacy breakthrough content.
-- Packaging as an executable.
+### 4. 提取项目材料（仅属于当前项目）
+
+- 每章原文和章节风格分析结果。
+- 每章人工审查后的分析结果。
+- 全书风格归纳草稿和人工审查结果。
+- 最终生成的改写提示词草稿。
+
+提取工程的最终 JSON 不包含范文中的人物名、剧情骨架或专有设定。
+
+## 用户工作流
+
+### 改写工程
+
+工作台 → 新建工程 → 改写工程 → 导入文件 → 预览信息 → 选择改写提示词 → 确认信息 → 创建工程 → 内容拆分 → 提取当前章剧情与人物 → AI 修改/扩充目标骨架 → AI 改写 → 当前章前后对比 → 接受/调整/重试 → 下一章循环 → 合并已确认章节 → 检查分章 → 导出。
+
+### 提取工程
+
+工作台 → 新建工程 → 提取工程 → 导入文件 → 预览信息 → 选择/确认风格分析提示词 → 确认信息 → 创建工程 → 内容拆分 → 当前章风格分析 → 人工审查 → 下一章循环 → 合并梳理各章分析 → 生成改写提示词 → 预览与人工审查 → 导出 JSON。
+
+## UI 方向
+
+以成熟长文本软件的工作台结构为参照，重点借鉴 Scrivener 的信息架构，而非复制品牌外观：
+
+- 左侧：工程/章节 Binder，突出层级、状态和快速跳转。
+- 中央：当前工作的主编辑区；改写阶段支持原文与结果对照。
+- 右侧：当前章节检查器，承载骨架、人物、提示词摘要和生成操作。
+- 顶部：只保留当前阶段需要的高频操作和明确的下一步。
+- 底部或标题区：显示字数、章节进度、保存/生成状态。
+- 面板宽度允许调整或在窄窗口折叠，不使用固定大卡片挤压正文。
+- 常用按钮使用一致尺寸；主操作易发现，次要操作进入就近工具区或菜单。
+
+视觉目标是“可长时间工作的文字工具”：清晰、安静、高对比、正文优先，避免现有界面中过多玻璃卡片、过小按钮和不可用的固定尺寸。
+
+## 验收要求
+
+### A. 改写工程闭环
+
+- [ ] 新建工程明确区分“改写工程”和“提取工程”。
+- [ ] 改写工程创建前能选择一个改写提示词模板，并在工程中保持绑定。
+- [ ] 内容拆分后可以按章节导航，能够看见未处理、已提取、已改写、已确认等状态。
+- [ ] “提取剧情与人物”生成并持久化原始骨架和人物卡，不写回改写提示词模板。
+- [ ] 可以在原始骨架基础上保存目标骨架，并执行 AI 优化/扩充。
+- [ ] 改写请求包含当前改写提示词、目标骨架、相关人物卡和当前章正文。
+- [ ] 当前章能够进行原文/改写文对照，并能接受、编辑或重新生成。
+- [ ] 下一章处理时能复用已确认的人物特点与必要前文状态。
+- [ ] 合并输出只采用已确认结果；未确认章节必须有明确处理策略和提示。
+- [ ] 导出前可检查标题、顺序、包含状态和正文来源，TXT/EPUB 输出符合该计划。
+
+### B. 提取工程闭环
+
+- [ ] 提取工程创建前选择的是“风格分析提示词”，界面不把它误称为改写提示词。
+- [ ] 每章分析结果包含结构化风格观察和可核对的文本依据，并允许人工编辑确认。
+- [ ] 全书归纳不是简单拼接章节总结；会去重、处理冲突、区分稳定规律并去内容化。
+- [ ] 最终预览的是基础规则、识别规则和改写规则，允许人工修改后再导出。
+- [ ] 导出 JSON 不包含源文人物名、剧情骨架或专有设定。
+
+### C. 提示词管理与 JSON 契约
+
+- [ ] “提示词”菜单分为“改写提示词”和“分析提示词”两个子界面。
+- [ ] 改写提示词编辑器只管理基础、识别和改写三类规则。
+- [ ] 分析提示词编辑器管理分析维度、证据/归纳规则和输出要求。
+- [ ] 软件能够导入自己导出的改写提示词 JSON。
+- [ ] 完成一次 `提取工程导出 → 改写提示词导入 → 新建改写工程选择` 的自动或集成测试。
+- [ ] JSON 使用明确版本号；非法 JSON、缺字段和不支持版本均给出可理解的错误，不静默丢数据。
+- [ ] 旧统一提示词包仍可读取或迁移；已有用户数据不能因升级消失。
+
+### D. UI 可用性
+
+- [ ] 1440×900 桌面视口下，工作台首屏同时可用地显示章节导航、主工作区和检查器。
+- [ ] 1280×720 视口下，主操作、当前章节、正文区和下一步入口不被裁剪；辅助面板可折叠。
+- [ ] 至少验证一个较窄视口，不能出现横向页面溢出、按钮重叠或正文不可阅读。
+- [ ] 常用按钮可点击高度不低于 36px；主操作与危险操作有明确层级。
+- [ ] 正文阅读区域有合理行宽、字号和行高，滚动发生在明确面板内而非整页失控。
+- [ ] 长章节名、空数据、加载、错误、禁用和已完成状态都有可用呈现。
+- [ ] 键盘焦点可见，主要按钮和输入具备语义标签。
+- [ ] UI 概念图与最终运行截图完成逐项对照；没有可修复的明显尺寸、层级或截断问题。
+
+### E. 数据、兼容与可追溯性
+
+- [ ] 数据库升级通过显式、可重复执行的版本迁移完成。
+- [ ] AI 生成内容保存模型、模板版本/快照、输入材料和生成时间等必要来源信息。
+- [ ] 修改模板不会改变历史章节当时使用的生成记录。
+- [ ] 项目删除/模板删除遵循已有软删除或引用保护策略，不留下破损绑定。
+
+### F. 自动化与人工验证
+
+- [ ] `python -m unittest discover -s tests` 通过。
+- [ ] `python -m compileall src tests backend` 通过。
+- [ ] `npm.cmd --prefix desktop run build` 通过。
+- [ ] `git diff --check` 通过。
+- [ ] 使用 Playwright 验证至少一条改写工程导航交互和一条提示词子界面切换。
+- [ ] 检查桌面与窄视口截图、控制台错误和 Vite 错误覆盖层。
+- [ ] 最终按本文件逐项自审；未满足项必须说明原因，不能以“代码已写”代替验收。
+
+## 2026-07-15 验收记录
+
+- [x] 两类工程、两类提示词和项目内材料边界已落到数据库、服务、API 与 React 工作台。
+- [x] 提取工程产出的 `rusty.rewrite_prompt v2` 已通过“导出 → 再导入 → 新建改写工程绑定”集成测试。
+- [x] 未确认改写不会进入导出；全书风格归纳只使用人工确认的章节分析。
+- [x] 旧 v1 统一提示词包可迁移读取，人物/剧情材料进入兼容元数据而不会污染新改写模板。
+- [x] 1440×900、1280×720、768×900 完成真实浏览器渲染；窄视口无页面横向溢出，已测按钮高度均不低于 36px。
+- [x] Playwright 完成提示词主界面切换、工作台阶段切换、检查器折叠、文案与空态检查；控制台、页面异常和失败请求均为 0。
+- [x] `python -m unittest discover -s tests`、`python -m pytest tests -q`、`python -m compileall -q src tests backend`、`npm.cmd --prefix desktop run build` 与 `git diff --check` 通过。
+
+## 实施顺序
+
+1. 审计当前统一提示词包、项目流程、数据库和兼容入口。
+2. 定义并迁移改写提示词、分析提示词、章节骨架/人物材料和章节分析数据。
+3. 完成服务/API/JSON 往返契约及测试。
+4. 生成文字工作台完整 UI 概念，提取设计系统和组件清单。
+5. 重构新建工程、提示词管理和项目工作台。
+6. 串通两条逐章工作流及最终导出。
+7. 自动化测试、真实渲染、视口检查、概念对照和 PLAN 自审。
+8. 清理临时 QA 产物，提交并推送。
+
+## 本轮非目标
+
+- DOCX 导出。
+- URL/网页文章抓取。
+- 多人云端协作或同步。
+- 绕过模型安全策略的提示词生成或导入行为。
+- 为了视觉效果加入与文字处理无关的插画、指标或装饰性面板。

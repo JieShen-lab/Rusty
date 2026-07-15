@@ -61,6 +61,30 @@ class FakeStyleAIClient(AIClient):
         )
 
 
+def create_rewrite_prompt(client, headers) -> int:
+    response = client.post(
+        "/api/prompts",
+        json={"name": "Test Rewrite Prompt", "global_rules": "Keep facts.", "rewrite_rules": "Rewrite clearly."},
+        headers=headers,
+    )
+    return int(response.json()["id"])
+
+
+def create_analysis_prompt(client, headers) -> int:
+    response = client.post(
+        "/api/analysis-prompts",
+        json={
+            "name": "Test Analysis Prompt",
+            "analysis_dimensions": "Action, dialogue, relationships, rhythm.",
+            "evidence_rules": "Cite short evidence and remove names from reusable rules.",
+            "synthesis_rules": "Keep repeated patterns only.",
+            "output_requirements": "Return strict JSON.",
+        },
+        headers=headers,
+    )
+    return int(response.json()["id"])
+
+
 @unittest.skipIf(TestClient is None, "FastAPI optional dependency is not installed")
 class BackendApiTests(unittest.TestCase):
     def test_health_and_token_rejection(self) -> None:
@@ -93,9 +117,15 @@ class BackendApiTests(unittest.TestCase):
 
             preview = client.post("/api/projects/preview", json={"source_path": str(source)}, headers=headers)
             token = preview.json()["preview_token"]
+            analysis_prompt_id = create_analysis_prompt(client, headers)
             created = client.post(
                 "/api/projects",
-                json={"preview_token": token, "project_name": "API Book", "purpose": "summary"},
+                json={
+                    "preview_token": token,
+                    "project_name": "API Book",
+                    "purpose": "extract",
+                    "analysis_prompt_template_id": analysis_prompt_id,
+                },
                 headers=headers,
             )
             projects = client.get("/api/projects")
@@ -107,7 +137,7 @@ class BackendApiTests(unittest.TestCase):
         self.assertEqual("API Book", created.json()["name"])
         self.assertEqual(1, len(projects.json()))
         self.assertEqual(1, len(chapters.json()))
-        self.assertEqual("summary", detail.json()["settings"]["processing_mode"])
+        self.assertEqual("extract", detail.json()["settings"]["processing_mode"])
 
     def test_export_plan_api_controls_export_order_titles_and_exclusions(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
@@ -125,9 +155,10 @@ class BackendApiTests(unittest.TestCase):
             headers = {"X-Rusty-Token": "test-token"}
 
             preview = client.post("/api/projects/preview", json={"source_path": str(source)}, headers=headers)
+            prompt_id = create_rewrite_prompt(client, headers)
             created = client.post(
                 "/api/projects",
-                json={"preview_token": preview.json()["preview_token"], "project_name": "Export Book"},
+                json={"preview_token": preview.json()["preview_token"], "project_name": "Export Book", "prompt_template_id": prompt_id},
                 headers=headers,
             )
             project_id = created.json()["id"]
@@ -242,9 +273,10 @@ class BackendApiTests(unittest.TestCase):
                 json={"name": "Rejected"},
             )
             preview = client.post("/api/projects/preview", json={"source_path": str(source)}, headers=headers)
+            prompt_id = create_rewrite_prompt(client, headers)
             created_project = client.post(
                 "/api/projects",
-                json={"preview_token": preview.json()["preview_token"], "project_name": "Styled Book"},
+                json={"preview_token": preview.json()["preview_token"], "project_name": "Styled Book", "prompt_template_id": prompt_id},
                 headers=headers,
             )
             project_id = created_project.json()["id"]
@@ -444,9 +476,10 @@ class BackendApiTests(unittest.TestCase):
             headers = {"X-Rusty-Token": "test-token"}
 
             preview = client.post("/api/projects/preview", json={"source_path": str(source)}, headers=headers)
+            prompt_id = create_rewrite_prompt(client, headers)
             created_project = client.post(
                 "/api/projects",
-                json={"preview_token": preview.json()["preview_token"], "project_name": "Anchor Book"},
+                json={"preview_token": preview.json()["preview_token"], "project_name": "Anchor Book", "prompt_template_id": prompt_id},
                 headers=headers,
             )
             project_id = created_project.json()["id"]

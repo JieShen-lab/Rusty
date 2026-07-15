@@ -65,6 +65,7 @@ class ChapterErrorOut(BaseModel):
 
 class ChapterAIOutputsOut(BaseModel):
     plot_summary: str | None = None
+    plot_characters: list[dict[str, Any]] | None = None
     needs_rewrite: bool | None = None
     scene_labels: list[str] | None = None
     scene_reasoning: str | None = None
@@ -74,6 +75,9 @@ class ChapterAIOutputsOut(BaseModel):
     rewritten_word_count: int | None = None
     expansion_ratio: float | None = None
     rewrite_elapsed_ms: int | None = None
+    style_analysis: dict[str, Any] | None = None
+    reviewed_style_analysis: dict[str, Any] | None = None
+    style_analysis_status: str | None = None
 
 
 class ChapterDetailOut(BaseModel):
@@ -119,7 +123,9 @@ class CreateProjectRequest(BaseModel):
     preview_token: str = Field(min_length=1)
     project_name: str | None = None
     workspace_path: str | None = None
-    purpose: Literal["rewrite", "summary"] = "rewrite"
+    purpose: Literal["rewrite", "extract", "summary"] = "rewrite"
+    prompt_template_id: int | None = None
+    analysis_prompt_template_id: int | None = None
 
 
 class ExportResponse(BaseModel):
@@ -171,6 +177,7 @@ class RewriteTextRequest(BaseModel):
 class ProjectSettingsUpdateRequest(BaseModel):
     model_id: int | None = None
     prompt_template_id: int | None = None
+    analysis_prompt_template_id: int | None = None
     processing_mode: str = "auto"
     concurrency: int = 1
     target_word_count: int | None = None
@@ -229,8 +236,6 @@ class PromptTemplateOut(BaseModel):
     scene_detection_rules: str
     rewrite_rules: str
     description: str = ""
-    story_anchor: dict[str, Any] = Field(default_factory=dict)
-    characters: list[dict[str, Any]] = Field(default_factory=list)
     scene_rules: list[PromptSceneRule] = Field(default_factory=list)
     package_metadata: dict[str, Any] = Field(default_factory=dict)
     source_project_id: int | None = None
@@ -243,8 +248,6 @@ class PromptTemplateWriteRequest(BaseModel):
     scene_detection_rules: str = ""
     rewrite_rules: str = ""
     description: str = ""
-    story_anchor: dict[str, Any] = Field(default_factory=dict)
-    characters: list[dict[str, Any]] = Field(default_factory=list)
     scene_rules: list[PromptSceneRule] = Field(default_factory=list)
     package_metadata: dict[str, Any] = Field(default_factory=dict)
     source_project_id: int | None = None
@@ -261,6 +264,49 @@ class PromptPackageExtractRequest(BaseModel):
 
 class PlotExpansionRequest(BaseModel):
     enabled: bool = True
+
+
+class TargetSkeletonWriteRequest(BaseModel):
+    text: str = ""
+    enabled: bool = True
+
+
+class AnalysisPromptTemplateOut(BaseModel):
+    id: int
+    name: str
+    description: str
+    analysis_dimensions: str
+    evidence_rules: str
+    synthesis_rules: str
+    output_requirements: str
+    version: int
+    is_default: bool
+
+
+class AnalysisPromptTemplateWriteRequest(BaseModel):
+    name: str = Field(min_length=1)
+    description: str = ""
+    analysis_dimensions: str = ""
+    evidence_rules: str = ""
+    synthesis_rules: str = ""
+    output_requirements: str = ""
+    is_default: bool = False
+
+
+class StyleAnalysisOut(BaseModel):
+    chapter_id: int
+    analysis: dict[str, Any] = Field(default_factory=dict)
+    reviewed: dict[str, Any] = Field(default_factory=dict)
+    status: str
+    analysis_prompt_template_id: int | None = None
+    model_id: int | None = None
+    elapsed_ms: int | None = None
+    updated_at: str | None = None
+    reviewed_at: str | None = None
+
+
+class StyleAnalysisReviewRequest(BaseModel):
+    reviewed: dict[str, Any] = Field(default_factory=dict)
 
 
 class ProjectPromptWriteRequest(BaseModel):

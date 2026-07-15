@@ -1,4 +1,6 @@
 import type {
+  AnalysisPromptTemplate,
+  AnalysisPromptTemplateWrite,
   AnchorExtractWrite,
   Chapter,
   ChapterDetail,
@@ -25,6 +27,7 @@ import type {
   StyleTemplateExtractWrite,
   StyleTemplate,
   StyleTrialWrite,
+  StyleAnalysis,
   StyleTemplateWrite,
 } from './types';
 
@@ -165,7 +168,14 @@ export function previewProject(sourcePath: string, workspacePath?: string) {
   });
 }
 
-export function createProject(previewToken: string, projectName?: string, workspacePath?: string, purpose: ProjectPurpose = 'rewrite') {
+export function createProject(
+  previewToken: string,
+  projectName?: string,
+  workspacePath?: string,
+  purpose: ProjectPurpose = 'rewrite',
+  promptTemplateId?: number | null,
+  analysisPromptTemplateId?: number | null,
+) {
   return request<Project>('/api/projects', {
     method: 'POST',
     body: JSON.stringify({
@@ -173,6 +183,8 @@ export function createProject(previewToken: string, projectName?: string, worksp
       project_name: projectName || null,
       workspace_path: workspacePath || null,
       purpose,
+      prompt_template_id: promptTemplateId ?? null,
+      analysis_prompt_template_id: analysisPromptTemplateId ?? null,
     }),
   });
 }
@@ -219,6 +231,22 @@ export function importPromptPackage(content: string) {
 
 export function exportPromptPackage(templateId: number) {
   return request<{ content: string }>(`/api/prompts/${templateId}/export`, { method: 'POST' });
+}
+
+export function getAnalysisPrompts() {
+  return request<AnalysisPromptTemplate[]>('/api/analysis-prompts');
+}
+
+export function createAnalysisPrompt(payload: AnalysisPromptTemplateWrite) {
+  return request<AnalysisPromptTemplate>('/api/analysis-prompts', { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export function updateAnalysisPrompt(templateId: number, payload: AnalysisPromptTemplateWrite) {
+  return request<AnalysisPromptTemplate>(`/api/analysis-prompts/${templateId}`, { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export function deleteAnalysisPrompt(templateId: number) {
+  return request<{ ok: boolean }>(`/api/analysis-prompts/${templateId}/delete`, { method: 'POST' });
 }
 
 export function extractProjectPromptPackage(projectId: number, modelId?: number | null) {
@@ -366,6 +394,31 @@ export function summarizeChapter(chapterId: number) {
   return request<{ ok: boolean; text: string }>(`/api/chapters/${chapterId}/summarize`, { method: 'POST' });
 }
 
+export function analyzeChapterStyle(chapterId: number, modelId?: number | null) {
+  return request<StyleAnalysis>(`/api/chapters/${chapterId}/style-analysis`, {
+    method: 'POST',
+    body: JSON.stringify({ model_id: modelId ?? null }),
+  });
+}
+
+export function reviewChapterStyle(chapterId: number, reviewed: Record<string, unknown>) {
+  return request<StyleAnalysis>(`/api/chapters/${chapterId}/style-analysis/review`, {
+    method: 'POST',
+    body: JSON.stringify({ reviewed }),
+  });
+}
+
+export function synthesizeProjectStyle(projectId: number, modelId?: number | null) {
+  return request<PromptTemplate>(`/api/projects/${projectId}/style-analysis/synthesize`, {
+    method: 'POST',
+    body: JSON.stringify({ model_id: modelId ?? null }),
+  });
+}
+
+export function getProjectStyleSynthesis(projectId: number) {
+  return request<{ prompt_template_id?: number | null }>(`/api/projects/${projectId}/style-analysis/synthesis`);
+}
+
 export function detectScene(chapterId: number) {
   return request<{ ok: boolean; text: string }>(`/api/chapters/${chapterId}/detect-scene`, { method: 'POST' });
 }
@@ -381,6 +434,13 @@ export function expandChapterPlot(chapterId: number, enabled: boolean) {
   });
 }
 
+export function saveTargetSkeleton(chapterId: number, text: string, enabled = true) {
+  return request<import('./types').ChapterDetail>(`/api/chapters/${chapterId}/target-skeleton`, {
+    method: 'POST',
+    body: JSON.stringify({ text, enabled }),
+  });
+}
+
 export function retryChapterStage(chapterId: number, stage: 'summary' | 'scene_detection' | 'plot_expansion' | 'rewrite') {
   return request<{ ok: boolean; text: string }>(`/api/chapters/${chapterId}/retry`, {
     method: 'POST',
@@ -393,4 +453,8 @@ export function saveChapterRewrite(chapterId: number, rewrittenText: string) {
     method: 'POST',
     body: JSON.stringify({ rewritten_text: rewrittenText }),
   });
+}
+
+export function confirmChapterRewrite(chapterId: number) {
+  return request<import('./types').ChapterDetail>(`/api/chapters/${chapterId}/confirm-rewrite`, { method: 'POST' });
 }

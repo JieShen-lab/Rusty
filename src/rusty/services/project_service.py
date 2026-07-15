@@ -51,6 +51,8 @@ class ProjectService:
         workspace_path: str | Path,
         project_name: str | None = None,
         processing_mode: str = "rewrite",
+        prompt_template_id: int | None = None,
+        analysis_prompt_template_id: int | None = None,
     ) -> int:
         source_bytes = book.source_path.read_bytes()
         content_hash = hashlib.sha256(source_bytes).hexdigest()
@@ -131,10 +133,13 @@ class ProjectService:
             )
             connection.execute(
                 """
-                INSERT INTO project_settings (project_id, txt_split_rule_id, processing_mode)
-                VALUES (?, 1, ?)
+                INSERT INTO project_settings (
+                    project_id, prompt_template_id, analysis_prompt_template_id,
+                    txt_split_rule_id, processing_mode
+                )
+                VALUES (?, ?, ?, 1, ?)
                 """,
-                (project_id, processing_mode),
+                (project_id, prompt_template_id, analysis_prompt_template_id, processing_mode),
             )
             chapter_rows = [
                 (
@@ -358,6 +363,7 @@ class ProjectService:
                         expansion_ratio = excluded.expansion_ratio,
                         prompt_snapshot_json = excluded.prompt_snapshot_json,
                         anchor_snapshot_json = excluded.anchor_snapshot_json,
+                        confirmed_at = NULL,
                         updated_at = CURRENT_TIMESTAMP
                     """,
                     (
@@ -514,7 +520,8 @@ class ProjectService:
                     COALESCE(NULLIF(p.export_title, ''), c.title) AS export_title,
                     p.include_in_export,
                     c.status,
-                    r.rewrite_source
+                    r.rewrite_source,
+                    r.confirmed_at
                 FROM export_chapter_plan p
                 JOIN chapters c ON c.id = p.chapter_id
                 LEFT JOIN chapter_rewrites r ON r.chapter_id = c.id
@@ -529,7 +536,7 @@ class ProjectService:
                 export_order=row["export_order"],
                 export_title=row["export_title"],
                 include_in_export=bool(row["include_in_export"]),
-                source_status=_export_source_status(row["status"], row["rewrite_source"]),
+                source_status=_export_source_status(row["status"], row["rewrite_source"], row["confirmed_at"]),
             )
             for row in rows
         ]
@@ -589,13 +596,17 @@ class ProjectService:
                     COALESCE(NULLIF(p.export_title, ''), c.title) AS export_title,
                     c.title AS original_title,
                     c.original_text,
-                    c.rewritten_text,
+                    CASE
+                        WHEN r.confirmed_at IS NOT NULL OR c.status = 'confirmed' THEN c.rewritten_text
+                        ELSE NULL
+                    END AS rewritten_text,
                     c.word_count,
                     c.status,
                     c.source_start_line,
                     c.source_end_line,
                     p.include_in_export,
-                    r.rewrite_source
+                    r.rewrite_source,
+                    r.confirmed_at
                 FROM export_chapter_plan p
                 JOIN chapters c ON c.id = p.chapter_id
                 LEFT JOIN chapter_rewrites r ON r.chapter_id = c.id
@@ -678,6 +689,7 @@ class ProjectService:
                     project_id,
                     model_id,
                     prompt_template_id,
+                    analysis_prompt_template_id,
                     txt_split_rule_id,
                     processing_mode,
                     concurrency,
@@ -695,6 +707,7 @@ class ProjectService:
         project_id: int,
         model_id: int | None = None,
         prompt_template_id: int | None = None,
+        analysis_prompt_template_id: int | None = None,
         processing_mode: str = "manual",
         concurrency: int = 1,
         target_word_count: int | None = None,
@@ -707,15 +720,17 @@ class ProjectService:
                     project_id,
                     model_id,
                     prompt_template_id,
+                    analysis_prompt_template_id,
                     processing_mode,
                     concurrency,
                     target_word_count,
                     min_expansion_ratio
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(project_id)
                 DO UPDATE SET
                     model_id = excluded.model_id,
                     prompt_template_id = excluded.prompt_template_id,
+                    analysis_prompt_template_id = excluded.analysis_prompt_template_id,
                     processing_mode = excluded.processing_mode,
                     concurrency = excluded.concurrency,
                     target_word_count = excluded.target_word_count,
@@ -726,6 +741,7 @@ class ProjectService:
                     project_id,
                     model_id,
                     prompt_template_id,
+                    analysis_prompt_template_id,
                     processing_mode,
                     concurrency,
                     target_word_count,
@@ -813,6 +829,7 @@ class ProjectService:
             project_id=row["project_id"],
             model_id=row["model_id"],
             prompt_template_id=row["prompt_template_id"],
+            analysis_prompt_template_id=row["analysis_prompt_template_id"],
             txt_split_rule_id=row["txt_split_rule_id"],
             processing_mode=row["processing_mode"],
             concurrency=row["concurrency"],
@@ -822,7 +839,7 @@ class ProjectService:
 
     @staticmethod
     def _effective_export_chapter_from_row(row) -> EffectiveExportChapter:
-        source_status = _export_source_status(row["status"], row["rewrite_source"])
+        source_status = _export_source_status(row["status"], row["rewrite_source"], row["confirmed_at"])
         return EffectiveExportChapter(
             id=row["id"],
             project_id=row["project_id"],
@@ -840,9 +857,11 @@ class ProjectService:
         )
 
 
-def _export_source_status(chapter_status: str, rewrite_source: str | None) -> str:
+def _export_source_status(chapter_status: str, rewrite_source: str | None, confirmed_at: str | None = None) -> str:
     if chapter_status == "kept_original":
         return "kept_original"
+    if chapter_status != "confirmed" and confirmed_at is None:
+        return "original"
     if rewrite_source == "manual":
         return "manual_rewrite"
     if rewrite_source == "ai":

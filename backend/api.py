@@ -19,16 +19,18 @@ from rusty.db import session
 from rusty.models import ChapterRecord, ExportPlanItem, ParsedBook, ProjectSummary
 from rusty.services.anchor_extraction_service import AnchorExtractionService
 from rusty.services.anchor_service import AnchorService, CharacterCard, OutlineTemplate
+from rusty.services.analysis_service import AnalysisService
 from rusty.services.model_service import ModelService
 from rusty.services.pipeline_service import PipelineService
 from rusty.services.project_service import ProjectService, default_database_path
 from rusty.services.prompt_service import PromptService
-from rusty.services.prompt_package_extraction_service import PromptPackageExtractionService
 from rusty.services.style_extraction_service import StyleExtractionService
 from rusty.services.style_service import StyleTemplate, StyleTemplateService
 
 from .schemas import (
     ChapterAIOutputsOut,
+    AnalysisPromptTemplateOut,
+    AnalysisPromptTemplateWriteRequest,
     AnchorExtractRequest,
     CharacterCardOut,
     CharacterCardsExtractOut,
@@ -63,6 +65,7 @@ from .schemas import (
     PromptPackageExtractRequest,
     PromptPackageImportRequest,
     PlotExpansionRequest,
+    TargetSkeletonWriteRequest,
     OutlineTemplateOut,
     OutlineTemplateWriteRequest,
     PipelineRunResponse,
@@ -75,6 +78,8 @@ from .schemas import (
     StyleTemplateOut,
     StyleTrialWriteRequest,
     StyleTemplateWriteRequest,
+    StyleAnalysisOut,
+    StyleAnalysisReviewRequest,
     TextResultResponse,
 )
 
@@ -113,10 +118,7 @@ def create_app(
     pipeline_service = PipelineService(db_path)
     model_service = ModelService(db_path)
     prompt_service = PromptService(db_path)
-    prompt_package_extraction_service = PromptPackageExtractionService(
-        db_path,
-        ai_client=prompt_package_ai_client or style_ai_client,
-    )
+    analysis_service = AnalysisService(db_path, ai_client=prompt_package_ai_client or style_ai_client)
     style_service = StyleTemplateService(db_path)
     style_extraction_service = StyleExtractionService(db_path, ai_client=style_ai_client)
     anchor_service = AnchorService(db_path)
@@ -201,11 +203,18 @@ def create_app(
             raise _http_error(400, "preview_mismatch", "源文件已变化，请重新预览后再创建工程。")
         workspace = _optional_workspace_path(payload.workspace_path) or state.workspace_path or state.source_path.parent
         parsed = project_service.preview_book(state.source_path)
+        purpose = "extract" if payload.purpose == "summary" else payload.purpose
+        if purpose == "rewrite" and payload.prompt_template_id is None:
+            raise _http_error(400, "rewrite_prompt_required", "创建改写工程前请选择改写提示词。")
+        if purpose == "extract" and payload.analysis_prompt_template_id is None:
+            raise _http_error(400, "analysis_prompt_required", "创建提取工程前请选择风格分析提示词。")
         project_id = project_service.create_project(
             parsed,
             workspace,
             payload.project_name,
-            processing_mode=payload.purpose,
+            processing_mode=purpose,
+            prompt_template_id=payload.prompt_template_id,
+            analysis_prompt_template_id=payload.analysis_prompt_template_id,
         )
         return _project_out(_require_project(project_service, project_id))
 
@@ -280,6 +289,7 @@ def create_app(
             project_id=project_id,
             model_id=payload.model_id,
             prompt_template_id=payload.prompt_template_id,
+            analysis_prompt_template_id=payload.analysis_prompt_template_id,
             processing_mode=payload.processing_mode,
             concurrency=payload.concurrency,
             target_word_count=payload.target_word_count,
@@ -340,6 +350,53 @@ def create_app(
         text = pipeline_service.summarize_chapter(chapter_id)
         return TextResultResponse(ok=True, text=text)
 
+    @app.get("/api/chapters/{chapter_id}/style-analysis", response_model=StyleAnalysisOut)
+    def get_chapter_style_analysis(chapter_id: int) -> StyleAnalysisOut:
+        chapter = _require_existing_chapter(project_service, chapter_id)
+        _require_project(project_service, chapter.project_id)
+        record = analysis_service.get_chapter_analysis(chapter_id)
+        if record is None:
+            raise _http_error(404, "style_analysis_not_found", "本章尚未进行风格分析。")
+        return StyleAnalysisOut(**record)
+
+    @app.post(
+        "/api/chapters/{chapter_id}/style-analysis",
+        response_model=StyleAnalysisOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def analyze_chapter_style(chapter_id: int, payload: PromptPackageExtractRequest) -> StyleAnalysisOut:
+        chapter = _require_existing_chapter(project_service, chapter_id)
+        _require_project(project_service, chapter.project_id)
+        return StyleAnalysisOut(**analysis_service.analyze_chapter(chapter_id, model_id=payload.model_id))
+
+    @app.post(
+        "/api/chapters/{chapter_id}/style-analysis/review",
+        response_model=StyleAnalysisOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def review_chapter_style(chapter_id: int, payload: StyleAnalysisReviewRequest) -> StyleAnalysisOut:
+        chapter = _require_existing_chapter(project_service, chapter_id)
+        _require_project(project_service, chapter.project_id)
+        return StyleAnalysisOut(**analysis_service.review_chapter(chapter_id, payload.reviewed))
+
+    @app.get("/api/projects/{project_id}/style-analysis/synthesis", response_model=dict[str, Any])
+    def get_project_style_synthesis(project_id: int) -> dict[str, Any]:
+        _require_project(project_service, project_id)
+        return analysis_service.get_project_synthesis(project_id) or {}
+
+    @app.post(
+        "/api/projects/{project_id}/style-analysis/synthesize",
+        response_model=PromptTemplateOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def synthesize_project_style(project_id: int, payload: PromptPackageExtractRequest) -> PromptTemplateOut:
+        _require_project(project_service, project_id)
+        template_id = analysis_service.synthesize_project(project_id, model_id=payload.model_id)
+        template = prompt_service.get_template(template_id)
+        if template is None:
+            raise _http_error(500, "style_synthesis_failed", "已生成改写提示词，但无法重新读取。")
+        return PromptTemplateOut(**template.__dict__)
+
     @app.post("/api/chapters/{chapter_id}/detect-scene", response_model=TextResultResponse, dependencies=[Depends(_require_token)])
     def detect_scene(chapter_id: int) -> TextResultResponse:
         chapter = _require_existing_chapter(project_service, chapter_id)
@@ -361,6 +418,17 @@ def create_app(
         text = pipeline_service.expand_chapter_plot(chapter_id, enabled=payload.enabled)
         return TextResultResponse(ok=True, text=text)
 
+    @app.post(
+        "/api/chapters/{chapter_id}/target-skeleton",
+        response_model=ChapterDetailOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def save_target_skeleton(chapter_id: int, payload: TargetSkeletonWriteRequest) -> ChapterDetailOut:
+        chapter = _require_existing_chapter(project_service, chapter_id)
+        _require_project(project_service, chapter.project_id)
+        pipeline_service.save_target_skeleton(chapter_id, payload.text, payload.enabled)
+        return _chapter_detail(_require_existing_chapter(project_service, chapter_id), pipeline_service)
+
     @app.post("/api/chapters/{chapter_id}/retry", response_model=TextResultResponse, dependencies=[Depends(_require_token)])
     def retry_chapter_stage(chapter_id: int, payload: RetryStageRequest) -> TextResultResponse:
         chapter = _require_existing_chapter(project_service, chapter_id)
@@ -375,6 +443,17 @@ def create_app(
         project_service.save_chapter_rewrite(chapter_id, payload.rewritten_text)
         updated = _require_existing_chapter(project_service, chapter_id)
         return _chapter_detail(updated, pipeline_service)
+
+    @app.post(
+        "/api/chapters/{chapter_id}/confirm-rewrite",
+        response_model=ChapterDetailOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def confirm_chapter_rewrite(chapter_id: int) -> ChapterDetailOut:
+        chapter = _require_existing_chapter(project_service, chapter_id)
+        _require_project(project_service, chapter.project_id)
+        pipeline_service.confirm_rewrite(chapter_id)
+        return _chapter_detail(_require_existing_chapter(project_service, chapter_id), pipeline_service)
 
     @app.get("/api/models", response_model=list[ModelOut])
     def list_models() -> list[ModelOut]:
@@ -410,6 +489,48 @@ def create_app(
         result = model_service.test_connection(model_id)
         return ModelTestResponse(ok=result.ok, message=result.message, elapsed_ms=result.elapsed_ms)
 
+    @app.get("/api/analysis-prompts", response_model=list[AnalysisPromptTemplateOut])
+    def list_analysis_prompts() -> list[AnalysisPromptTemplateOut]:
+        return [AnalysisPromptTemplateOut(**template.__dict__) for template in analysis_service.list_templates()]
+
+    @app.post(
+        "/api/analysis-prompts",
+        response_model=AnalysisPromptTemplateOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def create_analysis_prompt(payload: AnalysisPromptTemplateWriteRequest) -> AnalysisPromptTemplateOut:
+        template_id = analysis_service.create_template(**payload.model_dump())
+        template = analysis_service.get_template(template_id)
+        if template is None:
+            raise _http_error(500, "analysis_prompt_create_failed", "分析提示词已创建，但无法重新读取。")
+        return AnalysisPromptTemplateOut(**template.__dict__)
+
+    @app.post(
+        "/api/analysis-prompts/{template_id}",
+        response_model=AnalysisPromptTemplateOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def update_analysis_prompt(
+        template_id: int,
+        payload: AnalysisPromptTemplateWriteRequest,
+    ) -> AnalysisPromptTemplateOut:
+        analysis_service.update_template(template_id, **payload.model_dump())
+        template = analysis_service.get_template(template_id)
+        if template is None:
+            raise _http_error(404, "analysis_prompt_not_found", f"Analysis prompt not found: {template_id}")
+        return AnalysisPromptTemplateOut(**template.__dict__)
+
+    @app.post(
+        "/api/analysis-prompts/{template_id}/delete",
+        response_model=dict[str, bool],
+        dependencies=[Depends(_require_token)],
+    )
+    def delete_analysis_prompt(template_id: int) -> dict[str, bool]:
+        if analysis_service.get_template(template_id) is None:
+            raise _http_error(404, "analysis_prompt_not_found", f"Analysis prompt not found: {template_id}")
+        analysis_service.delete_template(template_id)
+        return {"ok": True}
+
     @app.get("/api/prompts", response_model=list[PromptTemplateOut])
     def list_prompts() -> list[PromptTemplateOut]:
         return [PromptTemplateOut(**template.__dict__) for template in prompt_service.list_templates()]
@@ -441,7 +562,7 @@ def create_app(
     )
     def extract_project_prompt_package(project_id: int, payload: PromptPackageExtractRequest) -> PromptTemplateOut:
         _require_project(project_service, project_id)
-        template_id = prompt_package_extraction_service.extract_from_project(project_id, model_id=payload.model_id)
+        template_id = analysis_service.synthesize_project(project_id, model_id=payload.model_id)
         template = prompt_service.get_template(template_id)
         if template is None:
             raise _http_error(500, "prompt_extract_failed", "Prompt package was extracted but could not be loaded.")

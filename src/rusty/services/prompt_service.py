@@ -8,8 +8,10 @@ from typing import Any
 from rusty.db import initialize_database, session
 from rusty.services.project_service import default_database_path
 
-PROMPT_PACKAGE_SCHEMA = "rusty.prompt_package"
-PROMPT_PACKAGE_SCHEMA_VERSION = 1
+REWRITE_PROMPT_SCHEMA = "rusty.rewrite_prompt"
+LEGACY_PROMPT_PACKAGE_SCHEMA = "rusty.prompt_package"
+PROMPT_PACKAGE_SCHEMA = REWRITE_PROMPT_SCHEMA
+PROMPT_PACKAGE_SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -46,7 +48,6 @@ class PromptTemplate:
             "name": self.name,
             "description": self.description,
             "system_rules": self.global_rules,
-            "summary_rules": self.summary_rules,
             "scene_recognition": {
                 "general_rules": self.scene_detection_rules,
                 "categories": [
@@ -67,9 +68,10 @@ class PromptTemplate:
                     if rule.rewrite_prompt.strip()
                 ],
             },
-            "story_anchor": self.story_anchor,
-            "characters": self.characters,
-            "metadata": self.package_metadata,
+            "metadata": {
+                **self.package_metadata,
+                "template_kind": "rewrite",
+            },
         }
 
 
@@ -194,18 +196,35 @@ class PromptService:
     def export_template(self, template_id: int) -> str:
         template = self.get_template(template_id)
         if template is None:
-            raise ValueError(f"Prompt package not found: {template_id}")
+            raise ValueError(f"Rewrite prompt not found: {template_id}")
         return json.dumps(template.to_package(), ensure_ascii=False, indent=2)
 
     def import_template_text(self, content: str) -> int:
         try:
             package = json.loads(content)
         except json.JSONDecodeError as exc:
-            raise ValueError(f"Prompt package is not valid JSON: {exc}") from exc
+            raise ValueError(f"Rewrite prompt is not valid JSON: {exc}") from exc
         if not isinstance(package, dict):
-            raise ValueError("Prompt package must be a JSON object.")
-        if package.get("schema") not in (None, PROMPT_PACKAGE_SCHEMA):
-            raise ValueError("Unsupported prompt package schema.")
+            raise ValueError("Rewrite prompt must be a JSON object.")
+        if package.get("schema") not in (None, REWRITE_PROMPT_SCHEMA, LEGACY_PROMPT_PACKAGE_SCHEMA):
+            raise ValueError("Unsupported rewrite prompt schema.")
+        version = package.get("schema_version", 1)
+        if not isinstance(version, int) or version not in (1, PROMPT_PACKAGE_SCHEMA_VERSION):
+            raise ValueError(f"Unsupported rewrite prompt schema version: {version}")
+        if package.get("schema") == REWRITE_PROMPT_SCHEMA and version == PROMPT_PACKAGE_SCHEMA_VERSION:
+            missing = [
+                key
+                for key in ("name", "system_rules", "scene_recognition", "rewrite_rules")
+                if key not in package
+            ]
+            if missing:
+                raise ValueError(f"Rewrite prompt is missing required fields: {', '.join(missing)}")
+            if not isinstance(package["name"], str) or not package["name"].strip():
+                raise ValueError("Rewrite prompt field 'name' must be a non-empty string.")
+            if not isinstance(package["scene_recognition"], dict):
+                raise ValueError("Rewrite prompt field 'scene_recognition' must be an object.")
+            if not isinstance(package["rewrite_rules"], dict):
+                raise ValueError("Rewrite prompt field 'rewrite_rules' must be an object.")
         payload = _normalize_package(package)
         return self.create_template(**payload)
 
@@ -324,17 +343,25 @@ def _normalize_package(package: dict[str, Any]) -> dict[str, Any]:
                 "sort_order": index,
             }
         )
+    metadata = package.get("metadata") if isinstance(package.get("metadata"), dict) else {}
+    legacy_material: dict[str, Any] = {}
+    if isinstance(package.get("story_anchor"), dict) and package.get("story_anchor"):
+        legacy_material["story_anchor"] = package["story_anchor"]
+    if isinstance(package.get("characters"), list) and package.get("characters"):
+        legacy_material["characters"] = package["characters"]
+    if legacy_material:
+        metadata = {**metadata, "legacy_project_material": legacy_material}
     return {
-        "name": str(package.get("name") or "导入的提示词包"),
+        "name": str(package.get("name") or "导入的改写提示词"),
         "description": str(package.get("description") or ""),
         "global_rules": str(package.get("system_rules") or package.get("global_rules") or ""),
         "summary_rules": str(package.get("summary_rules") or ""),
         "scene_detection_rules": str(recognition.get("general_rules") or package.get("scene_detection_rules") or ""),
         "rewrite_rules": str(rewrite.get("general") or package.get("rewrite_rules_text") or ""),
-        "story_anchor": package.get("story_anchor") if isinstance(package.get("story_anchor"), dict) else {},
-        "characters": package.get("characters") if isinstance(package.get("characters"), list) else [],
+        "story_anchor": {},
+        "characters": [],
         "scene_rules": scene_rules,
-        "package_metadata": package.get("metadata") if isinstance(package.get("metadata"), dict) else {},
+        "package_metadata": metadata,
         "source_project_id": None,
         "is_default": False,
     }

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { AppShell } from './components/AppShell';
 import type { RouteKey } from './components/Sidebar';
 import { HomePage } from './pages/HomePage';
+import { AnchorManagePage } from './pages/AnchorManagePage';
 import { ModelManagePage } from './pages/ModelManagePage';
 import { NewProjectPage } from './pages/NewProjectPage';
 import { ProjectWorkspacePage } from './pages/ProjectWorkspacePage';
@@ -24,7 +25,8 @@ function parseRoute(pathname: string): Route {
   if (parts[0] === 'new-project') return { key: 'new-project', path: '/new-project' };
   if (parts[0] === 'models') return { key: 'models', path: '/models' };
   if (parts[0] === 'prompts') return { key: 'prompts', path: '/prompts' };
-  if (parts[0] === 'styles' || parts[0] === 'anchors') return { key: 'prompts', path: '/prompts' };
+  if (parts[0] === 'anchors') return { key: 'anchors', path: '/anchors' };
+  if (parts[0] === 'styles') return { key: 'prompts', path: '/prompts' };
   return { key: 'home', path: '/home' };
 }
 
@@ -48,10 +50,11 @@ export default function App() {
 
   let page = <HomePage onNavigate={navigate} />;
   if (route.key === 'library') page = <WorkbenchPage onNavigate={navigate} />;
-  if (route.key === 'workspace') page = <ProjectWorkspacePage projectId={route.projectId} onNavigate={navigate} />;
+  if (route.key === 'workspace' && route.projectId !== undefined) page = <ProjectWorkspacePage projectId={route.projectId} onNavigate={navigate} />;
   if (route.key === 'new-project') page = <NewProjectPage onNavigate={navigate} />;
   if (route.key === 'models') page = <ModelManagePage />;
   if (route.key === 'prompts') page = <PromptManagePage />;
+  if (route.key === 'anchors') page = <AnchorManagePage />;
 
   return (
     <AppShell active={route.key} onNavigate={navigate}>

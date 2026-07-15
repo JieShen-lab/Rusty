@@ -60,6 +60,7 @@ class ProjectSettings:
     project_id: int
     model_id: int | None
     prompt_template_id: int | None
+    analysis_prompt_template_id: int | None
     txt_split_rule_id: int | None
     processing_mode: str
     concurrency: int
@@ -130,6 +131,7 @@ class ChapterError:
 @dataclass(frozen=True)
 class ChapterAIOutputs:
     plot_summary: str | None = None
+    plot_characters: list[dict] | None = None
     needs_rewrite: bool | None = None
     scene_labels: list[str] | None = None
     scene_reasoning: str | None = None
@@ -139,6 +141,9 @@ class ChapterAIOutputs:
     rewritten_word_count: int | None = None
     expansion_ratio: float | None = None
     rewrite_elapsed_ms: int | None = None
+    style_analysis: dict | None = None
+    reviewed_style_analysis: dict | None = None
+    style_analysis_status: str | None = None
 
 
 @dataclass(frozen=True)

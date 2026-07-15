@@ -26,6 +26,9 @@ class SchemaTests(unittest.TestCase):
         self.assertIn("chapters", table_names)
         self.assertIn("ai_models", table_names)
         self.assertIn("prompt_templates", table_names)
+        self.assertIn("analysis_prompt_templates", table_names)
+        self.assertIn("chapter_style_analyses", table_names)
+        self.assertIn("project_style_syntheses", table_names)
         self.assertIn("style_templates", table_names)
         self.assertIn("project_style_bindings", table_names)
         self.assertIn("outline_templates", table_names)
@@ -100,6 +103,7 @@ class SchemaTests(unittest.TestCase):
         self.assertIn("rewrite_source", columns)
         self.assertIn("prompt_snapshot_json", columns)
         self.assertIn("anchor_snapshot_json", columns)
+        self.assertIn("confirmed_at", columns)
         self.assertEqual(("unknown", "{}", "{}"), row)
         self.assertEqual(CURRENT_SCHEMA_VERSION, version)
 
