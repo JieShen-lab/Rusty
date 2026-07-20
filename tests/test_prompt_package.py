@@ -107,6 +107,51 @@ class PromptPackageTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "missing required fields"):
                 service.import_template_text(json.dumps({"schema": PROMPT_PACKAGE_SCHEMA, "schema_version": 2, "name": "Incomplete"}))
 
+    def test_import_legacy_stringified_template_maps_prompt_content(self) -> None:
+        legacy_payload = {
+            "name": "测试",
+            "rewriteTemplate": json.dumps(
+                {
+                    "commonPrompt": "扩写执行指令",
+                    "categoryPrompts": {"combat_scene": "强化动作因果。"},
+                },
+                ensure_ascii=False,
+            ),
+            "identifyTemplate": json.dumps(
+                {
+                    "categories": [
+                        {
+                            "id": "combat_scene",
+                            "name": "高燃战斗场景",
+                            "conditions": "出现武器、招式名称",
+                        },
+                        {
+                            "id": "emotional_moment",
+                            "name": "情感爆发时刻",
+                            "conditions": "出现哭泣、拥抱等行为",
+                        },
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            "breakthroughTemplate": "仅作为兼容元数据保留。",
+        }
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            service = PromptService(Path(directory) / "rusty.db")
+            template_id = service.import_template_text(json.dumps(legacy_payload, ensure_ascii=False))
+            template = service.get_template(template_id)
+
+        self.assertIsNotNone(template)
+        self.assertEqual("测试", template.name)
+        self.assertEqual("扩写执行指令", template.rewrite_rules)
+        self.assertEqual(2, len(template.scene_rules))
+        self.assertEqual("combat_scene", template.scene_rules[0].scene_key)
+        self.assertEqual("出现武器、招式名称", template.scene_rules[0].detection_prompt)
+        self.assertEqual("强化动作因果。", template.scene_rules[0].rewrite_prompt)
+        self.assertEqual("emotional_moment", template.scene_rules[1].scene_key)
+        self.assertEqual("legacy.prompt_template", template.package_metadata["import_schema"])
+        self.assertEqual("仅作为兼容元数据保留。", template.package_metadata["legacy_breakthroughTemplate"])
+
     def test_plot_expansion_and_rewrite_use_structured_package(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)

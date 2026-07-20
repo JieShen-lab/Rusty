@@ -319,6 +319,9 @@ class PromptService:
 
 
 def _normalize_package(package: dict[str, Any]) -> dict[str, Any]:
+    if any(key in package for key in ("rewriteTemplate", "identifyTemplate", "breakthroughTemplate")):
+        return _normalize_legacy_template(package)
+
     recognition = package.get("scene_recognition") if isinstance(package.get("scene_recognition"), dict) else {}
     rewrite = package.get("rewrite_rules") if isinstance(package.get("rewrite_rules"), dict) else {}
     categories = recognition.get("categories") if isinstance(recognition.get("categories"), list) else []
@@ -365,6 +368,116 @@ def _normalize_package(package: dict[str, Any]) -> dict[str, Any]:
         "source_project_id": None,
         "is_default": False,
     }
+
+
+def _normalize_legacy_template(package: dict[str, Any]) -> dict[str, Any]:
+    raw_rewrite = package.get("rewriteTemplate")
+    raw_identify = package.get("identifyTemplate")
+    rewrite_template = _embedded_object(raw_rewrite)
+    identify_template = _embedded_object(raw_identify)
+
+    category_prompts = rewrite_template.get("categoryPrompts")
+    rewrite_by_key: dict[str, str] = {}
+    if isinstance(category_prompts, dict):
+        rewrite_by_key = {
+            str(key): _legacy_prompt_text(value)
+            for key, value in category_prompts.items()
+        }
+
+    raw_categories = identify_template.get("categories")
+    categories = raw_categories if isinstance(raw_categories, list) else []
+    scene_rules: list[dict[str, Any]] = []
+    imported_keys: set[str] = set()
+    for index, item in enumerate(categories):
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("id") or item.get("key") or item.get("scene_key") or f"scene_{index + 1}")
+        imported_keys.add(key)
+        scene_rules.append(
+            {
+                "scene_key": key,
+                "display_name": str(item.get("name") or item.get("display_name") or key),
+                "description": _legacy_prompt_text(item.get("description")),
+                "detection_prompt": _legacy_prompt_text(
+                    item.get("conditions") or item.get("detectionPrompt") or item.get("detection_prompt")
+                ),
+                "rewrite_prompt": rewrite_by_key.get(key, ""),
+                "sort_order": index,
+            }
+        )
+
+    for key, rewrite_prompt in rewrite_by_key.items():
+        if key in imported_keys:
+            continue
+        scene_rules.append(
+            {
+                "scene_key": key,
+                "display_name": key,
+                "rewrite_prompt": rewrite_prompt,
+                "sort_order": len(scene_rules),
+            }
+        )
+
+    rewrite_rules = _legacy_prompt_text(
+        rewrite_template.get("commonPrompt") or rewrite_template.get("prompt")
+    )
+    if not rewrite_template and raw_rewrite is not None:
+        rewrite_rules = _legacy_prompt_text(raw_rewrite)
+
+    scene_detection_rules = _legacy_prompt_text(
+        identify_template.get("commonPrompt")
+        or identify_template.get("generalPrompt")
+        or identify_template.get("prompt")
+    )
+    if not identify_template and raw_identify is not None:
+        scene_detection_rules = _legacy_prompt_text(raw_identify)
+
+    metadata: dict[str, Any] = {
+        "import_schema": "legacy.prompt_template",
+        "legacy_fields": sorted(str(key) for key in package),
+    }
+    if "breakthroughTemplate" in package:
+        metadata["legacy_breakthroughTemplate"] = package.get("breakthroughTemplate")
+
+    return {
+        "name": str(package.get("name") or "导入的改写提示词"),
+        "description": str(package.get("description") or "从旧版提示词 JSON 导入。"),
+        "global_rules": "",
+        "summary_rules": "",
+        "scene_detection_rules": scene_detection_rules,
+        "rewrite_rules": rewrite_rules,
+        "story_anchor": {},
+        "characters": [],
+        "scene_rules": scene_rules,
+        "package_metadata": metadata,
+        "source_project_id": None,
+        "is_default": False,
+    }
+
+
+def _embedded_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str):
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _legacy_prompt_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "\n".join(str(item) for item in value)
+    if isinstance(value, dict):
+        nested = value.get("prompt") or value.get("rewritePrompt") or value.get("rewrite_prompt")
+        return _legacy_prompt_text(nested) if nested is not None else json.dumps(value, ensure_ascii=False)
+    return str(value)
 
 
 def _dump_object(value: dict[str, Any] | None) -> str:
