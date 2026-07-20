@@ -16,6 +16,12 @@
   --danger: #c93636;
   --focus: #3f75f0;
 
+  /* Shared workbench aliases used by the newer editor surfaces. */
+  --line: var(--border);
+  --line-strong: var(--border-strong);
+  --muted: var(--ink-muted);
+  --accent-strong: var(--accent-hover);
+
   /* Compatibility aliases for older pages while they use the new visual system. */
   --bg-main: var(--canvas);
   --bg-ink: #e6eaf0;
