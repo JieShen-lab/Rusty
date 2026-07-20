@@ -355,7 +355,7 @@ class AnalysisService:
                     f"输出要求：\n{template.output_requirements}\n\n"
                     f"schema 必须是 {PROMPT_PACKAGE_SCHEMA}，schema_version 必须是 {PROMPT_PACKAGE_SCHEMA_VERSION}。"
                     "只输出 name、description、system_rules、scene_recognition、rewrite_rules、metadata。"
-                    "scene_recognition 包含 general_rules 和 categories；rewrite_rules 包含 general 和 specific。"
+                    "scene_recognition 只包含 categories；rewrite_rules 包含 general 和 specific。"
                     "禁止输出 story_anchor、characters、人物名、剧情骨架和专有设定。\n\n"
                     f"逐章材料：\n{json.dumps(materials, ensure_ascii=False, indent=2)}"
                 ),

@@ -9,7 +9,6 @@ import { TopBar } from '../components/TopBar';
 const tabs = [
   ['全局规则', 'global_rules'],
   ['总结规则', 'summary_rules'],
-  ['场景识别', 'scene_detection_rules'],
   ['改写规则', 'rewrite_rules'],
 ] as const;
 

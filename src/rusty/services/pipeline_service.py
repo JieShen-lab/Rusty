@@ -415,10 +415,6 @@ class PipelineService:
             template.summary_rules,
             prompts.get("summary_rules") or prompts.get("summary") or prompts.get("summary_override"),
         )
-        scene_detection_rules = _append_prompt(
-            template.scene_detection_rules,
-            prompts.get("scene_detection_rules") or prompts.get("scene_detection") or prompts.get("scene_override"),
-        )
         rewrite_rules = _append_prompt(
             template.rewrite_rules,
             prompts.get("rewrite_rules") or prompts.get("rewrite") or prompts.get("rewrite_override"),
@@ -427,7 +423,6 @@ class PipelineService:
             template,
             global_rules=global_rules,
             summary_rules=summary_rules,
-            scene_detection_rules=scene_detection_rules,
             rewrite_rules=rewrite_rules,
         )
 
@@ -453,13 +448,17 @@ class PipelineService:
             f"- {rule.scene_key}（{rule.display_name}）：{rule.description}\n  识别规则：{rule.detection_prompt}"
             for rule in template.scene_rules
         )
-        category_section = f"\n\n可用场景分类（labels 只能使用其中的 key）：\n{categories}" if categories else ""
+        category_section = (
+            f"可用场景分类（labels 只能使用其中的 key）：\n{categories}"
+            if categories
+            else "当前模板未定义场景类别。"
+        )
         return [
             {"role": "system", "content": template.global_rules},
             {
                 "role": "user",
                 "content": (
-                    f"{template.scene_detection_rules}{category_section}\n\n"
+                    f"{category_section}\n\n"
                     "Return JSON with needs_rewrite, labels, and reasoning. 仅返回 JSON。\n"
                     f"# {chapter.title}\n{chapter.original_text}"
                 ),

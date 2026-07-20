@@ -233,7 +233,6 @@ class PromptTemplateOut(BaseModel):
     is_default: bool
     global_rules: str
     summary_rules: str
-    scene_detection_rules: str
     rewrite_rules: str
     description: str = ""
     scene_rules: list[PromptSceneRule] = Field(default_factory=list)
@@ -245,7 +244,6 @@ class PromptTemplateWriteRequest(BaseModel):
     name: str = Field(min_length=1)
     global_rules: str = ""
     summary_rules: str = ""
-    scene_detection_rules: str = ""
     rewrite_rules: str = ""
     description: str = ""
     scene_rules: list[PromptSceneRule] = Field(default_factory=list)

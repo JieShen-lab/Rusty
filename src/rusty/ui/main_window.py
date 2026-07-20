@@ -189,13 +189,11 @@ class NewProjectDialog:
         self.template_combo = QComboBox()
         self.prompt_tabs = QTabWidget()
         self.prompt_global_edit = QPlainTextEdit()
-        self.prompt_summary_edit = QPlainTextEdit()
         self.prompt_scene_edit = QPlainTextEdit()
         self.prompt_rewrite_edit = QPlainTextEdit()
         self.prompt_project_edit = QPlainTextEdit()
         for editor in (
             self.prompt_global_edit,
-            self.prompt_summary_edit,
             self.prompt_scene_edit,
             self.prompt_rewrite_edit,
             self.prompt_project_edit,
@@ -393,7 +391,6 @@ class NewProjectDialog:
         form.addRow("模板", self.template_combo)
         card_layout.addLayout(form)
         self.prompt_tabs.addTab(self.prompt_global_edit, "系统破甲")
-        self.prompt_tabs.addTab(self.prompt_summary_edit, "场景识别")
         self.prompt_tabs.addTab(self.prompt_scene_edit, "改写规则")
         self.prompt_tabs.addTab(self.prompt_rewrite_edit, "总结策略")
         self.prompt_tabs.addTab(self.prompt_project_edit, "项目覆盖")
@@ -549,7 +546,6 @@ class NewProjectDialog:
         if template is None:
             return
         self.prompt_global_edit.setPlainText(template.global_rules)
-        self.prompt_summary_edit.setPlainText(template.scene_detection_rules)
         self.prompt_scene_edit.setPlainText(template.rewrite_rules)
         self.prompt_rewrite_edit.setPlainText(template.summary_rules)
         self.prompt_project_edit.setPlainText("项目覆盖仍保留在提示词页面中完整编辑。")
@@ -1283,12 +1279,10 @@ class RustyMainWindow:
         self.prompt_tabs_manage = QTabWidget()
         self.global_rules_edit = QPlainTextEdit()
         self.summary_rules_edit = QPlainTextEdit()
-        self.scene_rules_edit = QPlainTextEdit()
         self.rewrite_rules_edit = QPlainTextEdit()
         self.project_prompt_text_edit = QPlainTextEdit()
         self.prompt_tabs_manage.addTab(self.global_rules_edit, "全局规则")
         self.prompt_tabs_manage.addTab(self.summary_rules_edit, "总结规则")
-        self.prompt_tabs_manage.addTab(self.scene_rules_edit, "场景识别")
         self.prompt_tabs_manage.addTab(self.rewrite_rules_edit, "改写规则")
         self.prompt_tabs_manage.addTab(self.project_prompt_text_edit, "项目覆盖")
         right_layout.addWidget(self.prompt_tabs_manage, 1)
@@ -1589,7 +1583,6 @@ class RustyMainWindow:
         self.template_default_check.setChecked(template.is_default)
         self.global_rules_edit.setPlainText(template.global_rules)
         self.summary_rules_edit.setPlainText(template.summary_rules)
-        self.scene_rules_edit.setPlainText(template.scene_detection_rules)
         self.rewrite_rules_edit.setPlainText(template.rewrite_rules)
 
     def clear_template_form(self) -> None:
@@ -1599,7 +1592,6 @@ class RustyMainWindow:
         self.template_default_check.setChecked(False)
         self.global_rules_edit.clear()
         self.summary_rules_edit.clear()
-        self.scene_rules_edit.clear()
         self.rewrite_rules_edit.clear()
 
     def save_template(self) -> None:
@@ -1609,7 +1601,6 @@ class RustyMainWindow:
                     name=self.template_name_edit.text().strip(),
                     global_rules=self.global_rules_edit.toPlainText(),
                     summary_rules=self.summary_rules_edit.toPlainText(),
-                    scene_detection_rules=self.scene_rules_edit.toPlainText(),
                     rewrite_rules=self.rewrite_rules_edit.toPlainText(),
                     is_default=self.template_default_check.isChecked(),
                 )
@@ -1619,7 +1610,6 @@ class RustyMainWindow:
                     name=self.template_name_edit.text().strip(),
                     global_rules=self.global_rules_edit.toPlainText(),
                     summary_rules=self.summary_rules_edit.toPlainText(),
-                    scene_detection_rules=self.scene_rules_edit.toPlainText(),
                     rewrite_rules=self.rewrite_rules_edit.toPlainText(),
                     is_default=self.template_default_check.isChecked(),
                 )

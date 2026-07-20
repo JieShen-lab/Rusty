@@ -26,7 +26,7 @@ type RewriteTab = 'base' | 'recognition' | 'rewrite';
 type AnalysisTab = 'dimensions' | 'evidence' | 'synthesis';
 
 const emptyRewrite: PromptTemplateWrite = {
-  name: '', description: '', global_rules: '', summary_rules: '', scene_detection_rules: '', rewrite_rules: '',
+  name: '', description: '', global_rules: '', summary_rules: '', rewrite_rules: '',
   scene_rules: [], package_metadata: {}, source_project_id: null, is_default: false,
 };
 const emptyAnalysis: AnalysisPromptTemplateWrite = {
@@ -206,8 +206,7 @@ function RewriteEditor({ form, onAdd, onRemove, onTab, onUpdate, setForm, tab }:
       ) : null}
       {tab === 'recognition' ? (
         <div className="structured-editor">
-          <PromptField hint="模型如何识别场景，以及如何返回类别。" label="通用识别规则" value={form.scene_detection_rules} onChange={(value) => setForm({ ...form, scene_detection_rules: value })} compact />
-          <div className="section-heading"><div><strong>场景类别</strong><span>识别结果会匹配同 key 的具体改写规则</span></div><button className="button secondary" onClick={onAdd} type="button"><Plus size={16} />添加类别</button></div>
+          <div className="section-heading"><div><strong>场景类别</strong><span>每个类别单独定义识别条件，并匹配同 key 的具体改写规则</span></div><button className="button secondary" onClick={onAdd} type="button"><Plus size={16} />添加类别</button></div>
           <div className="scene-table">
             {form.scene_rules.map((rule, index) => <SceneRuleEditor index={index} key={`${rule.scene_key}-${index}`} mode="recognition" onRemove={() => onRemove(index)} onUpdate={(patch) => onUpdate(index, patch)} rule={rule} />)}
             {form.scene_rules.length === 0 ? <div className="compact-empty">暂无类别。可添加对话推进、动作冲突、情绪转折等场景。</div> : null}

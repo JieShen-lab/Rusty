@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .connection import session
 
-CURRENT_SCHEMA_VERSION = 7
+CURRENT_SCHEMA_VERSION = 8
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -111,7 +111,6 @@ CREATE TABLE IF NOT EXISTS prompt_templates (
     name TEXT NOT NULL,
     global_rules TEXT NOT NULL DEFAULT '',
     summary_rules TEXT NOT NULL DEFAULT '',
-    scene_detection_rules TEXT NOT NULL DEFAULT '',
     rewrite_rules TEXT NOT NULL DEFAULT '',
     description TEXT NOT NULL DEFAULT '',
     story_anchor_json TEXT NOT NULL DEFAULT '{}',
@@ -748,6 +747,15 @@ def _migrate_to_v7(connection: sqlite3.Connection) -> None:
     connection.execute("UPDATE project_settings SET processing_mode = 'extract' WHERE processing_mode = 'summary'")
 
 
+def _migrate_to_v8(connection: sqlite3.Connection) -> None:
+    if _column_exists(connection, "prompt_templates", "scene_detection_rules"):
+        connection.execute("ALTER TABLE prompt_templates DROP COLUMN scene_detection_rules")
+    connection.execute(
+        "DELETE FROM project_custom_prompts WHERE prompt_key IN (?, ?, ?)",
+        ("scene_detection_rules", "scene_detection", "scene_override"),
+    )
+
+
 MIGRATIONS = {
     2: _migrate_to_v2,
     3: _migrate_to_v3,
@@ -755,6 +763,7 @@ MIGRATIONS = {
     5: _migrate_to_v5,
     6: _migrate_to_v6,
     7: _migrate_to_v7,
+    8: _migrate_to_v8,
 }
 
 

@@ -116,6 +116,48 @@ class SchemaTests(unittest.TestCase):
 
         self.assertEqual(1, foreign_keys_enabled)
 
+    def test_initialize_database_removes_general_scene_detection_column(self) -> None:
+        connection = sqlite3.connect(":memory:")
+        connection.executescript(
+            """
+            CREATE TABLE schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            INSERT INTO schema_migrations(version) VALUES (7);
+            CREATE TABLE prompt_templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                scene_detection_rules TEXT NOT NULL DEFAULT ''
+            );
+            CREATE TABLE projects (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'draft',
+                current_stage TEXT NOT NULL DEFAULT 'import'
+            );
+            CREATE TABLE project_custom_prompts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id INTEGER NOT NULL,
+                prompt_key TEXT NOT NULL,
+                prompt_text TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (project_id, prompt_key)
+            );
+            INSERT INTO prompt_templates(name, scene_detection_rules) VALUES ('Legacy', 'Legacy rule');
+            INSERT INTO projects(id, name) VALUES (1, 'Legacy project');
+            INSERT INTO project_custom_prompts(project_id, prompt_key, prompt_text)
+            VALUES (1, 'scene_detection_rules', 'Legacy override');
+            """
+        )
+
+        initialize_database(connection)
+
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(prompt_templates)")}
+        self.assertNotIn("scene_detection_rules", columns)
+        self.assertEqual("Legacy", connection.execute("SELECT name FROM prompt_templates").fetchone()[0])
+        self.assertEqual(0, connection.execute("SELECT COUNT(*) FROM project_custom_prompts").fetchone()[0])
+
 
 if __name__ == "__main__":
     unittest.main()

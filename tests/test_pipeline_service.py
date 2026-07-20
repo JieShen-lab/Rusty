@@ -58,7 +58,6 @@ class PipelineServiceTests(unittest.TestCase):
             PromptService(database_path).create_template(
                 name="Default",
                 summary_rules="Summarize",
-                scene_detection_rules="Detect",
                 rewrite_rules="Rewrite",
                 is_default=True,
             )
@@ -156,7 +155,6 @@ class PipelineServiceTests(unittest.TestCase):
             PromptService(database_path).create_template(
                 name="Default",
                 summary_rules="Summarize",
-                scene_detection_rules="Detect",
                 rewrite_rules="Rewrite",
                 is_default=True,
             )
@@ -228,7 +226,6 @@ class PipelineServiceTests(unittest.TestCase):
             PromptService(database_path).create_template(
                 name="Default",
                 summary_rules="Summarize",
-                scene_detection_rules="Detect",
                 rewrite_rules="Rewrite",
                 is_default=True,
             )
@@ -279,7 +276,6 @@ class PipelineServiceTests(unittest.TestCase):
             PromptService(database_path).create_template(
                 name="Default",
                 summary_rules="Summarize",
-                scene_detection_rules="Detect",
                 rewrite_rules="Rewrite",
                 is_default=True,
             )
@@ -363,8 +359,12 @@ class PipelineServiceTests(unittest.TestCase):
                 name="Default",
                 global_rules="Base global",
                 summary_rules="Base summary",
-                scene_detection_rules="Base scene",
                 rewrite_rules="Base rewrite",
+                scene_rules=[{
+                    "scene_key": "combat",
+                    "display_name": "Combat",
+                    "detection_prompt": "Detect combat.",
+                }],
                 is_default=True,
             )
             prompt_service.save_project_prompt(project_id, "global_override", "Project global")
@@ -385,8 +385,8 @@ class PipelineServiceTests(unittest.TestCase):
         self.assertIn("Project global", summary_messages[0]["content"])
         self.assertIn("Base summary", summary_messages[-1]["content"])
         self.assertIn("Project summary", summary_messages[-1]["content"])
-        self.assertIn("Base scene", scene_messages[-1]["content"])
-        self.assertIn("Project scene", scene_messages[-1]["content"])
+        self.assertIn("Detect combat.", scene_messages[-1]["content"])
+        self.assertNotIn("Project scene", scene_messages[-1]["content"])
         self.assertIn("Base rewrite", rewrite_messages[-1]["content"])
         self.assertIn("Project rewrite", rewrite_messages[-1]["content"])
 
@@ -471,7 +471,6 @@ class PipelineServiceTests(unittest.TestCase):
                 name="Default",
                 global_rules="Base global",
                 summary_rules="Summarize",
-                scene_detection_rules="Detect",
                 rewrite_rules="Base rewrite",
                 is_default=True,
             )

@@ -30,7 +30,6 @@ class PromptTemplate:
     name: str
     global_rules: str
     summary_rules: str
-    scene_detection_rules: str
     rewrite_rules: str
     description: str
     story_anchor: dict[str, Any]
@@ -49,7 +48,6 @@ class PromptTemplate:
             "description": self.description,
             "system_rules": self.global_rules,
             "scene_recognition": {
-                "general_rules": self.scene_detection_rules,
                 "categories": [
                     {
                         "key": rule.scene_key,
@@ -86,7 +84,6 @@ class PromptService:
         name: str,
         global_rules: str = "",
         summary_rules: str = "",
-        scene_detection_rules: str = "",
         rewrite_rules: str = "",
         is_default: bool = False,
         description: str = "",
@@ -102,16 +99,15 @@ class PromptService:
             cursor = connection.execute(
                 """
                 INSERT INTO prompt_templates (
-                    name, global_rules, summary_rules, scene_detection_rules, rewrite_rules,
+                    name, global_rules, summary_rules, rewrite_rules,
                     description, story_anchor_json, characters_json, package_metadata_json,
                     source_project_id, is_default
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     name,
                     global_rules,
                     summary_rules,
-                    scene_detection_rules,
                     rewrite_rules,
                     description,
                     _dump_object(story_anchor),
@@ -131,7 +127,6 @@ class PromptService:
         name: str,
         global_rules: str,
         summary_rules: str,
-        scene_detection_rules: str,
         rewrite_rules: str,
         is_default: bool = False,
         description: str = "",
@@ -147,8 +142,8 @@ class PromptService:
             cursor = connection.execute(
                 """
                 UPDATE prompt_templates
-                SET name = ?, global_rules = ?, summary_rules = ?, scene_detection_rules = ?,
-                    rewrite_rules = ?, description = ?, story_anchor_json = ?, characters_json = ?,
+                SET name = ?, global_rules = ?, summary_rules = ?, rewrite_rules = ?,
+                    description = ?, story_anchor_json = ?, characters_json = ?,
                     package_metadata_json = ?, source_project_id = ?, version = version + 1,
                     is_default = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ? AND deleted_at IS NULL
@@ -157,7 +152,6 @@ class PromptService:
                     name,
                     global_rules,
                     summary_rules,
-                    scene_detection_rules,
                     rewrite_rules,
                     description,
                     _dump_object(story_anchor),
@@ -251,7 +245,7 @@ class PromptService:
     @staticmethod
     def _select_sql(where: str | None = None) -> str:
         sql = """
-            SELECT id, name, global_rules, summary_rules, scene_detection_rules, rewrite_rules,
+            SELECT id, name, global_rules, summary_rules, rewrite_rules,
                    description, story_anchor_json, characters_json, package_metadata_json,
                    source_project_id, version, is_default, updated_at
             FROM prompt_templates
@@ -305,7 +299,6 @@ class PromptService:
             name=row["name"],
             global_rules=row["global_rules"],
             summary_rules=row["summary_rules"],
-            scene_detection_rules=row["scene_detection_rules"],
             rewrite_rules=row["rewrite_rules"],
             description=row["description"],
             story_anchor=_parse_object(row["story_anchor_json"]),
@@ -359,7 +352,6 @@ def _normalize_package(package: dict[str, Any]) -> dict[str, Any]:
         "description": str(package.get("description") or ""),
         "global_rules": str(package.get("system_rules") or package.get("global_rules") or ""),
         "summary_rules": str(package.get("summary_rules") or ""),
-        "scene_detection_rules": str(recognition.get("general_rules") or package.get("scene_detection_rules") or ""),
         "rewrite_rules": str(rewrite.get("general") or package.get("rewrite_rules_text") or ""),
         "story_anchor": {},
         "characters": [],
@@ -424,14 +416,6 @@ def _normalize_legacy_template(package: dict[str, Any]) -> dict[str, Any]:
     if not rewrite_template and raw_rewrite is not None:
         rewrite_rules = _legacy_prompt_text(raw_rewrite)
 
-    scene_detection_rules = _legacy_prompt_text(
-        identify_template.get("commonPrompt")
-        or identify_template.get("generalPrompt")
-        or identify_template.get("prompt")
-    )
-    if not identify_template and raw_identify is not None:
-        scene_detection_rules = _legacy_prompt_text(raw_identify)
-
     metadata: dict[str, Any] = {
         "import_schema": "legacy.prompt_template",
         "legacy_fields": sorted(str(key) for key in package),
@@ -444,7 +428,6 @@ def _normalize_legacy_template(package: dict[str, Any]) -> dict[str, Any]:
         "description": str(package.get("description") or "从旧版提示词 JSON 导入。"),
         "global_rules": "",
         "summary_rules": "",
-        "scene_detection_rules": scene_detection_rules,
         "rewrite_rules": rewrite_rules,
         "story_anchor": {},
         "characters": [],

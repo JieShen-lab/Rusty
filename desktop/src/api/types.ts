@@ -155,7 +155,6 @@ export type PromptTemplate = {
   is_default: boolean;
   global_rules: string;
   summary_rules: string;
-  scene_detection_rules: string;
   rewrite_rules: string;
   description: string;
   scene_rules: PromptSceneRule[];
@@ -176,7 +175,6 @@ export type PromptTemplateWrite = {
   name: string;
   global_rules: string;
   summary_rules: string;
-  scene_detection_rules: string;
   rewrite_rules: string;
   description: string;
   scene_rules: PromptSceneRule[];

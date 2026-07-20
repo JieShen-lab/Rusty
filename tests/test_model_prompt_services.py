@@ -140,7 +140,6 @@ class ModelPromptServiceTests(unittest.TestCase):
                 name="Default",
                 global_rules="global",
                 summary_rules="summary",
-                scene_detection_rules="scene",
                 rewrite_rules="rewrite",
                 is_default=True,
             )
@@ -150,7 +149,6 @@ class ModelPromptServiceTests(unittest.TestCase):
                 name="Default v2",
                 global_rules="global2",
                 summary_rules="summary2",
-                scene_detection_rules="scene2",
                 rewrite_rules="rewrite2",
                 is_default=False,
             )
@@ -162,6 +160,7 @@ class ModelPromptServiceTests(unittest.TestCase):
 
         self.assertIsNotNone(template)
         self.assertEqual("Default", template.name)
+        self.assertFalse(hasattr(template, "scene_detection_rules"))
         self.assertIsNotNone(updated)
         self.assertEqual("Default v2", updated.name)
         self.assertEqual(2, updated.version)

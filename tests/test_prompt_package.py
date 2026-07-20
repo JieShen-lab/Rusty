@@ -93,6 +93,7 @@ class PromptPackageTests(unittest.TestCase):
         self.assertEqual(2, exported["schema_version"])
         self.assertNotIn("story_anchor", exported)
         self.assertNotIn("characters", exported)
+        self.assertNotIn("general_rules", exported["scene_recognition"])
         self.assertEqual({}, imported.story_anchor)
         self.assertEqual([], imported.characters)
         self.assertEqual("combat", imported.scene_rules[0].scene_key)
@@ -170,7 +171,6 @@ class PromptPackageTests(unittest.TestCase):
             )
             template_id = PromptService(database_path).create_template(
                 name="Package",
-                scene_detection_rules="Detect scenes.",
                 rewrite_rules="General rewrite.",
                 story_anchor={"mainline": ["Alice must choose"]},
                 characters=[{"name": "Alice", "is_main": True}],
@@ -258,6 +258,8 @@ class PromptPackageTests(unittest.TestCase):
             target_settings = project_service.get_project_settings(target_project_id)
 
         self.assertEqual("Extracted style", template.name)
+        self.assertFalse(hasattr(template, "scene_detection_rules"))
+        self.assertNotIn("general_rules", json.loads(exported_content)["scene_recognition"])
         self.assertEqual(project_id, template.source_project_id)
         self.assertIsNone(settings.prompt_template_id)
         self.assertEqual("extract", settings.processing_mode)

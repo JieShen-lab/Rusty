@@ -252,7 +252,9 @@ class BackendApiTests(unittest.TestCase):
         self.assertNotIn("secret-value", str(models.json()))
         self.assertEqual(200, created_prompt.status_code)
         self.assertEqual("API Prompt", created_prompt.json()["name"])
+        self.assertNotIn("scene_detection_rules", created_prompt.json())
         self.assertEqual(1, len(prompts.json()))
+        self.assertNotIn("scene_detection_rules", prompts.json()[0])
         self.assertEqual(200, deleted_model.status_code)
         self.assertEqual(200, deleted_prompt.status_code)
 
