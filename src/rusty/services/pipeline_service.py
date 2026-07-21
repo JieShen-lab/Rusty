@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
@@ -11,6 +12,7 @@ from rusty.services.ai_client import AIClient, AIResponse, OpenAICompatibleClien
 from rusty.services.anchor_service import AnchorService, CharacterCard, OutlineTemplate
 from rusty.services.model_service import ModelConfig, ModelService
 from rusty.services.project_service import ProjectService, default_database_path
+from rusty.services.prompt_compiler import CompiledRequest, PromptCompiler
 from rusty.services.prompt_service import PromptService, PromptTemplate
 from rusty.services.style_service import StyleTemplate, StyleTemplateService
 
@@ -35,6 +37,7 @@ class PipelineService:
         self.prompt_service = PromptService(self.database_path)
         self.style_service = StyleTemplateService(self.database_path)
         self.anchor_service = AnchorService(self.database_path)
+        self.prompt_compiler = PromptCompiler()
         self.ai_client = ai_client or OpenAICompatibleClient()
         with session(self.database_path) as connection:
             initialize_database(connection)
@@ -50,7 +53,7 @@ class PipelineService:
             "summary",
             model_id,
             template_id,
-            self._summary_messages,
+            self._summary_request,
             self._save_summary,
         )
 
@@ -65,7 +68,7 @@ class PipelineService:
             "scene_detection",
             model_id,
             template_id,
-            self._scene_messages,
+            self._scene_request,
             self._save_scene_analysis,
         )
 
@@ -75,14 +78,7 @@ class PipelineService:
         model_id: int | None = None,
         template_id: int | None = None,
     ) -> str:
-        return self._run_chapter_stage(
-            chapter_id,
-            "rewrite",
-            model_id,
-            template_id,
-            self._rewrite_messages,
-            self._save_rewrite,
-        )
+        return self._run_rewrite_stage(chapter_id, model_id, template_id)
 
     def expand_chapter_plot(
         self,
@@ -109,7 +105,7 @@ class PipelineService:
             "plot_expansion",
             model_id,
             template_id,
-            self._plot_expansion_messages,
+            self._plot_expansion_request,
             self._save_plot_expansion,
         )
 
@@ -155,32 +151,71 @@ class PipelineService:
         template_id: int | None = None,
         should_pause: Callable[[], bool] | None = None,
     ) -> PipelineResult:
-        processed = 0
-        skipped = 0
-        failed = 0
         resolved_model = self._resolve_model(model_id, project_id)
         resolved_template = self._resolve_template(template_id, project_id)
+        settings = self.project_service.get_project_settings(project_id)
+        concurrency = max(1, settings.concurrency if settings else 1)
+        chapters = self.project_service.list_chapters(project_id)
+        failed_ids: set[int] = set()
+        skipped = 0
         self.set_project_paused(project_id, False)
         self._set_project_status(project_id, "processing")
-        for chapter in self.project_service.list_chapters(project_id):
-            if should_pause and should_pause():
-                self.set_project_paused(project_id, True)
-                return PipelineResult(processed=processed, skipped=skipped, failed=failed, paused=True)
-            if self.is_project_paused(project_id):
-                return PipelineResult(processed=processed, skipped=skipped, failed=failed, paused=True)
-            try:
-                self.summarize_chapter(chapter.id, resolved_model.id, resolved_template.id)
-                scene_text = self.detect_scene(chapter.id, resolved_model.id, resolved_template.id)
-                if self._scene_needs_rewrite(scene_text):
-                    self.rewrite_chapter(chapter.id, resolved_model.id, resolved_template.id)
-                else:
-                    self._mark_chapter_kept_original(chapter.id)
-                    skipped += 1
-                processed += 1
-            except Exception:
-                failed += 1
-        self._set_project_status(project_id, "processed" if failed == 0 else "partial")
-        return PipelineResult(processed=processed, skipped=skipped, failed=failed)
+
+        self._set_project_stage(project_id, "summary")
+        summary_results, paused = self._run_chapter_batch(
+            chapters,
+            lambda chapter: self.summarize_chapter(chapter.id, resolved_model.id, resolved_template.id),
+            concurrency,
+            should_pause,
+        )
+        failed_ids.update(chapter.id for chapter in chapters if chapter.id not in summary_results)
+        if paused:
+            self.set_project_paused(project_id, True)
+            return PipelineResult(len(summary_results), skipped, len(failed_ids), paused=True)
+
+        eligible = [chapter for chapter in chapters if chapter.id in summary_results]
+        self._set_project_stage(project_id, "scene_detection")
+        scene_results, paused = self._run_chapter_batch(
+            eligible,
+            lambda chapter: self.detect_scene(chapter.id, resolved_model.id, resolved_template.id),
+            concurrency,
+            should_pause,
+        )
+        failed_ids.update(chapter.id for chapter in eligible if chapter.id not in scene_results)
+        if paused:
+            self.set_project_paused(project_id, True)
+            return PipelineResult(len(scene_results), skipped, len(failed_ids), paused=True)
+
+        rewrite_chapters: list[ChapterRecord] = []
+        for chapter in eligible:
+            scene_text = scene_results.get(chapter.id)
+            if scene_text is None:
+                continue
+            if self._scene_needs_rewrite(scene_text):
+                rewrite_chapters.append(chapter)
+            else:
+                self._mark_chapter_kept_original(chapter.id)
+                skipped += 1
+
+        self._set_project_stage(project_id, "rewrite")
+        rewrite_results, paused = self._run_chapter_batch(
+            rewrite_chapters,
+            lambda chapter: self.rewrite_chapter(chapter.id, resolved_model.id, resolved_template.id),
+            concurrency,
+            should_pause,
+        )
+        failed_ids.update(chapter.id for chapter in rewrite_chapters if chapter.id not in rewrite_results)
+        if paused:
+            self.set_project_paused(project_id, True)
+            return PipelineResult(len(chapters) - len(failed_ids), skipped, len(failed_ids), paused=True)
+
+        self._set_project_stage(project_id, "review")
+        self._set_project_status(project_id, "processed" if not failed_ids else "partial")
+        return PipelineResult(
+            processed=len(chapters) - len(failed_ids),
+            skipped=skipped,
+            failed=len(failed_ids),
+        )
 
     def run_summary_project(
         self,
@@ -189,25 +224,27 @@ class PipelineService:
         template_id: int | None = None,
         should_pause: Callable[[], bool] | None = None,
     ) -> PipelineResult:
-        processed = 0
-        failed = 0
         resolved_model = self._resolve_model(model_id, project_id)
         resolved_template = self._resolve_template(template_id, project_id)
+        settings = self.project_service.get_project_settings(project_id)
+        concurrency = max(1, settings.concurrency if settings else 1)
+        chapters = self.project_service.list_chapters(project_id)
         self.set_project_paused(project_id, False)
         self._set_project_status(project_id, "processing")
-        for chapter in self.project_service.list_chapters(project_id):
-            if should_pause and should_pause():
-                self.set_project_paused(project_id, True)
-                return PipelineResult(processed=processed, skipped=0, failed=failed, paused=True)
-            if self.is_project_paused(project_id):
-                return PipelineResult(processed=processed, skipped=0, failed=failed, paused=True)
-            try:
-                self.summarize_chapter(chapter.id, resolved_model.id, resolved_template.id)
-                processed += 1
-            except Exception:
-                failed += 1
+        self._set_project_stage(project_id, "summary")
+        results, paused = self._run_chapter_batch(
+            chapters,
+            lambda chapter: self.summarize_chapter(chapter.id, resolved_model.id, resolved_template.id),
+            concurrency,
+            should_pause,
+        )
+        failed = len(chapters) - len(results)
+        if paused:
+            self.set_project_paused(project_id, True)
+            return PipelineResult(processed=len(results), skipped=0, failed=failed, paused=True)
+        self._set_project_stage(project_id, "review")
         self._set_project_status(project_id, "summarized" if failed == 0 else "partial")
-        return PipelineResult(processed=processed, skipped=0, failed=failed)
+        return PipelineResult(processed=len(results), skipped=0, failed=failed)
 
     def retry_chapter_stage(
         self,
@@ -287,6 +324,57 @@ class PipelineService:
             for row in rows
         ]
 
+    def preview_chapter_prompt(self, chapter_id: int, stage: str) -> dict[str, Any]:
+        chapter = self.project_service.get_chapter(chapter_id)
+        if chapter is None:
+            raise ValueError(f"Chapter not found: {chapter_id}")
+        template = self._resolve_template(None, chapter.project_id)
+        if stage == "summary":
+            compiled = self._summary_request(chapter, template)
+        elif stage == "scene_detection":
+            compiled = self._scene_request(chapter, template)
+        elif stage == "plot_expansion":
+            compiled = self._plot_expansion_request(chapter, template)
+        elif stage == "rewrite":
+            compiled = self._rewrite_request(chapter, template)
+        else:
+            raise ValueError(f"Unsupported prompt preview stage: {stage}")
+        return compiled.snapshot()
+
+    def list_generation_attempts(self, chapter_id: int, stage: str | None = None) -> list[dict[str, Any]]:
+        where = "chapter_id = ?" if stage is None else "chapter_id = ? AND stage = ?"
+        params: tuple[Any, ...] = (chapter_id,) if stage is None else (chapter_id, stage)
+        with session(self.database_path) as connection:
+            rows = connection.execute(
+                f"""
+                SELECT id, stage, attempt_number, request_json, response_text, parsed_json,
+                       error_type, error_message, model_id, prompt_template_id,
+                       token_usage_json, elapsed_ms, created_at
+                FROM generation_attempts
+                WHERE {where}
+                ORDER BY id
+                """,
+                params,
+            ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "stage": row["stage"],
+                "attempt_number": row["attempt_number"],
+                "request": _parse_json_object(row["request_json"]),
+                "response_text": row["response_text"],
+                "parsed": _parse_json_object(row["parsed_json"]),
+                "error_type": row["error_type"],
+                "error_message": row["error_message"],
+                "model_id": row["model_id"],
+                "prompt_template_id": row["prompt_template_id"],
+                "token_usage": _parse_json_object(row["token_usage_json"]),
+                "elapsed_ms": row["elapsed_ms"],
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+
     def get_chapter_ai_outputs(self, chapter_id: int) -> ChapterAIOutputs:
         with session(self.database_path) as connection:
             summary = connection.execute(
@@ -299,7 +387,7 @@ class PipelineService:
             ).fetchone()
             scene = connection.execute(
                 """
-                SELECT needs_rewrite, scene_labels_json, reasoning
+                SELECT needs_rewrite, scene_labels_json, reasoning, context_markers_json
                 FROM chapter_scene_analysis
                 WHERE chapter_id = ?
                 """,
@@ -315,7 +403,8 @@ class PipelineService:
             ).fetchone()
             rewrite = connection.execute(
                 """
-                SELECT rewrite_source, actual_word_count, expansion_ratio, elapsed_ms
+                SELECT rewrite_source, actual_word_count, expansion_ratio, elapsed_ms,
+                       rewrite_mode, anchor_text, expanded_text
                 FROM chapter_rewrites
                 WHERE chapter_id = ?
                 """,
@@ -336,12 +425,16 @@ class PipelineService:
             needs_rewrite=bool(scene["needs_rewrite"]) if scene is not None else None,
             scene_labels=scene_labels,
             scene_reasoning=scene["reasoning"] if scene is not None else None,
+            scene_markers=_parse_json_dict_list(scene["context_markers_json"]) if scene is not None else None,
             plot_expansion_enabled=bool(plot_expansion["enabled"]) if plot_expansion is not None else None,
             expanded_plot=plot_expansion["expanded_plot"] if plot_expansion is not None else None,
             rewrite_source=rewrite["rewrite_source"] if rewrite is not None else None,
             rewritten_word_count=rewrite["actual_word_count"] if rewrite is not None else None,
             expansion_ratio=rewrite["expansion_ratio"] if rewrite is not None else None,
             rewrite_elapsed_ms=rewrite["elapsed_ms"] if rewrite is not None else None,
+            rewrite_mode=rewrite["rewrite_mode"] if rewrite is not None else None,
+            rewrite_anchor=rewrite["anchor_text"] if rewrite is not None else None,
+            rewrite_expanded=rewrite["expanded_text"] if rewrite is not None else None,
             style_analysis=_parse_json_object(style_analysis["analysis_json"]) if style_analysis is not None else None,
             reviewed_style_analysis=_parse_json_object(style_analysis["reviewed_json"]) if style_analysis is not None else None,
             style_analysis_status=style_analysis["status"] if style_analysis is not None else None,
@@ -364,8 +457,34 @@ class PipelineService:
             model = self._resolve_model(model_id, chapter.project_id)
             template = self._resolve_template(template_id, chapter.project_id)
             api_key = self.model_service.get_api_key(model.id)
-            response = self.ai_client.chat(model, api_key, message_builder(chapter, template))
-            saver(chapter, model, template, response)
+            compiled = message_builder(chapter, template)
+            if not isinstance(compiled, CompiledRequest):
+                raise TypeError(f"Prompt builder for {stage} did not return CompiledRequest")
+            attempt_number = self._next_attempt_number(chapter.id, stage)
+            try:
+                response = self.ai_client.chat(model, api_key, compiled.message_list())
+            except Exception as exc:
+                self._record_generation_attempt(
+                    chapter.id,
+                    stage,
+                    attempt_number,
+                    compiled,
+                    model,
+                    template,
+                    error=exc,
+                )
+                raise
+            self._record_generation_attempt(
+                chapter.id,
+                stage,
+                attempt_number,
+                compiled,
+                model,
+                template,
+                response=response,
+                parsed=_parse_stage_response(stage, response.text),
+            )
+            saver(chapter, model, template, response, compiled)
             self._mark_stage(chapter_id, stage, "completed", response.elapsed_ms, response.token_usage)
             if stage == "summary":
                 self.project_service.refresh_project_progress(chapter.project_id)
@@ -374,6 +493,95 @@ class PipelineService:
         except Exception as exc:
             self._mark_stage(chapter_id, stage, "failed")
             self._record_error(chapter_id, stage, exc)
+            raise
+
+    def _run_rewrite_stage(
+        self,
+        chapter_id: int,
+        model_id: int | None,
+        template_id: int | None,
+    ) -> str:
+        chapter = self.project_service.get_chapter(chapter_id)
+        if chapter is None:
+            raise ValueError(f"Chapter not found: {chapter_id}")
+        self._mark_stage(chapter_id, "rewrite", "running")
+        try:
+            model = self._resolve_model(model_id, chapter.project_id)
+            template = self._resolve_template(template_id, chapter.project_id)
+            settings = self.project_service.get_project_settings(chapter.project_id)
+            rewrite_mode = settings.rewrite_mode if settings else "anchor_expand"
+            max_attempts = settings.max_attempts if settings else 2
+            api_key = self.model_service.get_api_key(model.id)
+            compiled = self._rewrite_request(chapter, template, rewrite_mode=rewrite_mode)
+            last_error: Exception | None = None
+
+            for _ in range(max_attempts):
+                attempt_number = self._next_attempt_number(chapter.id, "rewrite")
+                try:
+                    response = self.ai_client.chat(model, api_key, compiled.message_list())
+                except Exception as exc:
+                    last_error = exc
+                    self._record_generation_attempt(
+                        chapter.id,
+                        "rewrite",
+                        attempt_number,
+                        compiled,
+                        model,
+                        template,
+                        error=exc,
+                    )
+                    continue
+
+                try:
+                    applied = _apply_rewrite_response(chapter.original_text, response.text, rewrite_mode)
+                    self._validate_rewrite_targets(chapter, applied["rewritten_text"])
+                except RewriteOutputError as exc:
+                    last_error = exc
+                    self._record_generation_attempt(
+                        chapter.id,
+                        "rewrite",
+                        attempt_number,
+                        compiled,
+                        model,
+                        template,
+                        response=response,
+                        parsed=exc.parsed,
+                        error=exc,
+                    )
+                    compiled = compiled.repair(response.text, exc.code, str(exc))
+                    continue
+
+                self._record_generation_attempt(
+                    chapter.id,
+                    "rewrite",
+                    attempt_number,
+                    compiled,
+                    model,
+                    template,
+                    response=response,
+                    parsed=applied,
+                )
+                self._save_rewrite(
+                    chapter,
+                    model,
+                    template,
+                    response,
+                    rewritten_text=applied["rewritten_text"],
+                    rewrite_mode=rewrite_mode,
+                    anchor=applied["anchor"],
+                    expanded=applied["expanded"],
+                    prompt_snapshot=compiled.snapshot(),
+                )
+                self._mark_stage(chapter.id, "rewrite", "completed", response.elapsed_ms, response.token_usage)
+                self._resolve_stage_errors(chapter.id, "rewrite")
+                return applied["rewritten_text"]
+
+            if last_error is None:
+                last_error = RewriteOutputError("rewrite_failed", "Rewrite failed without a response.")
+            raise last_error
+        except Exception as exc:
+            self._mark_stage(chapter.id, "rewrite", "failed")
+            self._record_error(chapter.id, "rewrite", exc)
             raise
 
     def _resolve_model(self, model_id: int | None, project_id: int) -> ModelConfig:
@@ -426,46 +634,19 @@ class PipelineService:
             rewrite_rules=rewrite_rules,
         )
 
-    @staticmethod
-    def _summary_messages(chapter: ChapterRecord, template: PromptTemplate) -> list[dict[str, str]]:
-        return [
-            {"role": "system", "content": template.global_rules},
-            {
-                "role": "user",
-                "content": (
-                    f"{template.summary_rules}\n\n"
-                    "提取本章可供后续改写使用的内容骨架和人物卡。只返回 JSON："
-                    '{"plot_skeleton":"...","key_events":[],"characters":[]}。'
-                    "人物卡只描述本项目人物的角色、性格、关系、语言和行为特点，不把这些内容写入改写提示词模板。\n\n"
-                    f"# {chapter.title}\n{chapter.original_text}"
-                ),
-            },
-        ]
+    def _summary_request(self, chapter: ChapterRecord, template: PromptTemplate) -> CompiledRequest:
+        return self.prompt_compiler.compile_summary(chapter, template)
 
-    @staticmethod
-    def _scene_messages(chapter: ChapterRecord, template: PromptTemplate) -> list[dict[str, str]]:
-        categories = "\n".join(
-            f"- {rule.scene_key}（{rule.display_name}）：{rule.description}\n  识别规则：{rule.detection_prompt}"
-            for rule in template.scene_rules
-        )
-        category_section = (
-            f"可用场景分类（labels 只能使用其中的 key）：\n{categories}"
-            if categories
-            else "当前模板未定义场景类别。"
-        )
-        return [
-            {"role": "system", "content": template.global_rules},
-            {
-                "role": "user",
-                "content": (
-                    f"{category_section}\n\n"
-                    "Return JSON with needs_rewrite, labels, and reasoning. 仅返回 JSON。\n"
-                    f"# {chapter.title}\n{chapter.original_text}"
-                ),
-            },
-        ]
+    def _summary_messages(self, chapter: ChapterRecord, template: PromptTemplate) -> list[dict[str, str]]:
+        return self._summary_request(chapter, template).message_list()
 
-    def _plot_expansion_messages(self, chapter: ChapterRecord, template: PromptTemplate) -> list[dict[str, str]]:
+    def _scene_request(self, chapter: ChapterRecord, template: PromptTemplate) -> CompiledRequest:
+        return self.prompt_compiler.compile_scene_detection(chapter, template)
+
+    def _scene_messages(self, chapter: ChapterRecord, template: PromptTemplate) -> list[dict[str, str]]:
+        return self._scene_request(chapter, template).message_list()
+
+    def _plot_expansion_request(self, chapter: ChapterRecord, template: PromptTemplate) -> CompiledRequest:
         with session(self.database_path) as connection:
             scene = connection.execute(
                 "SELECT scene_labels_json, reasoning FROM chapter_scene_analysis WHERE chapter_id = ?",
@@ -477,22 +658,25 @@ class PipelineService:
             ).fetchone()
         labels = _parse_json_list(scene["scene_labels_json"]) if scene is not None else []
         reasoning = scene["reasoning"] if scene is not None else ""
-        return [
-            {"role": "system", "content": template.global_rules},
-            {
-                "role": "user",
-                "content": (
-                    "在保持既有事实、时间线和人物设定的前提下，为本章增加或强化剧情线。"
-                    "只输出可供后续改写使用的剧情扩展方案，不要直接改写正文。\n\n"
-                    f"原始剧情骨架：\n{summary['plot_summary'] if summary is not None else '尚未提取'}\n\n"
-                    f"本章人物卡：\n{summary['characters_json'] if summary is not None else '[]'}\n\n"
-                    f"场景标签：{', '.join(labels) or '未识别'}\n识别说明：{reasoning or '无'}\n\n"
-                    f"# {chapter.title}\n{chapter.original_text}"
-                ),
-            },
-        ]
+        return self.prompt_compiler.compile_plot_expansion(
+            chapter,
+            template,
+            plot_summary=summary["plot_summary"] if summary is not None else "",
+            characters_json=summary["characters_json"] if summary is not None else "[]",
+            labels=labels,
+            reasoning=reasoning,
+        )
 
-    def _rewrite_messages(self, chapter: ChapterRecord, template: PromptTemplate) -> list[dict[str, str]]:
+    def _plot_expansion_messages(self, chapter: ChapterRecord, template: PromptTemplate) -> list[dict[str, str]]:
+        return self._plot_expansion_request(chapter, template).message_list()
+
+    def _rewrite_request(
+        self,
+        chapter: ChapterRecord,
+        template: PromptTemplate,
+        *,
+        rewrite_mode: str | None = None,
+    ) -> CompiledRequest:
         settings = self.project_service.get_project_settings(chapter.project_id)
         style_template = self.style_service.get_project_style_template(chapter.project_id)
         outline_template = self.anchor_service.get_project_outline_template(chapter.project_id)
@@ -510,16 +694,33 @@ class PipelineService:
         outline_section = self._outline_section(outline_template)
         character_section = self._character_cards_section(character_cards)
         package_sections = self._prompt_package_rewrite_sections(chapter, template)
-        return [
-            {"role": "system", "content": _append_prompt(template.global_rules, style_template.global_prompt if style_template else None)},
-            {
-                "role": "user",
-                "content": (
-                    f"{template.rewrite_rules}{target_text}{package_sections}{style_section}{outline_section}{character_section}\n\n"
-                    f"Rewrite this chapter:\n# {chapter.title}\n{chapter.original_text}"
-                ),
-            },
-        ]
+        marker_section = self._scene_marker_section(chapter.id)
+        return self.prompt_compiler.compile_rewrite(
+            chapter,
+            template,
+            rewrite_mode=rewrite_mode or (settings.rewrite_mode if settings else "anchor_expand"),
+            target_text=target_text,
+            package_sections=package_sections,
+            style_system_rules=style_template.global_prompt if style_template else "",
+            style_section=style_section,
+            outline_section=outline_section,
+            character_section=character_section,
+            marker_section=marker_section,
+        )
+
+    def _rewrite_messages(self, chapter: ChapterRecord, template: PromptTemplate) -> list[dict[str, str]]:
+        return self._rewrite_request(chapter, template).message_list()
+
+    def _scene_marker_section(self, chapter_id: int) -> str:
+        with session(self.database_path) as connection:
+            row = connection.execute(
+                "SELECT context_markers_json FROM chapter_scene_analysis WHERE chapter_id = ?",
+                (chapter_id,),
+            ).fetchone()
+        markers = _parse_json_dict_list(row["context_markers_json"]) if row is not None else []
+        if not markers:
+            return ""
+        return "\n\n## IDENTIFIED TARGET MARKERS\n" + json.dumps(markers, ensure_ascii=False, indent=2)
 
     def _prompt_package_rewrite_sections(self, chapter: ChapterRecord, template: PromptTemplate) -> str:
         with session(self.database_path) as connection:
@@ -559,6 +760,7 @@ class PipelineService:
         model: ModelConfig,
         template: PromptTemplate,
         response: AIResponse,
+        compiled: CompiledRequest,
     ) -> None:
         parsed = _parse_summary_response(response.text)
         with session(self.database_path) as connection:
@@ -599,6 +801,7 @@ class PipelineService:
         model: ModelConfig,
         template: PromptTemplate,
         response: AIResponse,
+        compiled: CompiledRequest,
     ) -> None:
         parsed = _parse_scene_response(response.text)
         with session(self.database_path) as connection:
@@ -609,16 +812,18 @@ class PipelineService:
                     needs_rewrite,
                     scene_labels_json,
                     reasoning,
+                    context_markers_json,
                     model_id,
                     prompt_template_id,
                     token_usage_json,
                     updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(chapter_id)
                 DO UPDATE SET
                     needs_rewrite = excluded.needs_rewrite,
                     scene_labels_json = excluded.scene_labels_json,
                     reasoning = excluded.reasoning,
+                    context_markers_json = excluded.context_markers_json,
                     model_id = excluded.model_id,
                     prompt_template_id = excluded.prompt_template_id,
                     token_usage_json = excluded.token_usage_json,
@@ -629,6 +834,7 @@ class PipelineService:
                     1 if parsed["needs_rewrite"] else 0,
                     json.dumps(parsed["labels"], ensure_ascii=False),
                     parsed["reasoning"],
+                    json.dumps(parsed["markers"], ensure_ascii=False),
                     model.id,
                     template.id,
                     json.dumps(response.token_usage),
@@ -645,11 +851,9 @@ class PipelineService:
         model: ModelConfig,
         template: PromptTemplate,
         response: AIResponse,
+        compiled: CompiledRequest,
     ) -> None:
-        prompt_snapshot = {
-            "messages": self._plot_expansion_messages(chapter, template),
-            "prompt_package": {"id": template.id, "name": template.name, "version": template.version},
-        }
+        prompt_snapshot = compiled.snapshot()
         with session(self.database_path) as connection:
             connection.execute(
                 """
@@ -681,26 +885,19 @@ class PipelineService:
         model: ModelConfig,
         template: PromptTemplate,
         response: AIResponse,
+        *,
+        rewritten_text: str,
+        rewrite_mode: str,
+        anchor: str,
+        expanded: str,
+        prompt_snapshot: dict[str, Any],
     ) -> None:
         settings = self.project_service.get_project_settings(chapter.project_id)
         target_word_count = settings.target_word_count if settings else None
-        min_expansion_ratio = settings.min_expansion_ratio if settings else None
-        word_count = count_text_units(response.text)
+        word_count = count_text_units(rewritten_text)
         ratio = word_count / chapter.word_count if chapter.word_count else None
-        if target_word_count is not None and word_count < target_word_count:
-            raise ValueError(f"Rewrite is shorter than target length: {word_count} < {target_word_count}")
-        if min_expansion_ratio is not None and ratio is not None and ratio < min_expansion_ratio:
-            raise ValueError(f"Rewrite expansion ratio is below minimum: {ratio:.2f} < {min_expansion_ratio:.2f}")
         with session(self.database_path) as connection:
             anchor_snapshot = self._anchor_snapshot_for_chapter(chapter)
-            prompt_snapshot = {
-                "messages": self._rewrite_messages(chapter, template),
-                "prompt_template": {
-                    "id": template.id,
-                    "name": template.name,
-                    "version": template.version,
-                },
-            }
             connection.execute(
                 """
                 INSERT INTO chapter_rewrites (
@@ -714,10 +911,13 @@ class PipelineService:
                     prompt_template_id,
                     prompt_snapshot_json,
                     anchor_snapshot_json,
+                    rewrite_mode,
+                    anchor_text,
+                    expanded_text,
                     token_usage_json,
                     elapsed_ms,
                     updated_at
-                ) VALUES (?, ?, 'ai', ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ) VALUES (?, ?, 'ai', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(chapter_id)
                 DO UPDATE SET
                     rewritten_text = excluded.rewritten_text,
@@ -729,6 +929,9 @@ class PipelineService:
                     prompt_template_id = excluded.prompt_template_id,
                     prompt_snapshot_json = excluded.prompt_snapshot_json,
                     anchor_snapshot_json = excluded.anchor_snapshot_json,
+                    rewrite_mode = excluded.rewrite_mode,
+                    anchor_text = excluded.anchor_text,
+                    expanded_text = excluded.expanded_text,
                     token_usage_json = excluded.token_usage_json,
                     elapsed_ms = excluded.elapsed_ms,
                     confirmed_at = NULL,
@@ -736,7 +939,7 @@ class PipelineService:
                 """,
                 (
                     chapter.id,
-                    response.text,
+                    rewritten_text,
                     target_word_count,
                     word_count,
                     ratio,
@@ -744,6 +947,9 @@ class PipelineService:
                     template.id,
                     json.dumps(prompt_snapshot, ensure_ascii=False),
                     json.dumps(anchor_snapshot, ensure_ascii=False),
+                    rewrite_mode,
+                    anchor,
+                    expanded,
                     json.dumps(response.token_usage),
                     response.elapsed_ms,
                 ),
@@ -754,9 +960,26 @@ class PipelineService:
                 SET rewritten_text = ?, status = 'rewritten', updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
-                (response.text, chapter.id),
+                (rewritten_text, chapter.id),
             )
         self.project_service.refresh_project_progress(chapter.project_id)
+
+    def _validate_rewrite_targets(self, chapter: ChapterRecord, rewritten_text: str) -> None:
+        settings = self.project_service.get_project_settings(chapter.project_id)
+        target_word_count = settings.target_word_count if settings else None
+        min_expansion_ratio = settings.min_expansion_ratio if settings else None
+        word_count = count_text_units(rewritten_text)
+        ratio = word_count / chapter.word_count if chapter.word_count else None
+        if target_word_count is not None and word_count < target_word_count:
+            raise RewriteOutputError(
+                "rewrite_too_short",
+                f"Rewrite is shorter than target length: {word_count} < {target_word_count}",
+            )
+        if min_expansion_ratio is not None and ratio is not None and ratio < min_expansion_ratio:
+            raise RewriteOutputError(
+                "expansion_ratio_too_low",
+                f"Rewrite expansion ratio is below minimum: {ratio:.2f} < {min_expansion_ratio:.2f}",
+            )
 
     def _mark_stage(
         self,
@@ -818,6 +1041,64 @@ class PipelineService:
                 (chapter_id, stage, type(exc).__name__, str(exc)),
             )
 
+    def _next_attempt_number(self, chapter_id: int, stage: str) -> int:
+        with session(self.database_path) as connection:
+            row = connection.execute(
+                "SELECT COALESCE(MAX(attempt_number), 0) + 1 FROM generation_attempts WHERE chapter_id = ? AND stage = ?",
+                (chapter_id, stage),
+            ).fetchone()
+        return int(row[0])
+
+    def _record_generation_attempt(
+        self,
+        chapter_id: int,
+        stage: str,
+        attempt_number: int,
+        compiled: CompiledRequest,
+        model: ModelConfig,
+        template: PromptTemplate,
+        *,
+        response: AIResponse | None = None,
+        parsed: dict[str, Any] | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        error_type = _classify_generation_error(error) if error is not None else None
+        request_snapshot = compiled.snapshot()
+        request_snapshot["model"] = {
+            "id": model.id,
+            "display_name": model.display_name,
+            "provider": model.provider,
+            "base_url": model.base_url,
+            "model_name": model.model_name,
+            "temperature": model.temperature,
+            "max_tokens": model.max_tokens,
+            "timeout_seconds": model.timeout_seconds,
+        }
+        with session(self.database_path) as connection:
+            connection.execute(
+                """
+                INSERT INTO generation_attempts (
+                    chapter_id, stage, attempt_number, request_json, response_text,
+                    parsed_json, error_type, error_message, model_id, prompt_template_id,
+                    token_usage_json, elapsed_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    chapter_id,
+                    stage,
+                    attempt_number,
+                    json.dumps(request_snapshot, ensure_ascii=False),
+                    response.text if response is not None else "",
+                    json.dumps(parsed or {}, ensure_ascii=False),
+                    error_type,
+                    str(error) if error is not None else None,
+                    model.id,
+                    template.id,
+                    json.dumps(response.token_usage if response is not None else {}, ensure_ascii=False),
+                    response.elapsed_ms if response is not None else None,
+                ),
+            )
+
     def _resolve_stage_errors(self, chapter_id: int, stage: str) -> None:
         with session(self.database_path) as connection:
             connection.execute(
@@ -827,6 +1108,50 @@ class PipelineService:
                 WHERE chapter_id = ? AND stage = ? AND resolved_at IS NULL
                 """,
                 (chapter_id, stage),
+            )
+
+    def _run_chapter_batch(
+        self,
+        chapters: list[ChapterRecord],
+        worker: Callable[[ChapterRecord], str],
+        concurrency: int,
+        should_pause: Callable[[], bool] | None,
+    ) -> tuple[dict[int, str], bool]:
+        results: dict[int, str] = {}
+        if not chapters:
+            return results, False
+        if should_pause and should_pause():
+            return results, True
+        if self.is_project_paused(chapters[0].project_id):
+            return results, True
+
+        if concurrency <= 1:
+            for chapter in chapters:
+                if should_pause and should_pause():
+                    return results, True
+                if self.is_project_paused(chapter.project_id):
+                    return results, True
+                try:
+                    results[chapter.id] = worker(chapter)
+                except Exception:
+                    continue
+            return results, False
+
+        with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="rusty-stage") as executor:
+            futures = {executor.submit(worker, chapter): chapter for chapter in chapters}
+            for future in as_completed(futures):
+                chapter = futures[future]
+                try:
+                    results[chapter.id] = future.result()
+                except Exception:
+                    continue
+        return results, False
+
+    def _set_project_stage(self, project_id: int, stage: str) -> None:
+        with session(self.database_path) as connection:
+            connection.execute(
+                "UPDATE projects SET current_stage = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (stage, project_id),
             )
 
     def _set_project_status(self, project_id: int, status: str) -> None:
@@ -949,17 +1274,152 @@ class PipelineService:
 
 def _parse_scene_response(text: str) -> dict:
     try:
-        data = json.loads(text)
+        data = json.loads(_strip_json_fence(text))
     except json.JSONDecodeError:
-        return {"needs_rewrite": True, "labels": ["unspecified"], "reasoning": text}
-    labels = data.get("labels") or data.get("scene_labels") or []
+        return {
+            "needs_rewrite": True,
+            "labels": ["unspecified"],
+            "reasoning": text,
+            "markers": [{"category_id": "unspecified", "expand_description": text}],
+        }
+    if not isinstance(data, dict):
+        data = {}
+    analysis = data.get("analysis") if isinstance(data.get("analysis"), dict) else data
+    labels = analysis.get("categories") or analysis.get("labels") or analysis.get("scene_labels") or []
     if isinstance(labels, str):
         labels = [labels]
+    raw_markers = analysis.get("markers") if isinstance(analysis.get("markers"), list) else []
+    markers = []
+    for item in raw_markers:
+        if not isinstance(item, dict):
+            continue
+        category_id = item.get("category_id") or item.get("categoryId") or item.get("scene_key") or "unspecified"
+        markers.append(
+            {
+                "category_id": str(category_id),
+                "category_name": str(item.get("category_name") or item.get("categoryName") or ""),
+                "expand_description": str(
+                    item.get("expand_description") or item.get("expandDescription") or item.get("description") or ""
+                ),
+                "evidence": str(item.get("evidence") or item.get("excerpt") or ""),
+            }
+        )
+    reasoning = str(analysis.get("reasoning", ""))
+    if not markers and labels:
+        markers = [
+            {
+                "category_id": str(label),
+                "category_name": "",
+                "expand_description": reasoning,
+                "evidence": "",
+            }
+            for label in labels
+        ]
     return {
-        "needs_rewrite": bool(data.get("needs_rewrite")),
-        "labels": labels,
-        "reasoning": str(data.get("reasoning", "")),
+        "needs_rewrite": bool(
+            analysis.get("has_target_content", analysis.get("hasTargetContent", analysis.get("needs_rewrite")))
+        ),
+        "labels": [str(label) for label in labels],
+        "reasoning": reasoning,
+        "markers": markers,
     }
+
+
+class RewriteOutputError(ValueError):
+    def __init__(self, code: str, message: str, parsed: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.parsed = parsed or {}
+
+
+def _apply_rewrite_response(original_text: str, response_text: str, rewrite_mode: str) -> dict[str, str]:
+    stripped = response_text.strip()
+    if not stripped:
+        raise RewriteOutputError("empty_response", "The model returned an empty rewrite.")
+    if _looks_like_refusal(stripped):
+        raise RewriteOutputError("refusal_detected", "The model response appears to be a refusal.")
+    if rewrite_mode == "full_rewrite":
+        return {"rewritten_text": stripped, "anchor": original_text, "expanded": stripped}
+
+    try:
+        parsed = json.loads(_strip_json_fence(stripped))
+    except json.JSONDecodeError as exc:
+        raise RewriteOutputError("invalid_json", f"Rewrite response is not valid JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise RewriteOutputError("invalid_json_shape", "Rewrite response must be a JSON object.")
+    payload = parsed.get("rewrite") if isinstance(parsed.get("rewrite"), dict) else parsed
+    anchor = payload.get("anchor")
+    expanded = payload.get("expanded")
+    if not isinstance(anchor, str) or not anchor:
+        raise RewriteOutputError("empty_anchor", "Rewrite anchor must be a non-empty string.", parsed)
+    if not isinstance(expanded, str) or not expanded.strip():
+        raise RewriteOutputError("empty_expanded", "Expanded replacement must be a non-empty string.", parsed)
+    occurrences = original_text.count(anchor)
+    if occurrences == 0:
+        raise RewriteOutputError("anchor_missing", "Rewrite anchor was not found in the original chapter.", parsed)
+    if occurrences > 1:
+        raise RewriteOutputError(
+            "anchor_ambiguous",
+            f"Rewrite anchor occurs {occurrences} times; it must be unique.",
+            parsed,
+        )
+    return {
+        "rewritten_text": original_text.replace(anchor, expanded, 1),
+        "anchor": anchor,
+        "expanded": expanded,
+    }
+
+
+def _strip_json_fence(text: str) -> str:
+    stripped = text.strip()
+    if stripped.startswith("```") and stripped.endswith("```"):
+        stripped = stripped[3:-3].strip()
+        if stripped.lower().startswith("json"):
+            stripped = stripped[4:].strip()
+    return stripped
+
+
+def _looks_like_refusal(text: str) -> bool:
+    prefix = text.strip().lower()[:500]
+    return any(
+        prefix.startswith(phrase)
+        for phrase in (
+            "i can't assist",
+            "i cannot assist",
+            "i'm unable to",
+            "i am unable to",
+            "i'm sorry, but i can't",
+            "i'm sorry, but i cannot",
+            "我不能协助",
+            "我无法协助",
+            "抱歉，我不能",
+            "很抱歉，我无法",
+        )
+    )
+
+
+def _classify_generation_error(error: Exception | None) -> str | None:
+    if error is None:
+        return None
+    if isinstance(error, RewriteOutputError):
+        return error.code
+    name = type(error).__name__.lower()
+    message = str(error).lower()
+    if "timeout" in name or "timeout" in message:
+        return "timeout"
+    if "http" in name or "status" in message:
+        return "provider_error"
+    return "execution_error"
+
+
+def _parse_stage_response(stage: str, text: str) -> dict[str, Any]:
+    if stage == "summary":
+        return _parse_summary_response(text)
+    if stage == "scene_detection":
+        return _parse_scene_response(text)
+    if stage == "plot_expansion":
+        return {"expanded_plot": text.strip()}
+    return {}
 
 
 def _parse_summary_response(text: str) -> dict[str, Any]:

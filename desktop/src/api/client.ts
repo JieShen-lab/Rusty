@@ -4,10 +4,12 @@ import type {
   AnchorExtractWrite,
   Chapter,
   ChapterDetail,
+  CompiledPromptPreview,
   CharacterCard,
   CharacterCardWrite,
   ExportPlanItem,
   ExportPlanUpdate,
+  GenerationAttempt,
   ModelConfig,
   ModelTestResult,
   OutlineTemplate,
@@ -425,6 +427,18 @@ export function detectScene(chapterId: number) {
 
 export function rewriteChapter(chapterId: number) {
   return request<{ ok: boolean; text: string }>(`/api/chapters/${chapterId}/rewrite`, { method: 'POST' });
+}
+
+export function getChapterPromptPreview(
+  chapterId: number,
+  stage: 'summary' | 'scene_detection' | 'plot_expansion' | 'rewrite' = 'rewrite',
+) {
+  return request<CompiledPromptPreview>(`/api/chapters/${chapterId}/prompt-preview?stage=${stage}`);
+}
+
+export function getChapterGenerationAttempts(chapterId: number, stage?: string) {
+  const query = stage ? `?stage=${encodeURIComponent(stage)}` : '';
+  return request<GenerationAttempt[]>(`/api/chapters/${chapterId}/generation-attempts${query}`);
 }
 
 export function expandChapterPlot(chapterId: number, enabled: boolean) {

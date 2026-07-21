@@ -144,6 +144,21 @@ Rusty 的最终目的不是保存一堆彼此混杂的提示词字段，而是�
 - [x] Playwright 完成提示词主界面切换、工作台阶段切换、检查器折叠、文案与空态检查；控制台、页面异常和失败请求均为 0。
 - [x] `python -m unittest discover -s tests`、`python -m pytest tests -q`、`python -m compileall -q src tests backend`、`npm.cmd --prefix desktop run build` 与 `git diff --check` 通过。
 
+## 2026-07-21 FleshOut 参考实现增量
+
+本增量只学习 FleshOut 可观察到的工作流，不复制其提示词文本，也不把兼容字段自动提升为 Rusty 规则。证据等级与边界记录在 `docs/fleshout-reference.md`；Rusty 的独立目标契约记录在 `docs/rewrite-engine-target.md`。
+
+- [x] 摘要、场景识别、剧情扩展和改写统一经过版本化 PromptCompiler。
+- [x] 每个请求显式区分 `RUSTY NATIVE RULES` 与用户自有规则，并保存准确的 system/user 消息快照。
+- [x] 场景识别结果包含可持久化的上下文标记，而不再只有布尔值和标签。
+- [x] 默认改写模式改为“唯一原文锚点 + 扩写替换”，由 Rusty 确定性合并；保留整章改写兼容模式。
+- [x] 锚点缺失、锚点歧义、非法 JSON、空输出、疑似拒绝、长度不足和服务商错误均可分类记录。
+- [x] 改写失败按工程上限有限重试，格式/锚点失败会携带明确校验码请求修复。
+- [x] 项目执行按摘要 → 识别 → 改写 → 审查分阶段运行，并使用工程并发设置。
+- [x] 数据库 v9 保存逐次请求、响应、解析结果、错误、模型、模板、token 和耗时。
+- [x] 工作台可查看 Rusty 规则版本、实际请求及最近生成记录。
+- [x] 旧 `breakthroughTemplate` 继续只作为兼容元数据保留，不自动启用。
+
 ## 实施顺序
 
 1. 审计当前统一提示词包、项目流程、数据库和兼容入口。

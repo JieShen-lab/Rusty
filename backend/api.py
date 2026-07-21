@@ -294,6 +294,8 @@ def create_app(
             concurrency=payload.concurrency,
             target_word_count=payload.target_word_count,
             min_expansion_ratio=payload.min_expansion_ratio,
+            rewrite_mode=payload.rewrite_mode,
+            max_attempts=payload.max_attempts,
         )
         return get_project(project_id)
 
@@ -410,6 +412,18 @@ def create_app(
         _require_project(project_service, chapter.project_id)
         text = pipeline_service.rewrite_chapter(chapter_id)
         return TextResultResponse(ok=True, text=text)
+
+    @app.get("/api/chapters/{chapter_id}/prompt-preview", response_model=dict[str, Any])
+    def preview_chapter_prompt(chapter_id: int, stage: str = "rewrite") -> dict[str, Any]:
+        chapter = _require_existing_chapter(project_service, chapter_id)
+        _require_project(project_service, chapter.project_id)
+        return pipeline_service.preview_chapter_prompt(chapter_id, stage)
+
+    @app.get("/api/chapters/{chapter_id}/generation-attempts", response_model=list[dict[str, Any]])
+    def list_generation_attempts(chapter_id: int, stage: str | None = None) -> list[dict[str, Any]]:
+        chapter = _require_existing_chapter(project_service, chapter_id)
+        _require_project(project_service, chapter.project_id)
+        return pipeline_service.list_generation_attempts(chapter_id, stage)
 
     @app.post("/api/chapters/{chapter_id}/expand-plot", response_model=TextResultResponse, dependencies=[Depends(_require_token)])
     def expand_chapter_plot(chapter_id: int, payload: PlotExpansionRequest) -> TextResultResponse:

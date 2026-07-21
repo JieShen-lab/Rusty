@@ -325,11 +325,17 @@ class AnalysisService:
     @staticmethod
     def _chapter_messages(title: str, text: str, template: AnalysisPromptTemplate) -> list[dict[str, str]]:
         return [
-            {"role": "system", "content": "你负责分析小说表达风格。只返回严格 JSON，不改写正文。"},
+            {
+                "role": "system",
+                "content": (
+                    "[RUSTY NATIVE RULES: rusty.native.extraction.chapter.v1]\n"
+                    "你负责分析小说表达风格。只返回严格 JSON，不改写正文。"
+                ),
+            },
             {
                 "role": "user",
                 "content": (
-                    f"分析维度：\n{template.analysis_dimensions}\n\n"
+                    f"[USER-OWNED ANALYSIS RULES]\n分析维度：\n{template.analysis_dimensions}\n\n"
                     f"证据规则：\n{template.evidence_rules}\n\n"
                     f"输出要求：\n{template.output_requirements}\n\n"
                     "返回对象至少包含 overview、dimensions、evidence。每条 evidence 使用原文短片段。"
@@ -346,11 +352,17 @@ class AnalysisService:
         template: AnalysisPromptTemplate,
     ) -> list[dict[str, str]]:
         return [
-            {"role": "system", "content": "你负责把逐章风格分析归纳为可复用的改写提示词。只返回严格 JSON。"},
+            {
+                "role": "system",
+                "content": (
+                    "[RUSTY NATIVE RULES: rusty.native.extraction.synthesis.v1]\n"
+                    "你负责把逐章风格分析归纳为可复用的改写提示词。只返回严格 JSON。"
+                ),
+            },
             {
                 "role": "user",
                 "content": (
-                    f"工程：{project_name}\n"
+                    f"工程：{project_name}\n[USER-OWNED SYNTHESIS RULES]\n"
                     f"归纳规则：\n{template.synthesis_rules}\n\n"
                     f"输出要求：\n{template.output_requirements}\n\n"
                     f"schema 必须是 {PROMPT_PACKAGE_SCHEMA}，schema_version 必须是 {PROMPT_PACKAGE_SCHEMA_VERSION}。"

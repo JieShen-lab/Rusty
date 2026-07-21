@@ -163,6 +163,8 @@ class BackendApiTests(unittest.TestCase):
             )
             project_id = created.json()["id"]
             chapters = client.get(f"/api/projects/{project_id}/chapters").json()
+            prompt_preview = client.get(f"/api/chapters/{chapters[0]['id']}/prompt-preview?stage=rewrite")
+            generation_attempts = client.get(f"/api/chapters/{chapters[0]['id']}/generation-attempts?stage=rewrite")
             default_plan = client.get(f"/api/projects/{project_id}/export-plan")
             save_without_token = client.post(
                 f"/api/projects/{project_id}/export-plan",
@@ -197,6 +199,9 @@ class BackendApiTests(unittest.TestCase):
             exported_text = Path(exported.json()["output_path"]).read_text(encoding="utf-8")
 
         self.assertEqual(200, default_plan.status_code)
+        self.assertEqual(200, prompt_preview.status_code)
+        self.assertEqual("rusty.native.rewrite.v1", prompt_preview.json()["ruleset_id"])
+        self.assertEqual([], generation_attempts.json())
         self.assertEqual(["1. One", "2. Two", "3. Three"], [item["export_title"] for item in default_plan.json()])
         self.assertEqual(["original", "original", "original"], [item["source_status"] for item in default_plan.json()])
         self.assertEqual(403, save_without_token.status_code)

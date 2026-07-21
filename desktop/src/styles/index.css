@@ -264,6 +264,11 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .prompt-preview section { min-width: 0; border-right: 1px solid var(--line); padding: 22px; }
 .prompt-preview h3 { margin: 0 0 12px; font-size: 14px; }
 .prompt-preview pre { margin: 0; white-space: pre-wrap; font: 13px/1.75 "Microsoft YaHei UI", sans-serif; }
+.rewrite-trace { margin: 18px; border: 1px solid var(--line); border-radius: 12px; background: #fff; }
+.rewrite-trace summary { cursor: pointer; padding: 14px 16px; font-weight: 700; }
+.rewrite-trace section { border-top: 1px solid var(--line); padding: 16px; }
+.rewrite-trace h3 { margin: 0 0 10px; font-size: 14px; }
+.rewrite-trace pre { max-height: 320px; margin: 0; overflow: auto; white-space: pre-wrap; font: 12px/1.65 "Microsoft YaHei UI", sans-serif; }
 .export-plan { padding: 22px; }
 .export-row { display: grid; grid-template-columns: 22px 34px minmax(0, 1fr) 90px; align-items: center; gap: 8px; min-height: 48px; border-bottom: 1px solid var(--line); }
 .export-row input:not([type="checkbox"]) { min-height: 34px; border: 1px solid transparent; border-radius: 6px; padding-inline: 8px; }

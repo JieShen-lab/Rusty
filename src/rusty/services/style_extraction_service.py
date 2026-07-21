@@ -125,7 +125,10 @@ class StyleExtractionService:
         return [
             {
                 "role": "system",
-                "content": "You extract reusable prose style templates. Return strict JSON only.",
+                "content": (
+                    "[RUSTY NATIVE RULES: rusty.native.style_extraction.v1]\n"
+                    "You extract reusable prose style templates. Return strict JSON only."
+                ),
             },
             {
                 "role": "user",
@@ -149,7 +152,11 @@ class StyleExtractionService:
         return [
             {
                 "role": "system",
-                "content": template.global_prompt,
+                "content": (
+                    "[RUSTY NATIVE RULES: rusty.native.style_trial.v1]\n"
+                    "Generate only a validation sample for the visible user-owned style rules.\n\n"
+                    f"[USER-OWNED SYSTEM RULES]\n{template.global_prompt or 'None'}"
+                ),
             },
             {
                 "role": "user",

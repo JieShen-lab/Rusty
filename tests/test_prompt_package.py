@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -50,6 +51,42 @@ class RecordingAIClient:
                         "characters": [{"name": "Alice", "traits": ["decisive"], "role": "lead"}],
                     }
                 ),
+                {},
+                10,
+            )
+        if "AVAILABLE CATEGORIES" in user:
+            return AIResponse(
+                json.dumps(
+                    {
+                        "analysis": {
+                            "has_target_content": True,
+                            "categories": ["combat"],
+                            "markers": [
+                                {
+                                    "category_id": "combat",
+                                    "category_name": "combat",
+                                    "expand_description": "Alice enters the battle.",
+                                    "evidence": "Alice enters a battle.",
+                                }
+                            ],
+                            "reasoning": "battle",
+                        }
+                    }
+                ),
+                {},
+                10,
+            )
+        if "ORIGINAL PLOT SKELETON" in user:
+            return AIResponse("Strengthen the conflict and force Alice to choose.", {}, 10)
+        if "RUSTY OUTPUT CONTRACT" in user:
+            match = re.search(
+                r"--- ORIGINAL CHAPTER: .*? ---\n(.*?)\n--- END ORIGINAL CHAPTER ---",
+                user,
+                re.DOTALL,
+            )
+            original = match.group(1) if match else "Alice enters a battle."
+            return AIResponse(
+                json.dumps({"anchor": original, "expanded": f"{original} Alice makes a decisive choice."}),
                 {},
                 10,
             )
@@ -195,7 +232,7 @@ class PromptPackageTests(unittest.TestCase):
 
         rewrite_text = client.calls[-1][-1]["content"]
         self.assertTrue(outputs.plot_expansion_enabled)
-        self.assertIn("强化冲突", outputs.expanded_plot)
+        self.assertIn("Strengthen the conflict", outputs.expanded_plot)
         self.assertIn("Combat-specific rewrite.", rewrite_text)
         self.assertIn("Alice must choose", rewrite_text)
         self.assertIn("decisive", rewrite_text)

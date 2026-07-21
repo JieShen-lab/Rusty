@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import json
+import re
 import sys
 import tempfile
 import unittest
@@ -11,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from rusty.services import AnchorService, ModelService, PipelineService, PromptService, ProjectService, StyleTemplateService
 from rusty.services.ai_client import AIClient, AIResponse
+from rusty.services.pipeline_service import RewriteOutputError, _apply_rewrite_response
 
 
 class FakeAIClient(AIClient):
@@ -21,23 +23,57 @@ class FakeAIClient(AIClient):
 
     def chat(self, model, api_key, messages):
         self.calls.append((model, messages))
-        user_text = messages[-1]["content"]
+        user_text = "\n".join(message["content"] for message in messages if message["role"] == "user")
         if self.fail_on and self.fail_on in user_text:
             raise RuntimeError("fake failure")
-        if "Return JSON" in user_text:
+        if "AVAILABLE CATEGORIES" in user_text:
             text = (
-                '{"needs_rewrite": true, "labels": ["expand"], "reasoning": "needs detail"}'
+                '{"analysis":{"has_target_content":true,"categories":["expand"],'
+                '"markers":[{"category_id":"expand","category_name":"Expand",'
+                '"expand_description":"needs detail","evidence":"Original text."}],'
+                '"reasoning":"needs detail"}}'
                 if self.scene_needs_rewrite
-                else '{"needs_rewrite": false, "labels": ["keep"], "reasoning": "preserve original"}'
+                else '{"analysis":{"has_target_content":false,"categories":[],"markers":[],'
+                '"reasoning":"preserve original"}}'
             )
-        elif "Rewrite" in user_text:
-            text = "Rewritten chapter text."
+        elif "RUSTY OUTPUT CONTRACT" in user_text:
+            match = re.search(
+                r"--- ORIGINAL CHAPTER: .*? ---\n(.*?)\n--- END ORIGINAL CHAPTER ---",
+                user_text,
+                re.DOTALL,
+            )
+            anchor = match.group(1) if match else "Original text."
+            text = json.dumps({"anchor": anchor, "expanded": "Rewritten chapter text."})
         else:
             text = "Structured summary."
         return AIResponse(text=text, token_usage={"total_tokens": 3}, elapsed_ms=5)
 
 
+class SequenceAIClient(AIClient):
+    def __init__(self, responses: list[str]) -> None:
+        self.responses = list(responses)
+        self.calls: list[list[dict[str, str]]] = []
+
+    def chat(self, model, api_key, messages):
+        self.calls.append(messages)
+        if not self.responses:
+            raise AssertionError("No fake response remains")
+        return AIResponse(text=self.responses.pop(0), token_usage={"total_tokens": 5}, elapsed_ms=7)
+
+
 class PipelineServiceTests(unittest.TestCase):
+    def test_refusal_detection_does_not_reject_fictional_dialogue_inside_valid_json(self) -> None:
+        with self.assertRaises(RewriteOutputError) as refusal:
+            _apply_rewrite_response("Original text.", "I'm sorry, but I can't assist with that.", "anchor_expand")
+        accepted = _apply_rewrite_response(
+            "Original text.",
+            json.dumps({"anchor": "Original text.", "expanded": "她说：我无法协助。"}, ensure_ascii=False),
+            "anchor_expand",
+        )
+
+        self.assertEqual("refusal_detected", refusal.exception.code)
+        self.assertEqual("她说：我无法协助。", accepted["rewritten_text"])
+
     def test_summary_project_only_runs_summary_stage(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)
@@ -184,18 +220,20 @@ class PipelineServiceTests(unittest.TestCase):
                 connection.close()
 
         self.assertEqual("Structured summary.", summary)
-        self.assertIn("needs_rewrite", scene)
+        self.assertIn("has_target_content", scene)
         self.assertEqual("Rewritten chapter text.", rewrite)
         self.assertIn("Rewritten chapter text.", merged)
         self.assertEqual("Structured summary.", outputs.plot_summary)
         self.assertTrue(outputs.needs_rewrite)
         self.assertEqual(["expand"], outputs.scene_labels)
         self.assertEqual("needs detail", outputs.scene_reasoning)
+        self.assertEqual("expand", outputs.scene_markers[0]["category_id"])
         self.assertEqual("ai", outputs.rewrite_source)
         self.assertIsNotNone(outputs.rewritten_word_count)
         self.assertGreater(outputs.rewritten_word_count, 0)
         self.assertEqual("ai", rewrite_row[0])
-        self.assertIn("Rewrite this chapter", rewrite_row[1])
+        self.assertIn("RUSTY OUTPUT CONTRACT", rewrite_row[1])
+        self.assertIn("rusty.native.rewrite.v1", rewrite_row[1])
         self.assertEqual(
             {"style_template": None, "outline_template": None, "character_cards": []},
             json.loads(rewrite_row[2]),
@@ -614,6 +652,104 @@ class PipelineServiceTests(unittest.TestCase):
         self.assertEqual(1, len(errors))
         self.assertEqual("rewrite", errors[0].stage)
         self.assertIn("shorter than target", errors[0].message)
+
+    def test_anchor_rewrite_repairs_invalid_output_and_records_exact_attempts(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            database_path = root / "rusty.db"
+            source_path = root / "book.txt"
+            source_path.write_text("1. One\nOriginal text.", encoding="utf-8")
+            project_service = ProjectService(database_path)
+            project_id = project_service.import_book(source_path, root)
+            chapter_id = project_service.list_chapters(project_id)[0].id
+            ModelService(database_path).create_model(
+                display_name="Fake",
+                provider="openai_compatible",
+                base_url="https://api.example.test/v1",
+                model_name="fake-model",
+                is_default=True,
+            )
+            PromptService(database_path).create_template(
+                name="Default",
+                global_rules="User global rule.",
+                rewrite_rules="User rewrite rule.",
+                is_default=True,
+            )
+            project_service.update_project_settings(project_id, max_attempts=2, rewrite_mode="anchor_expand")
+            fake_client = SequenceAIClient(
+                [
+                    '{"anchor":"missing text","expanded":"first try"}',
+                    '{"anchor":"Original text.","expanded":"Expanded original text."}',
+                ]
+            )
+            pipeline = PipelineService(database_path, ai_client=fake_client)
+
+            result = pipeline.rewrite_chapter(chapter_id)
+            attempts = pipeline.list_generation_attempts(chapter_id, "rewrite")
+            preview = pipeline.preview_chapter_prompt(chapter_id, "rewrite")
+
+        self.assertEqual("Expanded original text.", result)
+        self.assertEqual(2, len(attempts))
+        self.assertEqual("anchor_missing", attempts[0]["error_type"])
+        self.assertIsNone(attempts[1]["error_type"])
+        self.assertEqual("anchor_missing", attempts[1]["request"]["provenance"]["repair_for"])
+        self.assertEqual("fake-model", attempts[1]["request"]["model"]["model_name"])
+        self.assertNotIn("api_key", attempts[1]["request"]["model"])
+        self.assertEqual("rusty.native.rewrite.v1", preview["ruleset_id"])
+        self.assertIn("[RUSTY NATIVE RULES", preview["messages"][0]["content"])
+        self.assertIn("[USER-OWNED SYSTEM RULES]", preview["messages"][0]["content"])
+        self.assertIn("User global rule.", preview["messages"][0]["content"])
+        self.assertIn("User rewrite rule.", preview["messages"][1]["content"])
+
+    def test_anchor_rewrite_rejects_ambiguous_anchor(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            database_path = root / "rusty.db"
+            source_path = root / "book.txt"
+            source_path.write_text("1. One\nAgain and Again.", encoding="utf-8")
+            project_service = ProjectService(database_path)
+            project_id = project_service.import_book(source_path, root)
+            chapter_id = project_service.list_chapters(project_id)[0].id
+            ModelService(database_path).create_model(
+                display_name="Fake", provider="openai_compatible", base_url="https://example.test/v1",
+                model_name="fake", is_default=True,
+            )
+            PromptService(database_path).create_template(name="Default", rewrite_rules="Expand.", is_default=True)
+            project_service.update_project_settings(project_id, max_attempts=1)
+            pipeline = PipelineService(
+                database_path,
+                ai_client=SequenceAIClient(['{"anchor":"Again","expanded":"Once more"}']),
+            )
+
+            with self.assertRaisesRegex(ValueError, "occurs 2 times"):
+                pipeline.rewrite_chapter(chapter_id)
+            attempts = pipeline.list_generation_attempts(chapter_id, "rewrite")
+
+        self.assertEqual("anchor_ambiguous", attempts[0]["error_type"])
+
+    def test_full_rewrite_mode_preserves_legacy_whole_chapter_behavior(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            database_path = root / "rusty.db"
+            source_path = root / "book.txt"
+            source_path.write_text("1. One\nOriginal text.", encoding="utf-8")
+            project_service = ProjectService(database_path)
+            project_id = project_service.import_book(source_path, root)
+            chapter_id = project_service.list_chapters(project_id)[0].id
+            ModelService(database_path).create_model(
+                display_name="Fake", provider="openai_compatible", base_url="https://example.test/v1",
+                model_name="fake", is_default=True,
+            )
+            PromptService(database_path).create_template(name="Default", rewrite_rules="Rewrite.", is_default=True)
+            project_service.update_project_settings(project_id, rewrite_mode="full_rewrite", max_attempts=1)
+            pipeline = PipelineService(database_path, ai_client=SequenceAIClient(["A complete replacement chapter."]))
+
+            result = pipeline.rewrite_chapter(chapter_id)
+            outputs = pipeline.get_chapter_ai_outputs(chapter_id)
+
+        self.assertEqual("A complete replacement chapter.", result)
+        self.assertEqual("full_rewrite", outputs.rewrite_mode)
+        self.assertEqual("A complete replacement chapter.", outputs.rewrite_expanded)
 
 
 if __name__ == "__main__":

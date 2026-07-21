@@ -36,6 +36,7 @@ class SchemaTests(unittest.TestCase):
         self.assertIn("project_outline_bindings", table_names)
         self.assertIn("project_character_bindings", table_names)
         self.assertIn("chapter_stage_status", table_names)
+        self.assertIn("generation_attempts", table_names)
         self.assertIn("exports", table_names)
         self.assertIn("export_chapter_plan", table_names)
 
@@ -104,6 +105,9 @@ class SchemaTests(unittest.TestCase):
         self.assertIn("prompt_snapshot_json", columns)
         self.assertIn("anchor_snapshot_json", columns)
         self.assertIn("confirmed_at", columns)
+        self.assertIn("rewrite_mode", columns)
+        self.assertIn("anchor_text", columns)
+        self.assertIn("expanded_text", columns)
         self.assertEqual(("unknown", "{}", "{}"), row)
         self.assertEqual(CURRENT_SCHEMA_VERSION, version)
 

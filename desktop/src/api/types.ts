@@ -33,12 +33,16 @@ export type ChapterAIOutputs = {
   needs_rewrite: boolean | null;
   scene_labels: string[] | null;
   scene_reasoning: string | null;
+  scene_markers: Array<Record<string, unknown>> | null;
   plot_expansion_enabled: boolean | null;
   expanded_plot: string | null;
   rewrite_source: string | null;
   rewritten_word_count: number | null;
   expansion_ratio: number | null;
   rewrite_elapsed_ms: number | null;
+  rewrite_mode: 'anchor_expand' | 'full_rewrite' | null;
+  rewrite_anchor: string | null;
+  rewrite_expanded: string | null;
   style_analysis: Record<string, unknown> | null;
   reviewed_style_analysis: Record<string, unknown> | null;
   style_analysis_status: string | null;
@@ -67,6 +71,31 @@ export type ChapterDetail = {
   ai_outputs: ChapterAIOutputs;
   stage_statuses: StageStatus[];
   errors: ChapterError[];
+};
+
+export type CompiledPromptPreview = {
+  stage: string;
+  ruleset_id: string;
+  expected_output: string;
+  messages: Array<{ role: string; content: string }>;
+  provenance: Record<string, unknown>;
+  model?: Record<string, unknown>;
+};
+
+export type GenerationAttempt = {
+  id: number;
+  stage: string;
+  attempt_number: number;
+  request: CompiledPromptPreview;
+  response_text: string;
+  parsed: Record<string, unknown>;
+  error_type: string | null;
+  error_message: string | null;
+  model_id: number | null;
+  prompt_template_id: number | null;
+  token_usage: Record<string, unknown>;
+  elapsed_ms: number | null;
+  created_at: string;
 };
 
 export type ProjectDetail = {
@@ -336,6 +365,8 @@ export type ProjectSettingsWrite = {
   concurrency?: number;
   target_word_count?: number | null;
   min_expansion_ratio?: number | null;
+  rewrite_mode?: 'anchor_expand' | 'full_rewrite';
+  max_attempts?: number;
 };
 
 export type PipelineRunResult = {

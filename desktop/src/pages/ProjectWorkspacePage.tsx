@@ -11,6 +11,8 @@ import {
   exportTxt,
   getAnalysisPrompts,
   getChapter,
+  getChapterGenerationAttempts,
+  getChapterPromptPreview,
   getChapters,
   getProject,
   getProjectExportPlan,
@@ -28,7 +30,9 @@ import type {
   AnalysisPromptTemplate,
   Chapter,
   ChapterDetail,
+  CompiledPromptPreview,
   ExportPlanItem,
+  GenerationAttempt,
   ProjectDetail,
   ProjectPurpose,
   PromptTemplate,
@@ -52,6 +56,8 @@ export function ProjectWorkspacePage({ onNavigate, projectId }: Props) {
   const [targetSkeleton, setTargetSkeleton] = useState('');
   const [rewriteDraft, setRewriteDraft] = useState('');
   const [analysisDraft, setAnalysisDraft] = useState('{}');
+  const [promptPreview, setPromptPreview] = useState<CompiledPromptPreview | null>(null);
+  const [generationAttempts, setGenerationAttempts] = useState<GenerationAttempt[]>([]);
   const [binderVisible, setBinderVisible] = useState(true);
   const [inspectorVisible, setInspectorVisible] = useState(true);
   const [binderWidth, setBinderWidth] = useState(240);
@@ -97,8 +103,32 @@ export function ProjectWorkspacePage({ onNavigate, projectId }: Props) {
     } catch (reason) { setError(messageOf(reason)); }
   }, []);
 
+  const loadRewriteTrace = useCallback(async (chapterId: number) => {
+    try {
+      const [preview, attempts] = await Promise.all([
+        getChapterPromptPreview(chapterId, 'rewrite'),
+        getChapterGenerationAttempts(chapterId, 'rewrite'),
+      ]);
+      setPromptPreview(preview);
+      setGenerationAttempts(attempts);
+    } catch {
+      setPromptPreview(null);
+      setGenerationAttempts([]);
+    }
+  }, []);
+
   useEffect(() => { void loadProject(); }, [loadProject]);
   useEffect(() => { if (selectedChapterId) void loadChapter(selectedChapterId); }, [loadChapter, selectedChapterId]);
+  useEffect(() => {
+    if (window.innerWidth < 960) {
+      setBinderVisible(false);
+      setInspectorVisible(false);
+    }
+  }, []);
+  useEffect(() => {
+    if (selectedChapterId && purpose === 'rewrite') void loadRewriteTrace(selectedChapterId);
+    else { setPromptPreview(null); setGenerationAttempts([]); }
+  }, [loadRewriteTrace, purpose, selectedChapterId]);
   useEffect(() => { setStage(0); }, [purpose]);
 
   async function run(label: string, action: () => Promise<unknown>, nextStage?: number) {
@@ -106,6 +136,7 @@ export function ProjectWorkspacePage({ onNavigate, projectId }: Props) {
     try {
       await action();
       if (selectedChapterId) await loadChapter(selectedChapterId);
+      if (selectedChapterId && purpose === 'rewrite') await loadRewriteTrace(selectedChapterId);
       await loadProject();
       if (nextStage !== undefined) setStage(nextStage);
       setMessage(`${label}完成。`);
@@ -192,7 +223,10 @@ export function ProjectWorkspacePage({ onNavigate, projectId }: Props) {
 
       <div className="workbench-grid" style={{ gridTemplateColumns: `${binderVisible ? `${binderWidth}px 8px` : ''} minmax(0,1fr) ${inspectorVisible ? `8px ${inspectorWidth}px` : ''}` }}>
         {binderVisible ? <><ChapterBinder chapters={chapters} currentId={selectedChapterId} detail={detail} purpose={purpose} onSelect={setSelectedChapterId} /><div aria-label="调整章节目录宽度" className="panel-resizer" onPointerDown={(event) => beginResize('binder', event)} role="separator" /></> : null}
-        <main className="workspace-center"><WorkspaceContent analysisDraft={analysisDraft} detail={detail} exportPlan={exportPlan} generatedPrompt={generatedPrompt} purpose={purpose} rewriteDraft={rewriteDraft} setAnalysisDraft={setAnalysisDraft} setExportPlan={setExportPlan} setRewriteDraft={setRewriteDraft} setTargetSkeleton={setTargetSkeleton} stage={stage} targetSkeleton={targetSkeleton} /></main>
+        <main className="workspace-center">
+          <WorkspaceContent analysisDraft={analysisDraft} detail={detail} exportPlan={exportPlan} generatedPrompt={generatedPrompt} purpose={purpose} rewriteDraft={rewriteDraft} setAnalysisDraft={setAnalysisDraft} setExportPlan={setExportPlan} setRewriteDraft={setRewriteDraft} setTargetSkeleton={setTargetSkeleton} stage={stage} targetSkeleton={targetSkeleton} />
+          {purpose === 'rewrite' && stage === 3 ? <RewriteTrace attempts={generationAttempts} preview={promptPreview} /> : null}
+        </main>
         {inspectorVisible ? <><div aria-label="调整检查器宽度" className="panel-resizer" onPointerDown={(event) => beginResize('inspector', event)} role="separator" /><Inspector actions={<InspectorActions busy={busy} detail={detail} generatedPrompt={generatedPrompt} onAnalyze={() => selectedChapterId && run('章节风格分析', () => analyzeChapterStyle(selectedChapterId), 2)} onConfirmAnalysis={() => void reviewAnalysis()} onConfirmRewrite={() => void saveRewrite(true)} onExpand={() => selectedChapterId && run('目标骨架生成', () => expandChapterPlot(selectedChapterId, true), 2)} onExportBook={exportBook} onExportPrompt={() => void exportGeneratedPrompt()} onReviewPrompt={() => onNavigate('/prompts')} onRewrite={() => void identifyAndRewrite()} onSaveRewrite={() => void saveRewrite(false)} onSaveSkeleton={() => selectedChapterId && run('目标骨架保存', () => saveTargetSkeleton(selectedChapterId, targetSkeleton))} onSummarize={() => selectedChapterId && run('剧情与人物提取', () => summarizeChapter(selectedChapterId), 1)} onSynthesize={() => void synthesize()} purpose={purpose} stage={stage} />} analysisPrompt={selectedAnalysisPrompt} detail={detail} purpose={purpose} rewritePrompt={selectedRewritePrompt} /></> : null}
       </div>
 
@@ -243,6 +277,11 @@ function InspectorActions(props: { busy: boolean; detail: ChapterDetail | null; 
   return <div className="inspector-hint">进入“章节风格分析”开始处理本章。</div>;
 }
 
+function RewriteTrace({ attempts, preview }: { attempts: GenerationAttempt[]; preview: CompiledPromptPreview | null }) {
+  const latest = attempts[attempts.length - 1];
+  const shown = latest?.request || preview;
+  return <details className="rewrite-trace"><summary>查看 Rusty 实际请求与生成记录</summary>{shown ? <><section><h3>规则来源</h3><pre>{`Rusty 自有规则：${shown.ruleset_id}\n用户提示词：模板 #${String(shown.provenance.template_id ?? '未绑定')}\n输出契约：${shown.expected_output}`}</pre></section>{shown.messages.map((message, index) => <section key={`${message.role}-${index}`}><h3>{message.role === 'system' ? 'System 请求' : message.role === 'assistant' ? '模型上次输出' : 'User 请求'}</h3><pre>{message.content}</pre></section>)}</> : <section><p>当前章节暂时无法编译改写请求。</p></section>}<section><h3>最近生成记录</h3><pre>{latest ? `第 ${latest.attempt_number} 次 · ${latest.error_type || '成功'}\n${latest.error_message || latest.response_text}` : '尚未生成'}</pre></section></details>;
+}
 function ActionButton({ busy, label, onClick }: { busy: boolean; label: string; onClick: () => void }) { return <button className="button primary full" disabled={busy} onClick={onClick} type="button"><Sparkles size={16} />{busy ? '处理中…' : label}</button>; }
 function ManuscriptPane({ text, title, words }: { text: string; title: string; words: number }) { return <section className="manuscript-pane"><header><h2>{title}</h2><span>{words.toLocaleString()} 字</span></header><div className="manuscript-text">{text}</div></section>; }
 function EditablePanel({ label, manuscript = false, onChange, placeholder, readOnly = false, value }: { label: string; manuscript?: boolean; onChange?: (value: string) => void; placeholder: string; readOnly?: boolean; value: string }) { return <label className={`editable-panel ${manuscript ? 'manuscript-editor' : ''}`}><span><strong>{label}</strong><small>{countText(value).toLocaleString()} 字</small></span><textarea placeholder={placeholder} readOnly={readOnly} value={value} onChange={(event) => onChange?.(event.target.value)} /></label>; }

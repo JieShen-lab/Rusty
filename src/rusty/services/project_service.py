@@ -353,8 +353,11 @@ class ProjectService:
                         expansion_ratio,
                         prompt_snapshot_json,
                         anchor_snapshot_json,
+                        rewrite_mode,
+                        anchor_text,
+                        expanded_text,
                         updated_at
-                    ) VALUES (?, ?, 'manual', ?, ?, ?, '{}', CURRENT_TIMESTAMP)
+                    ) VALUES (?, ?, 'manual', ?, ?, ?, '{}', 'full_rewrite', '', ?, CURRENT_TIMESTAMP)
                     ON CONFLICT(chapter_id)
                     DO UPDATE SET
                         rewritten_text = excluded.rewritten_text,
@@ -363,6 +366,9 @@ class ProjectService:
                         expansion_ratio = excluded.expansion_ratio,
                         prompt_snapshot_json = excluded.prompt_snapshot_json,
                         anchor_snapshot_json = excluded.anchor_snapshot_json,
+                        rewrite_mode = excluded.rewrite_mode,
+                        anchor_text = excluded.anchor_text,
+                        expanded_text = excluded.expanded_text,
                         confirmed_at = NULL,
                         updated_at = CURRENT_TIMESTAMP
                     """,
@@ -372,6 +378,7 @@ class ProjectService:
                         word_count,
                         ratio,
                         json.dumps({"source": "manual_edit"}, ensure_ascii=False),
+                        text,
                     ),
                 )
                 connection.execute(
@@ -694,7 +701,9 @@ class ProjectService:
                     processing_mode,
                     concurrency,
                     target_word_count,
-                    min_expansion_ratio
+                    min_expansion_ratio,
+                    rewrite_mode,
+                    max_attempts
                 FROM project_settings
                 WHERE project_id = ?
                 """,
@@ -712,7 +721,13 @@ class ProjectService:
         concurrency: int = 1,
         target_word_count: int | None = None,
         min_expansion_ratio: float | None = None,
+        rewrite_mode: str = "anchor_expand",
+        max_attempts: int = 2,
     ) -> None:
+        if rewrite_mode not in {"anchor_expand", "full_rewrite"}:
+            raise ValueError(f"Unsupported rewrite mode: {rewrite_mode}")
+        if max_attempts < 1 or max_attempts > 10:
+            raise ValueError("max_attempts must be between 1 and 10")
         with session(self.database_path) as connection:
             connection.execute(
                 """
@@ -724,8 +739,10 @@ class ProjectService:
                     processing_mode,
                     concurrency,
                     target_word_count,
-                    min_expansion_ratio
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    min_expansion_ratio,
+                    rewrite_mode,
+                    max_attempts
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(project_id)
                 DO UPDATE SET
                     model_id = excluded.model_id,
@@ -735,6 +752,8 @@ class ProjectService:
                     concurrency = excluded.concurrency,
                     target_word_count = excluded.target_word_count,
                     min_expansion_ratio = excluded.min_expansion_ratio,
+                    rewrite_mode = excluded.rewrite_mode,
+                    max_attempts = excluded.max_attempts,
                     updated_at = CURRENT_TIMESTAMP
                 """,
                 (
@@ -746,6 +765,8 @@ class ProjectService:
                     concurrency,
                     target_word_count,
                     min_expansion_ratio,
+                    rewrite_mode,
+                    max_attempts,
                 ),
             )
 
@@ -835,6 +856,8 @@ class ProjectService:
             concurrency=row["concurrency"],
             target_word_count=row["target_word_count"],
             min_expansion_ratio=row["min_expansion_ratio"],
+            rewrite_mode=row["rewrite_mode"],
+            max_attempts=row["max_attempts"],
         )
 
     @staticmethod

@@ -188,7 +188,13 @@ class AnchorExtractionService:
     def _outline_messages(sample_text: str, name: str, detail_level: str) -> list[dict[str, str]]:
         dimensions = "\n".join(f"- {item}" for item in OUTLINE_DIMENSIONS)
         return [
-            {"role": "system", "content": "You extract reusable plot outline anchors. Return strict JSON only."},
+            {
+                "role": "system",
+                "content": (
+                    "[RUSTY NATIVE RULES: rusty.native.outline_extraction.v1]\n"
+                    "You extract reusable plot outline anchors. Return strict JSON only."
+                ),
+            },
             {
                 "role": "user",
                 "content": (
@@ -208,7 +214,13 @@ class AnchorExtractionService:
     def _character_messages(sample_text: str, detail_level: str) -> list[dict[str, str]]:
         dimensions = "\n".join(f"- {item}" for item in CHARACTER_DIMENSIONS)
         return [
-            {"role": "system", "content": "You extract reusable character cards. Return strict JSON only."},
+            {
+                "role": "system",
+                "content": (
+                    "[RUSTY NATIVE RULES: rusty.native.character_extraction.v1]\n"
+                    "You extract reusable character cards. Return strict JSON only."
+                ),
+            },
             {
                 "role": "user",
                 "content": (

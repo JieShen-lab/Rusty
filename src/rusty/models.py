@@ -66,6 +66,8 @@ class ProjectSettings:
     concurrency: int
     target_word_count: int | None
     min_expansion_ratio: float | None
+    rewrite_mode: str = "anchor_expand"
+    max_attempts: int = 2
 
 
 @dataclass(frozen=True)
@@ -135,12 +137,16 @@ class ChapterAIOutputs:
     needs_rewrite: bool | None = None
     scene_labels: list[str] | None = None
     scene_reasoning: str | None = None
+    scene_markers: list[dict] | None = None
     plot_expansion_enabled: bool | None = None
     expanded_plot: str | None = None
     rewrite_source: str | None = None
     rewritten_word_count: int | None = None
     expansion_ratio: float | None = None
     rewrite_elapsed_ms: int | None = None
+    rewrite_mode: str | None = None
+    rewrite_anchor: str | None = None
+    rewrite_expanded: str | None = None
     style_analysis: dict | None = None
     reviewed_style_analysis: dict | None = None
     style_analysis_status: str | None = None

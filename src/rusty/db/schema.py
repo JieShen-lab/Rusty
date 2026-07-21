@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .connection import session
 
-CURRENT_SCHEMA_VERSION = 8
+CURRENT_SCHEMA_VERSION = 9
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -170,6 +170,8 @@ CREATE TABLE IF NOT EXISTS project_settings (
     concurrency INTEGER NOT NULL DEFAULT 1,
     target_word_count INTEGER,
     min_expansion_ratio REAL,
+    rewrite_mode TEXT NOT NULL DEFAULT 'anchor_expand' CHECK (rewrite_mode IN ('anchor_expand', 'full_rewrite')),
+    max_attempts INTEGER NOT NULL DEFAULT 2,
     settings_json TEXT NOT NULL DEFAULT '{}',
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
@@ -383,11 +385,35 @@ CREATE TABLE IF NOT EXISTS chapter_rewrites (
     prompt_template_id INTEGER,
     prompt_snapshot_json TEXT NOT NULL DEFAULT '{}',
     anchor_snapshot_json TEXT NOT NULL DEFAULT '{}',
+    rewrite_mode TEXT NOT NULL DEFAULT 'anchor_expand' CHECK (rewrite_mode IN ('anchor_expand', 'full_rewrite')),
+    anchor_text TEXT NOT NULL DEFAULT '',
+    expanded_text TEXT NOT NULL DEFAULT '',
     token_usage_json TEXT NOT NULL DEFAULT '{}',
     elapsed_ms INTEGER,
     confirmed_at TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE,
+    FOREIGN KEY (model_id) REFERENCES ai_models(id) ON DELETE SET NULL,
+    FOREIGN KEY (prompt_template_id) REFERENCES prompt_templates(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS generation_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chapter_id INTEGER NOT NULL,
+    stage TEXT NOT NULL,
+    attempt_number INTEGER NOT NULL,
+    request_json TEXT NOT NULL DEFAULT '{}',
+    response_text TEXT NOT NULL DEFAULT '',
+    parsed_json TEXT NOT NULL DEFAULT '{}',
+    error_type TEXT,
+    error_message TEXT,
+    model_id INTEGER,
+    prompt_template_id INTEGER,
+    token_usage_json TEXT NOT NULL DEFAULT '{}',
+    elapsed_ms INTEGER,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (chapter_id, stage, attempt_number),
     FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE,
     FOREIGN KEY (model_id) REFERENCES ai_models(id) ON DELETE SET NULL,
     FOREIGN KEY (prompt_template_id) REFERENCES prompt_templates(id) ON DELETE SET NULL
@@ -451,6 +477,8 @@ CREATE INDEX IF NOT EXISTS idx_export_plan_project_order ON export_chapter_plan(
 CREATE INDEX IF NOT EXISTS idx_stage_status_stage_status ON chapter_stage_status(stage, status);
 CREATE INDEX IF NOT EXISTS idx_chapter_errors_stage ON chapter_errors(stage, created_at);
 CREATE INDEX IF NOT EXISTS idx_project_errors_stage ON project_errors(stage, created_at);
+CREATE INDEX IF NOT EXISTS idx_generation_attempts_chapter_stage
+    ON generation_attempts(chapter_id, stage, attempt_number);
 """
 
 DEFAULT_SEED_SQL = """
@@ -756,6 +784,71 @@ def _migrate_to_v8(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_to_v9(connection: sqlite3.Connection) -> None:
+    _add_column_if_missing(
+        connection,
+        "project_settings",
+        "rewrite_mode",
+        "rewrite_mode TEXT NOT NULL DEFAULT 'anchor_expand' CHECK (rewrite_mode IN ('anchor_expand', 'full_rewrite'))",
+    )
+    _add_column_if_missing(
+        connection,
+        "project_settings",
+        "max_attempts",
+        "max_attempts INTEGER NOT NULL DEFAULT 2",
+    )
+    _add_column_if_missing(
+        connection,
+        "chapter_scene_analysis",
+        "context_markers_json",
+        "context_markers_json TEXT NOT NULL DEFAULT '[]'",
+    )
+    _add_column_if_missing(
+        connection,
+        "chapter_rewrites",
+        "rewrite_mode",
+        "rewrite_mode TEXT NOT NULL DEFAULT 'anchor_expand' CHECK (rewrite_mode IN ('anchor_expand', 'full_rewrite'))",
+    )
+    _add_column_if_missing(
+        connection,
+        "chapter_rewrites",
+        "anchor_text",
+        "anchor_text TEXT NOT NULL DEFAULT ''",
+    )
+    _add_column_if_missing(
+        connection,
+        "chapter_rewrites",
+        "expanded_text",
+        "expanded_text TEXT NOT NULL DEFAULT ''",
+    )
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS generation_attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chapter_id INTEGER NOT NULL,
+            stage TEXT NOT NULL,
+            attempt_number INTEGER NOT NULL,
+            request_json TEXT NOT NULL DEFAULT '{}',
+            response_text TEXT NOT NULL DEFAULT '',
+            parsed_json TEXT NOT NULL DEFAULT '{}',
+            error_type TEXT,
+            error_message TEXT,
+            model_id INTEGER,
+            prompt_template_id INTEGER,
+            token_usage_json TEXT NOT NULL DEFAULT '{}',
+            elapsed_ms INTEGER,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (chapter_id, stage, attempt_number),
+            FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE,
+            FOREIGN KEY (model_id) REFERENCES ai_models(id) ON DELETE SET NULL,
+            FOREIGN KEY (prompt_template_id) REFERENCES prompt_templates(id) ON DELETE SET NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_generation_attempts_chapter_stage
+            ON generation_attempts(chapter_id, stage, attempt_number);
+        """
+    )
+
+
 MIGRATIONS = {
     2: _migrate_to_v2,
     3: _migrate_to_v3,
@@ -764,6 +857,7 @@ MIGRATIONS = {
     6: _migrate_to_v6,
     7: _migrate_to_v7,
     8: _migrate_to_v8,
+    9: _migrate_to_v9,
 }
 
 
