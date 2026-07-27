@@ -6,6 +6,7 @@ from typing import Any
 
 from rusty.services.ai_client import AIClient, OpenAICompatibleClient
 from rusty.services.anchor_service import AnchorService
+from rusty.services.material_service import MATERIAL_TYPES, MaterialService
 from rusty.services.model_service import ModelConfig, ModelService
 from rusty.services.project_service import ProjectService, default_database_path
 
@@ -29,6 +30,37 @@ CHARACTER_DIMENSIONS = [
     "emotional_triggers",
     "anti_ooc_rules",
 ]
+MATERIAL_DIMENSIONS = {
+    "outline": [
+        "story_scope",
+        "volumes_or_phases",
+        "major_plot_beats",
+        "causal_chain",
+        "character_progression",
+        "timeline",
+        "unresolved_hooks",
+    ],
+    "plot_skeleton": [
+        "applicable_scenarios",
+        "prerequisites",
+        "participants_and_roles",
+        "stages",
+        "turning_points",
+        "climax",
+        "outcomes",
+        "reusable_variants",
+    ],
+    "snippet": [
+        "snippet_kind",
+        "trigger",
+        "actions",
+        "sensory_description",
+        "effect_or_power",
+        "cost",
+        "constraints",
+        "applicable_scenarios",
+    ],
+}
 
 
 class AnchorExtractionService:
@@ -41,7 +73,82 @@ class AnchorExtractionService:
         self.model_service = ModelService(self.database_path)
         self.project_service = ProjectService(self.database_path)
         self.anchor_service = AnchorService(self.database_path)
+        self.material_service = MaterialService(self.database_path)
         self.ai_client = ai_client or OpenAICompatibleClient()
+
+    def extract_materials_from_text(
+        self,
+        sample_text: str,
+        *,
+        material_type: str,
+        scope: str = "public",
+        project_id: int | None = None,
+        name: str | None = None,
+        detail_level: str = "standard",
+        model_id: int | None = None,
+        source_metadata: dict[str, Any] | None = None,
+    ) -> list[int]:
+        if material_type not in MATERIAL_TYPES:
+            raise ValueError(f"Unsupported material type: {material_type}")
+        sample = _sample_text(sample_text)
+        model = self._resolve_model(model_id)
+        response = self.ai_client.chat(
+            model,
+            self.model_service.get_api_key(model.id),
+            self._material_messages(sample, material_type, detail_level, name),
+        )
+        extracted = _parse_json_object(response.text, "Material extraction")
+        items = extracted.get("materials")
+        if not isinstance(items, list) or not items:
+            raise ValueError("Material extraction response must contain a non-empty materials list.")
+        shared_source_metadata = {
+            **(source_metadata or {}),
+            "source_type": (source_metadata or {}).get("source_type", "paste"),
+            "sample_character_count": len(sample),
+            "detail_level": detail_level,
+            "material_type": material_type,
+        }
+        import_metadata = {
+            "created_by": f"ai_{material_type}_extraction",
+            "prompt_ruleset": f"rusty.native.material.{material_type}.v1",
+            "model_id": model.id,
+            "model_name": model.model_name,
+            "token_usage": response.token_usage,
+            "elapsed_ms": response.elapsed_ms,
+        }
+        material_ids: list[int] = []
+        for index, item in enumerate(items):
+            if not isinstance(item, dict):
+                continue
+            item_name = str(item.get("name") or name or "").strip()
+            if not item_name:
+                continue
+            content = item.get("content")
+            if not isinstance(content, dict):
+                content = {
+                    key: value
+                    for key, value in item.items()
+                    if key not in {"name", "description", "timeline_start_chapter", "timeline_end_chapter"}
+                }
+            material_ids.append(
+                self.material_service.create_material(
+                    material_type=material_type,
+                    scope=scope,
+                    project_id=project_id,
+                    name=item_name,
+                    description=str(item.get("description") or ""),
+                    detail_level=detail_level,
+                    content=content,
+                    source_metadata=shared_source_metadata,
+                    import_metadata=import_metadata,
+                    timeline_start_chapter=_positive_int_or_none(item.get("timeline_start_chapter")),
+                    timeline_end_chapter=_positive_int_or_none(item.get("timeline_end_chapter")),
+                    sort_order=index,
+                )
+            )
+        if not material_ids:
+            raise ValueError("Material extraction did not produce any valid materials.")
+        return material_ids
 
     def extract_outline_from_text(
         self,
@@ -105,16 +212,19 @@ class AnchorExtractionService:
     def extract_characters_from_text(
         self,
         sample_text: str,
+        name: str | None = None,
         detail_level: str = "standard",
         model_id: int | None = None,
         source_metadata: dict[str, Any] | None = None,
+        scope: str = "public",
+        project_id: int | None = None,
     ) -> list[int]:
         sample = _sample_text(sample_text)
         model = self._resolve_model(model_id)
         response = self.ai_client.chat(
             model,
             self.model_service.get_api_key(model.id),
-            self._character_messages(sample, detail_level),
+            self._character_messages(sample, detail_level, name),
         )
         extracted = _parse_json_object(response.text, "Character extraction")
         characters = extracted.get("characters")
@@ -152,6 +262,8 @@ class AnchorExtractionService:
                     profile=_object_or_empty(item.get("profile")),
                     source_metadata=metadata,
                     import_metadata=import_metadata,
+                    scope=scope,
+                    project_id=project_id,
                 )
             )
         if not card_ids:
@@ -161,13 +273,17 @@ class AnchorExtractionService:
     def extract_characters_from_file(
         self,
         source_path: str | Path,
+        name: str | None = None,
         detail_level: str = "standard",
         model_id: int | None = None,
+        scope: str = "public",
+        project_id: int | None = None,
     ) -> list[int]:
         book = self.project_service.preview_book(source_path)
         sample = "\n\n".join(f"# {chapter.title}\n{chapter.text}" for chapter in book.chapters)
         return self.extract_characters_from_text(
             sample,
+            name=name,
             detail_level=detail_level,
             model_id=model_id,
             source_metadata={
@@ -176,6 +292,8 @@ class AnchorExtractionService:
                 "source_format": book.source_format,
                 "book_title": book.title,
             },
+            scope=scope,
+            project_id=project_id,
         )
 
     def _resolve_model(self, model_id: int | None) -> ModelConfig:
@@ -211,28 +329,83 @@ class AnchorExtractionService:
         ]
 
     @staticmethod
-    def _character_messages(sample_text: str, detail_level: str) -> list[dict[str, str]]:
+    def _character_messages(
+        sample_text: str,
+        detail_level: str,
+        name: str | None = None,
+    ) -> list[dict[str, str]]:
         dimensions = "\n".join(f"- {item}" for item in CHARACTER_DIMENSIONS)
+        target_rule = (
+            f"Only extract the target character named “{name.strip()}”; use aliases and context to merge references to that person."
+            if name and name.strip()
+            else "Extract every identifiable character with enough textual evidence; merge aliases that refer to the same person."
+        )
         return [
             {
                 "role": "system",
                 "content": (
                     "[RUSTY NATIVE RULES: rusty.native.character_extraction.v1]\n"
-                    "You extract reusable character cards. Return strict JSON only."
+                    "You extract reusable character cards. Return strict JSON only. "
+                    "Never invent facts that are not supported by the source."
                 ),
             },
             {
                 "role": "user",
                 "content": (
                     "Extract structured character cards from the sample prose.\n"
+                    f"{target_rule}\n"
                     f"Detail level: {detail_level}\n"
                     "Required character dimensions:\n"
                     f"{dimensions}\n\n"
                     "Return JSON with key characters, an array of objects. Each object must include: "
                     "name, aliases, description, priority, is_main, relationship_notes, personality, "
                     "speech_style, action_constraints, anti_ooc_rules, profile.\n"
+                    "Analyze each character dimension independently. Put uncertain or absent dimensions as empty strings, empty arrays, or empty objects; do not speculate.\n"
+                    "The profile object should contain reusable visual fields such as identity, appearance, abilities, goals, background, strengths, weaknesses, and evidence when supported.\n"
                     "Use priority 80-100 for main or always-relevant characters; 0-79 for ordinary characters.\n\n"
                     f"Sample prose:\n{sample_text}"
+                ),
+            },
+        ]
+
+    @staticmethod
+    def _material_messages(
+        sample_text: str,
+        material_type: str,
+        detail_level: str,
+        name: str | None,
+    ) -> list[dict[str, str]]:
+        labels = {
+            "outline": "大纲",
+            "plot_skeleton": "剧情骨架",
+            "snippet": "小素材",
+        }
+        dimensions = "\n".join(f"- {item}" for item in MATERIAL_DIMENSIONS[material_type])
+        requested_name = name.strip() if name and name.strip() else "由原文提炼"
+        return [
+            {
+                "role": "system",
+                "content": (
+                    f"[RUSTY NATIVE RULES: rusty.native.material.{material_type}.v1]\n"
+                    f"你负责从小说文本中提取“{labels[material_type]}”。"
+                    "只能依据原文证据，不得补写原文不存在的设定。"
+                    "不确定内容使用空值，并降低 confidence。严格返回 JSON，不要 Markdown。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"提取目标：{labels[material_type]}\n"
+                    f"建议名称：{requested_name}\n"
+                    f"细节等级：{detail_level}\n"
+                    "分析维度：\n"
+                    f"{dimensions}\n\n"
+                    "返回结构：{\"materials\":[{\"name\":\"\", \"description\":\"\", "
+                    "\"timeline_start_chapter\":null, \"timeline_end_chapter\":null, "
+                    "\"content\":{}, \"evidence\":[], \"confidence\":0.0}]}。\n"
+                    "大纲通常返回一个覆盖范围较大的条目；剧情骨架和小素材可以返回多个候选。"
+                    "每个 content 必须使用上述分析维度作为主要字段，并保持可导入 JSON。\n\n"
+                    f"待分析文本：\n{sample_text}"
                 ),
             },
         ]
@@ -278,3 +451,11 @@ def _priority(value: Any) -> int:
     except (TypeError, ValueError):
         return 50
     return max(0, min(100, priority))
+
+
+def _positive_int_or_none(value: Any) -> int | None:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None

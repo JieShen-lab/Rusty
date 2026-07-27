@@ -1,15 +1,16 @@
 # New Project Page
 
 ## Purpose
-UI-R2 New Project is a minimal closed loop: selected local file path -> preview -> create -> project appears in library/workspace. It is not the old six-step wizard.
+New Project is a sequential, validated flow from project purpose to a ready workspace.
 
 ## Layout
-- Left glass panel: local file/workspace path inputs, guidance, and safety note.
-- Right preview panel: parsed metadata, chapter count, word count, first chapters.
-- Bottom action strip: 预览, 创建工程, 返回作品库.
+- First choose rewrite or extraction.
+- Then progress through: 导入文件 / 章节拆分 / 预览信息 / 模型配置 / 提示词策略 / 确认创建.
+- Future steps stay unavailable until prerequisites are complete.
+- Bottom actions are explicit. Enter never advances the flow.
 
 ## Data and Security Rules
-- In UI-R2, path entry is local-development mode unless Electron IPC file picker is wired.
+- Source file and working directory use Electron system pickers.
 - Preview returns metadata and a short-lived preview token.
 - Create must submit the preview token, not a fresh unverified path-only request.
 - Do not claim browser upload support.
@@ -21,4 +22,4 @@ UI-R2 New Project is a minimal closed loop: selected local file path -> preview 
 
 ## Visual Notes
 - Keep it focused and calm.
-- Use gold for the create action and blue for preview.
+- Use the shared blue primary action and neutral paper/canvas surfaces.

@@ -113,7 +113,8 @@ class ModelPromptServiceTests(unittest.TestCase):
             )
 
             configured = service.get_model(model_id)
-            secret_store.delete_secret(f"memory:model:{model_id}:api_key")
+            stored_key = next(iter(secret_store.values))
+            secret_store.delete_secret(f"memory:{stored_key}")
             missing = service.get_model(model_id)
             client = FakeModelTestClient()
             connection_result = service.test_connection(model_id, ai_client=client)
@@ -125,6 +126,36 @@ class ModelPromptServiceTests(unittest.TestCase):
         self.assertFalse(connection_result.ok)
         self.assertIn("No API key", connection_result.message)
         self.assertEqual([], client.calls)
+
+    def test_model_keys_are_isolated_between_databases(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            secret_store = InMemorySecretStore()
+            first = ModelService(root / "first.db", secret_store=secret_store)
+            second = ModelService(root / "second.db", secret_store=secret_store)
+            first_id = first.create_model(
+                display_name="First",
+                provider="openai_compatible",
+                base_url="https://api.example.test/v1",
+                model_name="first-model",
+                api_key="first-secret",
+            )
+            second_id = second.create_model(
+                display_name="Second",
+                provider="openai_compatible",
+                base_url="https://api.example.test/v1",
+                model_name="second-model",
+                api_key="second-secret",
+            )
+
+            self.assertEqual(1, first_id)
+            self.assertEqual(1, second_id)
+            self.assertEqual("first-secret", first.get_api_key(first_id))
+            self.assertEqual("second-secret", second.get_api_key(second_id))
+
+            first.delete_model(first_id)
+
+            self.assertEqual("second-secret", second.get_api_key(second_id))
 
     def test_prompt_template_and_project_prompt_crud(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:

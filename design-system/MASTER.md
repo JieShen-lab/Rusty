@@ -1,5 +1,7 @@
 # Rusty Text Workbench Design System
 
+> Status: UI baseline locked on 2026-07-23. New screens must reuse the tokens and component families below. The executable source of truth is `desktop/src/styles/theme.css`; this document records intent and constraints.
+
 ## 1. Product position
 
 Rusty is a desktop long-form text workbench, not a dashboard. The interface must keep chapter structure, manuscript text, project-derived material, and the next workflow action visible without turning every region into a decorative card.
@@ -17,9 +19,10 @@ Concept sources:
 
 ### App shell
 
-- Window/title region: 48px.
-- Primary app rail: 64-72px desktop; icon plus short Chinese label.
-- Route content fills remaining width and height; do not center it inside a dashboard max-width container.
+- Native window/title region: 30px.
+- Primary app rail: 72px desktop; every entry is a 56px icon-plus-label button.
+- The light/dark switch is the last rail entry at bottom-left and uses the same dimensions, icon size, type scale, hover state, and horizontal alignment as the five route entries.
+- Route content fills remaining width and height. The engineering library may keep a restrained maximum width; prompts, outlines, characters, models, setup, and project workspaces do not add decorative outer whitespace.
 - Status/action bars remain visible while their own content regions scroll.
 
 ### Project workbench
@@ -32,21 +35,20 @@ Concept sources:
 
 ### Prompt management
 
-- Template library: 280px.
+- Template library: 244px.
 - Main editor: flexible, minimum 560px.
-- Template inspector: 300px and collapsible on narrower screens.
 - Stable bottom save bar: 64px.
 
 ## 3. Color tokens
 
 ```css
 :root {
-  --canvas: #eef1f5;
-  --chrome: #f7f8fa;
+  --canvas: #f2f4f7;
+  --chrome: #f2f4f7;
   --paper: #ffffff;
-  --paper-muted: #fafbfc;
-  --border: #d9dee7;
-  --border-strong: #c5ccd8;
+  --paper-muted: #f2f4f7;
+  --border: #e0e6ee;
+  --border-strong: #d2dbe7;
   --ink: #19202c;
   --ink-muted: #5f6978;
   --ink-soft: #8a94a3;
@@ -58,14 +60,31 @@ Concept sources:
   --danger: #c93636;
   --focus: #3f75f0;
 }
+
+:root[data-theme="dark"] {
+  --canvas: #15181d;
+  --chrome: #181b21;
+  --paper: #20242b;
+  --paper-muted: #292e36;
+  --border: #353c46;
+  --border-strong: #46505d;
+  --ink: #edf1f7;
+  --ink-muted: #abb4c1;
+  --ink-soft: #7f8997;
+  --accent: #6f96ff;
+  --accent-hover: #89a8ff;
+  --accent-soft: #263b66;
+}
 ```
 
 Rules:
 
-- Paper surfaces are true white, not cream.
+- In light mode, paper surfaces are true white, not cream. In dark mode, use neutral blue-black layers rather than pure black.
 - No ambient gradient, glass blur, neon glow, or colored shadow.
 - Accent blue marks selection and the primary next action only.
 - Green/orange/red are semantic states, never decoration.
+- Components consume semantic tokens; page-level hard-coded light or dark colors are not allowed.
+- Theme selection is persisted under the versioned key `rusty.ui.theme.v1` and defaults to the operating-system preference on first use.
 
 ## 4. Typography
 
@@ -83,7 +102,8 @@ font-family: "Noto Serif CJK SC", "Source Han Serif SC", "Songti SC", SimSun, se
 
 Scale:
 
-- Route/project title: 18px / 650.
+- Route title: 24-30px / 650.
+- Project/chapter title: 20px / 650.
 - Panel title: 16px / 650.
 - Section title: 14px / 650.
 - UI body and controls: 14px / 400-600.
@@ -101,7 +121,7 @@ Do not shrink Chinese labels to fit. Truncate list-row titles only when the full
 - Editor page padding: 24-32px desktop, 16-20px narrow.
 - Small control radius: 6px.
 - Button/input radius: 8px.
-- Panel/section radius: 8-10px only when a contained group is needed.
+- Panel/section radius: 10-12px only when a contained group is needed.
 - Shadows: none for normal panels; one subtle `0 2px 8px rgb(20 30 50 / 8%)` for overlays only.
 
 ## 6. Controls

@@ -1,20 +1,24 @@
 import { useEffect, useState } from 'react';
-import { ArrowRight, FileText, Search, Trash2 } from 'lucide-react';
+import { ArrowRight, Plus, Search, Trash2 } from 'lucide-react';
 import { deleteProject, getProjects } from '../api/client';
 import type { Project } from '../api/types';
+import { DangerButton } from '../components/DangerButton';
 import { EmptyState } from '../components/EmptyState';
-import { GlassCard } from '../components/GlassCard';
 import { PrimaryButton } from '../components/PrimaryButton';
-import { StatusPill, statusVariant } from '../components/StatusPill';
-import { TopBar } from '../components/TopBar';
 
 type Props = {
   onNavigate: (path: string) => void;
 };
 
+type ProjectFilter = 'all' | 'active' | 'complete';
+type ProjectSort = 'updated' | 'name';
+
 export function WorkbenchPage({ onNavigate }: Props) {
   const [projects, setProjects] = useState<Project[]>([]);
+  const [selectedId, setSelectedId] = useState<number | null>(null);
   const [query, setQuery] = useState('');
+  const [filter, setFilter] = useState<ProjectFilter>('all');
+  const [sort, setSort] = useState<ProjectSort>('updated');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -22,79 +26,155 @@ export function WorkbenchPage({ onNavigate }: Props) {
     setLoading(true);
     setError(null);
     getProjects()
-      .then(setProjects)
+      .then((items) => {
+        setProjects(items);
+        setSelectedId((current) => current && items.some((project) => project.id === current) ? current : items[0]?.id ?? null);
+      })
       .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
       .finally(() => setLoading(false));
   }
 
   useEffect(loadProjects, []);
 
-  const filtered = projects.filter((project) => project.name.toLowerCase().includes(query.toLowerCase()));
+  const normalizedQuery = query.trim().toLowerCase();
+  const filtered = projects
+    .filter((project) => {
+      const matchesQuery = !normalizedQuery || `${project.name} ${project.book_title ?? ''}`.toLowerCase().includes(normalizedQuery);
+      const complete = project.progress >= 1 || project.status === 'completed';
+      const matchesFilter = filter === 'all' || (filter === 'complete' ? complete : !complete);
+      return matchesQuery && matchesFilter;
+    })
+    .sort((left, right) => sort === 'name'
+      ? left.name.localeCompare(right.name, 'zh-CN')
+      : new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime());
+  const selected = projects.find((project) => project.id === selectedId) ?? null;
 
   async function handleDelete(project: Project) {
     if (!window.confirm(`确认删除工程「${project.name}」？`)) return;
     try {
       await deleteProject(project.id);
-      loadProjects();
+      await loadProjects();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
   }
 
   return (
-    <div>
-      <TopBar title="作品库" subtitle={`${projects.length} 个项目 · 点击项目直接进入对应流程`} onRefresh={loadProjects} onNewProject={() => onNavigate('/new-project')} />
-      {error && <GlassCard className="mb-5 border-rose-300/25 text-rose-100">后端错误：{error}</GlassCard>}
+    <section className="project-library-page">
+      <header className="project-library-header">
+        <div>
+          <h1>工程</h1>
+          <p>{loading ? '读取中…' : `${projects.length} 个工程`}</p>
+        </div>
+        <PrimaryButton onClick={() => onNavigate('/new-project')}>
+          <Plus size={16} />
+          新建工程
+        </PrimaryButton>
+      </header>
+      {error ? <div className="inline-alert error">后端错误：{error}</div> : null}
       {projects.length === 0 && !loading ? (
         <EmptyState
-          title="还没有作品"
+          title="还没有工程"
           description="导入 TXT / EPUB / DOCX，创建改写或分析项目。"
-          action={<PrimaryButton onClick={() => onNavigate('/new-project')}>新建项目</PrimaryButton>}
+          action={<PrimaryButton onClick={() => onNavigate('/new-project')}>新建工程</PrimaryButton>}
         />
       ) : (
-        <GlassCard strong>
-          <label className="mb-4 flex max-w-md items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-[var(--text-muted)]">
-            <Search size={16} />
-            <input
-              className="w-full bg-transparent text-white outline-none placeholder:text-[var(--text-soft)]"
-              placeholder="搜索项目名称..."
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-            />
-          </label>
-          <div className="divide-y divide-white/10 overflow-hidden rounded-2xl border border-white/10">
-            {filtered.map((project) => (
-              <div className="group flex items-center gap-4 bg-white/[0.025] px-4 py-3 transition hover:bg-white/[0.065]" key={project.id}>
-                <button className="flex min-w-0 flex-1 cursor-pointer items-center gap-4 text-left" onClick={() => onNavigate(`/workspace/${project.id}`)} type="button">
-                  <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-white/10 bg-white/[0.06] text-[var(--accent-gold)]">
-                    <FileText size={19} />
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate font-semibold text-white">{project.name}</span>
-                    <span className="mt-1 block text-xs text-[var(--text-muted)]">{project.book_title || '未命名书籍'} · {project.total_chapters} 章 · {project.total_words.toLocaleString()} 字</span>
-                  </span>
-                  <span className="hidden items-center gap-6 text-xs text-[var(--text-muted)] md:flex">
-                    <span>{project.current_stage}</span>
-                    <span>{Math.round(project.progress * 100)}%</span>
-                  </span>
-                  <StatusPill variant={statusVariant(project.status)}>{project.status}</StatusPill>
-                  <ArrowRight className="text-[var(--text-soft)] transition group-hover:translate-x-1 group-hover:text-white" size={18} />
-                </button>
-                <button
-                  aria-label={`删除 ${project.name}`}
-                  className="rounded-lg p-2 text-[var(--text-soft)] transition hover:bg-rose-400/10 hover:text-rose-200"
-                  onClick={() => handleDelete(project)}
-                  title="删除项目"
-                  type="button"
-                >
-                  <Trash2 size={16} />
-                </button>
+        <div className="project-library-layout">
+          <aside className="project-browser">
+            <div className="project-filters">
+              <label className="project-search">
+                <Search aria-hidden="true" size={17} />
+                <input aria-label="搜索工程" placeholder="搜索工程名称…" value={query} onChange={(event) => setQuery(event.target.value)} />
+              </label>
+              <div>
+                <select aria-label="筛选工程" value={filter} onChange={(event) => setFilter(event.target.value as ProjectFilter)}>
+                  <option value="all">全部</option>
+                  <option value="active">进行中</option>
+                  <option value="complete">已完成</option>
+                </select>
+                <select aria-label="工程排序" value={sort} onChange={(event) => setSort(event.target.value as ProjectSort)}>
+                  <option value="updated">最近更新</option>
+                  <option value="name">名称</option>
+                </select>
               </div>
+            </div>
+            <div className="project-list" aria-label="工程列表">
+            {filtered.map((project) => (
+              <button
+                aria-pressed={project.id === selectedId}
+                className={`project-list-item ${project.id === selectedId ? 'selected' : ''}`}
+                key={project.id}
+                onClick={() => setSelectedId(project.id)}
+                onDoubleClick={() => onNavigate(`/workspace/${project.id}`)}
+                type="button"
+              >
+                  <span className="project-monogram">
+                    {project.name.trim().slice(0, 2).toUpperCase() || '工程'}
+                  </span>
+                  <span className="project-list-copy">
+                    <strong>{project.name}</strong>
+                    <small>{formatStage(project.current_stage)} · {Math.round(project.progress * 100)}%</small>
+                  </span>
+                  <time>{formatDate(project.updated_at)}</time>
+              </button>
             ))}
+            {filtered.length === 0 ? <div className="compact-empty">没有匹配工程</div> : null}
           </div>
-          {filtered.length === 0 && <EmptyState title="没有匹配项目" description="调整搜索条件或新建项目。" />}
-        </GlassCard>
+          </aside>
+
+          {selected ? (
+            <section className="project-detail-card" aria-label={`${selected.name} 工程详情`}>
+              <div className="project-cover">{selected.name.trim().slice(0, 2).toUpperCase() || '工程'}</div>
+              <div className="project-detail-content">
+                <div className="project-detail-meta">
+                  <span><i />{formatStatus(selected.status)}</span>
+                  <span>更新于 {formatDate(selected.updated_at)}</span>
+                </div>
+                <h2>{selected.name}</h2>
+                <p>{[selected.book_title, selected.author].filter(Boolean).join(' · ') || '未填写书名与作者'}</p>
+                <dl className="project-stats">
+                  <div><dt>章节</dt><dd>{selected.total_chapters}</dd></div>
+                  <div><dt>字数</dt><dd>{selected.total_words.toLocaleString()}</dd></div>
+                  <div><dt>阶段</dt><dd>{formatStage(selected.current_stage)}</dd></div>
+                  <div><dt>完成度</dt><dd className="accent">{Math.round(selected.progress * 100)}%</dd></div>
+                </dl>
+                <div className="project-detail-actions">
+                  <PrimaryButton onClick={() => onNavigate(`/workspace/${selected.id}`)}>
+                    <ArrowRight size={16} />
+                    进入工程
+                  </PrimaryButton>
+                  <DangerButton onClick={() => void handleDelete(selected)}>
+                    <Trash2 size={16} />
+                    删除
+                  </DangerButton>
+                </div>
+              </div>
+            </section>
+          ) : <div className="project-detail-empty">选择一个工程查看详情</div>}
+        </div>
       )}
-    </div>
+    </section>
   );
+}
+
+function formatDate(value: string) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '未知日期' : date.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' });
+}
+
+function formatStatus(status: string) {
+  const labels: Record<string, string> = { imported: '待启动', pending: '待启动', active: '进行中', processing: '处理中', completed: '已完成', failed: '失败' };
+  return labels[status] ?? status;
+}
+
+function formatStage(stage: string) {
+  const labels: Record<string, string> = {
+    imported: '已导入',
+    split: '内容拆分',
+    analyze: '章节分析',
+    rewrite: '章节改写',
+    export: '导出',
+    completed: '已完成',
+  };
+  return labels[stage] ?? stage;
 }

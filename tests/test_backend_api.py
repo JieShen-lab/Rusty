@@ -139,6 +139,54 @@ class BackendApiTests(unittest.TestCase):
         self.assertEqual(1, len(chapters.json()))
         self.assertEqual("extract", detail.json()["settings"]["processing_mode"])
 
+    def test_configured_txt_split_is_preserved_when_project_is_created(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            source = root / "configured-split.txt"
+            source.write_text("第一章 起\n甲。\n\n第二章 承\n乙。", encoding="utf-8")
+            os.environ["RUSTY_DATABASE_PATH"] = str(root / "rusty.db")
+            os.environ["RUSTY_API_TOKEN"] = "test-token"
+            api = importlib.import_module("backend.api")
+            app = api.create_app(root / "rusty.db")
+            client = TestClient(app)
+            headers = {"X-Rusty-Token": "test-token"}
+
+            preview = client.post(
+                "/api/projects/preview",
+                json={
+                    "source_path": str(source),
+                    "workspace_path": str(root / "workspace"),
+                    "split": {
+                        "mode": "simple",
+                        "line_prefix": "第",
+                        "number_style": "chinese",
+                        "title_suffixes": ["章"],
+                    },
+                },
+                headers=headers,
+            )
+            prompt_id = create_rewrite_prompt(client, headers)
+            created = client.post(
+                "/api/projects",
+                json={
+                    "preview_token": preview.json()["preview_token"],
+                    "project_name": "Configured split",
+                    "purpose": "rewrite",
+                    "prompt_template_id": prompt_id,
+                },
+                headers=headers,
+            )
+            project_id = created.json()["id"]
+            chapters = client.get(f"/api/projects/{project_id}/chapters").json()
+            detail = client.get(f"/api/projects/{project_id}").json()
+
+        self.assertEqual(200, preview.status_code)
+        self.assertEqual("simple", preview.json()["split_mode"])
+        self.assertEqual(["第一章 起", "第二章 承"], [item["title"] for item in preview.json()["chapters"]])
+        self.assertEqual(200, created.status_code)
+        self.assertEqual(["第一章 起", "第二章 承"], [item["title"] for item in chapters])
+        self.assertNotEqual(1, detail["settings"]["txt_split_rule_id"])
+
     def test_export_plan_api_controls_export_order_titles_and_exclusions(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)
@@ -556,6 +604,16 @@ class BackendApiTests(unittest.TestCase):
             alice_id = alice.json()["id"]
             bob_id = bob.json()["id"]
             listed_characters = client.get("/api/characters")
+            copied_character = client.post(
+                f"/api/characters/{alice_id}/copy",
+                json={"target_scope": "project", "target_project_id": project_id},
+                headers=headers,
+            )
+            imported_character = client.post(
+                "/api/characters/import",
+                json={**bob_payload, "name": "Imported Bob"},
+                headers=headers,
+            )
             updated_bob = client.post(
                 f"/api/characters/{bob_id}",
                 json={**bob_payload, "aliases": ["Robert"], "priority": 45},
@@ -601,6 +659,11 @@ class BackendApiTests(unittest.TestCase):
         self.assertEqual("Alice", alice.json()["name"])
         self.assertEqual(["A"], alice.json()["aliases"])
         self.assertEqual(2, len(listed_characters.json()))
+        self.assertEqual("project", copied_character.json()["scope"])
+        self.assertEqual(project_id, copied_character.json()["project_id"])
+        self.assertEqual(alice_id, copied_character.json()["source_character_card_id"])
+        self.assertEqual("Imported Bob", imported_character.json()["name"])
+        self.assertEqual("json_import", imported_character.json()["import_metadata"]["created_by"])
         self.assertEqual(["Robert"], updated_bob.json()["aliases"])
         self.assertEqual(45, updated_bob.json()["priority"])
         self.assertEqual(403, rejected_character_bind.status_code)

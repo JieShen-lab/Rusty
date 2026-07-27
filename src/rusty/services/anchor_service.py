@@ -43,6 +43,10 @@ class CharacterCard:
     source_metadata_json: str
     import_metadata_json: str
     version: int
+    scope: str = "public"
+    project_id: int | None = None
+    source_character_card_id: int | None = None
+    source_version: int | None = None
     sort_order: int = 0
 
     @property
@@ -51,6 +55,21 @@ class CharacterCard:
         if not isinstance(value, list):
             return []
         return [str(item).strip() for item in value if str(item).strip()]
+
+    @property
+    def profile(self) -> dict[str, Any]:
+        value = _loads_json(self.profile_json, {})
+        return value if isinstance(value, dict) else {}
+
+    @property
+    def source_metadata(self) -> dict[str, Any]:
+        value = _loads_json(self.source_metadata_json, {})
+        return value if isinstance(value, dict) else {}
+
+    @property
+    def import_metadata(self) -> dict[str, Any]:
+        value = _loads_json(self.import_metadata_json, {})
+        return value if isinstance(value, dict) else {}
 
 
 class AnchorService:
@@ -242,15 +261,23 @@ class AnchorService:
         profile: dict[str, Any] | None = None,
         source_metadata: dict[str, Any] | None = None,
         import_metadata: dict[str, Any] | None = None,
+        scope: str = "public",
+        project_id: int | None = None,
+        source_character_card_id: int | None = None,
+        source_version: int | None = None,
     ) -> int:
+        _validate_character_scope(scope, project_id)
         with session(self.database_path) as connection:
+            if project_id is not None:
+                self._ensure_project_exists(project_id)
             cursor = connection.execute(
                 """
                 INSERT INTO character_cards (
                     name, aliases_json, description, priority, is_main, relationship_notes,
                     personality, speech_style, action_constraints, anti_ooc_rules,
-                    profile_json, source_metadata_json, import_metadata_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    profile_json, source_metadata_json, import_metadata_json,
+                    scope, project_id, source_character_card_id, source_version
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     _required_name(name, "Character card name is required."),
@@ -266,6 +293,10 @@ class AnchorService:
                     json.dumps(profile or {}, ensure_ascii=False),
                     json.dumps(source_metadata or {}, ensure_ascii=False),
                     json.dumps(import_metadata or {}, ensure_ascii=False),
+                    scope,
+                    project_id,
+                    source_character_card_id,
+                    source_version,
                 ),
             )
             return int(cursor.lastrowid)
@@ -286,8 +317,13 @@ class AnchorService:
         profile: dict[str, Any] | None = None,
         source_metadata: dict[str, Any] | None = None,
         import_metadata: dict[str, Any] | None = None,
+        scope: str = "public",
+        project_id: int | None = None,
     ) -> None:
+        _validate_character_scope(scope, project_id)
         with session(self.database_path) as connection:
+            if project_id is not None:
+                self._ensure_project_exists(project_id)
             cursor = connection.execute(
                 """
                 UPDATE character_cards
@@ -305,6 +341,8 @@ class AnchorService:
                     profile_json = ?,
                     source_metadata_json = ?,
                     import_metadata_json = ?,
+                    scope = ?,
+                    project_id = ?,
                     version = version + 1,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = ? AND deleted_at IS NULL
@@ -323,11 +361,51 @@ class AnchorService:
                     json.dumps(profile or {}, ensure_ascii=False),
                     json.dumps(source_metadata or {}, ensure_ascii=False),
                     json.dumps(import_metadata or {}, ensure_ascii=False),
+                    scope,
+                    project_id,
                     card_id,
                 ),
             )
         if cursor.rowcount == 0:
             raise ValueError(f"Character card not found: {card_id}")
+
+    def copy_character_card(
+        self,
+        card_id: int,
+        *,
+        target_scope: str,
+        target_project_id: int | None = None,
+    ) -> int:
+        source = self.get_character_card(card_id)
+        if source is None:
+            raise ValueError(f"Character card not found: {card_id}")
+        _validate_character_scope(target_scope, target_project_id)
+        return self.create_character_card(
+            name=source.name,
+            aliases=source.aliases,
+            description=source.description,
+            priority=source.priority,
+            is_main=source.is_main,
+            relationship_notes=source.relationship_notes,
+            personality=source.personality,
+            speech_style=source.speech_style,
+            action_constraints=source.action_constraints,
+            anti_ooc_rules=source.anti_ooc_rules,
+            profile=source.profile,
+            source_metadata={
+                **source.source_metadata,
+                "copied_from_scope": source.scope,
+                "copied_from_project_id": source.project_id,
+            },
+            import_metadata={
+                **source.import_metadata,
+                "created_by": "character_card_copy",
+            },
+            scope=target_scope,
+            project_id=target_project_id,
+            source_character_card_id=source.id,
+            source_version=source.version,
+        )
 
     def delete_character_card(self, card_id: int) -> None:
         with session(self.database_path) as connection:
@@ -350,17 +428,32 @@ class AnchorService:
         if cursor.rowcount == 0:
             raise ValueError(f"Character card not found: {card_id}")
 
-    def list_character_cards(self) -> list[CharacterCard]:
+    def list_character_cards(
+        self,
+        scope: str | None = None,
+        project_id: int | None = None,
+    ) -> list[CharacterCard]:
+        clauses = ["deleted_at IS NULL"]
+        parameters: list[object] = []
+        if scope is not None:
+            _validate_character_scope(scope, project_id if scope == "project" else None)
+            clauses.append("scope = ?")
+            parameters.append(scope)
+        if project_id is not None:
+            clauses.append("project_id = ?")
+            parameters.append(project_id)
         with session(self.database_path) as connection:
             rows = connection.execute(
-                """
+                f"""
                 SELECT id, name, aliases_json, description, priority, is_main, relationship_notes,
                        personality, speech_style, action_constraints, anti_ooc_rules, profile_json,
-                       source_metadata_json, import_metadata_json, version, 0 AS sort_order
+                       source_metadata_json, import_metadata_json, version, scope, project_id,
+                       source_character_card_id, source_version, 0 AS sort_order
                 FROM character_cards
-                WHERE deleted_at IS NULL
+                WHERE {' AND '.join(clauses)}
                 ORDER BY updated_at DESC, id DESC
-                """
+                """,
+                parameters,
             ).fetchall()
         return [self._character_from_row(row) for row in rows]
 
@@ -370,7 +463,8 @@ class AnchorService:
                 """
                 SELECT id, name, aliases_json, description, priority, is_main, relationship_notes,
                        personality, speech_style, action_constraints, anti_ooc_rules, profile_json,
-                       source_metadata_json, import_metadata_json, version, 0 AS sort_order
+                       source_metadata_json, import_metadata_json, version, scope, project_id,
+                       source_character_card_id, source_version, 0 AS sort_order
                 FROM character_cards
                 WHERE id = ? AND deleted_at IS NULL
                 """,
@@ -414,7 +508,8 @@ class AnchorService:
                 SELECT c.id, c.name, c.aliases_json, c.description, c.priority, c.is_main,
                        c.relationship_notes, c.personality, c.speech_style, c.action_constraints,
                        c.anti_ooc_rules, c.profile_json, c.source_metadata_json,
-                       c.import_metadata_json, c.version, b.sort_order
+                       c.import_metadata_json, c.version, c.scope, c.project_id,
+                       c.source_character_card_id, c.source_version, b.sort_order
                 FROM project_character_bindings b
                 JOIN character_cards c ON c.id = b.character_card_id
                 WHERE b.project_id = ?
@@ -474,6 +569,10 @@ class AnchorService:
             source_metadata_json=row["source_metadata_json"],
             import_metadata_json=row["import_metadata_json"],
             version=row["version"],
+            scope=row["scope"],
+            project_id=row["project_id"],
+            source_character_card_id=row["source_character_card_id"],
+            source_version=row["source_version"],
             sort_order=row["sort_order"],
         )
 
@@ -514,6 +613,15 @@ def _clean_aliases(aliases: list[str] | None) -> list[str]:
 
 def _clamp_priority(priority: int) -> int:
     return max(0, min(100, int(priority)))
+
+
+def _validate_character_scope(scope: str, project_id: int | None) -> None:
+    if scope not in {"public", "project"}:
+        raise ValueError(f"Unsupported character scope: {scope}")
+    if scope == "project" and project_id is None:
+        raise ValueError("Project character cards require a project.")
+    if scope == "public" and project_id is not None:
+        raise ValueError("Public character cards cannot belong to a project.")
 
 
 def _loads_json(text: str, fallback: Any) -> Any:

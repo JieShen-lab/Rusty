@@ -1,14 +1,15 @@
 import { useEffect, useState } from 'react';
-import { KeyRound, Plus, Save, Trash2, Wifi } from 'lucide-react';
+import { Plus, Save, Trash2, Wifi } from 'lucide-react';
 import { createModel, deleteModel, getModels, testModel, updateModel } from '../api/client';
 import type { ModelConfig, ModelWrite } from '../api/types';
 import { EmptyState } from '../components/EmptyState';
-import { GlassCard } from '../components/GlassCard';
+import { SurfaceCard } from '../components/SurfaceCard';
 import { DangerButton } from '../components/DangerButton';
 import { PrimaryButton } from '../components/PrimaryButton';
 import { SecondaryButton } from '../components/SecondaryButton';
 import { StatusPill } from '../components/StatusPill';
 import { TopBar } from '../components/TopBar';
+import { useAutoDismiss } from '../hooks/useAutoDismiss';
 
 const emptyForm: ModelWrite = {
   display_name: '',
@@ -29,6 +30,9 @@ export function ModelManagePage() {
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  useAutoDismiss(message, setMessage);
+  useAutoDismiss(error, setError, 5200);
 
   function fillForm(model: ModelConfig) {
     setForm({
@@ -72,8 +76,12 @@ export function ModelManagePage() {
     setError(null);
     setMessage(null);
     try {
-      const payload = { ...form, api_key: form.api_key?.trim() || null };
+      const enteredApiKey = form.api_key?.trim() || null;
+      const payload = { ...form, api_key: enteredApiKey };
       const saved = selectedId ? await updateModel(selectedId, payload) : await createModel(payload);
+      if (enteredApiKey && !saved.has_api_key) {
+        throw new Error('API Key 未能写入系统凭据，请重试或检查 Windows 凭据服务。');
+      }
       setMessage('模型配置已保存。');
       loadModels(saved.id);
     } catch (err) {
@@ -119,20 +127,20 @@ export function ModelManagePage() {
   }
 
   return (
-    <div>
-      <TopBar title="模型" subtitle="管理 OpenAI-compatible API 模型配置。API Key 只写入后端 keyring，不会回显。" onRefresh={() => loadModels(selectedId)} />
-      {error && <GlassCard className="mb-5 border-rose-300/25 text-rose-100">后端错误：{error}</GlassCard>}
-      {message && <GlassCard className="mb-5 border-emerald-300/25 text-emerald-100">{message}</GlassCard>}
-      <div className="grid grid-cols-[360px_1fr] gap-5 max-lg:grid-cols-1">
-        <GlassCard title="模型列表" strong>
+    <div className="models-page">
+      <TopBar title="模型" onRefresh={() => loadModels(selectedId)} />
+      {error ? <div className="inline-alert error model-alert" role="alert">后端错误：{error}</div> : null}
+      {message ? <div className="inline-alert success model-alert" role="status">{message}</div> : null}
+      <div className="models-layout">
+        <SurfaceCard className="model-list-panel" title="模型列表">
           <SecondaryButton className="mb-4 w-full" onClick={startNew}>
             <Plus size={16} />
             新建模型
           </SecondaryButton>
           {models.length === 0 ? (
-            <EmptyState title="尚未配置模型" description="创建一个 OpenAI-compatible 模型配置后即可用于章节总结、识别和改写。" />
+            <EmptyState title="尚未配置模型" />
           ) : (
-            <div className="space-y-3">
+            <div className="model-list">
               {models.map((model) => (
                 <button
                   className={`w-full cursor-pointer rounded-2xl border p-4 text-left transition ${selectedId === model.id ? 'border-sky-300/30 bg-sky-300/12' : 'border-white/10 bg-white/[0.04] hover:bg-white/[0.08]'}`}
@@ -152,10 +160,10 @@ export function ModelManagePage() {
               ))}
             </div>
           )}
-        </GlassCard>
+        </SurfaceCard>
 
-        <GlassCard title={selectedId ? '编辑模型' : '新建模型'} eyebrow="Model Config" strong>
-          <div className="grid grid-cols-2 gap-4 max-xl:grid-cols-1">
+        <SurfaceCard className="model-config-panel" title={selectedId ? '编辑模型' : '新建模型'}>
+          <div className="model-form-grid">
             <Field label="Display name" value={form.display_name} onChange={(value) => setForm({ ...form, display_name: value })} />
             <Field label="Provider" value={form.provider} onChange={(value) => setForm({ ...form, provider: value })} />
             <Field label="Base URL" value={form.base_url} onChange={(value) => setForm({ ...form, base_url: value })} />
@@ -165,11 +173,11 @@ export function ModelManagePage() {
             <Field label="Max tokens（0 表示不限制）" type="number" value={String(form.max_tokens ?? 0)} onChange={(value) => setForm({ ...form, max_tokens: Number(value) || null })} />
             <Field label="Timeout seconds" type="number" value={String(form.timeout_seconds)} onChange={(value) => setForm({ ...form, timeout_seconds: Number(value) || 60 })} />
           </div>
-          <label className="mt-5 flex items-center gap-3 text-sm text-[var(--text-muted)]">
+          <label className="model-default-toggle">
             <input checked={form.is_default} onChange={(event) => setForm({ ...form, is_default: event.target.checked })} type="checkbox" />
             设为默认模型
           </label>
-          <div className="mt-7 flex flex-wrap gap-3">
+          <div className="model-actions">
             <PrimaryButton disabled={busy} onClick={save}>
               <Save size={16} />
               保存
@@ -183,11 +191,7 @@ export function ModelManagePage() {
               删除
             </DangerButton>
           </div>
-          <div className="mt-6 rounded-2xl border border-white/10 bg-white/[0.04] p-4 text-sm text-[var(--text-muted)]">
-            <KeyRound className="mb-2 text-[var(--accent-gold)]" size={20} />
-            后端仅返回 has_api_key，不会把真实 API Key 传给前端。
-          </div>
-        </GlassCard>
+        </SurfaceCard>
       </div>
     </div>
   );

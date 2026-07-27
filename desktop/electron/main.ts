@@ -13,6 +13,52 @@ const API_TOKEN = process.env.RUSTY_API_TOKEN || crypto.randomBytes(24).toString
 
 let backendProcess: ChildProcessWithoutNullStreams | null = null;
 
+type BackendRequestInput = {
+  path: string;
+  method?: string;
+  headers?: Record<string, string>;
+  body?: string | null;
+};
+
+type BackendRequestResult = {
+  status: number;
+  statusText: string;
+  body: string;
+  headers: Record<string, string>;
+};
+
+function proxyBackendRequest(input: BackendRequestInput): Promise<BackendRequestResult> {
+  if (!input.path.startsWith('/api/')) {
+    return Promise.reject(new Error('只允许访问 Rusty API。'));
+  }
+  return new Promise((resolve, reject) => {
+    const request = http.request(`${API_BASE}${input.path}`, {
+      method: input.method || 'GET',
+      headers: {
+        ...input.headers,
+        'X-Rusty-Token': API_TOKEN,
+      },
+    }, (response) => {
+      const chunks: Buffer[] = [];
+      response.on('data', (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+      response.on('end', () => {
+        const headers = Object.fromEntries(
+          Object.entries(response.headers).map(([key, value]) => [key, Array.isArray(value) ? value.join(', ') : String(value ?? '')]),
+        );
+        resolve({
+          status: response.statusCode || 500,
+          statusText: response.statusMessage || '',
+          body: Buffer.concat(chunks).toString('utf8'),
+          headers,
+        });
+      });
+    });
+    request.on('error', reject);
+    if (input.body) request.write(input.body);
+    request.end();
+  });
+}
+
 function projectRoot(): string {
   const appPath = app.getAppPath();
   const devRoot = path.resolve(appPath, '..');
@@ -64,27 +110,30 @@ async function ensureBackend(): Promise<void> {
   }
 
   const root = projectRoot();
-  backendProcess = spawn(pythonExecutable(root), ['-m', 'backend.server'], {
+  const spawnedProcess = spawn(pythonExecutable(root), ['-m', 'backend.server'], {
     cwd: root,
     env: {
       ...process.env,
       RUSTY_API_HOST: API_HOST,
       RUSTY_API_PORT: String(API_PORT),
       RUSTY_API_TOKEN: API_TOKEN,
-      RUSTY_API_ALLOWED_ORIGINS: 'http://127.0.0.1:5173,http://localhost:5173',
+      RUSTY_API_ALLOWED_ORIGINS: 'http://127.0.0.1:5173,http://localhost:5173,null',
     },
     windowsHide: true,
   });
+  backendProcess = spawnedProcess;
 
-  backendProcess.stdout.on('data', (data) => {
+  spawnedProcess.stdout.on('data', (data) => {
     console.log(`[rusty-backend] ${data.toString().trim()}`);
   });
-  backendProcess.stderr.on('data', (data) => {
+  spawnedProcess.stderr.on('data', (data) => {
     console.error(`[rusty-backend] ${data.toString().trim()}`);
   });
-  backendProcess.on('exit', (code, signal) => {
+  spawnedProcess.on('exit', (code, signal) => {
     console.log(`[rusty-backend] exited code=${code ?? 'null'} signal=${signal ?? 'null'}`);
-    backendProcess = null;
+    if (backendProcess === spawnedProcess) {
+      backendProcess = null;
+    }
   });
 
   const ready = await waitForBackendReady();
@@ -101,6 +150,12 @@ function stopBackend(): void {
 }
 
 async function restartBackend(): Promise<boolean> {
+  // A renderer request can fail during a very short startup or wake-up window.
+  // Do not tear down a backend that has already recovered by the time IPC runs.
+  if (await waitForHealth(1500)) {
+    return true;
+  }
+
   const currentProcess = backendProcess;
   if (currentProcess && !currentProcess.killed) {
     const exited = new Promise<void>((resolve) => currentProcess.once('exit', () => resolve()));
@@ -124,7 +179,7 @@ function createWindow(): void {
     backgroundColor: '#eef1f5',
     titleBarStyle: 'hidden',
     titleBarOverlay: {
-      color: '#f0f1f3',
+      color: '#00000000',
       symbolColor: '#5f6978',
       height: 30,
     },
@@ -167,16 +222,68 @@ ipcMain.handle('rusty:select-book-file', async () => {
   return result.canceled ? null : result.filePaths[0];
 });
 
+ipcMain.handle('rusty:select-library-document-file', async () => {
+  const result = await dialog.showOpenDialog({
+    title: '导入文档到文档库',
+    properties: ['openFile'],
+    filters: [{ name: 'Documents', extensions: ['txt', 'epub', 'docx'] }],
+  });
+  return result.canceled ? null : result.filePaths[0];
+});
+
+ipcMain.handle('rusty:select-document-library-directory', async () => {
+  const result = await dialog.showOpenDialog({
+    title: '选择文档保存目录',
+    properties: ['openDirectory', 'createDirectory'],
+  });
+  return result.canceled ? null : result.filePaths[0];
+});
+
+ipcMain.handle('rusty:select-document-export-path', async (_event, format: 'txt' | 'epub', title: string) => {
+  const extension = format === 'epub' ? 'epub' : 'txt';
+  const result = await dialog.showSaveDialog({
+    title: `导出 ${format.toUpperCase()}`,
+    defaultPath: `${title || 'document'}.${extension}`,
+    filters: [{ name: format.toUpperCase(), extensions: [extension] }],
+  });
+  return result.canceled ? null : result.filePath;
+});
+
+ipcMain.handle('rusty:select-workspace-directory', async () => {
+  const result = await dialog.showOpenDialog({
+    title: '选择工作目录',
+    properties: ['openDirectory', 'createDirectory'],
+  });
+  return result.canceled ? null : result.filePaths[0];
+});
+
 ipcMain.handle('rusty:get-backend-config', () => ({
   apiBase: API_BASE,
   apiToken: API_TOKEN,
 }));
+
+ipcMain.handle('rusty:backend-request', (_event, input: BackendRequestInput) => proxyBackendRequest(input));
 
 ipcMain.handle('rusty:restart-backend', async () => ({
   ok: await restartBackend(),
   apiBase: API_BASE,
   apiToken: API_TOKEN,
 }));
+
+ipcMain.handle('rusty:set-theme', (event, theme: 'light' | 'dark') => {
+  const window = BrowserWindow.fromWebContents(event.sender);
+  if (!window || (theme !== 'light' && theme !== 'dark')) {
+    return false;
+  }
+  const dark = theme === 'dark';
+  window.setBackgroundColor(dark ? '#15181d' : '#eef1f5');
+  window.setTitleBarOverlay({
+    color: '#00000000',
+    symbolColor: dark ? '#d8dee8' : '#5f6978',
+    height: 30,
+  });
+  return true;
+});
 
 app.whenReady().then(async () => {
   await ensureBackend();

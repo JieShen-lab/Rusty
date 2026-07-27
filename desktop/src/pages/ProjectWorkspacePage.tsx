@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { PointerEvent as ReactPointerEvent, ReactNode } from 'react';
-import { ChevronLeft, ChevronRight, Download, Eye, EyeOff, Save, Sparkles } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, ReactNode } from 'react';
+import { ArrowDownToLine, ArrowLeft, ArrowUpToLine, ChevronRight, Download, Eye, EyeOff, Save, Sparkles } from 'lucide-react';
 import {
   analyzeChapterStyle,
   confirmChapterRewrite,
@@ -130,7 +130,6 @@ export function ProjectWorkspacePage({ onNavigate, projectId }: Props) {
     else { setPromptPreview(null); setGenerationAttempts([]); }
   }, [loadRewriteTrace, purpose, selectedChapterId]);
   useEffect(() => { setStage(0); }, [purpose]);
-
   async function run(label: string, action: () => Promise<unknown>, nextStage?: number) {
     setBusy(true); setError(null); setMessage(null);
     try {
@@ -188,11 +187,6 @@ export function ProjectWorkspacePage({ onNavigate, projectId }: Props) {
     });
   }
 
-  function selectRelative(delta: -1 | 1) {
-    const next = chapters[selectedIndex + delta];
-    if (next) setSelectedChapterId(next.id);
-  }
-
   function beginResize(side: 'binder' | 'inspector', event: ReactPointerEvent<HTMLDivElement>) {
     event.preventDefault();
     const startX = event.clientX;
@@ -206,19 +200,20 @@ export function ProjectWorkspacePage({ onNavigate, projectId }: Props) {
     window.addEventListener('pointermove', move); window.addEventListener('pointerup', stop);
   }
 
-  const chapterStatus = useMemo(() => detail ? effectiveStatus(detail, purpose) : '未处理', [detail, purpose]);
+  const backendConnectionError = Boolean(error && (error.includes('Rusty 后端') || error.includes('Failed to fetch')));
+  const modelAuthError = Boolean(error && error.includes('模型服务鉴权失败'));
 
   return (
     <div className="project-workbench">
       <header className="workbench-toolbar">
-        <div className="project-heading"><button className="back-link" onClick={() => onNavigate('/home')} type="button">‹ 返回工程</button><strong>{project?.project.name || '加载中…'}</strong><span>{purpose === 'rewrite' ? '改写工程' : '提取工程'}</span></div>
-        <div className="chapter-heading"><button aria-label="上一章" className="icon-button" disabled={selectedIndex <= 0} onClick={() => selectRelative(-1)} type="button"><ChevronLeft size={18} /></button><div><strong>{selectedChapter?.title || '暂无章节'}</strong><span>{selectedChapter ? `${selectedChapter.word_count.toLocaleString()} 字 · ${chapterStatus}` : ''}</span></div><button aria-label="下一章" className="icon-button" disabled={selectedIndex < 0 || selectedIndex >= chapters.length - 1} onClick={() => selectRelative(1)} type="button"><ChevronRight size={18} /></button></div>
+        <div className="project-heading"><button className="button ghost workbench-back-button" onClick={() => onNavigate('/library')} type="button"><ArrowLeft size={16} />工程列表</button></div>
+        <div className="chapter-heading"><div><strong>{selectedChapter?.title || '暂无章节'}</strong>{selectedChapter ? <span className="chapter-meta"><span>{selectedChapter.word_count.toLocaleString()} 字</span><span>章节 {selectedIndex + 1}/{chapters.length}</span><span>{busy ? '正在处理…' : '本地保存'}<i className={`status-dot ${busy ? 'busy' : ''}`} /></span></span> : <span className="chapter-meta">无章节</span>}</div></div>
         <div className="toolbar-actions"><button aria-label={binderVisible ? '隐藏章节目录' : '显示章节目录'} className="button ghost" onClick={() => setBinderVisible((value) => !value)} type="button">{binderVisible ? <EyeOff size={16} /> : <Eye size={16} />}目录</button><button aria-label={inspectorVisible ? '隐藏检查器' : '显示检查器'} className="button ghost" onClick={() => setInspectorVisible((value) => !value)} type="button">{inspectorVisible ? <EyeOff size={16} /> : <Eye size={16} />}检查器</button></div>
       </header>
 
       <nav className="workflow-rail" aria-label="工程阶段">{stages.map((label, index) => <button aria-current={stage === index ? 'step' : undefined} className={stage === index ? 'active' : ''} key={label} onClick={() => setStage(index)} type="button"><span>{index + 1}</span>{label}</button>)}</nav>
       <div className="workbench-feedback">
-        {(error || message) ? <div className={`inline-alert workbench-alert ${error ? 'error' : 'success'}`} role={error ? 'alert' : 'status'}>{error || message}</div> : null}
+        {(error || message) ? <div className={`inline-alert workbench-alert ${error ? 'error' : 'success'}`} role={error ? 'alert' : 'status'}><span>{error || message}</span>{backendConnectionError ? <button disabled={busy} onClick={() => void loadProject()} type="button">重新连接</button> : modelAuthError ? <button onClick={() => onNavigate('/models')} type="button">模型设置</button> : null}</div> : null}
       </div>
 
       <div className="workbench-grid" style={{ gridTemplateColumns: `${binderVisible ? `${binderWidth}px 8px` : ''} minmax(0,1fr) ${inspectorVisible ? `8px ${inspectorWidth}px` : ''}` }}>
@@ -227,16 +222,15 @@ export function ProjectWorkspacePage({ onNavigate, projectId }: Props) {
           <WorkspaceContent analysisDraft={analysisDraft} detail={detail} exportPlan={exportPlan} generatedPrompt={generatedPrompt} purpose={purpose} rewriteDraft={rewriteDraft} setAnalysisDraft={setAnalysisDraft} setExportPlan={setExportPlan} setRewriteDraft={setRewriteDraft} setTargetSkeleton={setTargetSkeleton} stage={stage} targetSkeleton={targetSkeleton} />
           {purpose === 'rewrite' && stage === 3 ? <RewriteTrace attempts={generationAttempts} preview={promptPreview} /> : null}
         </main>
-        {inspectorVisible ? <><div aria-label="调整检查器宽度" className="panel-resizer" onPointerDown={(event) => beginResize('inspector', event)} role="separator" /><Inspector actions={<InspectorActions busy={busy} detail={detail} generatedPrompt={generatedPrompt} onAnalyze={() => selectedChapterId && run('章节风格分析', () => analyzeChapterStyle(selectedChapterId), 2)} onConfirmAnalysis={() => void reviewAnalysis()} onConfirmRewrite={() => void saveRewrite(true)} onExpand={() => selectedChapterId && run('目标骨架生成', () => expandChapterPlot(selectedChapterId, true), 2)} onExportBook={exportBook} onExportPrompt={() => void exportGeneratedPrompt()} onReviewPrompt={() => onNavigate('/prompts')} onRewrite={() => void identifyAndRewrite()} onSaveRewrite={() => void saveRewrite(false)} onSaveSkeleton={() => selectedChapterId && run('目标骨架保存', () => saveTargetSkeleton(selectedChapterId, targetSkeleton))} onSummarize={() => selectedChapterId && run('剧情与人物提取', () => summarizeChapter(selectedChapterId), 1)} onSynthesize={() => void synthesize()} purpose={purpose} stage={stage} />} analysisPrompt={selectedAnalysisPrompt} detail={detail} purpose={purpose} rewritePrompt={selectedRewritePrompt} /></> : null}
+        {inspectorVisible ? <><div aria-label="调整检查器宽度" className="panel-resizer" onPointerDown={(event) => beginResize('inspector', event)} role="separator" /><Inspector actions={<><InspectorActions busy={busy} detail={detail} generatedPrompt={generatedPrompt} onAnalyze={() => selectedChapterId && run('章节风格分析', () => analyzeChapterStyle(selectedChapterId), 2)} onConfirmAnalysis={() => void reviewAnalysis()} onConfirmRewrite={() => void saveRewrite(true)} onExpand={() => selectedChapterId && run('目标骨架生成', () => expandChapterPlot(selectedChapterId, true), 2)} onExportBook={exportBook} onExportPrompt={() => void exportGeneratedPrompt()} onReviewPrompt={() => onNavigate('/prompts')} onRewrite={() => void identifyAndRewrite()} onSaveRewrite={() => void saveRewrite(false)} onSaveSkeleton={() => selectedChapterId && run('目标骨架保存', () => saveTargetSkeleton(selectedChapterId, targetSkeleton))} onSummarize={() => selectedChapterId && run('剧情与人物提取', () => summarizeChapter(selectedChapterId), 1)} onSynthesize={() => void synthesize()} purpose={purpose} stage={stage} />{stage < stages.length - 1 ? <button className="button primary full inspector-next-button" disabled={busy} onClick={() => setStage((current) => Math.min(current + 1, stages.length - 1))} onKeyDown={blockEnterActivation} type="button">下一步<ChevronRight className="button-trailing-icon" size={16} /></button> : null}</>} analysisPrompt={selectedAnalysisPrompt} detail={detail} purpose={purpose} rewritePrompt={selectedRewritePrompt} /></> : null}
       </div>
-
-      <footer className="workbench-status"><span>{selectedChapter ? `字数 ${selectedChapter.word_count.toLocaleString()}${rewriteDraft ? ` / ${countText(rewriteDraft).toLocaleString()}` : ''}` : '无章节'}</span><span>章节 {selectedIndex >= 0 ? selectedIndex + 1 : 0} / {chapters.length}</span><span>阶段：{stages[stage]}</span><span className="status-spacer" /><span>{busy ? '正在处理…' : '本地保存'}</span><span className="status-dot" /> </footer>
     </div>
   );
 }
 
 function ChapterBinder({ chapters, currentId, detail, onSelect, purpose }: { chapters: Chapter[]; currentId: number | null; detail: ChapterDetail | null; onSelect: (id: number) => void; purpose: ProjectPurpose }) {
-  return <aside className="chapter-binder"><div className="binder-heading"><h2>章节目录</h2><span>{chapters.length} 章</span></div><div className="chapter-list">{chapters.map((chapter) => { const status = chapter.id === currentId && detail ? effectiveStatus(detail, purpose) : statusFromChapter(chapter.status, purpose); return <button aria-current={chapter.id === currentId ? 'page' : undefined} className={`chapter-row ${chapter.id === currentId ? 'selected' : ''}`} key={chapter.id} onClick={() => onSelect(chapter.id)} type="button"><span className="chapter-number">{chapter.index}</span><span className="chapter-name" title={chapter.title}>{chapter.title}</span><span className={`chapter-state ${statusTone(status)}`}>{status}</span></button>; })}{chapters.length === 0 ? <div className="compact-empty">工程中没有章节。</div> : null}</div><div className="binder-footer">共 {chapters.length} 章</div></aside>;
+  const listRef = useRef<HTMLDivElement>(null);
+  return <aside className="chapter-binder"><div className="binder-heading"><h2>章节目录</h2><span>共 {chapters.length} 章</span></div><div className="chapter-list" ref={listRef}>{chapters.map((chapter) => { const status = chapter.id === currentId && detail ? effectiveStatus(detail, purpose) : statusFromChapter(chapter.status, purpose); return <button aria-current={chapter.id === currentId ? 'page' : undefined} className={`chapter-row ${chapter.id === currentId ? 'selected' : ''}`} key={chapter.id} onClick={() => onSelect(chapter.id)} type="button"><span className="chapter-number">{chapter.index}</span><span className="chapter-name" title={chapter.title}>{chapter.title}</span><span className={`chapter-state ${statusTone(status)}`}>{status}</span></button>; })}{chapters.length === 0 ? <div className="compact-empty">工程中没有章节。</div> : null}</div><div className="binder-footer"><button onClick={() => listRef.current?.scrollTo({ behavior: 'smooth', top: 0 })} type="button"><ArrowUpToLine size={14} />回到顶部</button><button onClick={() => listRef.current?.scrollTo({ behavior: 'smooth', top: listRef.current.scrollHeight })} type="button"><ArrowDownToLine size={14} />回到底部</button></div></aside>;
 }
 
 function WorkspaceContent({ analysisDraft, detail, exportPlan, generatedPrompt, purpose, rewriteDraft, setAnalysisDraft, setExportPlan, setRewriteDraft, setTargetSkeleton, stage, targetSkeleton }: { analysisDraft: string; detail: ChapterDetail | null; exportPlan: ExportPlanItem[]; generatedPrompt: PromptTemplate | null; purpose: ProjectPurpose; rewriteDraft: string; setAnalysisDraft: (value: string) => void; setExportPlan: (value: ExportPlanItem[]) => void; setRewriteDraft: (value: string) => void; setTargetSkeleton: (value: string) => void; stage: number; targetSkeleton: string }) {
@@ -265,16 +259,16 @@ function InspectorActions(props: { busy: boolean; detail: ChapterDetail | null; 
   const { busy, detail, generatedPrompt, purpose, stage } = props;
   if (purpose === 'rewrite') {
     if (stage === 1) return <ActionButton busy={busy} label="提取剧情与人物" onClick={props.onSummarize} />;
-    if (stage === 2) return <><ActionButton busy={busy} label="AI 优化 / 扩充骨架" onClick={props.onExpand} /><button className="button secondary full" disabled={busy} onClick={props.onSaveSkeleton} type="button"><Save size={16} />保存目标骨架</button></>;
-    if (stage === 3) return <><ActionButton busy={busy} label="识别并改写" onClick={props.onRewrite} /><button className="button secondary full" disabled={busy} onClick={props.onSaveRewrite} type="button"><Save size={16} />保存改写稿</button><button className="button secondary full" disabled={busy || !detail?.chapter.rewritten_text} onClick={props.onConfirmRewrite} type="button">确认本章</button></>;
-    if (stage === 4) return <><button className="button primary full" disabled={busy} onClick={() => props.onExportBook('txt')} type="button"><Download size={16} />导出 TXT</button><button className="button secondary full" disabled={busy} onClick={() => props.onExportBook('epub')} type="button"><Download size={16} />导出 EPUB</button></>;
-    return <div className="inspector-hint">进入“剧情与人物”开始处理本章。</div>;
+    if (stage === 2) return <><ActionButton busy={busy} label="AI 优化 / 扩充骨架" onClick={props.onExpand} /><button className="button secondary full" disabled={busy} onClick={props.onSaveSkeleton} type="button"><Save className="button-leading-icon" size={16} />保存目标骨架</button></>;
+    if (stage === 3) return <><ActionButton busy={busy} label="识别并改写" onClick={props.onRewrite} /><button className="button secondary full" disabled={busy} onClick={props.onSaveRewrite} type="button"><Save className="button-leading-icon" size={16} />保存改写稿</button><button className="button secondary full" disabled={busy || !detail?.chapter.rewritten_text} onClick={props.onConfirmRewrite} type="button">确认本章</button></>;
+    if (stage === 4) return <><button className="button primary full" disabled={busy} onClick={() => props.onExportBook('txt')} type="button"><Download className="button-leading-icon" size={16} />导出 TXT</button><button className="button secondary full" disabled={busy} onClick={() => props.onExportBook('epub')} type="button"><Download className="button-leading-icon" size={16} />导出 EPUB</button></>;
+    return null;
   }
   if (stage === 1) return <ActionButton busy={busy} label="分析本章风格" onClick={props.onAnalyze} />;
   if (stage === 2) return <ActionButton busy={busy} label="确认本章分析" onClick={props.onConfirmAnalysis} />;
   if (stage === 3) return <ActionButton busy={busy} label="归纳全书并生成提示词" onClick={props.onSynthesize} />;
-  if (stage >= 4) return <><button className="button secondary full" disabled={busy || !generatedPrompt} onClick={props.onReviewPrompt} type="button">到提示词管理审查</button><button className="button primary full" disabled={busy || !generatedPrompt} onClick={props.onExportPrompt} type="button"><Download size={16} />导出 JSON</button></>;
-  return <div className="inspector-hint">进入“章节风格分析”开始处理本章。</div>;
+  if (stage >= 4) return <><button className="button secondary full" disabled={busy || !generatedPrompt} onClick={props.onReviewPrompt} type="button">到提示词管理审查</button><button className="button primary full" disabled={busy || !generatedPrompt} onClick={props.onExportPrompt} type="button"><Download className="button-leading-icon" size={16} />导出 JSON</button></>;
+  return null;
 }
 
 function RewriteTrace({ attempts, preview }: { attempts: GenerationAttempt[]; preview: CompiledPromptPreview | null }) {
@@ -282,7 +276,7 @@ function RewriteTrace({ attempts, preview }: { attempts: GenerationAttempt[]; pr
   const shown = latest?.request || preview;
   return <details className="rewrite-trace"><summary>查看 Rusty 实际请求与生成记录</summary>{shown ? <><section><h3>规则来源</h3><pre>{`Rusty 自有规则：${shown.ruleset_id}\n用户提示词：模板 #${String(shown.provenance.template_id ?? '未绑定')}\n输出契约：${shown.expected_output}`}</pre></section>{shown.messages.map((message, index) => <section key={`${message.role}-${index}`}><h3>{message.role === 'system' ? 'System 请求' : message.role === 'assistant' ? '模型上次输出' : 'User 请求'}</h3><pre>{message.content}</pre></section>)}</> : <section><p>当前章节暂时无法编译改写请求。</p></section>}<section><h3>最近生成记录</h3><pre>{latest ? `第 ${latest.attempt_number} 次 · ${latest.error_type || '成功'}\n${latest.error_message || latest.response_text}` : '尚未生成'}</pre></section></details>;
 }
-function ActionButton({ busy, label, onClick }: { busy: boolean; label: string; onClick: () => void }) { return <button className="button primary full" disabled={busy} onClick={onClick} type="button"><Sparkles size={16} />{busy ? '处理中…' : label}</button>; }
+function ActionButton({ busy, label, onClick }: { busy: boolean; label: string; onClick: () => void }) { return <button className="button primary full" disabled={busy} onClick={onClick} type="button"><Sparkles className="button-leading-icon" size={16} />{busy ? '处理中…' : label}</button>; }
 function ManuscriptPane({ text, title, words }: { text: string; title: string; words: number }) { return <section className="manuscript-pane"><header><h2>{title}</h2><span>{words.toLocaleString()} 字</span></header><div className="manuscript-text">{text}</div></section>; }
 function EditablePanel({ label, manuscript = false, onChange, placeholder, readOnly = false, value }: { label: string; manuscript?: boolean; onChange?: (value: string) => void; placeholder: string; readOnly?: boolean; value: string }) { return <label className={`editable-panel ${manuscript ? 'manuscript-editor' : ''}`}><span><strong>{label}</strong><small>{countText(value).toLocaleString()} 字</small></span><textarea placeholder={placeholder} readOnly={readOnly} value={value} onChange={(event) => onChange?.(event.target.value)} /></label>; }
 function AnalysisReview({ onChange, original, readOnly = false, title, value }: { onChange?: (value: string) => void; original: string; readOnly?: boolean; title: string; value: string }) { return <div className="analysis-review"><ManuscriptPane text={original} title="原文（证据来源）" words={countText(original)} /><EditablePanel label={title} placeholder="尚未生成分析" readOnly={readOnly} value={value} onChange={onChange} /></div>; }
@@ -294,8 +288,18 @@ function statusFromChapter(status: string, purpose: ProjectPurpose) { if (purpos
 function statusTone(status: string) { if (status === '已确认') return 'success'; if (status === '待审查' || status === '已提取') return 'warning'; if (status === '已改写') return 'info'; return 'muted'; }
 function sourceLabel(status: ExportPlanItem['source_status']) { if (status === 'manual_rewrite') return '手动改写'; if (status === 'ai_rewrite') return 'AI 改写'; if (status === 'kept_original') return '保留原文'; return '原文'; }
 function numberValue(value: unknown) { return typeof value === 'number' && Number.isFinite(value) ? value : null; }
+function blockEnterActivation(event: ReactKeyboardEvent<HTMLButtonElement>) { if (event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); } }
 function countText(value: string) { return value.replace(/\s/g, '').length; }
 function clamp(value: number, min: number, max: number) { return Math.min(max, Math.max(min, value)); }
-function messageOf(reason: unknown) { return reason instanceof Error ? reason.message : String(reason); }
+function messageOf(reason: unknown) {
+  const message = reason instanceof Error ? reason.message : String(reason);
+  if (/\b401\b|unauthorized/i.test(message)) {
+    return '模型服务鉴权失败：当前模型没有有效的 API Key，请前往“模型”设置后重新测试连接。';
+  }
+  if (/read operation timed out|readtimeout/i.test(message)) {
+    return '模型响应超时：模型未能在设定时间内返回结果。请在“模型”设置中适当增大 Timeout seconds 后重试本阶段。';
+  }
+  return message;
+}
 function safeName(value: string) { return value.replace(/[\\/:*?"<>|]/g, '_').trim() || 'rewrite-prompt'; }
 function download(content: string, fileName: string, type: string) { const url = URL.createObjectURL(new Blob([content], { type })); const link = document.createElement('a'); link.href = url; link.download = fileName; link.click(); URL.revokeObjectURL(url); }

@@ -1,0 +1,107 @@
+{
+  "characters": [
+    {
+      "name": "顾长青",
+      "aliases": [
+        "长青"
+      ],
+      "description": "听潮院弟子，擅长近身掌法与短距离身法。",
+      "priority": 100,
+      "is_main": true,
+      "relationship_notes": "信任苏晚照的判断；面对韩烬时优先夺回残图，不以杀人为第一目标。",
+      "personality": "谨慎、克制、重视证据。危险越近，说话越短，不会为了逞强暴露底牌。",
+      "speech_style": "常用两到八字的短句下判断或命令，很少解释自己的完整计划；不用浮夸称谓，不在战斗中长篇说教。",
+      "action_constraints": "遭遇未知敌人时先观察灵力、兵器和退路。近身突袭优先踢膝、勾踝或撞开兵器，建立安全距离后才用掌法；中距离优先用踏虚七步抢侧面；除非同伴面临致命危险，否则先制服再审问。",
+      "anti_ooc_rules": "不得无视埋伏直接正面冲锋；不得用未掌握的剑法、雷法或御空术；不得在前两重落空时强行写出青崖叠浪掌第三重。",
+      "profile": {
+        "cultivation": {
+          "realm": "凝脉",
+          "spiritual_affinity": "水土",
+          "known_techniques": [
+            "青崖叠浪掌",
+            "踏虚七步"
+          ]
+        },
+        "decision_policy": [
+          {
+            "condition": "近身突袭，距离三尺以内",
+            "priority": 1,
+            "action": "先以左脚踢膝或勾踝破坏重心，右臂保护头胸，再判断是否接掌。"
+          },
+          {
+            "condition": "敌人持兵器从正面逼近",
+            "priority": 2,
+            "action": "不空手硬接锋刃；用踏虚七步切向兵器外侧。"
+          },
+          {
+            "condition": "敌人退路明确且需要活口",
+            "priority": 3,
+            "action": "逼向墙角或由苏晚照封路，不追求致命一击。"
+          }
+        ]
+      }
+    },
+    {
+      "name": "苏晚照",
+      "aliases": [
+        "晚照",
+        "苏师姐"
+      ],
+      "description": "听潮院剑修，负责观察战场与限制敌人退路。",
+      "priority": 90,
+      "is_main": true,
+      "relationship_notes": "与顾长青配合默契；她负责封路和纠错，不抢夺顾长青的正面节奏。",
+      "personality": "冷静、准确，对夸张承诺缺乏耐心。关心同伴时也以提醒风险的方式表达。",
+      "speech_style": "陈述句简短，先说结论再说方位；很少使用感叹句。战斗中常用“左侧”“两步”“别追”等短指令。",
+      "action_constraints": "优先观察敌人退路和隐藏兵器，再以玄霜剑式·封江限制落脚点；左肩旧伤发作时减少连续挥剑。",
+      "anti_ooc_rules": "不得突然情绪失控；不得把封江写成直接冻死同境敌人的杀招；不得忘记左肩旧伤。",
+      "profile": {
+        "cultivation": {
+          "realm": "凝脉",
+          "spiritual_affinity": "水",
+          "known_techniques": [
+            "玄霜剑式·封江"
+          ]
+        },
+        "decision_policy": [
+          {
+            "condition": "敌人准备逃离狭窄地形",
+            "priority": 1,
+            "action": "先冻结积水形成窄线封路，再提醒顾长青调整站位。"
+          },
+          {
+            "condition": "顾长青进入她的剑路",
+            "priority": 2,
+            "action": "停止扩展剑式，改用口头提示，不冒险穿过同伴出剑。"
+          }
+        ]
+      }
+    },
+    {
+      "name": "韩烬",
+      "aliases": [],
+      "description": "赤炉盟修士，携带第二枚玄墟残图，惯用短刀和火属真气。",
+      "priority": 60,
+      "is_main": false,
+      "relationship_notes": "轻视小宗门弟子，但害怕任务失败后被赤炉盟惩罚。",
+      "personality": "急躁、好胜，受挫后会虚张声势并寻找逃跑路线。",
+      "speech_style": "常用反问和贬称，句尾带威胁；真正心虚时会重复强调赤炉盟。",
+      "action_constraints": "起手倾向用短刀正面压迫；失去重心后会向右侧墙根撤退；发现退路被冻结时优先抛暗器制造空隙。",
+      "anti_ooc_rules": "不得主动交出残图；不得表现得视死如归；不得使用金丹境能力。",
+      "profile": {
+        "cultivation": {
+          "realm": "凝脉",
+          "spiritual_affinity": "火",
+          "known_techniques": []
+        },
+        "decision_policy": [
+          {
+            "condition": "第一次攻击受阻",
+            "priority": 1,
+            "action": "以言语威胁掩饰失误，同时向右侧寻找退路。"
+          }
+        ]
+      }
+    }
+  ]
+}

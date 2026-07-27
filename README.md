@@ -2,6 +2,8 @@
 
 Python + PySide6 + SQLite desktop app for local novel project parsing, preview, and export.
 
+当前仓库同时包含 Electron + React R2 桌面端、FastAPI 本地接口、SQLite 服务层和可追踪 AI 改写流水线。完整的已完成功能、架构、模块和运行方式见 [当前功能与代码实现说明](docs/current-implementation.md)。
+
 ## MVP Scope
 
 - Import TXT / EPUB / DOCX

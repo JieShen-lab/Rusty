@@ -163,6 +163,41 @@ class AnchorServiceTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 service.bind_project_character(project_id + 100, card_id)
 
+    def test_character_copy_creates_independent_versioned_project_copy(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            database_path = Path(directory) / "rusty.db"
+            service = AnchorService(database_path)
+            project_id = _create_project(database_path)
+            public_id = service.create_character_card(
+                name="Alice",
+                aliases=["A"],
+                description="Original",
+                profile={"identity": "captain"},
+            )
+
+            project_copy_id = service.copy_character_card(
+                public_id,
+                target_scope="project",
+                target_project_id=project_id,
+            )
+            service.update_character_card(
+                public_id,
+                name="Alice v2",
+                aliases=["A"],
+                description="Changed public card",
+            )
+            project_copy = service.get_character_card(project_copy_id)
+
+        self.assertIsNotNone(project_copy)
+        assert project_copy is not None
+        self.assertEqual("project", project_copy.scope)
+        self.assertEqual(project_id, project_copy.project_id)
+        self.assertEqual(public_id, project_copy.source_character_card_id)
+        self.assertEqual(1, project_copy.source_version)
+        self.assertEqual("Alice", project_copy.name)
+        self.assertEqual("Original", project_copy.description)
+        self.assertEqual({"identity": "captain"}, project_copy.profile)
+
     def test_ai_outline_extraction_from_text_creates_structured_template(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             database_path = Path(directory) / "rusty.db"
@@ -210,6 +245,7 @@ class AnchorServiceTests(unittest.TestCase):
 
             card_ids = extraction.extract_characters_from_text(
                 "Alice protects Bob. Bobby answers carefully.",
+                name="Alice",
                 detail_level="standard",
             )
             service = AnchorService(database_path)
@@ -226,6 +262,7 @@ class AnchorServiceTests(unittest.TestCase):
         self.assertEqual("ai_character_extraction", alice_metadata["created_by"])
         self.assertEqual("paste", alice_source["source_type"])
         self.assertIn("Required character dimensions", fake_client.calls[0][2][-1]["content"])
+        self.assertIn("Only extract the target character named “Alice”", fake_client.calls[0][2][-1]["content"])
 
     def test_ai_anchor_extraction_from_file_uses_import_parser_sample(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:

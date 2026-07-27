@@ -16,6 +16,141 @@ class HealthResponse(BaseModel):
     app: str
 
 
+class LibraryDocumentOut(BaseModel):
+    id: int
+    title: str
+    author: str | None
+    description: str | None
+    source_filename: str
+    source_format: str
+    storage_path: str
+    source_size_bytes: int
+    stored_size_bytes: int
+    chapter_count: int
+    word_count: int
+    status: str
+    favorite: bool
+    categories: list[str]
+    created_at: str
+    updated_at: str
+
+
+class LibraryDocumentImportRequest(BaseModel):
+    source_path: str = Field(min_length=1)
+
+
+class LibraryDocumentUpdateRequest(BaseModel):
+    title: str = Field(min_length=1)
+    author: str | None = None
+
+
+class LibraryDocumentImportResponse(BaseModel):
+    document: LibraryDocumentOut
+    created: bool
+    storage_format: Literal["txt"] = "txt"
+
+
+class DocumentProcessingSettings(BaseModel):
+    chapter_pattern: str = Field(min_length=1)
+    chapter_indent: int = Field(default=0, ge=0, le=8)
+    paragraph_indent: int = Field(default=2, ge=0, le=8)
+    blank_lines: int = Field(default=1, ge=0, le=3)
+    trim_whitespace: bool = True
+
+
+class DocumentProcessingTemplateOut(BaseModel):
+    id: int
+    name: str
+    settings: DocumentProcessingSettings
+    is_default: bool
+    created_at: str
+    updated_at: str
+
+
+class DocumentProcessingTemplateCreateRequest(BaseModel):
+    name: str = Field(min_length=1)
+    settings: DocumentProcessingSettings
+
+
+class LibraryDocumentRevisionOut(BaseModel):
+    id: int
+    document_id: int
+    revision_number: int
+    revision_type: str
+    storage_path: str
+    template_id: int | None
+    parent_revision_id: int | None
+    created_at: str
+
+
+class LibraryDocumentCleanupRequest(BaseModel):
+    template_id: int
+
+
+class LibraryDocumentCleanupResponse(BaseModel):
+    document: LibraryDocumentOut
+    revision: LibraryDocumentRevisionOut
+    created: bool
+
+
+class DocumentLibrarySettingsOut(BaseModel):
+    storage_path: str
+
+
+class DocumentLibraryMigrateRequest(BaseModel):
+    target_path: str = Field(min_length=1)
+
+
+class DocumentCategoryOut(BaseModel):
+    id: int
+    name: str
+    parent_id: int | None
+    sort_order: int
+    document_count: int
+
+
+class DocumentCategoryCreateRequest(BaseModel):
+    name: str = Field(min_length=1)
+    parent_id: int | None = None
+
+
+class DocumentCategoryAssignmentRequest(BaseModel):
+    selected: bool
+
+
+class LibraryDocumentChapterOut(BaseModel):
+    id: int
+    revision_id: int
+    index: int
+    title: str
+    start_line: int | None
+    end_line: int | None
+    word_count: int
+
+
+class LibraryDocumentContentOut(BaseModel):
+    document_id: int
+    revision_id: int
+    chapter_id: int | None
+    title: str
+    text: str
+
+
+class LibraryDocumentChapterReorderRequest(BaseModel):
+    ordered_chapter_ids: list[int] = Field(min_length=1)
+
+
+class LibraryDocumentExportRequest(BaseModel):
+    format: Literal["txt", "epub"]
+    output_path: str = Field(min_length=1)
+
+
+class LibraryDocumentExportResponse(BaseModel):
+    ok: bool = True
+    format: Literal["txt", "epub"]
+    output_path: str
+
+
 class ProjectOut(BaseModel):
     id: int
     name: str
@@ -98,9 +233,19 @@ class ProjectDetailOut(BaseModel):
     exports: list[dict[str, Any]]
 
 
+class ChapterSplitRequest(BaseModel):
+    mode: Literal["auto", "simple", "regex"] = "auto"
+    line_prefix: str = "第"
+    number_style: Literal["mixed", "arabic", "chinese"] = "mixed"
+    title_suffixes: list[str] = Field(default_factory=lambda: ["章", "回", "节", "卷", "集", "部", "篇"])
+    extra_title_regex: str | None = None
+    custom_regex: str | None = None
+
+
 class PreviewRequest(BaseModel):
     source_path: str = Field(min_length=1)
     workspace_path: str | None = None
+    split: ChapterSplitRequest | None = None
 
 
 class PreviewChapterOut(BaseModel):
@@ -120,6 +265,7 @@ class PreviewResponse(BaseModel):
     source_encoding: str | None
     total_chapters: int
     total_words: int
+    split_mode: str = "auto"
     chapters: list[PreviewChapterOut]
 
 
@@ -128,6 +274,7 @@ class CreateProjectRequest(BaseModel):
     project_name: str | None = None
     workspace_path: str | None = None
     purpose: Literal["rewrite", "extract", "summary"] = "rewrite"
+    model_id: int | None = None
     prompt_template_id: int | None = None
     analysis_prompt_template_id: int | None = None
 
@@ -401,7 +548,88 @@ class AnchorExtractRequest(BaseModel):
     detail_level: Literal["brief", "standard", "detailed"] = "standard"
     sample_text: str | None = None
     source_path: str | None = None
+    source_project_id: int | None = None
+    source_document_id: int | None = None
     model_id: int | None = None
+    scope: Literal["public", "project"] = "public"
+    project_id: int | None = None
+
+
+class MaterialOut(BaseModel):
+    id: int
+    material_type: Literal["outline", "plot_skeleton", "snippet"]
+    scope: Literal["public", "project"]
+    project_id: int | None = None
+    project_name: str | None = None
+    name: str
+    description: str
+    detail_level: Literal["brief", "standard", "detailed"]
+    content: dict[str, Any]
+    source_metadata: dict[str, Any]
+    import_metadata: dict[str, Any]
+    source_material_id: int | None = None
+    source_version: int | None = None
+    timeline_start_chapter: int | None = None
+    timeline_end_chapter: int | None = None
+    sort_order: int = 0
+    version: int
+    created_at: str
+    updated_at: str
+    categories: list[str] = Field(default_factory=list)
+
+
+class MaterialWriteRequest(BaseModel):
+    material_type: Literal["outline", "plot_skeleton", "snippet"]
+    scope: Literal["public", "project"] = "public"
+    project_id: int | None = None
+    name: str = Field(min_length=1)
+    description: str = ""
+    detail_level: Literal["brief", "standard", "detailed"] = "standard"
+    content: dict[str, Any] = Field(default_factory=dict)
+    source_metadata: dict[str, Any] = Field(default_factory=dict)
+    import_metadata: dict[str, Any] = Field(default_factory=dict)
+    timeline_start_chapter: int | None = Field(default=None, ge=1)
+    timeline_end_chapter: int | None = Field(default=None, ge=1)
+    sort_order: int = 0
+    category_ids: list[int] = Field(default_factory=list)
+
+
+class MaterialUpdateRequest(BaseModel):
+    name: str = Field(min_length=1)
+    description: str = ""
+    detail_level: Literal["brief", "standard", "detailed"] = "standard"
+    content: dict[str, Any] = Field(default_factory=dict)
+    timeline_start_chapter: int | None = Field(default=None, ge=1)
+    timeline_end_chapter: int | None = Field(default=None, ge=1)
+    sort_order: int = 0
+    category_ids: list[int] | None = None
+
+
+class MaterialCopyRequest(BaseModel):
+    target_scope: Literal["public", "project"]
+    target_project_id: int | None = None
+    category_ids: list[int] = Field(default_factory=list)
+
+
+class MaterialCategoryOut(BaseModel):
+    id: int
+    name: str
+    material_type: Literal["outline", "plot_skeleton", "snippet"]
+    sort_order: int
+    material_count: int
+
+
+class MaterialCategoryCreateRequest(BaseModel):
+    name: str = Field(min_length=1)
+    material_type: Literal["outline", "plot_skeleton", "snippet"]
+
+
+class MaterialExtractRequest(AnchorExtractRequest):
+    material_type: Literal["outline", "plot_skeleton", "snippet"]
+
+
+class MaterialExtractOut(BaseModel):
+    materials: list[MaterialOut]
 
 
 class CharacterCardOut(BaseModel):
@@ -419,6 +647,10 @@ class CharacterCardOut(BaseModel):
     profile: dict[str, Any]
     source_metadata: dict[str, Any]
     import_metadata: dict[str, Any]
+    scope: Literal["public", "project"] = "public"
+    project_id: int | None = None
+    source_character_card_id: int | None = None
+    source_version: int | None = None
     version: int
     sort_order: int = 0
 
@@ -437,6 +669,13 @@ class CharacterCardWriteRequest(BaseModel):
     profile: dict[str, Any] = Field(default_factory=dict)
     source_metadata: dict[str, Any] = Field(default_factory=dict)
     import_metadata: dict[str, Any] = Field(default_factory=dict)
+    scope: Literal["public", "project"] = "public"
+    project_id: int | None = None
+
+
+class CharacterCardCopyRequest(BaseModel):
+    target_scope: Literal["public", "project"]
+    target_project_id: int | None = None
 
 
 class ProjectOutlineBindingRequest(BaseModel):

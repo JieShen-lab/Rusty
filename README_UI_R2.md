@@ -78,12 +78,13 @@ npm run electron:dev
 ```
 
 ## UI-R2 Pages
-- `/home`: dashboard with project metrics and recent projects.
 - `/library`: project list, project detail, delete, workspace entry.
-- `/workspace/:projectId`: project-bound chapter workspace, AI output preview, TXT/EPUB export.
-- `/new-project`: local path preview/create minimal flow.
+- `/workspace/:projectId`: project-bound rewrite/extraction workspace and export.
+- `/new-project`: sequential import, split, preview, model, prompt, and confirmation flow.
 - `/models`: model create/update/delete/test connection; API keys are accepted only as write-only inputs and are never returned.
-- `/prompts`: prompt template create/update/delete for global, summary, scene-detection, and rewrite rules.
+- `/prompts`: rewrite and analysis prompt template management.
+- `/outlines`: plot-outline template management and AI extraction.
+- `/characters`: character-card management and AI extraction.
 
 ## Migrated Functional Entrypoints
 
@@ -136,5 +137,4 @@ npm run electron:dev
 - Removing PySide6.
 - Production packaging.
 - Full AI pipeline execution API.
-- Frontend-side API key editing.
 - Moving Python business logic into TypeScript.

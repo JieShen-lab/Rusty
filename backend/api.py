@@ -19,7 +19,18 @@ from rusty.db import session
 from rusty.models import ChapterRecord, ExportPlanItem, ParsedBook, ProjectSummary
 from rusty.services.anchor_extraction_service import AnchorExtractionService
 from rusty.services.anchor_service import AnchorService, CharacterCard, OutlineTemplate
+from rusty.services.material_service import Material, MaterialCategory, MaterialService
 from rusty.services.analysis_service import AnalysisService
+from rusty.services.chapter_split_service import ChapterSplitService
+from rusty.services.document_library_service import (
+    DocumentLibraryService,
+    DocumentRevision,
+    LibraryCategory,
+    LibraryChapter,
+    LibraryDocument,
+    LibraryDocumentContent,
+    ProcessingTemplate,
+)
 from rusty.services.model_service import ModelService
 from rusty.services.pipeline_service import PipelineService
 from rusty.services.project_service import ProjectService, default_database_path
@@ -33,6 +44,7 @@ from .schemas import (
     AnalysisPromptTemplateWriteRequest,
     AnchorExtractRequest,
     CharacterCardOut,
+    CharacterCardCopyRequest,
     CharacterCardsExtractOut,
     CharacterCardWriteRequest,
     ChapterDetailOut,
@@ -44,6 +56,33 @@ from .schemas import (
     ExportPlanUpdateRequest,
     ExportResponse,
     HealthResponse,
+    LibraryDocumentImportRequest,
+    LibraryDocumentImportResponse,
+    LibraryDocumentUpdateRequest,
+    LibraryDocumentCleanupRequest,
+    LibraryDocumentCleanupResponse,
+    LibraryDocumentChapterOut,
+    LibraryDocumentChapterReorderRequest,
+    LibraryDocumentContentOut,
+    LibraryDocumentExportRequest,
+    LibraryDocumentExportResponse,
+    LibraryDocumentOut,
+    LibraryDocumentRevisionOut,
+    MaterialCategoryCreateRequest,
+    MaterialCategoryOut,
+    MaterialCopyRequest,
+    MaterialExtractOut,
+    MaterialExtractRequest,
+    MaterialOut,
+    MaterialUpdateRequest,
+    MaterialWriteRequest,
+    DocumentProcessingTemplateCreateRequest,
+    DocumentProcessingTemplateOut,
+    DocumentLibraryMigrateRequest,
+    DocumentLibrarySettingsOut,
+    DocumentCategoryAssignmentRequest,
+    DocumentCategoryCreateRequest,
+    DocumentCategoryOut,
     ModelTestResponse,
     ModelOut,
     ModelWriteRequest,
@@ -88,7 +127,7 @@ API_TOKEN_HEADER = "X-Rusty-Token"
 PREVIEW_TTL_SECONDS = 15 * 60
 SUPPORTED_IMPORT_SUFFIXES = {".txt", ".epub", ".docx"}
 STYLE_EXTRACTION_MAX_FILE_BYTES = 5 * 1024 * 1024
-DEFAULT_ALLOWED_ORIGINS = ("http://localhost:5173", "http://127.0.0.1:5173")
+DEFAULT_ALLOWED_ORIGINS = ("http://localhost:5173", "http://127.0.0.1:5173", "null")
 _GENERATED_TOKEN = secrets.token_urlsafe(32)
 
 
@@ -96,6 +135,8 @@ _GENERATED_TOKEN = secrets.token_urlsafe(32)
 class PreviewState:
     source_path: Path
     workspace_path: Path | None
+    parsed_book: ParsedBook
+    split_options: dict[str, Any]
     fingerprint: str
     expires_at: float
 
@@ -115,6 +156,8 @@ def create_app(
 ) -> FastAPI:
     db_path = Path(os.environ.get("RUSTY_DATABASE_PATH", database_path or default_database_path()))
     project_service = ProjectService(db_path)
+    chapter_split_service = ChapterSplitService()
+    document_library_service = DocumentLibraryService(db_path)
     pipeline_service = PipelineService(db_path)
     model_service = ModelService(db_path)
     prompt_service = PromptService(db_path)
@@ -122,6 +165,7 @@ def create_app(
     style_service = StyleTemplateService(db_path)
     style_extraction_service = StyleExtractionService(db_path, ai_client=style_ai_client)
     anchor_service = AnchorService(db_path)
+    material_service = MaterialService(db_path)
     anchor_extraction_service = AnchorExtractionService(db_path, ai_client=anchor_ai_client or style_ai_client)
 
     app = FastAPI(
@@ -170,6 +214,194 @@ def create_app(
     def list_projects() -> list[ProjectOut]:
         return [_project_out(project) for project in project_service.list_projects()]
 
+    @app.get("/api/documents", response_model=list[LibraryDocumentOut])
+    def list_library_documents() -> list[LibraryDocumentOut]:
+        return [_library_document_out(document) for document in document_library_service.list_documents()]
+
+    @app.post(
+        "/api/documents/import",
+        response_model=LibraryDocumentImportResponse,
+        dependencies=[Depends(_require_token)],
+    )
+    def import_library_document(payload: LibraryDocumentImportRequest) -> LibraryDocumentImportResponse:
+        result = document_library_service.import_document(payload.source_path)
+        return LibraryDocumentImportResponse(
+            document=_library_document_out(result.document),
+            created=result.created,
+            storage_format="txt",
+        )
+
+    @app.post(
+        "/api/documents/{document_id}",
+        response_model=LibraryDocumentOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def update_library_document(
+        document_id: int,
+        payload: LibraryDocumentUpdateRequest,
+    ) -> LibraryDocumentOut:
+        return _library_document_out(
+            document_library_service.update_document_metadata(
+                document_id,
+                title=payload.title,
+                author=payload.author,
+            )
+        )
+
+    @app.get("/api/document-library/settings", response_model=DocumentLibrarySettingsOut)
+    def get_document_library_settings() -> DocumentLibrarySettingsOut:
+        return DocumentLibrarySettingsOut(storage_path=str(document_library_service.get_library_path()))
+
+    @app.post(
+        "/api/document-library/migrate",
+        response_model=DocumentLibrarySettingsOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def migrate_document_library(payload: DocumentLibraryMigrateRequest) -> DocumentLibrarySettingsOut:
+        migrated = document_library_service.migrate_library_path(payload.target_path)
+        return DocumentLibrarySettingsOut(storage_path=str(migrated))
+
+    @app.get("/api/document-categories", response_model=list[DocumentCategoryOut])
+    def list_document_categories() -> list[DocumentCategoryOut]:
+        return [_document_category_out(category) for category in document_library_service.list_categories()]
+
+    @app.post(
+        "/api/document-categories",
+        response_model=DocumentCategoryOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def create_document_category(payload: DocumentCategoryCreateRequest) -> DocumentCategoryOut:
+        return _document_category_out(
+            document_library_service.create_category(payload.name, payload.parent_id)
+        )
+
+    @app.post(
+        "/api/documents/{document_id}/categories/{category_id}",
+        response_model=LibraryDocumentOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def assign_document_category(
+        document_id: int,
+        category_id: int,
+        payload: DocumentCategoryAssignmentRequest,
+    ) -> LibraryDocumentOut:
+        return _library_document_out(
+            document_library_service.set_document_category(document_id, category_id, payload.selected)
+        )
+
+    @app.get("/api/document-processing-templates", response_model=list[DocumentProcessingTemplateOut])
+    def list_document_processing_templates() -> list[DocumentProcessingTemplateOut]:
+        return [_processing_template_out(template) for template in document_library_service.list_processing_templates()]
+
+    @app.post(
+        "/api/document-processing-templates",
+        response_model=DocumentProcessingTemplateOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def create_document_processing_template(
+        payload: DocumentProcessingTemplateCreateRequest,
+    ) -> DocumentProcessingTemplateOut:
+        template = document_library_service.create_processing_template(
+            payload.name,
+            payload.settings.model_dump(),
+        )
+        return _processing_template_out(template)
+
+    @app.get(
+        "/api/documents/{document_id}/revisions",
+        response_model=list[LibraryDocumentRevisionOut],
+    )
+    def list_library_document_revisions(document_id: int) -> list[LibraryDocumentRevisionOut]:
+        return [_document_revision_out(revision) for revision in document_library_service.list_revisions(document_id)]
+
+    @app.get(
+        "/api/documents/{document_id}/chapters",
+        response_model=list[LibraryDocumentChapterOut],
+    )
+    def list_library_document_chapters(document_id: int) -> list[LibraryDocumentChapterOut]:
+        return [_library_chapter_out(chapter) for chapter in document_library_service.list_chapters(document_id)]
+
+    @app.get(
+        "/api/documents/{document_id}/content",
+        response_model=LibraryDocumentContentOut,
+    )
+    def get_library_document_content(
+        document_id: int,
+        chapter_id: int | None = None,
+    ) -> LibraryDocumentContentOut:
+        return _library_document_content_out(
+            document_library_service.get_content(document_id, chapter_id)
+        )
+
+    @app.post(
+        "/api/documents/{document_id}/chapters/reorder",
+        response_model=list[LibraryDocumentChapterOut],
+        dependencies=[Depends(_require_token)],
+    )
+    def reorder_library_document_chapters(
+        document_id: int,
+        payload: LibraryDocumentChapterReorderRequest,
+    ) -> list[LibraryDocumentChapterOut]:
+        return [
+            _library_chapter_out(chapter)
+            for chapter in document_library_service.reorder_chapters(
+                document_id,
+                payload.ordered_chapter_ids,
+            )
+        ]
+
+    @app.post(
+        "/api/documents/{document_id}/delete",
+        dependencies=[Depends(_require_token)],
+    )
+    def delete_library_document(document_id: int) -> dict[str, bool]:
+        document_library_service.delete_document(document_id)
+        return {"ok": True}
+
+    @app.post(
+        "/api/documents/{document_id}/cleanup",
+        response_model=LibraryDocumentCleanupResponse,
+        dependencies=[Depends(_require_token)],
+    )
+    def cleanup_library_document(
+        document_id: int,
+        payload: LibraryDocumentCleanupRequest,
+    ) -> LibraryDocumentCleanupResponse:
+        result = document_library_service.apply_cleanup(document_id, payload.template_id)
+        return LibraryDocumentCleanupResponse(
+            document=_library_document_out(result.document),
+            revision=_document_revision_out(result.revision),
+            created=result.created,
+        )
+
+    @app.post(
+        "/api/documents/{document_id}/revisions/{revision_id}/activate",
+        response_model=LibraryDocumentOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def activate_library_document_revision(document_id: int, revision_id: int) -> LibraryDocumentOut:
+        return _library_document_out(document_library_service.activate_revision(document_id, revision_id))
+
+    @app.post(
+        "/api/documents/{document_id}/export",
+        response_model=LibraryDocumentExportResponse,
+        dependencies=[Depends(_require_token)],
+    )
+    def export_library_document(
+        document_id: int,
+        payload: LibraryDocumentExportRequest,
+    ) -> LibraryDocumentExportResponse:
+        output = document_library_service.export_document(
+            document_id,
+            payload.format,
+            payload.output_path,
+        )
+        return LibraryDocumentExportResponse(
+            ok=True,
+            format=payload.format,
+            output_path=str(output),
+        )
+
     @app.get("/api/projects/{project_id}", response_model=ProjectDetailOut)
     def get_project(project_id: int) -> ProjectDetailOut:
         project = _require_project(project_service, project_id)
@@ -186,15 +418,22 @@ def create_app(
     def preview_project(payload: PreviewRequest) -> PreviewResponse:
         source_path = _validate_source_path(payload.source_path)
         workspace = _optional_workspace_path(payload.workspace_path)
-        parsed = project_service.preview_book(source_path)
+        split_options = payload.split.model_dump() if payload.split is not None else {"mode": "auto"}
+        if source_path.suffix.lower() == ".txt":
+            parsed = chapter_split_service.preview_txt(source_path, **split_options)
+        else:
+            parsed = project_service.preview_book(source_path)
+            split_options = {"mode": "document"}
         token = secrets.token_urlsafe(24)
         _PREVIEWS[token] = PreviewState(
             source_path=source_path,
             workspace_path=workspace,
+            parsed_book=parsed,
+            split_options=split_options,
             fingerprint=_file_fingerprint(source_path),
             expires_at=time.time() + PREVIEW_TTL_SECONDS,
         )
-        return _preview_out(parsed, token)
+        return _preview_out(parsed, token, split_mode=str(split_options["mode"]))
 
     @app.post("/api/projects", response_model=ProjectOut, dependencies=[Depends(_require_token)])
     def create_project(payload: CreateProjectRequest) -> ProjectOut:
@@ -202,12 +441,26 @@ def create_app(
         if _file_fingerprint(state.source_path) != state.fingerprint:
             raise _http_error(400, "preview_mismatch", "源文件已变化，请重新预览后再创建工程。")
         workspace = _optional_workspace_path(payload.workspace_path) or state.workspace_path or state.source_path.parent
-        parsed = project_service.preview_book(state.source_path)
+        parsed = state.parsed_book
         purpose = "extract" if payload.purpose == "summary" else payload.purpose
         if purpose == "rewrite" and payload.prompt_template_id is None:
             raise _http_error(400, "rewrite_prompt_required", "创建改写工程前请选择改写提示词。")
         if purpose == "extract" and payload.analysis_prompt_template_id is None:
             raise _http_error(400, "analysis_prompt_required", "创建提取工程前请选择风格分析提示词。")
+        txt_split_rule_id = 1
+        if parsed.source_format == "txt" and state.split_options.get("mode") != "auto":
+            options = state.split_options
+            txt_split_rule_id = project_service.create_txt_split_rule(
+                name=f"{payload.project_name or parsed.title} import split",
+                mode=str(options.get("mode") or "auto"),
+                line_prefix=str(options.get("line_prefix") or "") or None,
+                number_pattern=str(options.get("number_style") or "") or None,
+                title_suffix="|".join(options.get("title_suffixes") or []) or None,
+                custom_regex=options.get("custom_regex"),
+                extra_rules={
+                    "extra_title_regex": options.get("extra_title_regex"),
+                },
+            )
         project_id = project_service.create_project(
             parsed,
             workspace,
@@ -215,7 +468,10 @@ def create_app(
             processing_mode=purpose,
             prompt_template_id=payload.prompt_template_id,
             analysis_prompt_template_id=payload.analysis_prompt_template_id,
+            txt_split_rule_id=txt_split_rule_id,
+            model_id=payload.model_id,
         )
+        document_library_service.ensure_project_document(project_id, state.source_path)
         return _project_out(_require_project(project_service, project_id))
 
     @app.post("/api/projects/{project_id}/delete", dependencies=[Depends(_require_token)])
@@ -695,6 +951,120 @@ def create_app(
         template = style_service.get_project_style_template(project_id)
         return ProjectStyleBindingOut(style_template=_style_out(template) if template else None)
 
+    @app.get("/api/materials", response_model=list[MaterialOut])
+    def list_materials(
+        scope: str | None = None,
+        project_id: int | None = None,
+        material_type: str | None = None,
+        category_id: int | None = None,
+    ) -> list[MaterialOut]:
+        return [
+            _material_out(item)
+            for item in material_service.list_materials(
+                scope=scope,
+                project_id=project_id,
+                material_type=material_type,
+                category_id=category_id,
+            )
+        ]
+
+    @app.get("/api/materials/categories", response_model=list[MaterialCategoryOut])
+    def list_material_categories(material_type: str | None = None) -> list[MaterialCategoryOut]:
+        return [_material_category_out(item) for item in material_service.list_categories(material_type)]
+
+    @app.post(
+        "/api/materials/categories",
+        response_model=MaterialCategoryOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def create_material_category(payload: MaterialCategoryCreateRequest) -> MaterialCategoryOut:
+        return _material_category_out(material_service.create_category(payload.name, payload.material_type))
+
+    @app.post("/api/materials", response_model=MaterialOut, dependencies=[Depends(_require_token)])
+    def create_material(payload: MaterialWriteRequest) -> MaterialOut:
+        material_id = material_service.create_material(**payload.model_dump())
+        material = material_service.get_material(material_id)
+        if material is None:
+            raise _http_error(500, "material_create_failed", "素材已创建但无法读取。")
+        return _material_out(material)
+
+    @app.post("/api/materials/import", response_model=MaterialOut, dependencies=[Depends(_require_token)])
+    def import_material(payload: MaterialWriteRequest) -> MaterialOut:
+        material_id = material_service.create_material(
+            **{
+                **payload.model_dump(),
+                "import_metadata": {
+                    **payload.import_metadata,
+                    "created_by": "json_import",
+                },
+            }
+        )
+        material = material_service.get_material(material_id)
+        if material is None:
+            raise _http_error(500, "material_import_failed", "素材已导入但无法读取。")
+        return _material_out(material)
+
+    @app.get("/api/materials/{material_id}", response_model=MaterialOut)
+    def get_material(material_id: int) -> MaterialOut:
+        material = material_service.get_material(material_id)
+        if material is None:
+            raise _http_error(404, "material_not_found", f"找不到素材：{material_id}")
+        return _material_out(material)
+
+    @app.post("/api/materials/{material_id}", response_model=MaterialOut, dependencies=[Depends(_require_token)])
+    def update_material(material_id: int, payload: MaterialUpdateRequest) -> MaterialOut:
+        material_service.update_material(material_id, **payload.model_dump())
+        material = material_service.get_material(material_id)
+        if material is None:
+            raise _http_error(404, "material_not_found", f"找不到素材：{material_id}")
+        return _material_out(material)
+
+    @app.post(
+        "/api/materials/{material_id}/copy",
+        response_model=MaterialOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def copy_material(material_id: int, payload: MaterialCopyRequest) -> MaterialOut:
+        copied_id = material_service.copy_material(
+            material_id,
+            target_scope=payload.target_scope,
+            target_project_id=payload.target_project_id,
+            category_ids=payload.category_ids,
+        )
+        copied = material_service.get_material(copied_id)
+        if copied is None:
+            raise _http_error(500, "material_copy_failed", "素材副本已创建但无法读取。")
+        return _material_out(copied)
+
+    @app.post(
+        "/api/materials/{material_id}/delete",
+        response_model=dict[str, bool],
+        dependencies=[Depends(_require_token)],
+    )
+    def delete_material(material_id: int) -> dict[str, bool]:
+        material_service.delete_material(material_id)
+        return {"ok": True}
+
+    @app.post("/api/material-extractions", response_model=MaterialExtractOut, dependencies=[Depends(_require_token)])
+    def extract_materials(payload: MaterialExtractRequest) -> MaterialExtractOut:
+        text, source_metadata = _resolve_anchor_source(
+            payload,
+            project_service=project_service,
+            document_library_service=document_library_service,
+        )
+        material_ids = anchor_extraction_service.extract_materials_from_text(
+            text,
+            material_type=payload.material_type,
+            scope=payload.scope,
+            project_id=payload.project_id,
+            name=payload.name,
+            detail_level=payload.detail_level,
+            model_id=payload.model_id,
+            source_metadata=source_metadata,
+        )
+        materials = [material_service.get_material(material_id) for material_id in material_ids]
+        return MaterialExtractOut(materials=[_material_out(item) for item in materials if item is not None])
+
     @app.get("/api/outlines", response_model=list[OutlineTemplateOut])
     def list_outline_templates() -> list[OutlineTemplateOut]:
         return [_outline_out(template) for template in anchor_service.list_outline_templates()]
@@ -757,28 +1127,28 @@ def create_app(
         return {"ok": True}
 
     @app.get("/api/characters", response_model=list[CharacterCardOut])
-    def list_character_cards() -> list[CharacterCardOut]:
-        return [_character_out(card) for card in anchor_service.list_character_cards()]
+    def list_character_cards(
+        scope: str | None = None,
+        project_id: int | None = None,
+    ) -> list[CharacterCardOut]:
+        return [_character_out(card) for card in anchor_service.list_character_cards(scope, project_id)]
 
     @app.post("/api/characters/extract", response_model=CharacterCardsExtractOut, dependencies=[Depends(_require_token)])
     def extract_character_cards(payload: AnchorExtractRequest) -> CharacterCardsExtractOut:
-        if bool(payload.sample_text and payload.sample_text.strip()) == bool(payload.source_path):
-            raise _http_error(400, "invalid_anchor_source", "Provide exactly one of sample_text or source_path.")
-        if payload.source_path:
-            source_path = _validate_source_path(payload.source_path)
-            if source_path.stat().st_size > STYLE_EXTRACTION_MAX_FILE_BYTES:
-                raise _http_error(400, "anchor_source_too_large", "Anchor extraction source file is too large.")
-            card_ids = anchor_extraction_service.extract_characters_from_file(
-                source_path,
-                detail_level=payload.detail_level,
-                model_id=payload.model_id,
-            )
-        else:
-            card_ids = anchor_extraction_service.extract_characters_from_text(
-                payload.sample_text or "",
-                detail_level=payload.detail_level,
-                model_id=payload.model_id,
-            )
+        text, source_metadata = _resolve_anchor_source(
+            payload,
+            project_service=project_service,
+            document_library_service=document_library_service,
+        )
+        card_ids = anchor_extraction_service.extract_characters_from_text(
+            text,
+            name=payload.name,
+            detail_level=payload.detail_level,
+            model_id=payload.model_id,
+            source_metadata=source_metadata,
+            scope=payload.scope,
+            project_id=payload.project_id,
+        )
         cards = [anchor_service.get_character_card(card_id) for card_id in card_ids]
         return CharacterCardsExtractOut(character_cards=[_character_out(card) for card in cards if card is not None])
 
@@ -795,6 +1165,33 @@ def create_app(
         card = anchor_service.get_character_card(card_id)
         if card is None:
             raise _http_error(500, "character_card_create_failed", "Character card was created but could not be loaded.")
+        return _character_out(card)
+
+    @app.post("/api/characters/import", response_model=CharacterCardOut, dependencies=[Depends(_require_token)])
+    def import_character_card(payload: CharacterCardWriteRequest) -> CharacterCardOut:
+        values = payload.model_dump(exclude={"import_metadata"})
+        card_id = anchor_service.create_character_card(
+            **values,
+            import_metadata={
+                **payload.import_metadata,
+                "created_by": "json_import",
+            },
+        )
+        card = anchor_service.get_character_card(card_id)
+        if card is None:
+            raise _http_error(500, "character_card_import_failed", "角色卡已导入但无法读取。")
+        return _character_out(card)
+
+    @app.post("/api/characters/{card_id}/copy", response_model=CharacterCardOut, dependencies=[Depends(_require_token)])
+    def copy_character_card(card_id: int, payload: CharacterCardCopyRequest) -> CharacterCardOut:
+        copied_id = anchor_service.copy_character_card(
+            card_id,
+            target_scope=payload.target_scope,
+            target_project_id=payload.target_project_id,
+        )
+        card = anchor_service.get_character_card(copied_id)
+        if card is None:
+            raise _http_error(500, "character_card_copy_failed", "角色卡副本已创建但无法读取。")
         return _character_out(card)
 
     @app.post("/api/characters/{card_id}", response_model=CharacterCardOut, dependencies=[Depends(_require_token)])
@@ -942,7 +1339,7 @@ def _safe_filename(value: str) -> str:
     return cleaned[:80] or "rusty-project"
 
 
-def _preview_out(book: ParsedBook, token: str) -> PreviewResponse:
+def _preview_out(book: ParsedBook, token: str, split_mode: str = "auto") -> PreviewResponse:
     return PreviewResponse(
         preview_token=token,
         title=book.title,
@@ -952,6 +1349,7 @@ def _preview_out(book: ParsedBook, token: str) -> PreviewResponse:
         source_encoding=book.source_encoding,
         total_chapters=len(book.chapters),
         total_words=book.total_words,
+        split_mode=split_mode,
         chapters=[
             PreviewChapterOut(
                 index=chapter.index,
@@ -960,7 +1358,7 @@ def _preview_out(book: ParsedBook, token: str) -> PreviewResponse:
                 start_line=chapter.start_line,
                 end_line=chapter.end_line,
             )
-            for chapter in book.chapters[:20]
+            for chapter in book.chapters
         ],
     )
 
@@ -982,6 +1380,37 @@ def _project_out(project: ProjectSummary) -> ProjectOut:
         updated_at=project.updated_at,
         progress=progress,
     )
+
+
+def _library_document_out(document: LibraryDocument) -> LibraryDocumentOut:
+    return LibraryDocumentOut(**document.__dict__)
+
+
+def _processing_template_out(template: ProcessingTemplate) -> DocumentProcessingTemplateOut:
+    return DocumentProcessingTemplateOut(
+        id=template.id,
+        name=template.name,
+        settings=template.settings,
+        is_default=template.is_default,
+        created_at=template.created_at,
+        updated_at=template.updated_at,
+    )
+
+
+def _document_revision_out(revision: DocumentRevision) -> LibraryDocumentRevisionOut:
+    return LibraryDocumentRevisionOut(**revision.__dict__)
+
+
+def _document_category_out(category: LibraryCategory) -> DocumentCategoryOut:
+    return DocumentCategoryOut(**category.__dict__)
+
+
+def _library_chapter_out(chapter: LibraryChapter) -> LibraryDocumentChapterOut:
+    return LibraryDocumentChapterOut(**chapter.__dict__)
+
+
+def _library_document_content_out(content: LibraryDocumentContent) -> LibraryDocumentContentOut:
+    return LibraryDocumentContentOut(**content.__dict__)
 
 
 def _chapter_out(chapter: ChapterRecord) -> ChapterOut:
@@ -1034,6 +1463,41 @@ def _outline_out(template: OutlineTemplate) -> OutlineTemplateOut:
     )
 
 
+def _material_out(material: Material) -> MaterialOut:
+    return MaterialOut(
+        id=material.id,
+        material_type=material.material_type,
+        scope=material.scope,
+        project_id=material.project_id,
+        project_name=material.project_name,
+        name=material.name,
+        description=material.description,
+        detail_level=material.detail_level,
+        content=_json_object(material.content_json),
+        source_metadata=_json_object(material.source_metadata_json),
+        import_metadata=_json_object(material.import_metadata_json),
+        source_material_id=material.source_material_id,
+        source_version=material.source_version,
+        timeline_start_chapter=material.timeline_start_chapter,
+        timeline_end_chapter=material.timeline_end_chapter,
+        sort_order=material.sort_order,
+        version=material.version,
+        created_at=material.created_at,
+        updated_at=material.updated_at,
+        categories=list(material.categories),
+    )
+
+
+def _material_category_out(category: MaterialCategory) -> MaterialCategoryOut:
+    return MaterialCategoryOut(
+        id=category.id,
+        name=category.name,
+        material_type=category.material_type,
+        sort_order=category.sort_order,
+        material_count=category.material_count,
+    )
+
+
 def _character_out(card: CharacterCard) -> CharacterCardOut:
     return CharacterCardOut(
         id=card.id,
@@ -1050,9 +1514,64 @@ def _character_out(card: CharacterCard) -> CharacterCardOut:
         profile=_json_object(card.profile_json),
         source_metadata=_json_object(card.source_metadata_json),
         import_metadata=_json_object(card.import_metadata_json),
+        scope=card.scope,
+        project_id=card.project_id,
+        source_character_card_id=card.source_character_card_id,
+        source_version=card.source_version,
         version=card.version,
         sort_order=card.sort_order,
     )
+
+
+def _resolve_anchor_source(
+    payload: AnchorExtractRequest,
+    *,
+    project_service: ProjectService,
+    document_library_service: DocumentLibraryService,
+) -> tuple[str, dict[str, Any]]:
+    sources = [
+        bool(payload.sample_text and payload.sample_text.strip()),
+        bool(payload.source_path),
+        payload.source_project_id is not None,
+        payload.source_document_id is not None,
+    ]
+    if sum(1 for present in sources if present) != 1:
+        raise _http_error(
+            400,
+            "invalid_anchor_source",
+            "请从粘贴文本、本地文件、工程或文档库中选择且只选择一种来源。",
+        )
+    if payload.sample_text and payload.sample_text.strip():
+        return payload.sample_text, {"source_type": "paste"}
+    if payload.source_path:
+        source_path = _validate_source_path(payload.source_path)
+        if source_path.stat().st_size > STYLE_EXTRACTION_MAX_FILE_BYTES:
+            raise _http_error(400, "anchor_source_too_large", "AI 提取源文件过大。")
+        book = project_service.preview_book(source_path)
+        text = "\n\n".join(f"# {chapter.title}\n{chapter.text}" for chapter in book.chapters)
+        return text, {
+            "source_type": "file",
+            "source_file_name": book.source_path.name,
+            "source_format": book.source_format,
+            "book_title": book.title,
+        }
+    if payload.source_project_id is not None:
+        project = project_service.get_project(payload.source_project_id)
+        if project is None:
+            raise _http_error(404, "project_not_found", f"找不到工程：{payload.source_project_id}")
+        chapters = project_service.list_chapters(payload.source_project_id)
+        text = "\n\n".join(f"# {chapter.title}\n{chapter.original_text}" for chapter in chapters)
+        return text, {
+            "source_type": "project",
+            "source_project_id": project.id,
+            "source_project_name": project.name,
+        }
+    content = document_library_service.get_content(int(payload.source_document_id))
+    return content.text, {
+        "source_type": "document_library",
+        "source_document_id": content.document_id,
+        "source_document_title": content.title,
+    }
 
 
 def _json_object(text: str) -> dict[str, Any]:

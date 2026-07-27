@@ -14,6 +14,101 @@ export type Project = {
   progress: number;
 };
 
+export type LibraryDocument = {
+  id: number;
+  title: string;
+  author: string | null;
+  description: string | null;
+  source_filename: string;
+  source_format: string;
+  storage_path: string;
+  source_size_bytes: number;
+  stored_size_bytes: number;
+  chapter_count: number;
+  word_count: number;
+  status: string;
+  favorite: boolean;
+  categories: string[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type LibraryDocumentImportResult = {
+  document: LibraryDocument;
+  created: boolean;
+  storage_format: 'txt';
+};
+
+export type DocumentProcessingSettings = {
+  chapter_pattern: string;
+  chapter_indent: number;
+  paragraph_indent: number;
+  blank_lines: number;
+  trim_whitespace: boolean;
+};
+
+export type DocumentProcessingTemplate = {
+  id: number;
+  name: string;
+  settings: DocumentProcessingSettings;
+  is_default: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type LibraryDocumentRevision = {
+  id: number;
+  document_id: number;
+  revision_number: number;
+  revision_type: string;
+  storage_path: string;
+  template_id: number | null;
+  parent_revision_id: number | null;
+  created_at: string;
+};
+
+export type LibraryDocumentCleanupResult = {
+  document: LibraryDocument;
+  revision: LibraryDocumentRevision;
+  created: boolean;
+};
+
+export type DocumentLibrarySettings = {
+  storage_path: string;
+};
+
+export type DocumentCategory = {
+  id: number;
+  name: string;
+  parent_id: number | null;
+  sort_order: number;
+  document_count: number;
+};
+
+export type LibraryDocumentChapter = {
+  id: number;
+  revision_id: number;
+  index: number;
+  title: string;
+  start_line: number | null;
+  end_line: number | null;
+  word_count: number;
+};
+
+export type LibraryDocumentContent = {
+  document_id: number;
+  revision_id: number;
+  chapter_id: number | null;
+  title: string;
+  text: string;
+};
+
+export type LibraryDocumentExportResult = {
+  ok: boolean;
+  format: 'txt' | 'epub';
+  output_path: string;
+};
+
 export type Chapter = {
   id: number;
   project_id: number;
@@ -107,6 +202,15 @@ export type ProjectDetail = {
 
 export type ProjectPurpose = 'rewrite' | 'extract';
 
+export type ChapterSplitOptions = {
+  mode: 'auto' | 'simple' | 'regex';
+  line_prefix?: string;
+  number_style?: 'mixed' | 'arabic' | 'chinese';
+  title_suffixes?: string[];
+  extra_title_regex?: string | null;
+  custom_regex?: string | null;
+};
+
 export type ExportSourceStatus = 'original' | 'manual_rewrite' | 'ai_rewrite' | 'kept_original';
 
 export type ExportPlanItem = {
@@ -137,6 +241,7 @@ export type PreviewResponse = {
   source_encoding: string | null;
   total_chapters: number;
   total_words: number;
+  split_mode: string;
   chapters: Array<{
     index: number;
     title: string;
@@ -321,6 +426,10 @@ export type CharacterCard = {
   profile: Record<string, unknown>;
   source_metadata: Record<string, unknown>;
   import_metadata: Record<string, unknown>;
+  scope: 'public' | 'project';
+  project_id: number | null;
+  source_character_card_id: number | null;
+  source_version: number | null;
   version: number;
   sort_order: number;
 };
@@ -339,6 +448,8 @@ export type CharacterCardWrite = {
   profile: Record<string, unknown>;
   source_metadata: Record<string, unknown>;
   import_metadata: Record<string, unknown>;
+  scope?: 'public' | 'project';
+  project_id?: number | null;
 };
 
 export type AnchorExtractWrite = {
@@ -346,7 +457,67 @@ export type AnchorExtractWrite = {
   detail_level: StyleDetailLevel;
   sample_text?: string | null;
   source_path?: string | null;
+  source_project_id?: number | null;
+  source_document_id?: number | null;
   model_id?: number | null;
+  scope?: 'public' | 'project';
+  project_id?: number | null;
+};
+
+export type MaterialType = 'outline' | 'plot_skeleton' | 'snippet';
+export type MaterialScope = 'public' | 'project';
+
+export type Material = {
+  id: number;
+  material_type: MaterialType;
+  scope: MaterialScope;
+  project_id: number | null;
+  project_name: string | null;
+  name: string;
+  description: string;
+  detail_level: StyleDetailLevel;
+  content: Record<string, unknown>;
+  source_metadata: Record<string, unknown>;
+  import_metadata: Record<string, unknown>;
+  source_material_id: number | null;
+  source_version: number | null;
+  timeline_start_chapter: number | null;
+  timeline_end_chapter: number | null;
+  sort_order: number;
+  version: number;
+  created_at: string;
+  updated_at: string;
+  categories: string[];
+};
+
+export type MaterialWrite = {
+  material_type: MaterialType;
+  scope: MaterialScope;
+  project_id?: number | null;
+  name: string;
+  description?: string;
+  detail_level?: StyleDetailLevel;
+  content: Record<string, unknown>;
+  source_metadata?: Record<string, unknown>;
+  import_metadata?: Record<string, unknown>;
+  timeline_start_chapter?: number | null;
+  timeline_end_chapter?: number | null;
+  sort_order?: number;
+  category_ids?: number[];
+};
+
+export type MaterialUpdate = Omit<MaterialWrite, 'material_type' | 'scope' | 'project_id' | 'source_metadata' | 'import_metadata'>;
+
+export type MaterialCategory = {
+  id: number;
+  name: string;
+  material_type: MaterialType;
+  sort_order: number;
+  material_count: number;
+};
+
+export type MaterialExtractWrite = AnchorExtractWrite & {
+  material_type: MaterialType;
 };
 
 export type ProjectOutlineBinding = {

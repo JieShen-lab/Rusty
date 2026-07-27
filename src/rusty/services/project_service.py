@@ -53,6 +53,8 @@ class ProjectService:
         processing_mode: str = "rewrite",
         prompt_template_id: int | None = None,
         analysis_prompt_template_id: int | None = None,
+        txt_split_rule_id: int | None = 1,
+        model_id: int | None = None,
     ) -> int:
         source_bytes = book.source_path.read_bytes()
         content_hash = hashlib.sha256(source_bytes).hexdigest()
@@ -134,12 +136,19 @@ class ProjectService:
             connection.execute(
                 """
                 INSERT INTO project_settings (
-                    project_id, prompt_template_id, analysis_prompt_template_id,
+                    project_id, model_id, prompt_template_id, analysis_prompt_template_id,
                     txt_split_rule_id, processing_mode
                 )
-                VALUES (?, ?, ?, 1, ?)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (project_id, prompt_template_id, analysis_prompt_template_id, processing_mode),
+                (
+                    project_id,
+                    model_id,
+                    prompt_template_id,
+                    analysis_prompt_template_id,
+                    txt_split_rule_id,
+                    processing_mode,
+                ),
             )
             chapter_rows = [
                 (
@@ -194,6 +203,43 @@ class ProjectService:
             )
 
         return project_id
+
+    def create_txt_split_rule(
+        self,
+        *,
+        name: str,
+        mode: str,
+        line_prefix: str | None = None,
+        number_pattern: str | None = None,
+        title_suffix: str | None = None,
+        custom_regex: str | None = None,
+        extra_rules: dict | None = None,
+    ) -> int:
+        with session(self.database_path) as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO txt_split_rules (
+                    name,
+                    mode,
+                    line_prefix,
+                    number_pattern,
+                    title_suffix,
+                    custom_regex,
+                    extra_rules_json,
+                    is_default
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+                """,
+                (
+                    name.strip() or "Project chapter split rule",
+                    mode,
+                    line_prefix,
+                    number_pattern,
+                    title_suffix,
+                    custom_regex,
+                    json.dumps(extra_rules or {}, ensure_ascii=False),
+                ),
+            )
+        return int(cursor.lastrowid)
 
     @staticmethod
     def _parse_book(source_path: str | Path) -> ParsedBook:

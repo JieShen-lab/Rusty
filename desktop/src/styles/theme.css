@@ -1,20 +1,34 @@
 :root {
-  --canvas: #eef1f5;
-  --chrome: #f7f8fa;
+  color-scheme: light;
+  --canvas: #f2f4f7;
+  --chrome: #f2f4f7;
   --paper: #ffffff;
-  --paper-muted: #fafbfc;
-  --border: #d9dee7;
-  --border-strong: #c5ccd8;
+  --paper-muted: #f2f4f7;
+  --paper-hover: #f8fafc;
+  --border: #e0e6ee;
+  --border-strong: #d2dbe7;
+  --border-hover: #b7bec9;
+  --selected-border: #c7d7f6;
   --ink: #19202c;
   --ink-muted: #5f6978;
   --ink-soft: #8a94a3;
+  --on-accent: #ffffff;
   --accent: #2458d8;
   --accent-hover: #1d49b9;
   --accent-soft: #edf3ff;
   --success: #23814b;
+  --success-soft: #eefaf3;
+  --success-border: #79c99b;
   --warning: #c66a13;
+  --warning-soft: #fff2dc;
   --danger: #c93636;
+  --danger-soft: #fff1f2;
+  --danger-border: #f0c9cd;
+  --info: #2463ba;
+  --info-soft: #eaf3ff;
+  --info-border: #9dbce7;
   --focus: #3f75f0;
+  --scrollbar: #c7ccd4;
 
   /* Shared workbench aliases used by the newer editor surfaces. */
   --line: var(--border);
@@ -29,57 +43,73 @@
   --bg-panel-strong: var(--paper);
   --bg-panel-hover: var(--paper-muted);
   --border-soft: var(--border);
-  --border-strong: var(--border-strong);
   --text-main: var(--ink);
   --text-muted: var(--ink-muted);
   --text-soft: var(--ink-soft);
-  --accent-gold: var(--accent);
   --accent-blue: var(--accent);
   --accent-cyan: #2a7abf;
   --accent-green: var(--success);
   --accent-red: var(--danger);
   --accent-violet: #6b5cc5;
-  --radius-card: 10px;
+  --radius-card: 12px;
   --radius-button: 8px;
-  --shadow-glass: none;
 }
 
-.glass-card,
-.glass-card-strong {
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --canvas: #15181d;
+  --chrome: #181b21;
+  --paper: #20242b;
+  --paper-muted: #292e36;
+  --paper-hover: #303640;
+  --border: #353c46;
+  --border-strong: #46505d;
+  --border-hover: #667180;
+  --selected-border: #4666a3;
+  --ink: #edf1f7;
+  --ink-muted: #abb4c1;
+  --ink-soft: #7f8997;
+  --accent: #5277c8;
+  --accent-hover: #6386d0;
+  --accent-soft: #243657;
+  --success: #62ce8d;
+  --success-soft: #1d3829;
+  --success-border: #397c57;
+  --warning: #e7a454;
+  --warning-soft: #45331e;
+  --danger: #f17d83;
+  --danger-soft: #46282d;
+  --danger-border: #7f454d;
+  --info: #6f91d4;
+  --info-soft: #233754;
+  --info-border: #496b9b;
+  --focus: #8bacff;
+  --scrollbar: #596270;
+  --bg-ink: #101217;
+  --accent-cyan: #65aee5;
+  --accent-violet: #a99af0;
+}
+
+.surface-card {
   border-color: var(--border) !important;
   background: var(--paper) !important;
   box-shadow: none !important;
-  backdrop-filter: none !important;
 }
 
-.command-tile,
-.project-row {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--paper);
-  color: var(--ink);
-  box-shadow: none;
-}
-
-.command-tile:hover,
-.project-row:hover {
-  transform: none;
-  border-color: #aeb9cb;
-  background: var(--paper-muted);
-}
-
-.form-label,
-.project-row small {
+.form-label {
+  display: block;
+  margin-bottom: 7px;
   color: var(--ink-muted);
+  font-size: 12px;
+  font-weight: 650;
 }
 
-.form-input,
-.prompt-editor {
+.form-input {
+  width: 100%;
+  min-height: 40px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--paper);
   color: var(--ink);
+  padding: 0 11px;
 }
-
-.prompt-editor { min-height: 220px; padding: 14px; font-size: 14px; line-height: 1.65; }
-.prompt-editor:focus { border-color: var(--focus); }

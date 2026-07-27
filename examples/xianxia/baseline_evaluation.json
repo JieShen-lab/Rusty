@@ -1,0 +1,52 @@
+{
+  "evaluation_target": "expected_rewrite.txt",
+  "result_type": "human-reviewed baseline, not a live API response",
+  "criteria": [
+    {
+      "id": "style_trigger_action",
+      "passed": true,
+      "evidence": "韩烬以反问回应后短刀立即出鞘，符合“话语或态度—动作”结构。"
+    },
+    {
+      "id": "style_paired_response",
+      "passed": true,
+      "evidence": "韩烬直取胸口后，顾长青先退、观察前脚，再踢膝勾踝；攻击与应对成对推进。"
+    },
+    {
+      "id": "style_concrete_verbs",
+      "passed": true,
+      "evidence": "使用沉肩、压入、扫出、内勾、下压、划线、内收等具体动作，而非“一招打退”。"
+    },
+    {
+      "id": "no_source_copy",
+      "passed": true,
+      "evidence": "没有复制行者、长枪、铁棒等范文人物、兵器或剧情。"
+    },
+    {
+      "id": "character_decision",
+      "passed": true,
+      "evidence": "顾长青面对三尺内近身突袭时先用左脚破坏膝弯与重心，没有直接起掌。"
+    },
+    {
+      "id": "speech_consistency",
+      "passed": true,
+      "evidence": "顾长青与苏晚照保持短句；韩烬使用反问、贬称和赤炉盟威胁。"
+    },
+    {
+      "id": "technique_consistency",
+      "passed": true,
+      "evidence": "踏虚七步有落脚与水痕；青崖叠浪掌有三重、半息延迟、浪拍石岸和右臂发麻。"
+    },
+    {
+      "id": "world_consistency",
+      "passed": true,
+      "evidence": "封江从地面积水结冰封路，没有把同境修士直接冻住；无人御空或瞬移。"
+    },
+    {
+      "id": "mainline_consistency",
+      "passed": true,
+      "evidence": "场景仍围绕第二枚残图，没有提前开启玄墟天门或出现第三枚残图。"
+    }
+  ],
+  "verdict": "基准文本满足当前九项标准；它证明目标提示词组合能够写出合格结果，但模型稳定性仍需使用真实 API 多次采样验证。"
+}

@@ -3,6 +3,7 @@ import type {
   AnalysisPromptTemplateWrite,
   AnchorExtractWrite,
   Chapter,
+  ChapterSplitOptions,
   ChapterDetail,
   CompiledPromptPreview,
   CharacterCard,
@@ -12,9 +13,27 @@ import type {
   GenerationAttempt,
   ModelConfig,
   ModelTestResult,
+  Material,
+  MaterialCategory,
+  MaterialExtractWrite,
+  MaterialScope,
+  MaterialType,
+  MaterialUpdate,
+  MaterialWrite,
   OutlineTemplate,
   OutlineTemplateWrite,
   ModelWrite,
+  LibraryDocument,
+  LibraryDocumentCleanupResult,
+  LibraryDocumentChapter,
+  LibraryDocumentContent,
+  LibraryDocumentExportResult,
+  LibraryDocumentImportResult,
+  LibraryDocumentRevision,
+  DocumentProcessingSettings,
+  DocumentProcessingTemplate,
+  DocumentLibrarySettings,
+  DocumentCategory,
   PreviewResponse,
   Project,
   ProjectCharacterBindings,
@@ -78,6 +97,32 @@ async function recoverBackend(): Promise<boolean> {
   return backendRecovery;
 }
 
+async function sendRequest(path: string, options: RequestInit, headers: Headers): Promise<Response> {
+  const desktopRequest = window.rustyDesktop?.requestBackend;
+  if (!desktopRequest) {
+    return fetch(`${apiBase()}${path}`, { ...options, headers });
+  }
+  const body = typeof options.body === 'string' ? options.body : null;
+  const result = await desktopRequest({
+    path,
+    method: options.method || 'GET',
+    headers: Object.fromEntries(headers.entries()),
+    body,
+  });
+  return new Response(result.body, {
+    status: result.status,
+    statusText: result.statusText,
+    headers: result.headers,
+  });
+}
+
+function shouldRecoverBackend(error: unknown): boolean {
+  if (!window.rustyDesktop?.requestBackend) {
+    return error instanceof TypeError;
+  }
+  return /ECONNREFUSED|ECONNRESET|EPIPE|socket hang up|connect\s+ETIMEDOUT/i.test(String(error));
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers = new Headers(options.headers);
   headers.set('Accept', 'application/json');
@@ -89,21 +134,36 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     headers.set('X-Rusty-Token', token);
   }
 
-  let response: Response;
+  let response: Response | null = null;
   try {
-    response = await fetch(`${apiBase()}${path}`, { ...options, headers });
+    response = await sendRequest(path, options, headers);
   } catch (error) {
+    if (!shouldRecoverBackend(error)) {
+      throw new ApiError(0, `请求未完成：${String(error)}`);
+    }
     const recovered = await recoverBackend();
     if (!recovered) {
       throw new ApiError(0, `Rusty 后端已停止且自动重启失败：${String(error)}`);
     }
-    try {
-      response = await fetch(`${apiBase()}${path}`, { ...options, headers });
-    } catch (retryError) {
+    let retryError: unknown = error;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        response = await sendRequest(path, options, headers);
+        retryError = null;
+        break;
+      } catch (reason) {
+        retryError = reason;
+        await new Promise((resolve) => window.setTimeout(resolve, 200 * (attempt + 1)));
+      }
+    }
+    if (retryError) {
       throw new ApiError(0, `Rusty 后端重启后仍无法连接：${String(retryError)}`);
     }
   }
 
+  if (!response) {
+    throw new ApiError(0, 'Rusty 后端未返回响应。');
+  }
   const text = await response.text();
   const data = text ? JSON.parse(text) : null;
   if (!response.ok) {
@@ -118,6 +178,108 @@ export function getHealth() {
 
 export function getProjects() {
   return request<Project[]>('/api/projects');
+}
+
+export function getLibraryDocuments() {
+  return request<LibraryDocument[]>('/api/documents');
+}
+
+export function importLibraryDocument(sourcePath: string) {
+  return request<LibraryDocumentImportResult>('/api/documents/import', {
+    method: 'POST',
+    body: JSON.stringify({ source_path: sourcePath }),
+  });
+}
+
+export function updateLibraryDocument(documentId: number, title: string, author: string | null) {
+  return request<LibraryDocument>(`/api/documents/${documentId}`, {
+    method: 'POST',
+    body: JSON.stringify({ title, author }),
+  });
+}
+
+export function getDocumentLibrarySettings() {
+  return request<DocumentLibrarySettings>('/api/document-library/settings');
+}
+
+export function migrateDocumentLibrary(targetPath: string) {
+  return request<DocumentLibrarySettings>('/api/document-library/migrate', {
+    method: 'POST',
+    body: JSON.stringify({ target_path: targetPath }),
+  });
+}
+
+export function getDocumentCategories() {
+  return request<DocumentCategory[]>('/api/document-categories');
+}
+
+export function createDocumentCategory(name: string, parentId?: number | null) {
+  return request<DocumentCategory>('/api/document-categories', {
+    method: 'POST',
+    body: JSON.stringify({ name, parent_id: parentId ?? null }),
+  });
+}
+
+export function assignDocumentCategory(documentId: number, categoryId: number, selected: boolean) {
+  return request<LibraryDocument>(`/api/documents/${documentId}/categories/${categoryId}`, {
+    method: 'POST',
+    body: JSON.stringify({ selected }),
+  });
+}
+
+export function getDocumentProcessingTemplates() {
+  return request<DocumentProcessingTemplate[]>('/api/document-processing-templates');
+}
+
+export function createDocumentProcessingTemplate(name: string, settings: DocumentProcessingSettings) {
+  return request<DocumentProcessingTemplate>('/api/document-processing-templates', {
+    method: 'POST',
+    body: JSON.stringify({ name, settings }),
+  });
+}
+
+export function getLibraryDocumentRevisions(documentId: number) {
+  return request<LibraryDocumentRevision[]>(`/api/documents/${documentId}/revisions`);
+}
+
+export function getLibraryDocumentChapters(documentId: number) {
+  return request<LibraryDocumentChapter[]>(`/api/documents/${documentId}/chapters`);
+}
+
+export function getLibraryDocumentContent(documentId: number, chapterId?: number | null) {
+  const query = chapterId == null ? '' : `?chapter_id=${chapterId}`;
+  return request<LibraryDocumentContent>(`/api/documents/${documentId}/content${query}`);
+}
+
+export function reorderLibraryDocumentChapters(documentId: number, orderedChapterIds: number[]) {
+  return request<LibraryDocumentChapter[]>(`/api/documents/${documentId}/chapters/reorder`, {
+    method: 'POST',
+    body: JSON.stringify({ ordered_chapter_ids: orderedChapterIds }),
+  });
+}
+
+export function deleteLibraryDocument(documentId: number) {
+  return request<{ ok: boolean }>(`/api/documents/${documentId}/delete`, { method: 'POST' });
+}
+
+export function cleanupLibraryDocument(documentId: number, templateId: number) {
+  return request<LibraryDocumentCleanupResult>(`/api/documents/${documentId}/cleanup`, {
+    method: 'POST',
+    body: JSON.stringify({ template_id: templateId }),
+  });
+}
+
+export function activateLibraryDocumentRevision(documentId: number, revisionId: number) {
+  return request<LibraryDocument>(`/api/documents/${documentId}/revisions/${revisionId}/activate`, {
+    method: 'POST',
+  });
+}
+
+export function exportLibraryDocument(documentId: number, format: 'txt' | 'epub', outputPath: string) {
+  return request<LibraryDocumentExportResult>(`/api/documents/${documentId}/export`, {
+    method: 'POST',
+    body: JSON.stringify({ format, output_path: outputPath }),
+  });
 }
 
 export function getProject(projectId: number) {
@@ -163,10 +325,10 @@ export function exportEpub(projectId: number) {
   });
 }
 
-export function previewProject(sourcePath: string, workspacePath?: string) {
+export function previewProject(sourcePath: string, workspacePath?: string, split?: ChapterSplitOptions) {
   return request<PreviewResponse>('/api/projects/preview', {
     method: 'POST',
-    body: JSON.stringify({ source_path: sourcePath, workspace_path: workspacePath || null }),
+    body: JSON.stringify({ source_path: sourcePath, workspace_path: workspacePath || null, split: split ?? null }),
   });
 }
 
@@ -177,6 +339,7 @@ export function createProject(
   purpose: ProjectPurpose = 'rewrite',
   promptTemplateId?: number | null,
   analysisPromptTemplateId?: number | null,
+  modelId?: number | null,
 ) {
   return request<Project>('/api/projects', {
     method: 'POST',
@@ -185,6 +348,7 @@ export function createProject(
       project_name: projectName || null,
       workspace_path: workspacePath || null,
       purpose,
+      model_id: modelId ?? null,
       prompt_template_id: promptTemplateId ?? null,
       analysis_prompt_template_id: analysisPromptTemplateId ?? null,
     }),
@@ -312,6 +476,72 @@ export function getOutlineTemplates() {
   return request<OutlineTemplate[]>('/api/outlines');
 }
 
+export function getMaterials(filters: {
+  scope?: MaterialScope;
+  project_id?: number;
+  material_type?: MaterialType;
+  category_id?: number;
+} = {}) {
+  const params = new URLSearchParams();
+  if (filters.scope) params.set('scope', filters.scope);
+  if (filters.project_id !== undefined) params.set('project_id', String(filters.project_id));
+  if (filters.material_type) params.set('material_type', filters.material_type);
+  if (filters.category_id !== undefined) params.set('category_id', String(filters.category_id));
+  const query = params.size ? `?${params.toString()}` : '';
+  return request<Material[]>(`/api/materials${query}`);
+}
+
+export function getMaterialCategories(materialType?: MaterialType) {
+  const query = materialType ? `?material_type=${encodeURIComponent(materialType)}` : '';
+  return request<MaterialCategory[]>(`/api/materials/categories${query}`);
+}
+
+export function createMaterialCategory(name: string, materialType: MaterialType) {
+  return request<MaterialCategory>('/api/materials/categories', {
+    method: 'POST',
+    body: JSON.stringify({ name, material_type: materialType }),
+  });
+}
+
+export function createMaterial(payload: MaterialWrite) {
+  return request<Material>('/api/materials', { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export function importMaterial(payload: MaterialWrite) {
+  return request<Material>('/api/materials/import', { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export function updateMaterial(materialId: number, payload: MaterialUpdate) {
+  return request<Material>(`/api/materials/${materialId}`, { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export function deleteMaterial(materialId: number) {
+  return request<{ ok: boolean }>(`/api/materials/${materialId}/delete`, { method: 'POST' });
+}
+
+export function copyMaterial(
+  materialId: number,
+  targetScope: MaterialScope,
+  targetProjectId?: number | null,
+  categoryIds: number[] = [],
+) {
+  return request<Material>(`/api/materials/${materialId}/copy`, {
+    method: 'POST',
+    body: JSON.stringify({
+      target_scope: targetScope,
+      target_project_id: targetProjectId ?? null,
+      category_ids: categoryIds,
+    }),
+  });
+}
+
+export function extractMaterials(payload: MaterialExtractWrite) {
+  return request<{ materials: Material[] }>('/api/material-extractions', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
 export function createOutlineTemplate(payload: OutlineTemplateWrite) {
   return request<OutlineTemplate>('/api/outlines', { method: 'POST', body: JSON.stringify(payload) });
 }
@@ -328,12 +558,34 @@ export function extractOutlineTemplate(payload: AnchorExtractWrite) {
   return request<OutlineTemplate>('/api/outlines/extract', { method: 'POST', body: JSON.stringify(payload) });
 }
 
-export function getCharacterCards() {
-  return request<CharacterCard[]>('/api/characters');
+export function getCharacterCards(scope?: 'public' | 'project', projectId?: number | null) {
+  const params = new URLSearchParams();
+  if (scope) params.set('scope', scope);
+  if (projectId !== undefined && projectId !== null) params.set('project_id', String(projectId));
+  const query = params.size ? `?${params.toString()}` : '';
+  return request<CharacterCard[]>(`/api/characters${query}`);
 }
 
 export function createCharacterCard(payload: CharacterCardWrite) {
   return request<CharacterCard>('/api/characters', { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export function importCharacterCard(payload: CharacterCardWrite) {
+  return request<CharacterCard>('/api/characters/import', { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export function copyCharacterCard(
+  cardId: number,
+  targetScope: 'public' | 'project',
+  targetProjectId?: number | null,
+) {
+  return request<CharacterCard>(`/api/characters/${cardId}/copy`, {
+    method: 'POST',
+    body: JSON.stringify({
+      target_scope: targetScope,
+      target_project_id: targetProjectId ?? null,
+    }),
+  });
 }
 
 export function updateCharacterCard(cardId: number, payload: CharacterCardWrite) {

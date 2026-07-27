@@ -1,7 +1,9 @@
 from .anchor_service import AnchorService, CharacterCard, OutlineTemplate
 from .anchor_extraction_service import AnchorExtractionService
 from .analysis_service import AnalysisService
+from .chapter_split_service import ChapterSplitService
 from .model_service import ModelConfig, ModelService, ModelTestResult
+from .material_service import Material, MaterialCategory, MaterialService
 from .pipeline_service import PipelineResult, PipelineService
 from .prompt_service import PromptService, PromptTemplate
 from .prompt_package_extraction_service import PromptPackageExtractionService
@@ -14,9 +16,13 @@ __all__ = [
     "AnchorService",
     "AnchorExtractionService",
     "AnalysisService",
+    "ChapterSplitService",
     "CharacterCard",
     "ModelService",
     "ModelTestResult",
+    "Material",
+    "MaterialCategory",
+    "MaterialService",
     "PipelineResult",
     "PipelineService",
     "ProjectService",

@@ -1,18 +1,18 @@
 # Models Page
 
 ## Purpose
-UI-R2 Models is an entry point into AI model configuration. In this round it may be list-only or clearly marked as a placeholder, but must not expose API keys.
+Models manages the AI connections used by project creation and generation.
 
 ## Layout
 - Header: 模型.
 - Left/list area: model cards with display name, provider, model name, default marker, API key presence.
-- Right/detail area: selected model read-only details or `UI-R2 暂不编辑` message.
+- Right/detail area: create/edit form, default-model option, connection test, save, and delete.
 
 ## Data Rules
-- Prefer list-only API from `ModelService.list_models()`.
-- Never return or render real API keys.
-- If write APIs are not implemented, disable edit/save controls and label them as UI-R3 work.
+- API keys are write-only in responses and stored through the backend keyring.
+- An unchanged masked key must never overwrite the stored secret.
+- Connection status, default status, and saved-key status use semantic theme tokens.
 
 ## Visual Notes
-- Use technical blue/cyan accents.
+- Use the shared blue accent only for selection and primary actions.
 - Use success pill only for default/ready states.

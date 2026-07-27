@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
@@ -82,7 +83,7 @@ class ModelService:
             )
             model_id = int(cursor.lastrowid)
             if api_key:
-                ref = self.secret_store.set_secret(f"model:{model_id}:api_key", api_key)
+                ref = self.secret_store.set_secret(self._api_key_name(model_id), api_key)
                 connection.execute("UPDATE ai_models SET api_key_secret_ref = ? WHERE id = ?", (ref, model_id))
         return model_id
 
@@ -112,9 +113,10 @@ class ModelService:
 
             secret_ref = existing["api_key_secret_ref"]
             if api_key:
-                if secret_ref:
+                new_secret_ref = self.secret_store.set_secret(self._api_key_name(model_id), api_key)
+                if secret_ref and secret_ref != new_secret_ref and not self._is_legacy_secret_ref(secret_ref):
                     self.secret_store.delete_secret(secret_ref)
-                secret_ref = self.secret_store.set_secret(f"model:{model_id}:api_key", api_key)
+                secret_ref = new_secret_ref
 
             connection.execute(
                 """
@@ -153,7 +155,9 @@ class ModelService:
                 (model_id,),
             ).fetchone()
             if row is not None:
-                self.secret_store.delete_secret(row["api_key_secret_ref"])
+                secret_ref = row["api_key_secret_ref"]
+                if not self._is_legacy_secret_ref(secret_ref):
+                    self.secret_store.delete_secret(secret_ref)
             connection.execute(
                 "UPDATE ai_models SET deleted_at = CURRENT_TIMESTAMP, is_default = 0 WHERE id = ?",
                 (model_id,),
@@ -273,3 +277,14 @@ class ModelService:
             is_default=bool(row["is_default"]),
             has_api_key=has_api_key,
         )
+
+    def _api_key_name(self, model_id: int) -> str:
+        database_identity = str(self.database_path.resolve()).casefold()
+        database_fingerprint = hashlib.sha256(database_identity.encode("utf-8")).hexdigest()[:20]
+        return f"database:{database_fingerprint}:model:{model_id}:api_key"
+
+    @staticmethod
+    def _is_legacy_secret_ref(ref: str | None) -> bool:
+        if not ref:
+            return False
+        return ":model:" in ref and ":database:" not in ref and not ref.startswith("memory:database:")

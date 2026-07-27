@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .connection import session
 
-CURRENT_SCHEMA_VERSION = 9
+CURRENT_SCHEMA_VERSION = 13
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -248,11 +248,74 @@ CREATE TABLE IF NOT EXISTS character_cards (
     profile_json TEXT NOT NULL DEFAULT '{}',
     source_metadata_json TEXT NOT NULL DEFAULT '{}',
     import_metadata_json TEXT NOT NULL DEFAULT '{}',
+    scope TEXT NOT NULL DEFAULT 'public' CHECK (scope IN ('public', 'project')),
+    project_id INTEGER,
+    source_character_card_id INTEGER,
+    source_version INTEGER,
     version INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     deleted_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS material_categories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    material_type TEXT NOT NULL CHECK (material_type IN ('outline', 'plot_skeleton', 'snippet')),
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    deleted_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS materials (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    material_type TEXT NOT NULL CHECK (material_type IN ('outline', 'plot_skeleton', 'snippet')),
+    scope TEXT NOT NULL DEFAULT 'public' CHECK (scope IN ('public', 'project')),
+    project_id INTEGER,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    detail_level TEXT NOT NULL DEFAULT 'standard' CHECK (detail_level IN ('brief', 'standard', 'detailed')),
+    content_json TEXT NOT NULL DEFAULT '{}',
+    source_metadata_json TEXT NOT NULL DEFAULT '{}',
+    import_metadata_json TEXT NOT NULL DEFAULT '{}',
+    source_material_id INTEGER,
+    source_version INTEGER,
+    legacy_outline_id INTEGER UNIQUE,
+    timeline_start_chapter INTEGER,
+    timeline_end_chapter INTEGER,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    version INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    deleted_at TEXT,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (source_material_id) REFERENCES materials(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS material_category_links (
+    material_id INTEGER NOT NULL,
+    category_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (material_id, category_id),
+    FOREIGN KEY (material_id) REFERENCES materials(id) ON DELETE CASCADE,
+    FOREIGN KEY (category_id) REFERENCES material_categories(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS project_documents (
+    project_id INTEGER PRIMARY KEY,
+    document_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (document_id) REFERENCES library_documents(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_materials_scope_project_timeline
+    ON materials(scope, project_id, timeline_start_chapter, sort_order);
+CREATE INDEX IF NOT EXISTS idx_materials_public_type
+    ON materials(scope, material_type, updated_at);
+CREATE INDEX IF NOT EXISTS idx_material_categories_type
+    ON material_categories(material_type, sort_order);
 
 CREATE TABLE IF NOT EXISTS project_outline_bindings (
     project_id INTEGER PRIMARY KEY,
@@ -471,6 +534,95 @@ CREATE TABLE IF NOT EXISTS export_chapter_plan (
     FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS library_documents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    author TEXT,
+    description TEXT,
+    source_filename TEXT NOT NULL,
+    source_format TEXT NOT NULL,
+    storage_path TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    source_size_bytes INTEGER NOT NULL DEFAULT 0,
+    stored_size_bytes INTEGER NOT NULL DEFAULT 0,
+    chapter_count INTEGER NOT NULL DEFAULT 0,
+    word_count INTEGER NOT NULL DEFAULT 0,
+    source_metadata_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'imported',
+    favorite INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    deleted_at TEXT,
+    current_revision_id INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS document_categories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    parent_id INTEGER,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    deleted_at TEXT,
+    FOREIGN KEY (parent_id) REFERENCES document_categories(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS document_category_links (
+    document_id INTEGER NOT NULL,
+    category_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (document_id, category_id),
+    FOREIGN KEY (document_id) REFERENCES library_documents(id) ON DELETE CASCADE,
+    FOREIGN KEY (category_id) REFERENCES document_categories(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS document_processing_templates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    settings_json TEXT NOT NULL DEFAULT '{}',
+    is_default INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    deleted_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS library_document_revisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    document_id INTEGER NOT NULL,
+    revision_number INTEGER NOT NULL,
+    revision_type TEXT NOT NULL,
+    storage_path TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    template_id INTEGER,
+    parent_revision_id INTEGER,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (document_id, revision_number),
+    FOREIGN KEY (document_id) REFERENCES library_documents(id) ON DELETE CASCADE,
+    FOREIGN KEY (template_id) REFERENCES document_processing_templates(id) ON DELETE SET NULL,
+    FOREIGN KEY (parent_revision_id) REFERENCES library_document_revisions(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS library_document_chapters (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    document_id INTEGER NOT NULL,
+    revision_id INTEGER NOT NULL,
+    chapter_index INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    start_line INTEGER,
+    end_line INTEGER,
+    word_count INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (revision_id, chapter_index),
+    FOREIGN KEY (document_id) REFERENCES library_documents(id) ON DELETE CASCADE,
+    FOREIGN KEY (revision_id) REFERENCES library_document_revisions(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS document_library_settings (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    storage_path TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status);
 CREATE INDEX IF NOT EXISTS idx_chapters_project_order ON chapters(project_id, chapter_index);
 CREATE INDEX IF NOT EXISTS idx_export_plan_project_order ON export_chapter_plan(project_id, export_order);
@@ -479,6 +631,16 @@ CREATE INDEX IF NOT EXISTS idx_chapter_errors_stage ON chapter_errors(stage, cre
 CREATE INDEX IF NOT EXISTS idx_project_errors_stage ON project_errors(stage, created_at);
 CREATE INDEX IF NOT EXISTS idx_generation_attempts_chapter_stage
     ON generation_attempts(chapter_id, stage, attempt_number);
+CREATE INDEX IF NOT EXISTS idx_library_documents_created_at
+    ON library_documents(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_library_documents_content_hash
+    ON library_documents(content_hash);
+CREATE INDEX IF NOT EXISTS idx_document_categories_parent_order
+    ON document_categories(parent_id, sort_order, name);
+CREATE INDEX IF NOT EXISTS idx_library_revisions_document_number
+    ON library_document_revisions(document_id, revision_number DESC);
+CREATE INDEX IF NOT EXISTS idx_library_chapters_revision_order
+    ON library_document_chapters(revision_id, chapter_index);
 """
 
 DEFAULT_SEED_SQL = """
@@ -493,6 +655,18 @@ INSERT OR IGNORE INTO txt_split_rules (
     'Chinese chapter headings',
     'custom_regex',
     '^(第[一二三四五六七八九十百千万零〇两0-9]+[章节卷集部篇回].*|[0-9]+[、.． ].*)$',
+    1
+);
+
+INSERT OR IGNORE INTO document_processing_templates (
+    id,
+    name,
+    settings_json,
+    is_default
+) VALUES (
+    1,
+    '标准中文小说排版',
+    '{"chapter_pattern":"^\\\\s*(第[一二三四五六七八九十百千万零〇两0-9]+[章节卷集部篇回].*|[0-9]+[、.． ].*)\\\\s*$","chapter_indent":0,"paragraph_indent":2,"blank_lines":1,"trim_whitespace":true}',
     1
 );
 """
@@ -849,6 +1023,231 @@ def _migrate_to_v9(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_to_v10(connection: sqlite3.Connection) -> None:
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS library_documents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            author TEXT,
+            description TEXT,
+            source_filename TEXT NOT NULL,
+            source_format TEXT NOT NULL,
+            storage_path TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            source_size_bytes INTEGER NOT NULL DEFAULT 0,
+            stored_size_bytes INTEGER NOT NULL DEFAULT 0,
+            chapter_count INTEGER NOT NULL DEFAULT 0,
+            word_count INTEGER NOT NULL DEFAULT 0,
+            source_metadata_json TEXT NOT NULL DEFAULT '{}',
+            status TEXT NOT NULL DEFAULT 'imported',
+            favorite INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            deleted_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS document_categories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            parent_id INTEGER,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            deleted_at TEXT,
+            FOREIGN KEY (parent_id) REFERENCES document_categories(id) ON DELETE SET NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS document_category_links (
+            document_id INTEGER NOT NULL,
+            category_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (document_id, category_id),
+            FOREIGN KEY (document_id) REFERENCES library_documents(id) ON DELETE CASCADE,
+            FOREIGN KEY (category_id) REFERENCES document_categories(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_library_documents_created_at
+            ON library_documents(created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_library_documents_content_hash
+            ON library_documents(content_hash);
+        CREATE INDEX IF NOT EXISTS idx_document_categories_parent_order
+            ON document_categories(parent_id, sort_order, name);
+        """
+    )
+
+
+def _migrate_to_v11(connection: sqlite3.Connection) -> None:
+    _add_column_if_missing(connection, "library_documents", "current_revision_id", "current_revision_id INTEGER")
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS document_processing_templates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            settings_json TEXT NOT NULL DEFAULT '{}',
+            is_default INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            deleted_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS library_document_revisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            document_id INTEGER NOT NULL,
+            revision_number INTEGER NOT NULL,
+            revision_type TEXT NOT NULL,
+            storage_path TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            template_id INTEGER,
+            parent_revision_id INTEGER,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (document_id, revision_number),
+            FOREIGN KEY (document_id) REFERENCES library_documents(id) ON DELETE CASCADE,
+            FOREIGN KEY (template_id) REFERENCES document_processing_templates(id) ON DELETE SET NULL,
+            FOREIGN KEY (parent_revision_id) REFERENCES library_document_revisions(id) ON DELETE SET NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS library_document_chapters (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            document_id INTEGER NOT NULL,
+            revision_id INTEGER NOT NULL,
+            chapter_index INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            start_line INTEGER,
+            end_line INTEGER,
+            word_count INTEGER NOT NULL DEFAULT 0,
+            UNIQUE (revision_id, chapter_index),
+            FOREIGN KEY (document_id) REFERENCES library_documents(id) ON DELETE CASCADE,
+            FOREIGN KEY (revision_id) REFERENCES library_document_revisions(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_library_revisions_document_number
+            ON library_document_revisions(document_id, revision_number DESC);
+        CREATE INDEX IF NOT EXISTS idx_library_chapters_revision_order
+            ON library_document_chapters(revision_id, chapter_index);
+
+        INSERT OR IGNORE INTO document_processing_templates (
+            id, name, settings_json, is_default
+        ) VALUES (
+            1,
+            '标准中文小说排版',
+            '{"chapter_pattern":"^\\\\s*(第[一二三四五六七八九十百千万零〇两0-9]+[章节卷集部篇回].*|[0-9]+[、.． ].*)\\\\s*$","chapter_indent":0,"paragraph_indent":2,"blank_lines":1,"trim_whitespace":true}',
+            1
+        );
+        """
+    )
+
+
+def _migrate_to_v12(connection: sqlite3.Connection) -> None:
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS document_library_settings (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            storage_path TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+    )
+
+
+def _migrate_to_v13(connection: sqlite3.Connection) -> None:
+    _add_column_if_missing(
+        connection,
+        "character_cards",
+        "scope",
+        "scope TEXT NOT NULL DEFAULT 'public' CHECK (scope IN ('public', 'project'))",
+    )
+    _add_column_if_missing(connection, "character_cards", "project_id", "project_id INTEGER")
+    _add_column_if_missing(
+        connection,
+        "character_cards",
+        "source_character_card_id",
+        "source_character_card_id INTEGER",
+    )
+    _add_column_if_missing(connection, "character_cards", "source_version", "source_version INTEGER")
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS material_categories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            material_type TEXT NOT NULL CHECK (material_type IN ('outline', 'plot_skeleton', 'snippet')),
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            deleted_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS materials (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            material_type TEXT NOT NULL CHECK (material_type IN ('outline', 'plot_skeleton', 'snippet')),
+            scope TEXT NOT NULL DEFAULT 'public' CHECK (scope IN ('public', 'project')),
+            project_id INTEGER,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            detail_level TEXT NOT NULL DEFAULT 'standard' CHECK (detail_level IN ('brief', 'standard', 'detailed')),
+            content_json TEXT NOT NULL DEFAULT '{}',
+            source_metadata_json TEXT NOT NULL DEFAULT '{}',
+            import_metadata_json TEXT NOT NULL DEFAULT '{}',
+            source_material_id INTEGER,
+            source_version INTEGER,
+            legacy_outline_id INTEGER UNIQUE,
+            timeline_start_chapter INTEGER,
+            timeline_end_chapter INTEGER,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            version INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            deleted_at TEXT,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (source_material_id) REFERENCES materials(id) ON DELETE SET NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS material_category_links (
+            material_id INTEGER NOT NULL,
+            category_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (material_id, category_id),
+            FOREIGN KEY (material_id) REFERENCES materials(id) ON DELETE CASCADE,
+            FOREIGN KEY (category_id) REFERENCES material_categories(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS project_documents (
+            project_id INTEGER PRIMARY KEY,
+            document_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (document_id) REFERENCES library_documents(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_materials_scope_project_timeline
+            ON materials(scope, project_id, timeline_start_chapter, sort_order);
+        CREATE INDEX IF NOT EXISTS idx_materials_public_type
+            ON materials(scope, material_type, updated_at);
+        CREATE INDEX IF NOT EXISTS idx_material_categories_type
+            ON material_categories(material_type, sort_order);
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO materials (
+            material_type, scope, name, description, detail_level, content_json,
+            source_metadata_json, import_metadata_json, legacy_outline_id, version,
+            created_at, updated_at
+        )
+        SELECT
+            'outline', 'public', name, description, detail_level, outline_json,
+            source_metadata_json,
+            json_set(COALESCE(import_metadata_json, '{}'), '$.migrated_from', 'outline_templates'),
+            id, version, created_at, updated_at
+        FROM outline_templates
+        WHERE deleted_at IS NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM materials m WHERE m.legacy_outline_id = outline_templates.id
+          )
+        """
+    )
+
 MIGRATIONS = {
     2: _migrate_to_v2,
     3: _migrate_to_v3,
@@ -858,6 +1257,10 @@ MIGRATIONS = {
     7: _migrate_to_v7,
     8: _migrate_to_v8,
     9: _migrate_to_v9,
+    10: _migrate_to_v10,
+    11: _migrate_to_v11,
+    12: _migrate_to_v12,
+    13: _migrate_to_v13,
 }
 
 
