@@ -177,7 +177,7 @@ def create_app(
     anchor_extraction_service = AnchorExtractionService(db_path, ai_client=anchor_ai_client or style_ai_client)
 
     app = FastAPI(
-        title="Rusty UI-R2 API",
+        title="Rusty Local API",
         version="0.1.0",
         responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
     )

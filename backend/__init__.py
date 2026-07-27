@@ -1,1 +1,1 @@
-"""FastAPI adapter layer for Rusty UI-R2."""
+"""FastAPI adapter layer for the Rusty desktop application."""
