@@ -1,6 +1,6 @@
 # Rusty UI-R2
 
-UI-R2 adds a parallel Electron + React frontend and a FastAPI adapter layer. The existing PySide6 app, SQLite schema, importers, exporters, and service layer stay in place.
+UI-R2 is the actively developed Electron + React desktop application. FastAPI exposes the local API, while the Python service layer and SQLite v14 database own persistence and business logic. The earlier PySide6 entry remains available for compatibility.
 
 ## What Was Added
 - `design-system/MASTER.md` and page-level specs for the UI-R2 visual system.
@@ -84,7 +84,9 @@ npm run electron:dev
 - `/models`: model create/update/delete/test connection; API keys are accepted only as write-only inputs and are never returned.
 - `/prompts`: rewrite and analysis prompt template management.
 - `/outlines`: plot-outline template management and AI extraction.
-- `/characters`: character-card management and AI extraction.
+- `/materials`: public/project scene materials and plot skeletons, tags, copies, and analysis state.
+- `/characters`: public/project character cards, fixed/custom fields, tags, copies, and analysis state.
+- `/documents`: document tags, editable content, revisions, merge, chapter creation, regex split, cleanup, and export.
 
 ## Migrated Functional Entrypoints
 
@@ -95,6 +97,8 @@ npm run electron:dev
 - Project settings API: model, prompt template, concurrency, target word count, and minimum expansion ratio.
 - Models: create, update, delete, test connection.
 - Prompts: create, update, delete.
+- Resource tags: independent material, character, and document tag namespaces.
+- Selection capture: save selected document/project text as a scene material, plot skeleton, or public character card.
 
 ## Security Notes
 - FastAPI binds to `127.0.0.1` by default.
@@ -108,7 +112,7 @@ npm run electron:dev
 Python tests:
 
 ```powershell
-python -m unittest discover -s tests
+python -m pytest -q
 ```
 
 Backend health:
@@ -133,8 +137,10 @@ cd desktop
 npm run electron:dev
 ```
 
-## Out of Scope for UI-R2
-- Removing PySide6.
-- Production packaging.
-- Full AI pipeline execution API.
-- Moving Python business logic into TypeScript.
+## Current Boundaries
+
+- PySide6 compatibility code is still present, but new product work targets Electron.
+- Custom character-cover file upload is not connected yet; deterministic default covers are available.
+- AI chapter splitting and the complete manual chapter-marking UI are not connected yet.
+- Production installer packaging and code signing are not included.
+- Python remains the source of truth for business logic; TypeScript does not duplicate the service layer.
