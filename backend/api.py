@@ -19,13 +19,12 @@ from rusty.db import session
 from rusty.models import ChapterRecord, ExportPlanItem, ParsedBook, ProjectSummary
 from rusty.services.anchor_extraction_service import AnchorExtractionService
 from rusty.services.anchor_service import AnchorService, CharacterCard, OutlineTemplate
-from rusty.services.material_service import Material, MaterialCategory, MaterialService
+from rusty.services.material_service import Material, MaterialService
 from rusty.services.analysis_service import AnalysisService
 from rusty.services.chapter_split_service import ChapterSplitService
 from rusty.services.document_library_service import (
     DocumentLibraryService,
     DocumentRevision,
-    LibraryCategory,
     LibraryChapter,
     LibraryDocument,
     LibraryDocumentContent,
@@ -43,6 +42,7 @@ from .schemas import (
     AnalysisPromptTemplateOut,
     AnalysisPromptTemplateWriteRequest,
     AnchorExtractRequest,
+    CharacterAnalyzeRequest,
     CharacterCardOut,
     CharacterCardCopyRequest,
     CharacterCardsExtractOut,
@@ -64,12 +64,12 @@ from .schemas import (
     LibraryDocumentChapterOut,
     LibraryDocumentChapterReorderRequest,
     LibraryDocumentContentOut,
+    LibraryDocumentSaveContentRequest,
     LibraryDocumentExportRequest,
     LibraryDocumentExportResponse,
     LibraryDocumentOut,
     LibraryDocumentRevisionOut,
-    MaterialCategoryCreateRequest,
-    MaterialCategoryOut,
+    MaterialAnalyzeRequest,
     MaterialCopyRequest,
     MaterialExtractOut,
     MaterialExtractRequest,
@@ -80,9 +80,8 @@ from .schemas import (
     DocumentProcessingTemplateOut,
     DocumentLibraryMigrateRequest,
     DocumentLibrarySettingsOut,
-    DocumentCategoryAssignmentRequest,
-    DocumentCategoryCreateRequest,
-    DocumentCategoryOut,
+    DocumentCreateChapterRequest,
+    DocumentMergeRequest,
     ModelTestResponse,
     ModelOut,
     ModelWriteRequest,
@@ -110,6 +109,13 @@ from .schemas import (
     PipelineRunResponse,
     RetryStageRequest,
     RewriteTextRequest,
+    RegexSplitApplyRequest,
+    RegexSplitPreviewRequest,
+    ResourceTagAssignmentRequest,
+    ResourceTagCreateRequest,
+    ResourceTagOut,
+    ResourceTagRenameRequest,
+    SelectionResourceCreateRequest,
     StageStatusOut,
     StyleTemplateExtractRequest,
     StyleTemplateExportResponse,
@@ -120,6 +126,8 @@ from .schemas import (
     StyleAnalysisOut,
     StyleAnalysisReviewRequest,
     TextResultResponse,
+    SplitPreview,
+    ManualChapterMarkRequest,
 )
 
 APP_NAME = "Rusty"
@@ -261,33 +269,30 @@ def create_app(
         migrated = document_library_service.migrate_library_path(payload.target_path)
         return DocumentLibrarySettingsOut(storage_path=str(migrated))
 
-    @app.get("/api/document-categories", response_model=list[DocumentCategoryOut])
-    def list_document_categories() -> list[DocumentCategoryOut]:
-        return [_document_category_out(category) for category in document_library_service.list_categories()]
+    @app.get("/api/document-tags", response_model=list[ResourceTagOut])
+    def list_document_tags() -> list[ResourceTagOut]:
+        return [_resource_tag_out(tag) for tag in document_library_service.list_tags()]
+
+    @app.post("/api/document-tags", response_model=ResourceTagOut, dependencies=[Depends(_require_token)])
+    def create_document_tag(payload: ResourceTagCreateRequest) -> ResourceTagOut:
+        return _resource_tag_out(document_library_service.create_tag(payload.name))
+
+    @app.post("/api/document-tags/{tag_id}", response_model=ResourceTagOut, dependencies=[Depends(_require_token)])
+    def rename_document_tag(tag_id: int, payload: ResourceTagRenameRequest) -> ResourceTagOut:
+        return _resource_tag_out(document_library_service.rename_tag(tag_id, payload.name))
+
+    @app.post("/api/document-tags/{tag_id}/delete", response_model=dict[str, bool], dependencies=[Depends(_require_token)])
+    def delete_document_tag(tag_id: int) -> dict[str, bool]:
+        document_library_service.delete_tag(tag_id)
+        return {"ok": True}
 
     @app.post(
-        "/api/document-categories",
-        response_model=DocumentCategoryOut,
-        dependencies=[Depends(_require_token)],
-    )
-    def create_document_category(payload: DocumentCategoryCreateRequest) -> DocumentCategoryOut:
-        return _document_category_out(
-            document_library_service.create_category(payload.name, payload.parent_id)
-        )
-
-    @app.post(
-        "/api/documents/{document_id}/categories/{category_id}",
+        "/api/documents/{document_id}/tags/{tag_id}",
         response_model=LibraryDocumentOut,
         dependencies=[Depends(_require_token)],
     )
-    def assign_document_category(
-        document_id: int,
-        category_id: int,
-        payload: DocumentCategoryAssignmentRequest,
-    ) -> LibraryDocumentOut:
-        return _library_document_out(
-            document_library_service.set_document_category(document_id, category_id, payload.selected)
-        )
+    def assign_document_tag(document_id: int, tag_id: int, payload: ResourceTagAssignmentRequest) -> LibraryDocumentOut:
+        return _library_document_out(document_library_service.set_document_tag(document_id, tag_id, payload.selected))
 
     @app.get("/api/document-processing-templates", response_model=list[DocumentProcessingTemplateOut])
     def list_document_processing_templates() -> list[DocumentProcessingTemplateOut]:
@@ -332,6 +337,81 @@ def create_app(
         return _library_document_content_out(
             document_library_service.get_content(document_id, chapter_id)
         )
+
+    @app.post(
+        "/api/documents/{document_id}/content",
+        response_model=LibraryDocumentCleanupResponse,
+        dependencies=[Depends(_require_token)],
+    )
+    def save_library_document_content(document_id: int, payload: LibraryDocumentSaveContentRequest) -> LibraryDocumentCleanupResponse:
+        result = document_library_service.save_content(
+            document_id,
+            text=payload.text,
+            title=payload.title,
+            chapter_id=payload.chapter_id,
+        )
+        return LibraryDocumentCleanupResponse(
+            document=_library_document_out(result.document),
+            revision=_document_revision_out(result.revision),
+            created=result.created,
+        )
+
+    @app.post("/api/documents/merge", response_model=LibraryDocumentOut, dependencies=[Depends(_require_token)])
+    def merge_library_documents(payload: DocumentMergeRequest) -> LibraryDocumentOut:
+        return _library_document_out(
+            document_library_service.merge_documents(payload.document_ids, payload.title, payload.author)
+        )
+
+    @app.post(
+        "/api/documents/{document_id}/chapters",
+        response_model=LibraryDocumentCleanupResponse,
+        dependencies=[Depends(_require_token)],
+    )
+    def create_library_document_chapter(document_id: int, payload: DocumentCreateChapterRequest) -> LibraryDocumentCleanupResponse:
+        result = document_library_service.create_chapter(
+            document_id,
+            title=payload.title,
+            text=payload.text,
+            position=payload.position,
+            current_chapter_id=payload.current_chapter_id,
+        )
+        return LibraryDocumentCleanupResponse(
+            document=_library_document_out(result.document),
+            revision=_document_revision_out(result.revision),
+            created=result.created,
+        )
+
+    @app.post("/api/documents/{document_id}/split/regex/preview", response_model=SplitPreview)
+    def preview_regex_document_split(document_id: int, payload: RegexSplitPreviewRequest) -> SplitPreview:
+        return SplitPreview(**document_library_service.preview_regex_split(document_id, payload.pattern).__dict__)
+
+    @app.post(
+        "/api/documents/{document_id}/split/regex/apply",
+        response_model=list[LibraryDocumentChapterOut],
+        dependencies=[Depends(_require_token)],
+    )
+    def apply_regex_document_split(document_id: int, payload: RegexSplitApplyRequest) -> list[LibraryDocumentChapterOut]:
+        return [
+            _library_chapter_out(chapter)
+            for chapter in document_library_service.apply_regex_split(document_id, payload.pattern, payload.preview_token)
+        ]
+
+    @app.post(
+        "/api/documents/{document_id}/chapters/mark",
+        response_model=list[LibraryDocumentChapterOut],
+        dependencies=[Depends(_require_token)],
+    )
+    def mark_library_document_chapter(document_id: int, payload: ManualChapterMarkRequest) -> list[LibraryDocumentChapterOut]:
+        return [
+            _library_chapter_out(chapter)
+            for chapter in document_library_service.mark_chapter(
+                document_id,
+                payload.revision_id,
+                payload.title,
+                payload.start_offset,
+                payload.end_offset,
+            )
+        ]
 
     @app.post(
         "/api/documents/{document_id}/chapters/reorder",
@@ -956,7 +1036,10 @@ def create_app(
         scope: str | None = None,
         project_id: int | None = None,
         material_type: str | None = None,
-        category_id: int | None = None,
+        tag_id: int | None = None,
+        analysis_status: str | None = None,
+        untagged: bool = False,
+        query: str | None = None,
     ) -> list[MaterialOut]:
         return [
             _material_out(item)
@@ -964,21 +1047,37 @@ def create_app(
                 scope=scope,
                 project_id=project_id,
                 material_type=material_type,
-                category_id=category_id,
+                tag_id=tag_id,
+                analysis_status=analysis_status,
+                untagged=untagged,
+                query=query,
             )
         ]
 
-    @app.get("/api/materials/categories", response_model=list[MaterialCategoryOut])
-    def list_material_categories(material_type: str | None = None) -> list[MaterialCategoryOut]:
-        return [_material_category_out(item) for item in material_service.list_categories(material_type)]
+    @app.get("/api/material-tags", response_model=list[ResourceTagOut])
+    def list_material_tags() -> list[ResourceTagOut]:
+        return [_resource_tag_out(tag) for tag in material_service.list_tags()]
+
+    @app.post("/api/material-tags", response_model=ResourceTagOut, dependencies=[Depends(_require_token)])
+    def create_material_tag(payload: ResourceTagCreateRequest) -> ResourceTagOut:
+        return _resource_tag_out(material_service.create_tag(payload.name))
+
+    @app.post("/api/material-tags/{tag_id}", response_model=ResourceTagOut, dependencies=[Depends(_require_token)])
+    def rename_material_tag(tag_id: int, payload: ResourceTagRenameRequest) -> ResourceTagOut:
+        return _resource_tag_out(material_service.rename_tag(tag_id, payload.name))
+
+    @app.post("/api/material-tags/{tag_id}/delete", response_model=dict[str, bool], dependencies=[Depends(_require_token)])
+    def delete_material_tag(tag_id: int) -> dict[str, bool]:
+        material_service.delete_tag(tag_id)
+        return {"ok": True}
 
     @app.post(
-        "/api/materials/categories",
-        response_model=MaterialCategoryOut,
+        "/api/materials/{material_id}/tags/{tag_id}",
+        response_model=MaterialOut,
         dependencies=[Depends(_require_token)],
     )
-    def create_material_category(payload: MaterialCategoryCreateRequest) -> MaterialCategoryOut:
-        return _material_category_out(material_service.create_category(payload.name, payload.material_type))
+    def assign_material_tag(material_id: int, tag_id: int, payload: ResourceTagAssignmentRequest) -> MaterialOut:
+        return _material_out(material_service.set_material_tag(material_id, tag_id, payload.selected))
 
     @app.post("/api/materials", response_model=MaterialOut, dependencies=[Depends(_require_token)])
     def create_material(payload: MaterialWriteRequest) -> MaterialOut:
@@ -1029,7 +1128,7 @@ def create_app(
             material_id,
             target_scope=payload.target_scope,
             target_project_id=payload.target_project_id,
-            category_ids=payload.category_ids,
+            tag_ids=payload.tag_ids,
         )
         copied = material_service.get_material(copied_id)
         if copied is None:
@@ -1044,6 +1143,19 @@ def create_app(
     def delete_material(material_id: int) -> dict[str, bool]:
         material_service.delete_material(material_id)
         return {"ok": True}
+
+    @app.post("/api/materials/{material_id}/analyze", response_model=MaterialOut, dependencies=[Depends(_require_token)])
+    def analyze_material(material_id: int, payload: MaterialAnalyzeRequest) -> MaterialOut:
+        material = material_service.get_material(material_id)
+        if material is None:
+            raise _http_error(404, "material_not_found", f"Material not found: {material_id}")
+        if payload.content is None:
+            raise _http_error(400, "analysis_content_required", "AI analysis client integration requires parsed JSON content.")
+        material_service.analyze_material(material_id, content=payload.content, model_id=payload.model_id)
+        analyzed = material_service.get_material(material_id)
+        if analyzed is None:
+            raise _http_error(404, "material_not_found", f"Material not found: {material_id}")
+        return _material_out(analyzed)
 
     @app.post("/api/material-extractions", response_model=MaterialExtractOut, dependencies=[Depends(_require_token)])
     def extract_materials(payload: MaterialExtractRequest) -> MaterialExtractOut:
@@ -1130,8 +1242,45 @@ def create_app(
     def list_character_cards(
         scope: str | None = None,
         project_id: int | None = None,
+        tag_id: int | None = None,
+        analysis_status: str | None = None,
+        untagged: bool = False,
     ) -> list[CharacterCardOut]:
-        return [_character_out(card) for card in anchor_service.list_character_cards(scope, project_id)]
+        return [
+            _character_out(card)
+            for card in anchor_service.list_character_cards(
+                scope,
+                project_id,
+                tag_id=tag_id,
+                analysis_status=analysis_status,
+                untagged=untagged,
+            )
+        ]
+
+    @app.get("/api/character-tags", response_model=list[ResourceTagOut])
+    def list_character_tags() -> list[ResourceTagOut]:
+        return [ResourceTagOut(**tag) for tag in anchor_service.list_character_tags()]
+
+    @app.post("/api/character-tags", response_model=ResourceTagOut, dependencies=[Depends(_require_token)])
+    def create_character_tag(payload: ResourceTagCreateRequest) -> ResourceTagOut:
+        return ResourceTagOut(**anchor_service.create_character_tag(payload.name))
+
+    @app.post("/api/character-tags/{tag_id}", response_model=ResourceTagOut, dependencies=[Depends(_require_token)])
+    def rename_character_tag(tag_id: int, payload: ResourceTagRenameRequest) -> ResourceTagOut:
+        return ResourceTagOut(**anchor_service.rename_character_tag(tag_id, payload.name))
+
+    @app.post("/api/character-tags/{tag_id}/delete", response_model=dict[str, bool], dependencies=[Depends(_require_token)])
+    def delete_character_tag(tag_id: int) -> dict[str, bool]:
+        anchor_service.delete_character_tag(tag_id)
+        return {"ok": True}
+
+    @app.post(
+        "/api/characters/{card_id}/tags/{tag_id}",
+        response_model=CharacterCardOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def assign_character_tag(card_id: int, tag_id: int, payload: ResourceTagAssignmentRequest) -> CharacterCardOut:
+        return _character_out(anchor_service.set_character_tag(card_id, tag_id, payload.selected))
 
     @app.post("/api/characters/extract", response_model=CharacterCardsExtractOut, dependencies=[Depends(_require_token)])
     def extract_character_cards(payload: AnchorExtractRequest) -> CharacterCardsExtractOut:
@@ -1208,6 +1357,84 @@ def create_app(
             raise _http_error(404, "character_card_not_found", f"Character card not found: {card_id}")
         anchor_service.delete_character_card(card_id)
         return {"ok": True}
+
+    @app.post("/api/characters/{card_id}/analyze", response_model=CharacterCardOut, dependencies=[Depends(_require_token)])
+    def analyze_character_card(card_id: int, payload: CharacterAnalyzeRequest) -> CharacterCardOut:
+        if anchor_service.get_character_card(card_id) is None:
+            raise _http_error(404, "character_card_not_found", f"Character card not found: {card_id}")
+        anchor_service.analyze_character_card(
+            card_id,
+            identity=payload.identity,
+            age=payload.age,
+            setting_text=payload.setting_text,
+            custom_fields=payload.custom_fields,
+            model_id=payload.model_id,
+        )
+        card = anchor_service.get_character_card(card_id)
+        if card is None:
+            raise _http_error(404, "character_card_not_found", f"Character card not found: {card_id}")
+        return _character_out(card)
+
+    def _selection_material_out(payload: SelectionResourceCreateRequest, material_type: str) -> MaterialOut:
+        selected_text = _normalize_selection_text(payload.selected_text)
+        material_id = material_service.create_material(
+            material_type=material_type,
+            scope="public",
+            project_id=None,
+            name=payload.name,
+            description="",
+            raw_text=selected_text,
+            content={},
+            analysis_status="unanalyzed",
+            source_metadata=_selection_source_metadata(payload),
+            import_metadata={"created_by": "selection_context_menu"},
+            tag_ids=[],
+        )
+        material = material_service.get_material(material_id)
+        if material is None:
+            raise _http_error(500, "material_create_failed", "Material was created but could not be loaded.")
+        return _material_out(material)
+
+    @app.post(
+        "/api/selection/materials/scene-reference",
+        response_model=MaterialOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def create_scene_material_from_selection(payload: SelectionResourceCreateRequest) -> MaterialOut:
+        return _selection_material_out(payload, "scene_reference")
+
+    @app.post(
+        "/api/selection/materials/plot-skeleton",
+        response_model=MaterialOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def create_plot_skeleton_from_selection(payload: SelectionResourceCreateRequest) -> MaterialOut:
+        return _selection_material_out(payload, "plot_skeleton")
+
+    @app.post(
+        "/api/selection/characters",
+        response_model=CharacterCardOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def create_character_from_selection(payload: SelectionResourceCreateRequest) -> CharacterCardOut:
+        selected_text = _normalize_selection_text(payload.selected_text)
+        card_id = anchor_service.create_character_card(
+            name=payload.name,
+            scope="public",
+            project_id=None,
+            identity="",
+            age="",
+            setting_text="",
+            custom_fields=[],
+            raw_text=selected_text,
+            analysis_status="unanalyzed",
+            source_metadata=_selection_source_metadata(payload),
+            import_metadata={"created_by": "selection_context_menu"},
+        )
+        card = anchor_service.get_character_card(card_id)
+        if card is None:
+            raise _http_error(500, "character_card_create_failed", "Character card was created but could not be loaded.")
+        return _character_out(card)
 
     @app.get("/api/projects/{project_id}/outline", response_model=ProjectOutlineBindingOut)
     def get_project_outline(project_id: int) -> ProjectOutlineBindingOut:
@@ -1401,8 +1628,14 @@ def _document_revision_out(revision: DocumentRevision) -> LibraryDocumentRevisio
     return LibraryDocumentRevisionOut(**revision.__dict__)
 
 
-def _document_category_out(category: LibraryCategory) -> DocumentCategoryOut:
-    return DocumentCategoryOut(**category.__dict__)
+def _resource_tag_out(tag: Any) -> ResourceTagOut:
+    if isinstance(tag, dict):
+        return ResourceTagOut(**tag)
+    data = tag.__dict__.copy()
+    if "document_count" in data and "resource_count" not in data:
+        data["resource_count"] = data.pop("document_count")
+    data.setdefault("normalized_name", data.get("name", "").casefold())
+    return ResourceTagOut(**data)
 
 
 def _library_chapter_out(chapter: LibraryChapter) -> LibraryDocumentChapterOut:
@@ -1473,7 +1706,9 @@ def _material_out(material: Material) -> MaterialOut:
         name=material.name,
         description=material.description,
         detail_level=material.detail_level,
+        raw_text=material.raw_text,
         content=_json_object(material.content_json),
+        analysis_status=material.analysis_status,
         source_metadata=_json_object(material.source_metadata_json),
         import_metadata=_json_object(material.import_metadata_json),
         source_material_id=material.source_material_id,
@@ -1484,17 +1719,7 @@ def _material_out(material: Material) -> MaterialOut:
         version=material.version,
         created_at=material.created_at,
         updated_at=material.updated_at,
-        categories=list(material.categories),
-    )
-
-
-def _material_category_out(category: MaterialCategory) -> MaterialCategoryOut:
-    return MaterialCategoryOut(
-        id=category.id,
-        name=category.name,
-        material_type=category.material_type,
-        sort_order=category.sort_order,
-        material_count=category.material_count,
+        tags=list(material.tags),
     )
 
 
@@ -1520,7 +1745,37 @@ def _character_out(card: CharacterCard) -> CharacterCardOut:
         source_version=card.source_version,
         version=card.version,
         sort_order=card.sort_order,
+        identity=card.identity,
+        age=card.age,
+        setting_text=card.setting_text,
+        custom_fields=card.custom_fields,
+        raw_text=card.raw_text,
+        analysis_status=card.analysis_status,
+        cover_path=card.cover_path,
+        cover_updated_at=card.cover_updated_at,
+        tags=list(card.tags),
     )
+
+
+def _normalize_selection_text(text: str) -> str:
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not normalized:
+        raise _http_error(400, "empty_selection", "Selected text is empty.")
+    if len(normalized) > 50000:
+        raise _http_error(400, "selection_too_large", "Selected text must be 50,000 characters or fewer.")
+    return normalized
+
+
+def _selection_source_metadata(payload: SelectionResourceCreateRequest) -> dict[str, Any]:
+    return {
+        "source_kind": payload.source_kind,
+        "document_id": payload.document_id,
+        "project_id": payload.project_id,
+        "chapter_id": payload.chapter_id,
+        "start_offset": payload.start_offset,
+        "end_offset": payload.end_offset,
+        "captured_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+    }
 
 
 def _resolve_anchor_source(

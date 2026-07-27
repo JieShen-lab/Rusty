@@ -3,11 +3,13 @@ from __future__ import annotations
 import sqlite3
 import sys
 import unittest
+import json
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from rusty.db import CURRENT_SCHEMA_VERSION, connect, initialize_database
+from rusty.db.schema import _migrate_to_v14
 
 
 class SchemaTests(unittest.TestCase):
@@ -33,6 +35,16 @@ class SchemaTests(unittest.TestCase):
         self.assertIn("project_style_bindings", table_names)
         self.assertIn("outline_templates", table_names)
         self.assertIn("character_cards", table_names)
+        self.assertIn("material_tags", table_names)
+        self.assertIn("material_tag_links", table_names)
+        self.assertIn("character_tags", table_names)
+        self.assertIn("character_tag_links", table_names)
+        self.assertIn("document_tags", table_names)
+        self.assertIn("document_tag_links", table_names)
+        self.assertNotIn("material_categories", table_names)
+        self.assertNotIn("material_category_links", table_names)
+        self.assertNotIn("document_categories", table_names)
+        self.assertNotIn("document_category_links", table_names)
         self.assertIn("project_outline_bindings", table_names)
         self.assertIn("project_character_bindings", table_names)
         self.assertIn("chapter_stage_status", table_names)
@@ -119,6 +131,141 @@ class SchemaTests(unittest.TestCase):
             connection.close()
 
         self.assertEqual(1, foreign_keys_enabled)
+
+    def test_v13_material_character_and_document_data_migrate_to_v14_idempotently(self) -> None:
+        connection = sqlite3.connect(":memory:")
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.executescript(
+            """
+            CREATE TABLE projects (id INTEGER PRIMARY KEY);
+            CREATE TABLE materials (
+                id INTEGER PRIMARY KEY,
+                material_type TEXT NOT NULL CHECK (material_type IN ('outline', 'plot_skeleton', 'snippet')),
+                scope TEXT NOT NULL DEFAULT 'public',
+                project_id INTEGER,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                detail_level TEXT NOT NULL DEFAULT 'standard',
+                content_json TEXT NOT NULL DEFAULT '{}',
+                source_metadata_json TEXT NOT NULL DEFAULT '{}',
+                import_metadata_json TEXT NOT NULL DEFAULT '{}',
+                source_material_id INTEGER,
+                source_version INTEGER,
+                legacy_outline_id INTEGER UNIQUE,
+                timeline_start_chapter INTEGER,
+                timeline_end_chapter INTEGER,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                version INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                deleted_at TEXT
+            );
+            INSERT INTO materials (id, material_type, name) VALUES
+                (1, 'outline', '旧大纲'),
+                (2, 'snippet', '旧片段');
+            CREATE TABLE material_categories (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                material_type TEXT NOT NULL,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                deleted_at TEXT
+            );
+            CREATE TABLE material_category_links (
+                material_id INTEGER NOT NULL,
+                category_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (material_id, category_id),
+                FOREIGN KEY (material_id) REFERENCES materials(id) ON DELETE CASCADE,
+                FOREIGN KEY (category_id) REFERENCES material_categories(id) ON DELETE CASCADE
+            );
+            INSERT INTO material_categories (id, name, material_type) VALUES
+                (1, '冒险', 'outline'),
+                (2, '冒险', 'snippet');
+            INSERT INTO material_category_links (material_id, category_id) VALUES (1, 1), (2, 2);
+
+            CREATE TABLE character_cards (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                aliases_json TEXT NOT NULL DEFAULT '[]',
+                description TEXT NOT NULL DEFAULT '',
+                priority INTEGER NOT NULL DEFAULT 50,
+                is_main INTEGER NOT NULL DEFAULT 0,
+                relationship_notes TEXT NOT NULL DEFAULT '',
+                personality TEXT NOT NULL DEFAULT '',
+                speech_style TEXT NOT NULL DEFAULT '',
+                action_constraints TEXT NOT NULL DEFAULT '',
+                anti_ooc_rules TEXT NOT NULL DEFAULT '',
+                profile_json TEXT NOT NULL DEFAULT '{}',
+                source_metadata_json TEXT NOT NULL DEFAULT '{}',
+                import_metadata_json TEXT NOT NULL DEFAULT '{}',
+                scope TEXT NOT NULL DEFAULT 'public',
+                project_id INTEGER,
+                source_character_card_id INTEGER,
+                source_version INTEGER,
+                version INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                deleted_at TEXT
+            );
+            INSERT INTO character_cards (
+                id, name, description, relationship_notes, personality, profile_json
+            ) VALUES (
+                1, '林玄', '旧设定', '师徒', '沉稳', '{"身份":"外门弟子","年龄":"十八岁","境界":"筑基"}'
+            );
+
+            CREATE TABLE library_documents (id INTEGER PRIMARY KEY, deleted_at TEXT);
+            INSERT INTO library_documents (id) VALUES (1);
+            CREATE TABLE document_categories (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                parent_id INTEGER,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                deleted_at TEXT
+            );
+            CREATE TABLE document_category_links (
+                document_id INTEGER NOT NULL,
+                category_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (document_id, category_id)
+            );
+            INSERT INTO document_categories (id, name) VALUES (1, '参考');
+            INSERT INTO document_category_links (document_id, category_id) VALUES (1, 1);
+            CREATE TABLE library_document_chapters (id INTEGER PRIMARY KEY);
+            """
+        )
+
+        _migrate_to_v14(connection)
+        _migrate_to_v14(connection)
+
+        materials = connection.execute(
+            "SELECT material_type, import_metadata_json FROM materials ORDER BY id"
+        ).fetchall()
+        character = connection.execute(
+            "SELECT identity, age, setting_text, custom_fields_json FROM character_cards WHERE id = 1"
+        ).fetchone()
+        tables = {
+            row[0]
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+
+        self.assertEqual(["plot_skeleton", "scene_reference"], [row["material_type"] for row in materials])
+        self.assertIn('"legacy_material_type":"outline"', materials[0]["import_metadata_json"])
+        self.assertEqual(2, connection.execute("SELECT COUNT(*) FROM materials").fetchone()[0])
+        self.assertEqual(1, connection.execute("SELECT COUNT(*) FROM material_tags").fetchone()[0])
+        self.assertEqual(2, connection.execute("SELECT COUNT(*) FROM material_tag_links").fetchone()[0])
+        self.assertEqual("外门弟子", character["identity"])
+        self.assertEqual("十八岁", character["age"])
+        self.assertEqual("旧设定", character["setting_text"])
+        self.assertEqual(3, len(json.loads(character["custom_fields_json"])))
+        self.assertEqual(1, connection.execute("SELECT COUNT(*) FROM document_tags").fetchone()[0])
+        self.assertEqual(1, connection.execute("SELECT COUNT(*) FROM document_tag_links").fetchone()[0])
+        self.assertNotIn("material_categories", tables)
+        self.assertNotIn("document_categories", tables)
 
     def test_initialize_database_removes_general_scene_detection_column(self) -> None:
         connection = sqlite3.connect(":memory:")

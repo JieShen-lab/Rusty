@@ -33,7 +33,7 @@ class LibraryDocument:
     word_count: int
     status: str
     favorite: bool
-    categories: list[str]
+    tags: list[str]
     created_at: str
     updated_at: str
 
@@ -74,12 +74,12 @@ class CleanupResult:
 
 
 @dataclass(frozen=True)
-class LibraryCategory:
+class LibraryTag:
     id: int
     name: str
-    parent_id: int | None
+    normalized_name: str
     sort_order: int
-    document_count: int
+    resource_count: int
 
 
 @dataclass(frozen=True)
@@ -90,6 +90,8 @@ class LibraryChapter:
     title: str
     start_line: int | None
     end_line: int | None
+    start_offset: int | None
+    end_offset: int | None
     word_count: int
 
 
@@ -100,11 +102,36 @@ class LibraryDocumentContent:
     chapter_id: int | None
     title: str
     text: str
+    start_offset: int | None = None
+    end_offset: int | None = None
+
+
+@dataclass(frozen=True)
+class SplitChapterCandidate:
+    index: int
+    title: str
+    start_line: int
+    end_line: int
+    start_offset: int
+    end_offset: int
+    word_count: int
+
+
+@dataclass(frozen=True)
+class SplitPreview:
+    preview_token: str
+    revision_id: int
+    chapter_count: int
+    chapters: list[SplitChapterCandidate]
 
 
 def default_document_library_path() -> Path:
     base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
     return base / "Rusty" / "document-library"
+
+
+def _count_words(text: str) -> int:
+    return len(re.findall(r"[\w\u4e00-\u9fff]+", text))
 
 
 class DocumentLibraryService:
@@ -128,11 +155,11 @@ class DocumentLibraryService:
             rows = connection.execute(
                 """
                 SELECT d.*,
-                       COALESCE(GROUP_CONCAT(c.name, char(31)), '') AS category_names
+                       COALESCE(GROUP_CONCAT(t.name, char(31)), '') AS tag_names
                 FROM library_documents d
-                LEFT JOIN document_category_links link ON link.document_id = d.id
-                LEFT JOIN document_categories c
-                    ON c.id = link.category_id AND c.deleted_at IS NULL
+                LEFT JOIN document_tag_links link ON link.document_id = d.id
+                LEFT JOIN document_tags t
+                    ON t.id = link.tag_id AND t.deleted_at IS NULL
                 WHERE d.deleted_at IS NULL
                 GROUP BY d.id
                 ORDER BY d.created_at DESC, d.id DESC
@@ -233,72 +260,94 @@ class DocumentLibraryService:
         self.library_path = destination
         return destination
 
-    def list_categories(self) -> list[LibraryCategory]:
+    def list_tags(self) -> list[LibraryTag]:
         with session(self.database_path) as connection:
             rows = connection.execute(
                 """
-                SELECT c.*, COUNT(link.document_id) AS document_count
-                FROM document_categories c
-                LEFT JOIN document_category_links link ON link.category_id = c.id
-                WHERE c.deleted_at IS NULL
-                GROUP BY c.id
-                ORDER BY c.sort_order, c.name
+                SELECT t.id, t.name, t.normalized_name, t.sort_order, COUNT(d.id) AS document_count
+                FROM document_tags t
+                LEFT JOIN document_tag_links link ON link.tag_id = t.id
+                LEFT JOIN library_documents d ON d.id = link.document_id AND d.deleted_at IS NULL
+                WHERE t.deleted_at IS NULL
+                GROUP BY t.id
+                ORDER BY t.sort_order, t.name
                 """
             ).fetchall()
         return [
-            LibraryCategory(
+            LibraryTag(
                 id=int(row["id"]),
                 name=str(row["name"]),
-                parent_id=int(row["parent_id"]) if row["parent_id"] is not None else None,
+                normalized_name=str(row["normalized_name"]),
                 sort_order=int(row["sort_order"]),
-                document_count=int(row["document_count"]),
+                resource_count=int(row["document_count"]),
             )
             for row in rows
         ]
 
-    def create_category(self, name: str, parent_id: int | None = None) -> LibraryCategory:
-        normalized_name = name.strip()
+    def create_tag(self, name: str) -> LibraryTag:
+        normalized_name = " ".join(name.strip().split())
         if not normalized_name:
-            raise ValueError("分类名称不能为空。")
+            raise ValueError("标签名称不能为空。")
+        if len(normalized_name) > 40:
+            raise ValueError("标签名称不能超过 40 个字符。")
+        key = normalized_name.casefold()
         with session(self.database_path) as connection:
-            duplicate = connection.execute(
-                "SELECT id FROM document_categories WHERE lower(name) = lower(?) AND deleted_at IS NULL",
-                (normalized_name,),
-            ).fetchone()
-            if duplicate is not None:
-                raise ValueError("已经存在同名分类。")
-            if parent_id is not None:
-                parent = connection.execute(
-                    "SELECT id FROM document_categories WHERE id = ? AND deleted_at IS NULL",
-                    (parent_id,),
-                ).fetchone()
-                if parent is None:
-                    raise FileNotFoundError(f"找不到父分类：{parent_id}")
-            cursor = connection.execute(
-                "INSERT INTO document_categories (name, parent_id) VALUES (?, ?)",
-                (normalized_name, parent_id),
+            connection.execute(
+                """
+                INSERT INTO document_tags (name, normalized_name)
+                VALUES (?, ?)
+                ON CONFLICT(normalized_name) WHERE deleted_at IS NULL
+                DO UPDATE SET updated_at = CURRENT_TIMESTAMP
+                """,
+                (normalized_name, key),
             )
-            category_id = int(cursor.lastrowid)
-        return next(category for category in self.list_categories() if category.id == category_id)
+        return next(tag for tag in self.list_tags() if tag.name == normalized_name)
 
-    def set_document_category(self, document_id: int, category_id: int, selected: bool) -> LibraryDocument:
+    def rename_tag(self, tag_id: int, name: str) -> LibraryTag:
+        normalized_name = " ".join(name.strip().split())
+        if not normalized_name:
+            raise ValueError("标签名称不能为空。")
+        with session(self.database_path) as connection:
+            cursor = connection.execute(
+                """
+                UPDATE document_tags
+                SET name = ?, normalized_name = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND deleted_at IS NULL
+                """,
+                (normalized_name, normalized_name.casefold(), tag_id),
+            )
+            if cursor.rowcount == 0:
+                raise FileNotFoundError(f"找不到文档标签：{tag_id}")
+        return next(tag for tag in self.list_tags() if tag.id == tag_id)
+
+    def delete_tag(self, tag_id: int) -> None:
+        with session(self.database_path) as connection:
+            connection.execute("DELETE FROM document_tag_links WHERE tag_id = ?", (tag_id,))
+            cursor = connection.execute(
+                "UPDATE document_tags SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND deleted_at IS NULL",
+                (tag_id,),
+            )
+            if cursor.rowcount == 0:
+                raise FileNotFoundError(f"找不到文档标签：{tag_id}")
+
+    def set_document_tag(self, document_id: int, tag_id: int, selected: bool) -> LibraryDocument:
         self._get_document(document_id)
         with session(self.database_path) as connection:
-            category = connection.execute(
-                "SELECT id FROM document_categories WHERE id = ? AND deleted_at IS NULL",
-                (category_id,),
+            tag = connection.execute(
+                "SELECT id FROM document_tags WHERE id = ? AND deleted_at IS NULL",
+                (tag_id,),
             ).fetchone()
-            if category is None:
-                raise FileNotFoundError(f"找不到分类：{category_id}")
+            if tag is None:
+                raise FileNotFoundError(f"找不到文档标签：{tag_id}")
             if selected:
                 connection.execute(
-                    "INSERT OR IGNORE INTO document_category_links (document_id, category_id) VALUES (?, ?)",
-                    (document_id, category_id),
+                    "INSERT OR IGNORE INTO document_tag_links (document_id, tag_id) VALUES (?, ?)",
+                    (document_id, tag_id),
                 )
             else:
                 connection.execute(
-                    "DELETE FROM document_category_links WHERE document_id = ? AND category_id = ?",
-                    (document_id, category_id),
+                    "DELETE FROM document_tag_links WHERE document_id = ? AND tag_id = ?",
+                    (document_id, tag_id),
                 )
         return self._get_document(document_id)
 
@@ -389,11 +438,11 @@ class DocumentLibraryService:
 
     def ensure_project_document(self, project_id: int, source_path: str | Path) -> LibraryDocument:
         result = self.import_document(source_path)
-        categories = self.list_categories()
-        project_category = next((item for item in categories if item.name == "工程"), None)
-        if project_category is None:
-            project_category = self.create_category("工程")
-        self.set_document_category(result.document.id, project_category.id, True)
+        tags = self.list_tags()
+        project_tag = next((item for item in tags if item.name == "工程"), None)
+        if project_tag is None:
+            project_tag = self.create_tag("工程")
+        self.set_document_tag(result.document.id, project_tag.id, True)
         with session(self.database_path) as connection:
             project = connection.execute(
                 "SELECT id FROM projects WHERE id = ? AND deleted_at IS NULL",
@@ -473,6 +522,8 @@ class DocumentLibraryService:
                 title=str(row["title"]),
                 start_line=int(row["start_line"]) if row["start_line"] is not None else None,
                 end_line=int(row["end_line"]) if row["end_line"] is not None else None,
+                start_offset=int(row["start_offset"]) if row["start_offset"] is not None else None,
+                end_offset=int(row["end_offset"]) if row["end_offset"] is not None else None,
                 word_count=int(row["word_count"]),
             )
             for row in rows
@@ -528,22 +579,231 @@ class DocumentLibraryService:
                 chapter_id=None,
                 title=document.title,
                 text=text,
+                start_offset=0,
+                end_offset=len(text),
             )
 
-        chapter = next(
-            (item for item in self._chapter_records_for_export(document) if item.id == chapter_id),
-            None,
-        )
+        chapter = next((item for item in self.list_chapters(document_id) if item.id == chapter_id), None)
         if chapter is None:
             raise FileNotFoundError(f"找不到当前版本的章节：{chapter_id}")
-        text = f"{chapter.title}\n\n{chapter.original_text}".strip() + "\n"
+        source_text = Path(revision.storage_path).read_text(encoding="utf-8")
+        start_offset, end_offset = self._chapter_offsets_from_lines(
+            source_text,
+            chapter.start_line,
+            chapter.end_line,
+        )
         return LibraryDocumentContent(
             document_id=document.id,
             revision_id=revision.id,
             chapter_id=chapter.id,
             title=chapter.title,
-            text=text,
+            text=source_text[start_offset:end_offset],
+            start_offset=start_offset,
+            end_offset=end_offset,
         )
+
+    def save_content(
+        self,
+        document_id: int,
+        *,
+        text: str,
+        title: str | None = None,
+        chapter_id: int | None = None,
+    ) -> CleanupResult:
+        document = self._get_document(document_id)
+        current_revision = self._ensure_initial_revision(document_id)
+        if chapter_id is None:
+            new_text = self._normalize_text(text)
+        else:
+            source_text = Path(current_revision.storage_path).read_text(encoding="utf-8")
+            chapters = self.list_chapters(document_id)
+            target = next((chapter for chapter in chapters if chapter.id == chapter_id), None)
+            if target is None:
+                raise FileNotFoundError(f"找不到章节：{chapter_id}")
+            start, end = self._chapter_offsets_from_lines(source_text, target.start_line, target.end_line)
+            new_text = source_text[:start] + self._normalize_text(text) + source_text[end:]
+        if title and title.strip():
+            self.update_document_metadata(document_id, title=title, author=document.author)
+            document = self._get_document(document_id)
+        revision = self._create_text_revision(document, current_revision, new_text, "manual_edit", {})
+        return CleanupResult(document=self._get_document(document_id), revision=revision, created=True)
+
+    def merge_documents(self, document_ids: list[int], title: str, author: str | None = None) -> LibraryDocument:
+        if len(document_ids) < 2:
+            raise ValueError("合并文档至少需要选择两份文档。")
+        normalized_title = title.strip()
+        if not normalized_title:
+            raise ValueError("合并后的文档标题不能为空。")
+        parts: list[str] = []
+        sources: list[dict[str, object]] = []
+        for document_id in document_ids:
+            document = self._get_document(document_id)
+            revision = self._ensure_initial_revision(document_id)
+            parts.append(Path(revision.storage_path).read_text(encoding="utf-8").strip())
+            sources.append({"document_id": document.id, "revision_id": revision.id, "title": document.title})
+        merged_text = self._normalize_text("\n\n".join(part for part in parts if part))
+        encoded = merged_text.encode("utf-8")
+        content_hash = hashlib.sha256(encoded).hexdigest()
+        self.library_path.mkdir(parents=True, exist_ok=True)
+        storage_path = self._allocate_storage_path(self._safe_filename(normalized_title), content_hash)
+        temporary_path = storage_path.with_suffix(".tmp")
+        temporary_path.write_bytes(encoded)
+        temporary_path.replace(storage_path)
+        book = parse_txt(storage_path)
+        try:
+            with session(self.database_path) as connection:
+                cursor = connection.execute(
+                    """
+                    INSERT INTO library_documents (
+                        title, author, description, source_filename, source_format,
+                        storage_path, content_hash, source_size_bytes, stored_size_bytes,
+                        chapter_count, word_count, source_metadata_json, status
+                    ) VALUES (?, ?, '', ?, 'txt', ?, ?, ?, ?, ?, ?, ?, 'imported')
+                    """,
+                    (
+                        normalized_title,
+                        author.strip() if author and author.strip() else None,
+                        f"{self._safe_filename(normalized_title)}.txt",
+                        str(storage_path),
+                        content_hash,
+                        len(encoded),
+                        len(encoded),
+                        len(book.chapters),
+                        book.total_words,
+                        json.dumps({"merge_sources": sources}, ensure_ascii=False),
+                    ),
+                )
+                document_id = int(cursor.lastrowid)
+                revision_cursor = connection.execute(
+                    """
+                    INSERT INTO library_document_revisions (
+                        document_id, revision_number, revision_type, storage_path, content_hash, metadata_json
+                    ) VALUES (?, 1, 'merge', ?, ?, ?)
+                    """,
+                    (document_id, str(storage_path), content_hash, json.dumps({"sources": sources}, ensure_ascii=False)),
+                )
+                revision_id = int(revision_cursor.lastrowid)
+                connection.execute("UPDATE library_documents SET current_revision_id = ? WHERE id = ?", (revision_id, document_id))
+                self._insert_chapters(connection, document_id, revision_id, book.chapters)
+        except Exception:
+            storage_path.unlink(missing_ok=True)
+            raise
+        return self._get_document(document_id)
+
+    def create_chapter(
+        self,
+        document_id: int,
+        *,
+        title: str,
+        text: str,
+        position: str = "end",
+        current_chapter_id: int | None = None,
+    ) -> CleanupResult:
+        document = self._get_document(document_id)
+        current_revision = self._ensure_initial_revision(document_id)
+        source_text = Path(current_revision.storage_path).read_text(encoding="utf-8")
+        chapter_text = self._normalize_text(f"{title.strip()}\n\n{text.strip()}")
+        if not title.strip():
+            raise ValueError("章节标题不能为空。")
+        insert_at = len(source_text)
+        if position in {"before", "after"}:
+            chapters = self.list_chapters(document_id)
+            target = next((chapter for chapter in chapters if chapter.id == current_chapter_id), None)
+            if target is None:
+                raise FileNotFoundError(f"找不到章节：{current_chapter_id}")
+            start, end = self._chapter_offsets_from_lines(source_text, target.start_line, target.end_line)
+            insert_at = start if position == "before" else end
+        elif position != "end":
+            raise ValueError("插入位置必须是 before、after 或 end。")
+        separator = "\n\n" if insert_at > 0 and not source_text[:insert_at].endswith("\n\n") else ""
+        new_text = source_text[:insert_at] + separator + chapter_text + "\n" + source_text[insert_at:]
+        revision = self._create_text_revision(document, current_revision, new_text, "manual_edit", {"operation": "create_chapter"})
+        return CleanupResult(document=self._get_document(document_id), revision=revision, created=True)
+
+    def preview_regex_split(self, document_id: int, pattern: str) -> SplitPreview:
+        revision = self._ensure_initial_revision(document_id)
+        text = Path(revision.storage_path).read_text(encoding="utf-8")
+        try:
+            regex = re.compile(pattern, re.MULTILINE)
+        except re.error as exc:
+            raise ValueError(f"正则无效：{exc}") from exc
+        matches = list(regex.finditer(text))
+        if not matches:
+            raise ValueError("没有匹配到章节标题。")
+        chapters = self._candidates_from_matches(text, matches)
+        token = hashlib.sha256(f"{revision.id}:{pattern}:{self._revision_hash(revision.id)}".encode("utf-8")).hexdigest()
+        return SplitPreview(preview_token=token, revision_id=revision.id, chapter_count=len(chapters), chapters=chapters)
+
+    def apply_regex_split(self, document_id: int, pattern: str, preview_token: str) -> list[LibraryChapter]:
+        preview = self.preview_regex_split(document_id, pattern)
+        if preview.preview_token != preview_token:
+            raise ValueError("分章预览已失效，请重新预览。")
+        with session(self.database_path) as connection:
+            connection.execute("DELETE FROM library_document_chapters WHERE revision_id = ?", (preview.revision_id,))
+            for chapter in preview.chapters:
+                connection.execute(
+                    """
+                    INSERT INTO library_document_chapters (
+                        document_id, revision_id, chapter_index, title, start_line, end_line,
+                        start_offset, end_offset, word_count
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        document_id,
+                        preview.revision_id,
+                        chapter.index,
+                        chapter.title,
+                        chapter.start_line,
+                        chapter.end_line,
+                        chapter.start_offset,
+                        chapter.end_offset,
+                        chapter.word_count,
+                    ),
+                )
+            connection.execute(
+                "UPDATE library_documents SET chapter_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (len(preview.chapters), document_id),
+            )
+        return self.list_chapters(document_id)
+
+    def mark_chapter(self, document_id: int, revision_id: int, title: str, start_offset: int, end_offset: int) -> list[LibraryChapter]:
+        if not title.strip():
+            raise ValueError("章节标题不能为空。")
+        revision = self._ensure_initial_revision(document_id)
+        if revision.id != revision_id:
+            raise ValueError("只能标记当前活动版本。")
+        text = Path(revision.storage_path).read_text(encoding="utf-8")
+        if start_offset < 0 or end_offset <= start_offset or end_offset > len(text):
+            raise ValueError("章节 offset 越界或顺序无效。")
+        with session(self.database_path) as connection:
+            max_index = connection.execute(
+                "SELECT COALESCE(MAX(chapter_index), 0) FROM library_document_chapters WHERE revision_id = ?",
+                (revision_id,),
+            ).fetchone()[0]
+            connection.execute(
+                """
+                INSERT INTO library_document_chapters (
+                    document_id, revision_id, chapter_index, title, start_line, end_line,
+                    start_offset, end_offset, word_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    document_id,
+                    revision_id,
+                    int(max_index) + 1,
+                    title.strip(),
+                    text.count("\n", 0, start_offset) + 1,
+                    text.count("\n", 0, end_offset) + 1,
+                    start_offset,
+                    end_offset,
+                    _count_words(text[start_offset:end_offset]),
+                ),
+            )
+            connection.execute(
+                "UPDATE library_documents SET chapter_count = chapter_count + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (document_id,),
+            )
+        return self.list_chapters(document_id)
 
     def export_document(self, document_id: int, export_format: str, output_path: str | Path) -> Path:
         document = self._get_document(document_id)
@@ -677,6 +937,105 @@ class DocumentLibraryService:
             )
         return self._get_document(document_id)
 
+    def _create_text_revision(
+        self,
+        document: LibraryDocument,
+        parent_revision: DocumentRevision,
+        text: str,
+        revision_type: str,
+        metadata: dict[str, object],
+    ) -> DocumentRevision:
+        encoded_text = self._normalize_text(text).encode("utf-8")
+        content_hash = hashlib.sha256(encoded_text).hexdigest()
+        revisions = self.list_revisions(document.id)
+        revision_number = (revisions[0].revision_number if revisions else 0) + 1
+        storage_path = self.library_path / f"{self._safe_filename(document.title)}-{content_hash[:12]}-v{revision_number}.txt"
+        temporary_path = storage_path.with_suffix(".tmp")
+        temporary_path.write_bytes(encoded_text)
+        temporary_path.replace(storage_path)
+        book = parse_txt(storage_path)
+        try:
+            with session(self.database_path) as connection:
+                cursor = connection.execute(
+                    """
+                    INSERT INTO library_document_revisions (
+                        document_id, revision_number, revision_type, storage_path,
+                        content_hash, parent_revision_id, metadata_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        document.id,
+                        revision_number,
+                        revision_type,
+                        str(storage_path),
+                        content_hash,
+                        parent_revision.id,
+                        json.dumps(metadata, ensure_ascii=False),
+                    ),
+                )
+                revision_id = int(cursor.lastrowid)
+                self._insert_chapters(connection, document.id, revision_id, book.chapters)
+                connection.execute(
+                    """
+                    UPDATE library_documents
+                    SET storage_path = ?, content_hash = ?, stored_size_bytes = ?,
+                        chapter_count = ?, word_count = ?, current_revision_id = ?,
+                        status = 'processed', updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (
+                        str(storage_path),
+                        content_hash,
+                        len(encoded_text),
+                        len(book.chapters),
+                        book.total_words,
+                        revision_id,
+                        document.id,
+                    ),
+                )
+        except Exception:
+            storage_path.unlink(missing_ok=True)
+            raise
+        return self.list_revisions(document.id)[0]
+
+    @staticmethod
+    def _chapter_offsets_from_lines(text: str, start_line: int | None, end_line: int | None) -> tuple[int, int]:
+        if start_line is None:
+            return 0, len(text)
+        line_starts = [0]
+        for match in re.finditer("\n", text):
+            line_starts.append(match.end())
+        start_index = max(0, min(len(line_starts) - 1, start_line - 1))
+        start = line_starts[start_index]
+        if end_line is None or end_line >= len(line_starts):
+            return start, len(text)
+        return start, line_starts[max(start_index, end_line)]
+
+    @staticmethod
+    def _candidates_from_matches(text: str, matches: list[re.Match[str]]) -> list[SplitChapterCandidate]:
+        line_starts = [0]
+        for match in re.finditer("\n", text):
+            line_starts.append(match.end())
+        candidates: list[SplitChapterCandidate] = []
+        for index, match in enumerate(matches, start=1):
+            start = match.start()
+            end = matches[index].start() if index < len(matches) else len(text)
+            start_line = text.count("\n", 0, start) + 1
+            end_line = text.count("\n", 0, end) + 1
+            title = (match.group(1) if match.groups() else match.group(0)).strip()
+            candidates.append(
+                SplitChapterCandidate(
+                    index=index,
+                    title=title,
+                    start_line=start_line,
+                    end_line=end_line,
+                    start_offset=start,
+                    end_offset=end,
+                    word_count=_count_words(text[start:end]),
+                )
+            )
+        return candidates
+
     def _read_source(self, path: Path) -> tuple[ParsedBook, str]:
         suffix = path.suffix.lower()
         if suffix == ".txt":
@@ -713,11 +1072,11 @@ class DocumentLibraryService:
             row = connection.execute(
                 """
                 SELECT d.*,
-                       COALESCE(GROUP_CONCAT(c.name, char(31)), '') AS category_names
+                       COALESCE(GROUP_CONCAT(c.name, char(31)), '') AS tag_names
                 FROM library_documents d
-                LEFT JOIN document_category_links link ON link.document_id = d.id
-                LEFT JOIN document_categories c
-                    ON c.id = link.category_id AND c.deleted_at IS NULL
+                LEFT JOIN document_tag_links link ON link.document_id = d.id
+                LEFT JOIN document_tags c
+                    ON c.id = link.tag_id AND c.deleted_at IS NULL
                 WHERE d.content_hash = ? AND d.deleted_at IS NULL
                 GROUP BY d.id
                 ORDER BY d.id
@@ -796,11 +1155,11 @@ class DocumentLibraryService:
             row = connection.execute(
                 """
                 SELECT d.*,
-                       COALESCE(GROUP_CONCAT(c.name, char(31)), '') AS category_names
+                       COALESCE(GROUP_CONCAT(c.name, char(31)), '') AS tag_names
                 FROM library_documents d
-                LEFT JOIN document_category_links link ON link.document_id = d.id
-                LEFT JOIN document_categories c
-                    ON c.id = link.category_id AND c.deleted_at IS NULL
+                LEFT JOIN document_tag_links link ON link.document_id = d.id
+                LEFT JOIN document_tags c
+                    ON c.id = link.tag_id AND c.deleted_at IS NULL
                 WHERE d.id = ? AND d.deleted_at IS NULL
                 GROUP BY d.id
                 """,
@@ -937,13 +1296,23 @@ class DocumentLibraryService:
 
     @staticmethod
     def _insert_chapters(connection, document_id: int, revision_id: int, chapters: list[ParsedChapter]) -> None:
+        revision_row = connection.execute(
+            "SELECT storage_path FROM library_document_revisions WHERE id = ?",
+            (revision_id,),
+        ).fetchone()
+        full_text = Path(str(revision_row["storage_path"])).read_text(encoding="utf-8") if revision_row else ""
         for chapter in chapters:
+            start_offset, end_offset = DocumentLibraryService._chapter_offsets_from_lines(
+                full_text,
+                chapter.start_line,
+                chapter.end_line,
+            )
             connection.execute(
                 """
                 INSERT INTO library_document_chapters (
                     document_id, revision_id, chapter_index, title,
-                    start_line, end_line, word_count
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    start_line, end_line, start_offset, end_offset, word_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     document_id,
@@ -952,6 +1321,8 @@ class DocumentLibraryService:
                     chapter.title,
                     chapter.start_line,
                     chapter.end_line,
+                    start_offset,
+                    end_offset,
                     chapter.word_count,
                 ),
             )
@@ -963,8 +1334,8 @@ class DocumentLibraryService:
 
     @staticmethod
     def _row_to_document(row) -> LibraryDocument:
-        raw_categories = str(row["category_names"] or "")
-        categories = [name for name in raw_categories.split(chr(31)) if name]
+        raw_tags = str(row["tag_names"] or "")
+        tags = [name for name in raw_tags.split(chr(31)) if name]
         return LibraryDocument(
             id=int(row["id"]),
             title=str(row["title"]),
@@ -979,7 +1350,7 @@ class DocumentLibraryService:
             word_count=int(row["word_count"]),
             status=str(row["status"]),
             favorite=bool(row["favorite"]),
-            categories=categories,
+            tags=tags,
             created_at=str(row["created_at"]),
             updated_at=str(row["updated_at"]),
         )

@@ -30,7 +30,7 @@ class LibraryDocumentOut(BaseModel):
     word_count: int
     status: str
     favorite: bool
-    categories: list[str]
+    tags: list[str] = Field(default_factory=list)
     created_at: str
     updated_at: str
 
@@ -101,20 +101,23 @@ class DocumentLibraryMigrateRequest(BaseModel):
     target_path: str = Field(min_length=1)
 
 
-class DocumentCategoryOut(BaseModel):
+class ResourceTagOut(BaseModel):
     id: int
     name: str
-    parent_id: int | None
-    sort_order: int
-    document_count: int
+    normalized_name: str = ""
+    sort_order: int = 0
+    resource_count: int = 0
 
 
-class DocumentCategoryCreateRequest(BaseModel):
-    name: str = Field(min_length=1)
-    parent_id: int | None = None
+class ResourceTagCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=40)
 
 
-class DocumentCategoryAssignmentRequest(BaseModel):
+class ResourceTagRenameRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=40)
+
+
+class ResourceTagAssignmentRequest(BaseModel):
     selected: bool
 
 
@@ -125,6 +128,8 @@ class LibraryDocumentChapterOut(BaseModel):
     title: str
     start_line: int | None
     end_line: int | None
+    start_offset: int | None = None
+    end_offset: int | None = None
     word_count: int
 
 
@@ -134,6 +139,60 @@ class LibraryDocumentContentOut(BaseModel):
     chapter_id: int | None
     title: str
     text: str
+    start_offset: int | None = None
+    end_offset: int | None = None
+
+
+class LibraryDocumentSaveContentRequest(BaseModel):
+    title: str | None = None
+    text: str
+    chapter_id: int | None = None
+
+
+class DocumentMergeRequest(BaseModel):
+    document_ids: list[int] = Field(min_length=2)
+    title: str = Field(min_length=1)
+    author: str | None = None
+
+
+class DocumentCreateChapterRequest(BaseModel):
+    title: str = Field(min_length=1)
+    text: str = ""
+    position: Literal["before", "after", "end"] = "end"
+    current_chapter_id: int | None = None
+
+
+class SplitChapterCandidate(BaseModel):
+    index: int
+    title: str
+    start_line: int
+    end_line: int
+    start_offset: int
+    end_offset: int
+    word_count: int
+
+
+class SplitPreview(BaseModel):
+    preview_token: str
+    revision_id: int
+    chapter_count: int
+    chapters: list[SplitChapterCandidate]
+
+
+class RegexSplitPreviewRequest(BaseModel):
+    pattern: str = Field(min_length=1)
+
+
+class RegexSplitApplyRequest(BaseModel):
+    pattern: str = Field(min_length=1)
+    preview_token: str = Field(min_length=1)
+
+
+class ManualChapterMarkRequest(BaseModel):
+    revision_id: int
+    title: str = Field(min_length=1)
+    start_offset: int = Field(ge=0)
+    end_offset: int = Field(ge=0)
 
 
 class LibraryDocumentChapterReorderRequest(BaseModel):
@@ -557,14 +616,16 @@ class AnchorExtractRequest(BaseModel):
 
 class MaterialOut(BaseModel):
     id: int
-    material_type: Literal["outline", "plot_skeleton", "snippet"]
+    material_type: Literal["scene_reference", "plot_skeleton"]
     scope: Literal["public", "project"]
     project_id: int | None = None
     project_name: str | None = None
     name: str
     description: str
     detail_level: Literal["brief", "standard", "detailed"]
+    raw_text: str = ""
     content: dict[str, Any]
+    analysis_status: Literal["unanalyzed", "analyzed"] = "analyzed"
     source_metadata: dict[str, Any]
     import_metadata: dict[str, Any]
     source_material_id: int | None = None
@@ -575,57 +636,53 @@ class MaterialOut(BaseModel):
     version: int
     created_at: str
     updated_at: str
-    categories: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
 
 
 class MaterialWriteRequest(BaseModel):
-    material_type: Literal["outline", "plot_skeleton", "snippet"]
+    material_type: Literal["scene_reference", "plot_skeleton"]
     scope: Literal["public", "project"] = "public"
     project_id: int | None = None
     name: str = Field(min_length=1)
     description: str = ""
     detail_level: Literal["brief", "standard", "detailed"] = "standard"
+    raw_text: str = ""
     content: dict[str, Any] = Field(default_factory=dict)
+    analysis_status: Literal["unanalyzed", "analyzed"] = "analyzed"
     source_metadata: dict[str, Any] = Field(default_factory=dict)
     import_metadata: dict[str, Any] = Field(default_factory=dict)
     timeline_start_chapter: int | None = Field(default=None, ge=1)
     timeline_end_chapter: int | None = Field(default=None, ge=1)
     sort_order: int = 0
-    category_ids: list[int] = Field(default_factory=list)
+    tag_ids: list[int] = Field(default_factory=list)
 
 
 class MaterialUpdateRequest(BaseModel):
     name: str = Field(min_length=1)
     description: str = ""
     detail_level: Literal["brief", "standard", "detailed"] = "standard"
+    raw_text: str | None = None
     content: dict[str, Any] = Field(default_factory=dict)
+    analysis_status: Literal["unanalyzed", "analyzed"] | None = None
     timeline_start_chapter: int | None = Field(default=None, ge=1)
     timeline_end_chapter: int | None = Field(default=None, ge=1)
     sort_order: int = 0
-    category_ids: list[int] | None = None
+    tag_ids: list[int] | None = None
 
 
 class MaterialCopyRequest(BaseModel):
     target_scope: Literal["public", "project"]
     target_project_id: int | None = None
-    category_ids: list[int] = Field(default_factory=list)
+    tag_ids: list[int] = Field(default_factory=list)
 
 
-class MaterialCategoryOut(BaseModel):
-    id: int
-    name: str
-    material_type: Literal["outline", "plot_skeleton", "snippet"]
-    sort_order: int
-    material_count: int
-
-
-class MaterialCategoryCreateRequest(BaseModel):
-    name: str = Field(min_length=1)
-    material_type: Literal["outline", "plot_skeleton", "snippet"]
+class MaterialAnalyzeRequest(BaseModel):
+    model_id: int | None = None
+    content: dict[str, Any] | None = None
 
 
 class MaterialExtractRequest(AnchorExtractRequest):
-    material_type: Literal["outline", "plot_skeleton", "snippet"]
+    material_type: Literal["scene_reference", "plot_skeleton"]
 
 
 class MaterialExtractOut(BaseModel):
@@ -653,6 +710,15 @@ class CharacterCardOut(BaseModel):
     source_version: int | None = None
     version: int
     sort_order: int = 0
+    identity: str = ""
+    age: str = ""
+    setting_text: str = ""
+    custom_fields: list[dict[str, Any]] = Field(default_factory=list)
+    raw_text: str = ""
+    analysis_status: Literal["unanalyzed", "analyzed"] = "analyzed"
+    cover_path: str | None = None
+    cover_updated_at: str | None = None
+    tags: list[str] = Field(default_factory=list)
 
 
 class CharacterCardWriteRequest(BaseModel):
@@ -671,11 +737,37 @@ class CharacterCardWriteRequest(BaseModel):
     import_metadata: dict[str, Any] = Field(default_factory=dict)
     scope: Literal["public", "project"] = "public"
     project_id: int | None = None
+    identity: str = ""
+    age: str = ""
+    setting_text: str = ""
+    custom_fields: list[dict[str, Any]] = Field(default_factory=list)
+    raw_text: str = ""
+    analysis_status: Literal["unanalyzed", "analyzed"] = "analyzed"
+    tag_ids: list[int] = Field(default_factory=list)
 
 
 class CharacterCardCopyRequest(BaseModel):
     target_scope: Literal["public", "project"]
     target_project_id: int | None = None
+
+
+class CharacterAnalyzeRequest(BaseModel):
+    model_id: int | None = None
+    identity: str = ""
+    age: str = ""
+    setting_text: str = ""
+    custom_fields: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class SelectionResourceCreateRequest(BaseModel):
+    source_kind: Literal["document", "project"]
+    selected_text: str = Field(min_length=1, max_length=50000)
+    name: str = Field(min_length=1)
+    document_id: int | None = None
+    project_id: int | None = None
+    chapter_id: int | None = None
+    start_offset: int | None = None
+    end_offset: int | None = None
 
 
 class ProjectOutlineBindingRequest(BaseModel):

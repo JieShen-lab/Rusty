@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { DragEvent, ReactNode } from 'react';
+import type { DragEvent, MouseEvent, ReactNode } from 'react';
 import {
   ArrowLeft,
   ArrowDownToLine,
@@ -19,7 +19,6 @@ import {
   Search,
   Scissors,
   Settings2,
-  Sparkles,
   Star,
   Trash2,
   WandSparkles,
@@ -27,13 +26,17 @@ import {
 } from 'lucide-react';
 import {
   activateLibraryDocumentRevision,
-  assignDocumentCategory,
+  assignDocumentTag,
   cleanupLibraryDocument,
-  createDocumentCategory,
+  createCharacterFromSelection,
+  createDocumentTag,
+  createLibraryDocumentChapter,
+  createPlotSkeletonFromSelection,
+  createSceneMaterialFromSelection,
   createDocumentProcessingTemplate,
   deleteLibraryDocument,
   exportLibraryDocument,
-  getDocumentCategories,
+  getDocumentTags,
   getDocumentLibrarySettings,
   getDocumentProcessingTemplates,
   getLibraryDocumentChapters,
@@ -42,17 +45,21 @@ import {
   getLibraryDocuments,
   importLibraryDocument,
   migrateDocumentLibrary,
+  mergeLibraryDocuments,
+  previewRegexSplit,
   reorderLibraryDocumentChapters,
+  saveLibraryDocumentContent,
+  applyRegexSplit,
   updateLibraryDocument,
 } from '../api/client';
 import type {
-  DocumentCategory,
   DocumentProcessingSettings,
   DocumentProcessingTemplate,
   LibraryDocument,
   LibraryDocumentChapter,
   LibraryDocumentContent,
   LibraryDocumentRevision,
+  ResourceTag,
 } from '../api/types';
 import { PrimaryButton } from '../components/PrimaryButton';
 import { SecondaryButton } from '../components/SecondaryButton';
@@ -60,14 +67,15 @@ import { TopBar } from '../components/TopBar';
 import { useAutoDismiss } from '../hooks/useAutoDismiss';
 
 type ProcessingTab = 'chapters' | 'cleanup' | 'reference';
+type DocumentAction = 'merge' | 'create-chapter' | 'regex-split';
 type ReferenceScope = 'book' | 'chapters' | 'paragraphs';
 
-const systemCategories = [
+const systemFilters = [
   { key: 'all', label: '全部文档', icon: LibraryBig },
   { key: 'favorite', label: '收藏', icon: Star },
-  { key: 'project', label: '工程分类', icon: FolderOpen },
+  { key: 'project', label: '工程文档', icon: FolderOpen },
   { key: 'recent', label: '最近导入', icon: Clock3 },
-  { key: 'uncategorized', label: '未分类', icon: Folder },
+  { key: 'untagged', label: '无标签', icon: Folder },
 ] as const;
 
 const palettes = ['indigo', 'terracotta', 'jade', 'slate', 'ochre', 'plum', 'bluegray'] as const;
@@ -82,9 +90,9 @@ const fallbackSettings: DocumentProcessingSettings = {
 
 export function DocumentLibraryPage() {
   const [documents, setDocuments] = useState<LibraryDocument[]>([]);
-  const [categories, setCategories] = useState<DocumentCategory[]>([]);
+  const [tags, setTags] = useState<ResourceTag[]>([]);
   const [libraryPath, setLibraryPath] = useState('');
-  const [activeCategory, setActiveCategory] = useState('all');
+  const [activeFilter, setActiveFilter] = useState('all');
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [searchText, setSearchText] = useState('');
   const [busy, setBusy] = useState(false);
@@ -104,16 +112,16 @@ export function DocumentLibraryPage() {
   const [selectedChapterId, setSelectedChapterId] = useState<number | null>(null);
   const [referenceScope, setReferenceScope] = useState<ReferenceScope>('book');
   const [exportOpen, setExportOpen] = useState(false);
-  const [categoryDialogOpen, setCategoryDialogOpen] = useState(false);
-  const [categoryName, setCategoryName] = useState('');
+  const [tagDialogOpen, setTagDialogOpen] = useState(false);
+  const [tagName, setTagName] = useState('');
   const [editingMetadata, setEditingMetadata] = useState<'title' | 'author' | null>(null);
   const [metadataTitle, setMetadataTitle] = useState('');
   const [metadataAuthor, setMetadataAuthor] = useState('');
 
   const query = searchText.trim().toLocaleLowerCase();
-  const userCategories = categories.filter((category) => category.name !== '工程');
+  const userTags = tags.filter((tag) => tag.name !== '工程');
   const visibleDocuments = documents.filter((document, index) => (
-    matchesCategory(document, activeCategory, index)
+    matchesFilter(document, activeFilter, index)
     && (!query || `${document.title} ${document.author ?? ''} ${document.source_filename}`.toLocaleLowerCase().includes(query))
   ));
   const selectedDocument = documents.find((document) => document.id === selectedId) ?? null;
@@ -130,13 +138,13 @@ export function DocumentLibraryPage() {
   async function loadLibrary(preferredId?: number | null) {
     setError(null);
     try {
-      const [documentItems, categoryItems, settings] = await Promise.all([
+      const [documentItems, tagItems, settings] = await Promise.all([
         getLibraryDocuments(),
-        getDocumentCategories(),
+        getDocumentTags(),
         getDocumentLibrarySettings(),
       ]);
       setDocuments(documentItems);
-      setCategories(categoryItems);
+      setTags(tagItems);
       setLibraryPath(settings.storage_path);
       const nextId = preferredId !== undefined ? preferredId : selectedId;
       setSelectedId(documentItems.some((document) => document.id === nextId) ? nextId : documentItems[0]?.id ?? null);
@@ -173,22 +181,22 @@ export function DocumentLibraryPage() {
     });
   }
 
-  async function addCategory() {
-    const name = categoryName.trim();
+  async function addTag() {
+    const name = tagName.trim();
     if (!name) return;
     await runBusy(async () => {
-      const created = await createDocumentCategory(name);
-      setCategories((current) => [...current, created]);
-      setCategoryName('');
-      setCategoryDialogOpen(false);
-      setMessage(`已创建分类“${created.name}”。`);
+      const created = await createDocumentTag(name);
+      setTags((current) => [...current, created]);
+      setTagName('');
+      setTagDialogOpen(false);
+      setMessage(`已创建标签“${created.name}”。`);
     });
   }
 
-  async function toggleCategory(category: DocumentCategory, selected: boolean) {
+  async function toggleTag(tag: ResourceTag, selected: boolean) {
     if (!selectedDocument) return;
     await runBusy(async () => {
-      await assignDocumentCategory(selectedDocument.id, category.id, selected);
+      await assignDocumentTag(selectedDocument.id, tag.id, selected);
       await loadLibrary(selectedDocument.id);
     }, false);
   }
@@ -286,8 +294,91 @@ export function DocumentLibraryPage() {
     });
   }
 
-  function showReservedAction(label: string) {
-    setMessage(`${label}入口已放入文档工作区，处理逻辑将在下一步接入。`);
+  async function handleDocumentAction(action: DocumentAction) {
+    if (!selectedDocument) return;
+    try {
+      if (action === 'merge') {
+        const rawIds = window.prompt('输入要合并的文档 ID，用逗号分隔。当前文档会自动放在第一位。');
+        if (!rawIds) return;
+        const ids = [
+          selectedDocument.id,
+          ...rawIds.split(',').map((item) => Number(item.trim())).filter((id) => Number.isInteger(id) && id > 0 && id !== selectedDocument.id),
+        ];
+        const title = window.prompt('合并后的文档标题', `${selectedDocument.title} 合并本`);
+        if (!title?.trim()) return;
+        const merged = await mergeLibraryDocuments(ids, title.trim());
+        await loadLibrary(merged.id);
+        setMessage('合并文档已创建，源文档未修改。');
+        return;
+      }
+      if (action === 'create-chapter') {
+        const title = window.prompt('章节标题');
+        if (!title?.trim()) return;
+        const text = window.prompt('章节正文') ?? '';
+        await createLibraryDocumentChapter(selectedDocument.id, title.trim(), text, selectedChapterId ? 'after' : 'end', selectedChapterId);
+        await openProcessing('chapters', selectedDocument);
+        setMessage('新增章节已写入新版本。');
+        return;
+      }
+      if (action === 'regex-split') {
+        const pattern = window.prompt('章节标题正则', '^第.+[章节].*$');
+        if (!pattern) return;
+        const preview = await previewRegexSplit(selectedDocument.id, pattern);
+        if (!window.confirm(`匹配到 ${preview.chapter_count} 个章节，确认应用？`)) return;
+        const saved = await applyRegexSplit(selectedDocument.id, pattern, preview.preview_token);
+        setChapters(saved);
+        setMessage('正则分章已应用到当前版本。');
+        return;
+      }
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  }
+
+  async function saveCurrentContent(text: string) {
+    if (!selectedDocument || !documentContent) return;
+    try {
+      const result = await saveLibraryDocumentContent(selectedDocument.id, text, null, documentContent.chapter_id);
+      await loadLibrary(result.document.id);
+      await openProcessing('chapters', result.document);
+      setMessage('正文已保存为新版本。');
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  }
+
+  async function saveSelection(
+    kind: 'scene' | 'plot' | 'character',
+    text: string,
+    startOffset: number,
+    endOffset: number,
+  ) {
+    if (!documentContent) return;
+    const selected = text.trim();
+    if (!selected) return;
+    if (selected.length > 50000) {
+      setError('选区不能超过 50,000 字符。');
+      return;
+    }
+    const name = window.prompt(kind === 'character' ? '角色名' : kind === 'scene' ? '素材名称' : '骨架名称', selected.slice(0, 24));
+    if (!name?.trim()) return;
+    const payload = {
+      source_kind: 'document' as const,
+      selected_text: selected,
+      name: name.trim(),
+      document_id: documentContent.document_id,
+      chapter_id: documentContent.chapter_id,
+      start_offset: startOffset,
+      end_offset: endOffset,
+    };
+    try {
+      if (kind === 'scene') await createSceneMaterialFromSelection(payload);
+      if (kind === 'plot') await createPlotSkeletonFromSelection(payload);
+      if (kind === 'character') await createCharacterFromSelection(payload);
+      setMessage('选区已保存到公共库，状态为未分析。');
+    } catch (err) {
+      setError(errorMessage(err));
+    }
   }
 
   async function showDocumentContent(chapterId: number | null) {
@@ -316,7 +407,7 @@ export function DocumentLibraryPage() {
       const saved = await createDocumentProcessingTemplate(templateName, templateSettings);
       setTemplates((current) => [...current, saved]);
       setTemplateId(saved.id);
-      setMessage('文字清理模板已保存。');
+      setMessage('文字整理模板已保存。');
     });
   }
 
@@ -393,8 +484,8 @@ export function DocumentLibraryPage() {
     }
   }
 
-  function categoryCount(category: string) {
-    return documents.filter((document, index) => matchesCategory(document, category, index)).length;
+  function filterCount(filter: string) {
+    return documents.filter((document, index) => matchesFilter(document, filter, index)).length;
   }
 
   if (workspaceOpen && selectedDocument) {
@@ -431,7 +522,9 @@ export function DocumentLibraryPage() {
           onApply={() => void applyProcessingTemplate()}
           onContentChange={(chapterId) => void showDocumentContent(chapterId)}
           onExport={() => setExportOpen(true)}
-          onReservedAction={showReservedAction}
+          onDocumentAction={(action) => void handleDocumentAction(action)}
+          onSaveContent={(text) => void saveCurrentContent(text)}
+          onSelectionResource={(kind, text, startOffset, endOffset) => void saveSelection(kind, text, startOffset, endOffset)}
           onRestore={(revisionId) => void restoreRevision(revisionId)}
           onReorder={(draggedId, targetId) => void reorderChapters(draggedId, targetId)}
           onSaveTemplate={() => void saveProcessingTemplate()}
@@ -475,22 +568,22 @@ export function DocumentLibraryPage() {
       {message ? <div className="inline-alert success document-library-alert" role="status">{message}</div> : null}
 
       <div className="document-library-layout">
-        <aside className="document-category-panel">
+        <aside className="document-tag-panel">
           <header>
-            <h2>文档分类</h2>
+            <h2>文档标签</h2>
           </header>
-          <nav aria-label="文档分类">
-            {systemCategories.map(({ icon: Icon, key, label }) => (
-              <CategoryButton active={activeCategory === key} count={categoryCount(key)} icon={<Icon size={16} />} key={key} label={label} onClick={() => setActiveCategory(key)} />
+          <nav aria-label="文档标签">
+            {systemFilters.map(({ icon: Icon, key, label }) => (
+              <TagFilterButton active={activeFilter === key} count={filterCount(key)} icon={<Icon size={16} />} key={key} label={label} onClick={() => setActiveFilter(key)} />
             ))}
-            <div className="document-category-heading">
-              <span>我的分类</span>
-              <button aria-label="新增分类" className="document-add-category" disabled={busy} onClick={() => setCategoryDialogOpen(true)} title="新增分类" type="button"><FolderPlus size={15} /></button>
+            <div className="document-tag-heading">
+              <span>我的标签</span>
+              <button aria-label="新增标签" className="document-add-tag" disabled={busy} onClick={() => setTagDialogOpen(true)} title="新增标签" type="button"><FolderPlus size={15} /></button>
             </div>
-            {userCategories.length ? userCategories.map((category) => {
-              const key = `category:${category.name}`;
-              return <CategoryButton active={activeCategory === key} count={category.document_count} icon={<Folder size={16} />} key={category.id} label={category.name} onClick={() => setActiveCategory(key)} />;
-            }) : <p className="document-category-empty">暂无自定义分类</p>}
+            {userTags.length ? userTags.map((tag) => {
+              const key = `tag:${tag.name}`;
+              return <TagFilterButton active={activeFilter === key} count={tag.resource_count} icon={<Folder size={16} />} key={tag.id} label={tag.name} onClick={() => setActiveFilter(key)} />;
+            }) : <p className="document-tag-empty">暂无自定义标签</p>}
           </nav>
         </aside>
 
@@ -580,23 +673,23 @@ export function DocumentLibraryPage() {
                   <Definition label="字数" value={formatNumber(selectedDocument.word_count)} />
                 </section>
                 <section>
-                  <div className="document-detail-heading"><span>所在分类</span></div>
-                  {userCategories.length ? (
-                    <div className="document-category-checks">
-                      {userCategories.map((category) => (
+                  <div className="document-detail-heading"><span>标签</span></div>
+                  {userTags.length ? (
+                    <div className="document-tag-checks">
+                      {userTags.map((tag) => (
                         <button
-                          aria-pressed={selectedDocument.categories.includes(category.name)}
-                          className={selectedDocument.categories.includes(category.name) ? 'selected' : ''}
-                          key={category.id}
+                          aria-pressed={selectedDocument.tags.includes(tag.name)}
+                          className={selectedDocument.tags.includes(tag.name) ? 'selected' : ''}
+                          key={tag.id}
                           type="button"
-                            disabled={busy}
-                          onClick={() => void toggleCategory(category, !selectedDocument.categories.includes(category.name))}
+                          disabled={busy}
+                          onClick={() => void toggleTag(tag, !selectedDocument.tags.includes(tag.name))}
                         >
-                          {category.name}
+                          {tag.name}
                         </button>
                       ))}
                     </div>
-                  ) : <button className="document-inline-action" onClick={() => setCategoryDialogOpen(true)} type="button"><FolderPlus size={14} />创建第一个分类</button>}
+                  ) : <button className="document-inline-action" onClick={() => setTagDialogOpen(true)} type="button"><FolderPlus size={14} />创建第一个标签</button>}
                 </section>
                 <section className="document-library-location">
                   <div title={libraryPath}>{libraryPath || '正在读取目录…'}</div>
@@ -612,13 +705,13 @@ export function DocumentLibraryPage() {
       </div>
 
       {exportOpen && selectedDocument ? <ExportDialog busy={busy} document={selectedDocument} onClose={() => setExportOpen(false)} onExport={(format) => void exportDocument(format)} /> : null}
-      {categoryDialogOpen ? (
-        <CategoryDialog
+      {tagDialogOpen ? (
+        <TagDialog
           busy={busy}
-          name={categoryName}
-          onChange={setCategoryName}
-          onClose={() => { setCategoryDialogOpen(false); setCategoryName(''); }}
-          onSubmit={() => void addCategory()}
+          name={tagName}
+          onChange={setTagName}
+          onClose={() => { setTagDialogOpen(false); setTagName(''); }}
+          onSubmit={() => void addTag()}
         />
       ) : null}
     </div>
@@ -633,8 +726,10 @@ type DocumentWorkspaceProps = {
   onContentChange: (chapterId: number | null) => void;
   onExport: () => void;
   onReorder: (draggedId: number, targetId: number) => void;
-  onReservedAction: (label: string) => void;
+  onDocumentAction: (action: DocumentAction) => void;
   onRestore: (revisionId: number) => void;
+  onSaveContent: (text: string) => void;
+  onSelectionResource: (kind: 'scene' | 'plot' | 'character', text: string, startOffset: number, endOffset: number) => void;
   onSaveTemplate: () => void;
   onSelectTemplate: (templateId: number) => void;
   onSettingsChange: (settings: DocumentProcessingSettings) => void;
@@ -665,9 +760,11 @@ function DocumentWorkspace(props: DocumentWorkspaceProps) {
       <main className="workspace-center document-workspace-main">
         <div className="document-workspace-content">
           {selectedTab === 'chapters' ? (
-            <TextPreview
+            <EditableTextPreview
               content={props.content}
               loading={processingBusy}
+              onSave={props.onSaveContent}
+              onSelectionResource={props.onSelectionResource}
               words={props.chapters.find((chapter) => chapter.id === props.selectedChapterId)?.word_count ?? document.word_count}
             />
           ) : null}
@@ -696,11 +793,10 @@ function DocumentWorkspace(props: DocumentWorkspaceProps) {
         <div className="document-workspace-actions">
           <header><span>文档处理</span><small>选择操作</small></header>
           <div className="inspector-action-area">
-            <button className="button secondary full" onClick={() => props.onReservedAction('合并文档')} type="button"><Combine size={16} />合并文档</button>
-            <button className="button secondary full" onClick={() => props.onReservedAction('新增章节')} type="button"><Plus size={16} />新增章节</button>
-            <button className={`button secondary full ${selectedTab === 'cleanup' ? 'selected' : ''}`} onClick={() => props.onTabChange('cleanup')} type="button"><WandSparkles size={16} />文字清理</button>
-            <button className="button secondary full" onClick={() => props.onReservedAction('正则分章')} type="button"><Scissors size={16} />正则分章</button>
-            <button className="button secondary full" onClick={() => props.onReservedAction('AI 分章')} type="button"><Sparkles size={16} />AI 分章</button>
+            <button className="button secondary full" onClick={() => props.onDocumentAction('merge')} type="button"><Combine size={16} />合并文档</button>
+            <button className="button secondary full" onClick={() => props.onDocumentAction('create-chapter')} type="button"><Plus size={16} />新增章节</button>
+            <button className={`button secondary full ${selectedTab === 'cleanup' ? 'selected' : ''}`} onClick={() => props.onTabChange('cleanup')} type="button"><WandSparkles size={16} />文字整理</button>
+            <button className="button secondary full" onClick={() => props.onDocumentAction('regex-split')} type="button"><Scissors size={16} />正则分章</button>
             <button className={`button secondary full ${selectedTab === 'reference' ? 'selected' : ''}`} onClick={() => props.onTabChange('reference')} type="button"><BookOpenText size={16} />引用范围</button>
           </div>
           <SecondaryButton onClick={props.onExport}><Download size={15} />导出文档</SecondaryButton>
@@ -765,11 +861,70 @@ function WorkspaceChapterNav({
   );
 }
 
-function TextPreview({ content, loading, words }: { content: LibraryDocumentContent | null; loading: boolean; words: number }) {
+function EditableTextPreview({
+  content,
+  loading,
+  onSave,
+  onSelectionResource,
+  words,
+}: {
+  content: LibraryDocumentContent | null;
+  loading: boolean;
+  onSave: (text: string) => void;
+  onSelectionResource: (kind: 'scene' | 'plot' | 'character', text: string, startOffset: number, endOffset: number) => void;
+  words: number;
+}) {
+  const [text, setText] = useState(content?.text ?? '');
+  const [dirty, setDirty] = useState(false);
+  const [menu, setMenu] = useState<{ x: number; y: number; text: string; startOffset: number; endOffset: number } | null>(null);
+
+  useEffect(() => {
+    setText(content?.text ?? '');
+    setDirty(false);
+    setMenu(null);
+  }, [content?.revision_id, content?.chapter_id]);
+
+  function openMenu(event: MouseEvent<HTMLTextAreaElement>) {
+    const target = event.currentTarget;
+    const rawSelection = target.value.slice(target.selectionStart, target.selectionEnd);
+    const selected = rawSelection.trim();
+    if (!selected) {
+      setMenu(null);
+      return;
+    }
+    event.preventDefault();
+    const leadingWhitespace = rawSelection.length - rawSelection.trimStart().length;
+    const startOffset = (content?.start_offset ?? 0) + target.selectionStart + leadingWhitespace;
+    setMenu({
+      x: event.clientX,
+      y: event.clientY,
+      text: selected,
+      startOffset,
+      endOffset: startOffset + selected.length,
+    });
+  }
+
   return (
-    <section aria-busy={loading} className="manuscript-pane document-workspace-text">
-      <header><h2>原文</h2><span>{formatNumber(words)} 字</span></header>
-      <div className="manuscript-text">{loading && !content ? '正在读取正文…' : content?.text || '当前文档没有可显示的正文。'}</div>
+    <section aria-busy={loading} className="manuscript-pane document-workspace-text editable-manuscript">
+      <header>
+        <h2>正文</h2>
+        <span>{dirty ? '未保存' : '已保存'} · {formatNumber(words)} 字</span>
+        <button className="button secondary" disabled={!dirty || loading || !content} onClick={() => onSave(text)} type="button"><Save size={15} />保存</button>
+      </header>
+      <textarea
+        className="manuscript-editor"
+        disabled={loading || !content}
+        onChange={(event) => { setText(event.target.value); setDirty(true); }}
+        onContextMenu={openMenu}
+        value={loading && !content ? '正在读取正文…' : text}
+      />
+      {menu ? (
+        <div className="selection-resource-menu" style={{ left: menu.x, top: menu.y }}>
+          <button onClick={() => { onSelectionResource('scene', menu.text, menu.startOffset, menu.endOffset); setMenu(null); }} type="button">添加为场景素材</button>
+          <button onClick={() => { onSelectionResource('plot', menu.text, menu.startOffset, menu.endOffset); setMenu(null); }} type="button">添加为剧情骨架</button>
+          <button onClick={() => { onSelectionResource('character', menu.text, menu.startOffset, menu.endOffset); setMenu(null); }} type="button">添加到公共角色卡</button>
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -779,7 +934,7 @@ function CleanupPanel(props: DocumentWorkspaceProps) {
   return (
     <div className="document-cleanup-grid">
       <div className="document-processing-settings">
-        <label><span className="form-label">清理模板</span><select className="form-input" value={props.templateId ?? ''} onChange={(event) => props.onSelectTemplate(Number(event.target.value))}>{props.templates.map((template) => <option key={template.id} value={template.id}>{template.name}{template.is_default ? '（默认）' : ''}</option>)}</select></label>
+        <label><span className="form-label">整理模板</span><select className="form-input" value={props.templateId ?? ''} onChange={(event) => props.onSelectTemplate(Number(event.target.value))}>{props.templates.map((template) => <option key={template.id} value={template.id}>{template.name}{template.is_default ? '（默认）' : ''}</option>)}</select></label>
         <div className="document-processing-number-grid">
           <NumberField label="章节缩进" value={settings.chapter_indent} onChange={(value) => props.onSettingsChange({ ...settings, chapter_indent: value })} />
           <NumberField label="段落首行缩进" value={settings.paragraph_indent} onChange={(value) => props.onSettingsChange({ ...settings, paragraph_indent: value })} />
@@ -794,7 +949,7 @@ function CleanupPanel(props: DocumentWorkspaceProps) {
         <div className="document-revision-list">
           <div className="document-detail-heading"><span>版本记录</span><small>{props.revisions.length} 个版本</small></div>
           {props.revisions.map((revision) => (
-            <div key={revision.id}><span>版本 {revision.revision_number} · {revision.revision_type === 'import' ? '导入版' : '文字清理'}</span><button disabled={props.processingBusy || revision.storage_path === props.document.storage_path} onClick={() => props.onRestore(revision.id)} type="button">{revision.storage_path === props.document.storage_path ? '当前' : '切换'}</button></div>
+            <div key={revision.id}><span>版本 {revision.revision_number} · {revisionLabel(revision.revision_type)}</span><button disabled={props.processingBusy || revision.storage_path === props.document.storage_path} onClick={() => props.onRestore(revision.id)} type="button">{revision.storage_path === props.document.storage_path ? '当前' : '切换'}</button></div>
           ))}
         </div>
       </div>
@@ -816,7 +971,7 @@ function ReferencePanel({ scope, setScope }: { scope: ReferenceScope; setScope: 
   );
 }
 
-function CategoryDialog({
+function TagDialog({
   busy,
   name,
   onChange,
@@ -832,18 +987,18 @@ function CategoryDialog({
   return (
     <div className="document-processing-backdrop" role="presentation">
       <form
-        aria-labelledby="document-category-title"
+        aria-labelledby="document-tag-title"
         aria-modal="true"
-        className="document-category-dialog"
+        className="document-tag-dialog"
         onSubmit={(event) => { event.preventDefault(); onSubmit(); }}
         role="dialog"
       >
         <header>
-          <div><span>文档分类</span><h2 id="document-category-title">创建新分类</h2></div>
-          <button aria-label="关闭分类窗口" className="icon-button" onClick={onClose} type="button"><X size={17} /></button>
+          <div><span>文档标签</span><h2 id="document-tag-title">创建新标签</h2></div>
+          <button aria-label="关闭标签窗口" className="icon-button" onClick={onClose} type="button"><X size={17} /></button>
         </header>
-        <label><span className="form-label">分类名称</span><input autoFocus className="form-input" maxLength={80} onChange={(event) => onChange(event.target.value)} placeholder="例如：写作参考" value={name} /></label>
-        <footer><SecondaryButton onClick={onClose}>取消</SecondaryButton><PrimaryButton disabled={busy || !name.trim()} type="submit">创建分类</PrimaryButton></footer>
+        <label><span className="form-label">标签名称</span><input autoFocus className="form-input" maxLength={40} onChange={(event) => onChange(event.target.value)} placeholder="例如：写作参考" value={name} /></label>
+        <footer><SecondaryButton onClick={onClose}>取消</SecondaryButton><PrimaryButton disabled={busy || !name.trim()} type="submit">创建标签</PrimaryButton></footer>
       </form>
     </div>
   );
@@ -876,8 +1031,8 @@ function ExportDialog({
   );
 }
 
-function CategoryButton({ active, count, icon, label, onClick }: { active: boolean; count: number; icon: ReactNode; label: string; onClick: () => void }) {
-  return <button aria-current={active ? 'page' : undefined} className={`document-category-item ${active ? 'selected' : ''}`} onClick={onClick} type="button">{icon}<span>{label}</span><small>{count}</small></button>;
+function TagFilterButton({ active, count, icon, label, onClick }: { active: boolean; count: number; icon: ReactNode; label: string; onClick: () => void }) {
+  return <button aria-current={active ? 'page' : undefined} className={`document-tag-item ${active ? 'selected' : ''}`} onClick={onClick} type="button">{icon}<span>{label}</span><small>{count}</small></button>;
 }
 
 function DefaultBookCover({ compact = false, document }: { compact?: boolean; document: LibraryDocument }) {
@@ -897,13 +1052,20 @@ function NumberField({ label, max = 8, onChange, value }: { label: string; max?:
   return <label><span className="form-label">{label}</span><input className="form-input" max={max} min={0} onChange={(event) => onChange(Number(event.target.value))} type="number" value={value} /></label>;
 }
 
-function matchesCategory(document: LibraryDocument, category: string, index: number) {
-  if (category === 'all') return true;
-  if (category === 'recent') return index < 5;
-  if (category === 'favorite') return document.favorite;
-  if (category === 'project') return document.categories.includes('工程');
-  if (category === 'uncategorized') return document.categories.length === 0;
-  return category.startsWith('category:') && document.categories.includes(category.slice('category:'.length));
+function matchesFilter(document: LibraryDocument, filter: string, index: number) {
+  if (filter === 'all') return true;
+  if (filter === 'recent') return index < 5;
+  if (filter === 'favorite') return document.favorite;
+  if (filter === 'project') return document.tags.includes('工程');
+  if (filter === 'untagged') return document.tags.length === 0;
+  return filter.startsWith('tag:') && document.tags.includes(filter.slice('tag:'.length));
+}
+
+function revisionLabel(revisionType: string) {
+  if (revisionType === 'import') return '导入版';
+  if (revisionType === 'manual_edit') return '手动编辑';
+  if (revisionType === 'merge') return '合并';
+  return '文字整理';
 }
 
 function statusLabel(status: string) {

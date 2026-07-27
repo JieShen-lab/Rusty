@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sqlite3
 from pathlib import Path
 
 from .connection import session
 
-CURRENT_SCHEMA_VERSION = 13
+CURRENT_SCHEMA_VERSION = 14
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -246,6 +247,15 @@ CREATE TABLE IF NOT EXISTS character_cards (
     action_constraints TEXT NOT NULL DEFAULT '',
     anti_ooc_rules TEXT NOT NULL DEFAULT '',
     profile_json TEXT NOT NULL DEFAULT '{}',
+    identity TEXT NOT NULL DEFAULT '',
+    age TEXT NOT NULL DEFAULT '',
+    setting_text TEXT NOT NULL DEFAULT '',
+    custom_fields_json TEXT NOT NULL DEFAULT '[]',
+    raw_text TEXT NOT NULL DEFAULT '',
+    analysis_status TEXT NOT NULL DEFAULT 'analyzed'
+        CHECK (analysis_status IN ('unanalyzed', 'analyzed')),
+    cover_path TEXT,
+    cover_updated_at TEXT,
     source_metadata_json TEXT NOT NULL DEFAULT '{}',
     import_metadata_json TEXT NOT NULL DEFAULT '{}',
     scope TEXT NOT NULL DEFAULT 'public' CHECK (scope IN ('public', 'project')),
@@ -258,25 +268,18 @@ CREATE TABLE IF NOT EXISTS character_cards (
     deleted_at TEXT
 );
 
-CREATE TABLE IF NOT EXISTS material_categories (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    material_type TEXT NOT NULL CHECK (material_type IN ('outline', 'plot_skeleton', 'snippet')),
-    sort_order INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    deleted_at TEXT
-);
-
 CREATE TABLE IF NOT EXISTS materials (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    material_type TEXT NOT NULL CHECK (material_type IN ('outline', 'plot_skeleton', 'snippet')),
+    material_type TEXT NOT NULL CHECK (material_type IN ('scene_reference', 'plot_skeleton')),
     scope TEXT NOT NULL DEFAULT 'public' CHECK (scope IN ('public', 'project')),
     project_id INTEGER,
     name TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
     detail_level TEXT NOT NULL DEFAULT 'standard' CHECK (detail_level IN ('brief', 'standard', 'detailed')),
+    raw_text TEXT NOT NULL DEFAULT '',
     content_json TEXT NOT NULL DEFAULT '{}',
+    analysis_status TEXT NOT NULL DEFAULT 'analyzed'
+        CHECK (analysis_status IN ('unanalyzed', 'analyzed')),
     source_metadata_json TEXT NOT NULL DEFAULT '{}',
     import_metadata_json TEXT NOT NULL DEFAULT '{}',
     source_material_id INTEGER,
@@ -293,13 +296,50 @@ CREATE TABLE IF NOT EXISTS materials (
     FOREIGN KEY (source_material_id) REFERENCES materials(id) ON DELETE SET NULL
 );
 
-CREATE TABLE IF NOT EXISTS material_category_links (
-    material_id INTEGER NOT NULL,
-    category_id INTEGER NOT NULL,
+CREATE TABLE IF NOT EXISTS material_tags (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    normalized_name TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (material_id, category_id),
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    deleted_at TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_material_tags_normalized_active
+    ON material_tags(normalized_name)
+    WHERE deleted_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS material_tag_links (
+    material_id INTEGER NOT NULL,
+    tag_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (material_id, tag_id),
     FOREIGN KEY (material_id) REFERENCES materials(id) ON DELETE CASCADE,
-    FOREIGN KEY (category_id) REFERENCES material_categories(id) ON DELETE CASCADE
+    FOREIGN KEY (tag_id) REFERENCES material_tags(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS character_tags (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    normalized_name TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    deleted_at TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_character_tags_normalized_active
+    ON character_tags(normalized_name)
+    WHERE deleted_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS character_tag_links (
+    character_card_id INTEGER NOT NULL,
+    tag_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (character_card_id, tag_id),
+    FOREIGN KEY (character_card_id) REFERENCES character_cards(id) ON DELETE CASCADE,
+    FOREIGN KEY (tag_id) REFERENCES character_tags(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS project_documents (
@@ -314,9 +354,6 @@ CREATE INDEX IF NOT EXISTS idx_materials_scope_project_timeline
     ON materials(scope, project_id, timeline_start_chapter, sort_order);
 CREATE INDEX IF NOT EXISTS idx_materials_public_type
     ON materials(scope, material_type, updated_at);
-CREATE INDEX IF NOT EXISTS idx_material_categories_type
-    ON material_categories(material_type, sort_order);
-
 CREATE TABLE IF NOT EXISTS project_outline_bindings (
     project_id INTEGER PRIMARY KEY,
     outline_template_id INTEGER NOT NULL,
@@ -556,24 +593,27 @@ CREATE TABLE IF NOT EXISTS library_documents (
     current_revision_id INTEGER
 );
 
-CREATE TABLE IF NOT EXISTS document_categories (
+CREATE TABLE IF NOT EXISTS document_tags (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
-    parent_id INTEGER,
+    normalized_name TEXT NOT NULL,
     sort_order INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    deleted_at TEXT,
-    FOREIGN KEY (parent_id) REFERENCES document_categories(id) ON DELETE SET NULL
+    deleted_at TEXT
 );
 
-CREATE TABLE IF NOT EXISTS document_category_links (
+CREATE UNIQUE INDEX IF NOT EXISTS idx_document_tags_normalized_active
+    ON document_tags(normalized_name)
+    WHERE deleted_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS document_tag_links (
     document_id INTEGER NOT NULL,
-    category_id INTEGER NOT NULL,
+    tag_id INTEGER NOT NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (document_id, category_id),
+    PRIMARY KEY (document_id, tag_id),
     FOREIGN KEY (document_id) REFERENCES library_documents(id) ON DELETE CASCADE,
-    FOREIGN KEY (category_id) REFERENCES document_categories(id) ON DELETE CASCADE
+    FOREIGN KEY (tag_id) REFERENCES document_tags(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS document_processing_templates (
@@ -611,6 +651,8 @@ CREATE TABLE IF NOT EXISTS library_document_chapters (
     title TEXT NOT NULL,
     start_line INTEGER,
     end_line INTEGER,
+    start_offset INTEGER,
+    end_offset INTEGER,
     word_count INTEGER NOT NULL DEFAULT 0,
     UNIQUE (revision_id, chapter_index),
     FOREIGN KEY (document_id) REFERENCES library_documents(id) ON DELETE CASCADE,
@@ -635,8 +677,8 @@ CREATE INDEX IF NOT EXISTS idx_library_documents_created_at
     ON library_documents(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_library_documents_content_hash
     ON library_documents(content_hash);
-CREATE INDEX IF NOT EXISTS idx_document_categories_parent_order
-    ON document_categories(parent_id, sort_order, name);
+CREATE INDEX IF NOT EXISTS idx_document_tags_order
+    ON document_tags(sort_order, name);
 CREATE INDEX IF NOT EXISTS idx_library_revisions_document_number
     ON library_document_revisions(document_id, revision_number DESC);
 CREATE INDEX IF NOT EXISTS idx_library_chapters_revision_order
@@ -1236,9 +1278,13 @@ def _migrate_to_v13(connection: sqlite3.Connection) -> None:
             created_at, updated_at
         )
         SELECT
-            'outline', 'public', name, description, detail_level, outline_json,
+            'plot_skeleton', 'public', name, description, detail_level, outline_json,
             source_metadata_json,
-            json_set(COALESCE(import_metadata_json, '{}'), '$.migrated_from', 'outline_templates'),
+            json_set(
+                json_set(COALESCE(import_metadata_json, '{}'), '$.migrated_from', 'outline_templates'),
+                '$.legacy_material_type',
+                'outline'
+            ),
             id, version, created_at, updated_at
         FROM outline_templates
         WHERE deleted_at IS NULL
@@ -1247,6 +1293,358 @@ def _migrate_to_v13(connection: sqlite3.Connection) -> None:
           )
         """
     )
+
+
+def _migrate_to_v14(connection: sqlite3.Connection) -> None:
+    _ensure_v14_tag_tables(connection)
+    _migrate_materials_to_v14(connection)
+    _migrate_character_cards_to_v14(connection)
+    _migrate_document_tags_to_v14(connection)
+    _add_column_if_missing(connection, "library_document_chapters", "start_offset", "start_offset INTEGER")
+    _add_column_if_missing(connection, "library_document_chapters", "end_offset", "end_offset INTEGER")
+    connection.executescript(
+        """
+        DROP TABLE IF EXISTS material_category_links;
+        DROP TABLE IF EXISTS material_categories;
+        DROP TABLE IF EXISTS document_category_links;
+        DROP TABLE IF EXISTS document_categories;
+        """
+    )
+
+
+def _ensure_v14_tag_tables(connection: sqlite3.Connection) -> None:
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS material_tags (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            normalized_name TEXT NOT NULL,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            deleted_at TEXT
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_material_tags_normalized_active
+            ON material_tags(normalized_name)
+            WHERE deleted_at IS NULL;
+        CREATE TABLE IF NOT EXISTS material_tag_links (
+            material_id INTEGER NOT NULL,
+            tag_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (material_id, tag_id),
+            FOREIGN KEY (material_id) REFERENCES materials(id) ON DELETE CASCADE,
+            FOREIGN KEY (tag_id) REFERENCES material_tags(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS character_tags (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            normalized_name TEXT NOT NULL,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            deleted_at TEXT
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_character_tags_normalized_active
+            ON character_tags(normalized_name)
+            WHERE deleted_at IS NULL;
+        CREATE TABLE IF NOT EXISTS character_tag_links (
+            character_card_id INTEGER NOT NULL,
+            tag_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (character_card_id, tag_id),
+            FOREIGN KEY (character_card_id) REFERENCES character_cards(id) ON DELETE CASCADE,
+            FOREIGN KEY (tag_id) REFERENCES character_tags(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS document_tags (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            normalized_name TEXT NOT NULL,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            deleted_at TEXT
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_document_tags_normalized_active
+            ON document_tags(normalized_name)
+            WHERE deleted_at IS NULL;
+        CREATE TABLE IF NOT EXISTS document_tag_links (
+            document_id INTEGER NOT NULL,
+            tag_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (document_id, tag_id),
+            FOREIGN KEY (document_id) REFERENCES library_documents(id) ON DELETE CASCADE,
+            FOREIGN KEY (tag_id) REFERENCES document_tags(id) ON DELETE CASCADE
+        );
+        """
+    )
+
+
+def _migrate_materials_to_v14(connection: sqlite3.Connection) -> None:
+    if not _table_exists(connection, "materials"):
+        return
+    _add_column_if_missing(connection, "materials", "raw_text", "raw_text TEXT NOT NULL DEFAULT ''")
+    _add_column_if_missing(
+        connection,
+        "materials",
+        "analysis_status",
+        "analysis_status TEXT NOT NULL DEFAULT 'analyzed' CHECK (analysis_status IN ('unanalyzed', 'analyzed'))",
+    )
+    table_sql_row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'materials'"
+    ).fetchone()
+    table_sql = str(table_sql_row[0] or "") if table_sql_row is not None else ""
+    if "'scene_reference'" in table_sql and "'snippet'" not in table_sql and "'outline'" not in table_sql:
+        _migrate_material_categories_to_tags(connection)
+        return
+
+    legacy_category_links = (
+        connection.execute(
+            "SELECT material_id, category_id, created_at FROM material_category_links"
+        ).fetchall()
+        if _table_exists(connection, "material_category_links")
+        else []
+    )
+    old_count = int(connection.execute("SELECT COUNT(*) FROM materials").fetchone()[0])
+    connection.execute("DROP TABLE IF EXISTS materials_v14")
+    connection.execute(
+        """
+        CREATE TABLE materials_v14 (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            material_type TEXT NOT NULL CHECK (material_type IN ('scene_reference', 'plot_skeleton')),
+            scope TEXT NOT NULL DEFAULT 'public' CHECK (scope IN ('public', 'project')),
+            project_id INTEGER,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            detail_level TEXT NOT NULL DEFAULT 'standard' CHECK (detail_level IN ('brief', 'standard', 'detailed')),
+            raw_text TEXT NOT NULL DEFAULT '',
+            content_json TEXT NOT NULL DEFAULT '{}',
+            analysis_status TEXT NOT NULL DEFAULT 'analyzed' CHECK (analysis_status IN ('unanalyzed', 'analyzed')),
+            source_metadata_json TEXT NOT NULL DEFAULT '{}',
+            import_metadata_json TEXT NOT NULL DEFAULT '{}',
+            source_material_id INTEGER,
+            source_version INTEGER,
+            legacy_outline_id INTEGER UNIQUE,
+            timeline_start_chapter INTEGER,
+            timeline_end_chapter INTEGER,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            version INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            deleted_at TEXT,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (source_material_id) REFERENCES materials(id) ON DELETE SET NULL
+        )
+        """
+    )
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(materials)")}
+    select_raw_text = "raw_text" if "raw_text" in columns else "''"
+    select_analysis_status = (
+        "CASE WHEN analysis_status IN ('unanalyzed', 'analyzed') THEN analysis_status ELSE 'analyzed' END"
+        if "analysis_status" in columns
+        else "'analyzed'"
+    )
+    connection.execute(
+        f"""
+        INSERT INTO materials_v14 (
+            id, material_type, scope, project_id, name, description, detail_level,
+            raw_text, content_json, analysis_status, source_metadata_json,
+            import_metadata_json, source_material_id, source_version, legacy_outline_id,
+            timeline_start_chapter, timeline_end_chapter, sort_order, version,
+            created_at, updated_at, deleted_at
+        )
+        SELECT
+            id,
+            CASE material_type
+                WHEN 'snippet' THEN 'scene_reference'
+                WHEN 'outline' THEN 'plot_skeleton'
+                ELSE 'plot_skeleton'
+            END,
+            scope, project_id, name, description, detail_level,
+            {select_raw_text}, content_json, {select_analysis_status},
+            source_metadata_json,
+            CASE
+                WHEN material_type = 'outline' AND instr(import_metadata_json, 'legacy_material_type') = 0
+                THEN json_set(COALESCE(NULLIF(import_metadata_json, ''), '{{}}'), '$.legacy_material_type', 'outline')
+                ELSE import_metadata_json
+            END,
+            source_material_id, source_version, legacy_outline_id,
+            timeline_start_chapter, timeline_end_chapter, sort_order, version,
+            created_at, updated_at, deleted_at
+        FROM materials
+        """
+    )
+    new_count = int(connection.execute("SELECT COUNT(*) FROM materials_v14").fetchone()[0])
+    if old_count != new_count:
+        raise RuntimeError("v14 material migration row count mismatch")
+    connection.execute("DROP TABLE materials")
+    connection.execute("ALTER TABLE materials_v14 RENAME TO materials")
+    connection.executescript(
+        """
+        CREATE INDEX IF NOT EXISTS idx_materials_scope_project_timeline
+            ON materials(scope, project_id, timeline_start_chapter, sort_order);
+        CREATE INDEX IF NOT EXISTS idx_materials_public_type
+            ON materials(scope, material_type, updated_at);
+        """
+    )
+    _migrate_material_categories_to_tags(connection, legacy_category_links)
+
+
+def _migrate_material_categories_to_tags(
+    connection: sqlite3.Connection,
+    link_rows: list[sqlite3.Row] | None = None,
+) -> None:
+    if not (_table_exists(connection, "material_categories") and _table_exists(connection, "material_category_links")):
+        return
+    rows = connection.execute(
+        "SELECT id, trim(name) AS name, sort_order FROM material_categories WHERE deleted_at IS NULL AND trim(name) <> ''"
+    ).fetchall()
+    category_to_tag: dict[int, int] = {}
+    for row in rows:
+        name = str(row["name"])
+        normalized = _normalized_tag_name(name)
+        connection.execute(
+            """
+            INSERT INTO material_tags (name, normalized_name, sort_order)
+            VALUES (?, ?, ?)
+            ON CONFLICT(normalized_name) WHERE deleted_at IS NULL
+            DO UPDATE SET name = excluded.name
+            """,
+            (name, normalized, int(row["sort_order"])),
+        )
+        tag_id = connection.execute(
+            "SELECT id FROM material_tags WHERE normalized_name = ? AND deleted_at IS NULL",
+            (normalized,),
+        ).fetchone()["id"]
+        category_to_tag[int(row["id"])] = int(tag_id)
+    rows_to_link = link_rows
+    if rows_to_link is None:
+        rows_to_link = connection.execute(
+            "SELECT material_id, category_id, created_at FROM material_category_links"
+        ).fetchall()
+    for row in rows_to_link:
+        tag_id = category_to_tag.get(int(row["category_id"]))
+        if tag_id is None:
+            continue
+        exists = connection.execute(
+            "SELECT 1 FROM materials WHERE id = ?",
+            (int(row["material_id"]),),
+        ).fetchone()
+        if exists is not None:
+            connection.execute(
+                "INSERT OR IGNORE INTO material_tag_links (material_id, tag_id, created_at) VALUES (?, ?, ?)",
+                (int(row["material_id"]), tag_id, row["created_at"]),
+            )
+
+
+def _migrate_character_cards_to_v14(connection: sqlite3.Connection) -> None:
+    for column, definition in [
+        ("identity", "identity TEXT NOT NULL DEFAULT ''"),
+        ("age", "age TEXT NOT NULL DEFAULT ''"),
+        ("setting_text", "setting_text TEXT NOT NULL DEFAULT ''"),
+        ("custom_fields_json", "custom_fields_json TEXT NOT NULL DEFAULT '[]'"),
+        ("raw_text", "raw_text TEXT NOT NULL DEFAULT ''"),
+        ("analysis_status", "analysis_status TEXT NOT NULL DEFAULT 'analyzed' CHECK (analysis_status IN ('unanalyzed', 'analyzed'))"),
+        ("cover_path", "cover_path TEXT"),
+        ("cover_updated_at", "cover_updated_at TEXT"),
+    ]:
+        _add_column_if_missing(connection, "character_cards", column, definition)
+    rows = connection.execute("SELECT * FROM character_cards").fetchall()
+    for row in rows:
+        profile = _loads_json_dict(str(row["profile_json"] or "{}"))
+        identity = str(row["identity"] or "").strip() or str(profile.get("身份") or profile.get("identity") or "").strip()
+        age = str(row["age"] or "").strip() or str(profile.get("年龄") or profile.get("age") or "").strip()
+        setting_text = str(row["setting_text"] or "").strip() or str(row["description"] or "").strip()
+        existing_fields = _loads_json_list(str(row["custom_fields_json"] or "[]"))
+        seen = {str(item.get("label", "")).strip().lower() for item in existing_fields if isinstance(item, dict)}
+        fields = list(existing_fields)
+
+        def add_field(label: str, value: object) -> None:
+            text = str(value or "").strip()
+            key = label.strip().lower()
+            if text and key and key not in seen:
+                fields.append({"id": f"legacy_{len(fields)}", "label": label, "value": text, "sort_order": len(fields)})
+                seen.add(key)
+
+        add_field("人物关系", row["relationship_notes"])
+        add_field("性格", row["personality"])
+        add_field("语言风格", row["speech_style"])
+        add_field("动作约束", row["action_constraints"])
+        add_field("防 OOC", row["anti_ooc_rules"])
+        for key, value in profile.items():
+            if str(key) in {"身份", "年龄", "identity", "age"}:
+                continue
+            add_field(str(key), value)
+        connection.execute(
+            """
+            UPDATE character_cards
+            SET identity = ?, age = ?, setting_text = ?, custom_fields_json = ?
+            WHERE id = ?
+            """,
+            (identity, age, setting_text, json.dumps(fields, ensure_ascii=False), int(row["id"])),
+        )
+
+
+def _migrate_document_tags_to_v14(connection: sqlite3.Connection) -> None:
+    if not _table_exists(connection, "document_categories"):
+        return
+    category_to_tag: dict[int, int] = {}
+    for row in connection.execute(
+        "SELECT id, trim(name) AS name, sort_order FROM document_categories WHERE deleted_at IS NULL AND trim(name) <> ''"
+    ).fetchall():
+        name = str(row["name"])
+        normalized = _normalized_tag_name(name)
+        connection.execute(
+            """
+            INSERT INTO document_tags (name, normalized_name, sort_order)
+            VALUES (?, ?, ?)
+            ON CONFLICT(normalized_name) WHERE deleted_at IS NULL
+            DO UPDATE SET name = excluded.name
+            """,
+            (name, normalized, int(row["sort_order"])),
+        )
+        tag_id = connection.execute(
+            "SELECT id FROM document_tags WHERE normalized_name = ? AND deleted_at IS NULL",
+            (normalized,),
+        ).fetchone()["id"]
+        category_to_tag[int(row["id"])] = int(tag_id)
+    if not _table_exists(connection, "document_category_links"):
+        return
+    for row in connection.execute("SELECT document_id, category_id, created_at FROM document_category_links").fetchall():
+        tag_id = category_to_tag.get(int(row["category_id"]))
+        if tag_id is not None:
+            connection.execute(
+                "INSERT OR IGNORE INTO document_tag_links (document_id, tag_id, created_at) VALUES (?, ?, ?)",
+                (int(row["document_id"]), tag_id, row["created_at"]),
+            )
+
+
+def _table_exists(connection: sqlite3.Connection, table_name: str) -> bool:
+    return connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table_name,),
+    ).fetchone() is not None
+
+
+def _normalized_tag_name(name: str) -> str:
+    return " ".join(name.strip().split()).casefold()
+
+
+def _loads_json_dict(text: str) -> dict[str, object]:
+    try:
+        value = json.loads(text)
+    except Exception:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _loads_json_list(text: str) -> list[dict[str, object]]:
+    try:
+        value = json.loads(text)
+    except Exception:
+        return []
+    return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
 
 MIGRATIONS = {
     2: _migrate_to_v2,
@@ -1261,6 +1659,7 @@ MIGRATIONS = {
     11: _migrate_to_v11,
     12: _migrate_to_v12,
     13: _migrate_to_v13,
+    14: _migrate_to_v14,
 }
 
 

@@ -67,7 +67,7 @@ class DocumentLibraryServiceTests(unittest.TestCase):
             self.assertEqual("作者甲", renamed.author)
             self.assertEqual(1, len(service.list_documents()))
 
-    def test_categories_chapters_migration_and_exports_are_functional(self) -> None:
+    def test_tags_chapters_migration_and_exports_are_functional(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)
             source = root / "长篇.txt"
@@ -81,8 +81,8 @@ class DocumentLibraryServiceTests(unittest.TestCase):
             service = DocumentLibraryService(database_path, original_library)
 
             imported = service.import_document(source)
-            category = service.create_category("参考资料")
-            assigned = service.set_document_category(imported.document.id, category.id, True)
+            tag = service.create_tag("参考资料")
+            assigned = service.set_document_tag(imported.document.id, tag.id, True)
             chapters = service.list_chapters(imported.document.id)
             full_content = service.get_content(imported.document.id)
             chapter_content = service.get_content(imported.document.id, chapters[1].id)
@@ -97,8 +97,8 @@ class DocumentLibraryServiceTests(unittest.TestCase):
             epub_output = service.export_document(imported.document.id, "epub", root / "export.epub")
             restarted = DocumentLibraryService(database_path)
 
-            self.assertEqual(["参考资料"], assigned.categories)
-            self.assertEqual(1, service.list_categories()[0].document_count)
+            self.assertEqual(["参考资料"], assigned.tags)
+            self.assertEqual(1, service.list_tags()[0].resource_count)
             self.assertEqual(["第一章 风起", "第二章 归途"], [item.title for item in chapters])
             self.assertIn("第一章 风起", full_content.text)
             self.assertEqual("第二章 归途", chapter_content.title)

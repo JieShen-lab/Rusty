@@ -40,7 +40,7 @@ class FakeMaterialAIClient(AIClient):
 
 
 class MaterialServiceTests(unittest.TestCase):
-    def test_public_categories_and_project_copy_are_independent(self) -> None:
+    def test_public_tags_and_project_copy_are_independent(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             database_path = Path(directory) / "rusty.db"
             service = MaterialService(database_path)
@@ -50,14 +50,14 @@ class MaterialServiceTests(unittest.TestCase):
                         "INSERT INTO projects (name, status, current_stage) VALUES ('测试工程', 'imported', 'split')"
                     ).lastrowid
                 )
-            category = service.create_category("冒险", "plot_skeleton")
+            tag = service.create_tag("冒险")
             public_id = service.create_material(
                 material_type="plot_skeleton",
                 scope="public",
                 name="遗迹探索",
                 description="公共骨架",
                 content={"stages": ["进入", "探索"]},
-                category_ids=[category.id],
+                tag_ids=[tag.id],
             )
             project_copy_id = service.copy_material(
                 public_id,
@@ -70,7 +70,7 @@ class MaterialServiceTests(unittest.TestCase):
                 description="公共骨架更新",
                 detail_level="detailed",
                 content={"stages": ["进入", "探索", "高潮"]},
-                category_ids=[category.id],
+                tag_ids=[tag.id],
             )
 
             public = service.get_material(public_id)
@@ -78,7 +78,7 @@ class MaterialServiceTests(unittest.TestCase):
             self.assertIsNotNone(public)
             self.assertIsNotNone(project_copy)
             assert public is not None and project_copy is not None
-            self.assertEqual(("冒险",), public.categories)
+            self.assertEqual(("冒险",), public.tags)
             self.assertEqual("project", project_copy.scope)
             self.assertEqual(project_id, project_copy.project_id)
             self.assertEqual(public_id, project_copy.source_material_id)

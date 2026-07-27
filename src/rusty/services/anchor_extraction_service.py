@@ -31,34 +31,22 @@ CHARACTER_DIMENSIONS = [
     "anti_ooc_rules",
 ]
 MATERIAL_DIMENSIONS = {
-    "outline": [
-        "story_scope",
-        "volumes_or_phases",
-        "major_plot_beats",
-        "causal_chain",
-        "character_progression",
-        "timeline",
-        "unresolved_hooks",
-    ],
     "plot_skeleton": [
-        "applicable_scenarios",
-        "prerequisites",
-        "participants_and_roles",
+        "premise",
         "stages",
+        "conflicts",
         "turning_points",
         "climax",
-        "outcomes",
-        "reusable_variants",
+        "resolution",
+        "hooks",
     ],
-    "snippet": [
-        "snippet_kind",
-        "trigger",
-        "actions",
-        "sensory_description",
-        "effect_or_power",
-        "cost",
-        "constraints",
-        "applicable_scenarios",
+    "scene_reference": [
+        "summary",
+        "writing_guidance",
+        "key_beats",
+        "source_cues",
+        "applicable_conditions",
+        "avoidances",
     ],
 }
 
@@ -138,7 +126,9 @@ class AnchorExtractionService:
                     name=item_name,
                     description=str(item.get("description") or ""),
                     detail_level=detail_level,
+                    raw_text=sample,
                     content=content,
+                    analysis_status="analyzed",
                     source_metadata=shared_source_metadata,
                     import_metadata=import_metadata,
                     timeline_start_chapter=_positive_int_or_none(item.get("timeline_start_chapter")),
@@ -375,37 +365,33 @@ class AnchorExtractionService:
         detail_level: str,
         name: str | None,
     ) -> list[dict[str, str]]:
-        labels = {
-            "outline": "大纲",
-            "plot_skeleton": "剧情骨架",
-            "snippet": "小素材",
-        }
         dimensions = "\n".join(f"- {item}" for item in MATERIAL_DIMENSIONS[material_type])
-        requested_name = name.strip() if name and name.strip() else "由原文提炼"
+        requested_name = name.strip() if name and name.strip() else "derive from source"
+        shape = (
+            "scene_reference content keys: summary, writing_guidance, key_beats, source_cues, applicable_conditions, avoidances."
+            if material_type == "scene_reference"
+            else "plot_skeleton content keys: premise, stages, conflicts, turning_points, climax, resolution, hooks."
+        )
         return [
             {
                 "role": "system",
                 "content": (
                     f"[RUSTY NATIVE RULES: rusty.native.material.{material_type}.v1]\n"
-                    f"你负责从小说文本中提取“{labels[material_type]}”。"
-                    "只能依据原文证据，不得补写原文不存在的设定。"
-                    "不确定内容使用空值，并降低 confidence。严格返回 JSON，不要 Markdown。"
+                    "Extract reusable writing resources from prose. Return strict JSON only. "
+                    "Do not invent unsupported facts and do not return Markdown."
                 ),
             },
             {
                 "role": "user",
                 "content": (
-                    f"提取目标：{labels[material_type]}\n"
-                    f"建议名称：{requested_name}\n"
-                    f"细节等级：{detail_level}\n"
-                    "分析维度：\n"
+                    f"Material type: {material_type}\n"
+                    f"Suggested name: {requested_name}\n"
+                    f"Detail level: {detail_level}\n"
+                    "Required dimensions:\n"
                     f"{dimensions}\n\n"
-                    "返回结构：{\"materials\":[{\"name\":\"\", \"description\":\"\", "
-                    "\"timeline_start_chapter\":null, \"timeline_end_chapter\":null, "
-                    "\"content\":{}, \"evidence\":[], \"confidence\":0.0}]}。\n"
-                    "大纲通常返回一个覆盖范围较大的条目；剧情骨架和小素材可以返回多个候选。"
-                    "每个 content 必须使用上述分析维度作为主要字段，并保持可导入 JSON。\n\n"
-                    f"待分析文本：\n{sample_text}"
+                    f"{shape}\n"
+                    "Return JSON: {\"materials\":[{\"name\":\"\", \"description\":\"\", \"content\":{}, \"evidence\":[], \"confidence\":0.0}]}\n\n"
+                    f"Source prose:\n{sample_text}"
                 ),
             },
         ]

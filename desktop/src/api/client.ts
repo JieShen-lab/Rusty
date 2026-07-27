@@ -14,12 +14,14 @@ import type {
   ModelConfig,
   ModelTestResult,
   Material,
-  MaterialCategory,
   MaterialExtractWrite,
   MaterialScope,
   MaterialType,
   MaterialUpdate,
   MaterialWrite,
+  ResourceTag,
+  SelectionResourceCreate,
+  SplitPreview,
   OutlineTemplate,
   OutlineTemplateWrite,
   ModelWrite,
@@ -33,7 +35,6 @@ import type {
   DocumentProcessingSettings,
   DocumentProcessingTemplate,
   DocumentLibrarySettings,
-  DocumentCategory,
   PreviewResponse,
   Project,
   ProjectCharacterBindings,
@@ -209,19 +210,24 @@ export function migrateDocumentLibrary(targetPath: string) {
   });
 }
 
-export function getDocumentCategories() {
-  return request<DocumentCategory[]>('/api/document-categories');
+export function getDocumentTags() {
+  return request<ResourceTag[]>('/api/document-tags');
 }
 
-export function createDocumentCategory(name: string, parentId?: number | null) {
-  return request<DocumentCategory>('/api/document-categories', {
-    method: 'POST',
-    body: JSON.stringify({ name, parent_id: parentId ?? null }),
-  });
+export function createDocumentTag(name: string) {
+  return request<ResourceTag>('/api/document-tags', { method: 'POST', body: JSON.stringify({ name }) });
 }
 
-export function assignDocumentCategory(documentId: number, categoryId: number, selected: boolean) {
-  return request<LibraryDocument>(`/api/documents/${documentId}/categories/${categoryId}`, {
+export function renameDocumentTag(tagId: number, name: string) {
+  return request<ResourceTag>(`/api/document-tags/${tagId}`, { method: 'POST', body: JSON.stringify({ name }) });
+}
+
+export function deleteDocumentTag(tagId: number) {
+  return request<{ ok: boolean }>(`/api/document-tags/${tagId}/delete`, { method: 'POST' });
+}
+
+export function assignDocumentTag(documentId: number, tagId: number, selected: boolean) {
+  return request<LibraryDocument>(`/api/documents/${documentId}/tags/${tagId}`, {
     method: 'POST',
     body: JSON.stringify({ selected }),
   });
@@ -249,6 +255,60 @@ export function getLibraryDocumentChapters(documentId: number) {
 export function getLibraryDocumentContent(documentId: number, chapterId?: number | null) {
   const query = chapterId == null ? '' : `?chapter_id=${chapterId}`;
   return request<LibraryDocumentContent>(`/api/documents/${documentId}/content${query}`);
+}
+
+export function saveLibraryDocumentContent(documentId: number, text: string, title?: string | null, chapterId?: number | null) {
+  return request<LibraryDocumentCleanupResult>(`/api/documents/${documentId}/content`, {
+    method: 'POST',
+    body: JSON.stringify({ text, title: title ?? null, chapter_id: chapterId ?? null }),
+  });
+}
+
+export function mergeLibraryDocuments(documentIds: number[], title: string, author?: string | null) {
+  return request<LibraryDocument>('/api/documents/merge', {
+    method: 'POST',
+    body: JSON.stringify({ document_ids: documentIds, title, author: author ?? null }),
+  });
+}
+
+export function createLibraryDocumentChapter(
+  documentId: number,
+  title: string,
+  text: string,
+  position: 'before' | 'after' | 'end',
+  currentChapterId?: number | null,
+) {
+  return request<LibraryDocumentCleanupResult>(`/api/documents/${documentId}/chapters`, {
+    method: 'POST',
+    body: JSON.stringify({ title, text, position, current_chapter_id: currentChapterId ?? null }),
+  });
+}
+
+export function previewRegexSplit(documentId: number, pattern: string) {
+  return request<SplitPreview>(`/api/documents/${documentId}/split/regex/preview`, {
+    method: 'POST',
+    body: JSON.stringify({ pattern }),
+  });
+}
+
+export function applyRegexSplit(documentId: number, pattern: string, previewToken: string) {
+  return request<LibraryDocumentChapter[]>(`/api/documents/${documentId}/split/regex/apply`, {
+    method: 'POST',
+    body: JSON.stringify({ pattern, preview_token: previewToken }),
+  });
+}
+
+export function markLibraryDocumentChapter(
+  documentId: number,
+  revisionId: number,
+  title: string,
+  startOffset: number,
+  endOffset: number,
+) {
+  return request<LibraryDocumentChapter[]>(`/api/documents/${documentId}/chapters/mark`, {
+    method: 'POST',
+    body: JSON.stringify({ revision_id: revisionId, title, start_offset: startOffset, end_offset: endOffset }),
+  });
 }
 
 export function reorderLibraryDocumentChapters(documentId: number, orderedChapterIds: number[]) {
@@ -480,26 +540,50 @@ export function getMaterials(filters: {
   scope?: MaterialScope;
   project_id?: number;
   material_type?: MaterialType;
-  category_id?: number;
+  tag_id?: number;
+  analysis_status?: 'unanalyzed' | 'analyzed';
+  untagged?: boolean;
+  query?: string;
 } = {}) {
   const params = new URLSearchParams();
   if (filters.scope) params.set('scope', filters.scope);
   if (filters.project_id !== undefined) params.set('project_id', String(filters.project_id));
   if (filters.material_type) params.set('material_type', filters.material_type);
-  if (filters.category_id !== undefined) params.set('category_id', String(filters.category_id));
+  if (filters.tag_id !== undefined) params.set('tag_id', String(filters.tag_id));
+  if (filters.analysis_status) params.set('analysis_status', filters.analysis_status);
+  if (filters.untagged) params.set('untagged', 'true');
+  if (filters.query) params.set('query', filters.query);
   const query = params.size ? `?${params.toString()}` : '';
   return request<Material[]>(`/api/materials${query}`);
 }
 
-export function getMaterialCategories(materialType?: MaterialType) {
-  const query = materialType ? `?material_type=${encodeURIComponent(materialType)}` : '';
-  return request<MaterialCategory[]>(`/api/materials/categories${query}`);
+export function getMaterialTags() {
+  return request<ResourceTag[]>('/api/material-tags');
 }
 
-export function createMaterialCategory(name: string, materialType: MaterialType) {
-  return request<MaterialCategory>('/api/materials/categories', {
+export function createMaterialTag(name: string) {
+  return request<ResourceTag>('/api/material-tags', { method: 'POST', body: JSON.stringify({ name }) });
+}
+
+export function renameMaterialTag(tagId: number, name: string) {
+  return request<ResourceTag>(`/api/material-tags/${tagId}`, { method: 'POST', body: JSON.stringify({ name }) });
+}
+
+export function deleteMaterialTag(tagId: number) {
+  return request<{ ok: boolean }>(`/api/material-tags/${tagId}/delete`, { method: 'POST' });
+}
+
+export function assignMaterialTag(materialId: number, tagId: number, selected: boolean) {
+  return request<Material>(`/api/materials/${materialId}/tags/${tagId}`, {
     method: 'POST',
-    body: JSON.stringify({ name, material_type: materialType }),
+    body: JSON.stringify({ selected }),
+  });
+}
+
+export function analyzeMaterial(materialId: number, content: Record<string, unknown>, modelId?: number | null) {
+  return request<Material>(`/api/materials/${materialId}/analyze`, {
+    method: 'POST',
+    body: JSON.stringify({ model_id: modelId ?? null, content }),
   });
 }
 
@@ -523,14 +607,14 @@ export function copyMaterial(
   materialId: number,
   targetScope: MaterialScope,
   targetProjectId?: number | null,
-  categoryIds: number[] = [],
+  tagIds: number[] = [],
 ) {
   return request<Material>(`/api/materials/${materialId}/copy`, {
     method: 'POST',
     body: JSON.stringify({
       target_scope: targetScope,
       target_project_id: targetProjectId ?? null,
-      category_ids: categoryIds,
+      tag_ids: tagIds,
     }),
   });
 }
@@ -564,6 +648,48 @@ export function getCharacterCards(scope?: 'public' | 'project', projectId?: numb
   if (projectId !== undefined && projectId !== null) params.set('project_id', String(projectId));
   const query = params.size ? `?${params.toString()}` : '';
   return request<CharacterCard[]>(`/api/characters${query}`);
+}
+
+export function getCharacterTags() {
+  return request<ResourceTag[]>('/api/character-tags');
+}
+
+export function createCharacterTag(name: string) {
+  return request<ResourceTag>('/api/character-tags', { method: 'POST', body: JSON.stringify({ name }) });
+}
+
+export function renameCharacterTag(tagId: number, name: string) {
+  return request<ResourceTag>(`/api/character-tags/${tagId}`, { method: 'POST', body: JSON.stringify({ name }) });
+}
+
+export function deleteCharacterTag(tagId: number) {
+  return request<{ ok: boolean }>(`/api/character-tags/${tagId}/delete`, { method: 'POST' });
+}
+
+export function assignCharacterTag(cardId: number, tagId: number, selected: boolean) {
+  return request<CharacterCard>(`/api/characters/${cardId}/tags/${tagId}`, {
+    method: 'POST',
+    body: JSON.stringify({ selected }),
+  });
+}
+
+export function analyzeCharacterCard(
+  cardId: number,
+  payload: { identity: string; age: string; setting_text: string; custom_fields: import('./types').CharacterCustomField[]; model_id?: number | null },
+) {
+  return request<CharacterCard>(`/api/characters/${cardId}/analyze`, { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export function createSceneMaterialFromSelection(payload: SelectionResourceCreate) {
+  return request<Material>('/api/selection/materials/scene-reference', { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export function createPlotSkeletonFromSelection(payload: SelectionResourceCreate) {
+  return request<Material>('/api/selection/materials/plot-skeleton', { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export function createCharacterFromSelection(payload: SelectionResourceCreate) {
+  return request<CharacterCard>('/api/selection/characters', { method: 'POST', body: JSON.stringify(payload) });
 }
 
 export function createCharacterCard(payload: CharacterCardWrite) {

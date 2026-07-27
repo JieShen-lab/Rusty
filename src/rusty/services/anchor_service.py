@@ -48,6 +48,15 @@ class CharacterCard:
     source_character_card_id: int | None = None
     source_version: int | None = None
     sort_order: int = 0
+    identity: str = ""
+    age: str = ""
+    setting_text: str = ""
+    custom_fields_json: str = "[]"
+    raw_text: str = ""
+    analysis_status: str = "analyzed"
+    cover_path: str | None = None
+    cover_updated_at: str | None = None
+    tags: tuple[str, ...] = ()
 
     @property
     def aliases(self) -> list[str]:
@@ -70,6 +79,11 @@ class CharacterCard:
     def import_metadata(self) -> dict[str, Any]:
         value = _loads_json(self.import_metadata_json, {})
         return value if isinstance(value, dict) else {}
+
+    @property
+    def custom_fields(self) -> list[dict[str, Any]]:
+        value = _loads_json(self.custom_fields_json, [])
+        return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
 
 
 class AnchorService:
@@ -265,8 +279,17 @@ class AnchorService:
         project_id: int | None = None,
         source_character_card_id: int | None = None,
         source_version: int | None = None,
+        identity: str = "",
+        age: str = "",
+        setting_text: str = "",
+        custom_fields: list[dict[str, Any]] | None = None,
+        raw_text: str = "",
+        analysis_status: str = "analyzed",
+        tag_ids: list[int] | None = None,
     ) -> int:
         _validate_character_scope(scope, project_id)
+        analysis_status = _validate_analysis_status(analysis_status)
+        custom_fields_json = json.dumps(_normalize_custom_fields(custom_fields), ensure_ascii=False)
         with session(self.database_path) as connection:
             if project_id is not None:
                 self._ensure_project_exists(project_id)
@@ -276,8 +299,9 @@ class AnchorService:
                     name, aliases_json, description, priority, is_main, relationship_notes,
                     personality, speech_style, action_constraints, anti_ooc_rules,
                     profile_json, source_metadata_json, import_metadata_json,
-                    scope, project_id, source_character_card_id, source_version
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    scope, project_id, source_character_card_id, source_version,
+                    identity, age, setting_text, custom_fields_json, raw_text, analysis_status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     _required_name(name, "Character card name is required."),
@@ -297,9 +321,17 @@ class AnchorService:
                     project_id,
                     source_character_card_id,
                     source_version,
+                    identity.strip(),
+                    age.strip(),
+                    setting_text,
+                    custom_fields_json,
+                    raw_text,
+                    analysis_status,
                 ),
             )
-            return int(cursor.lastrowid)
+            card_id = int(cursor.lastrowid)
+            self._replace_character_tags(connection, card_id, tag_ids or [])
+            return card_id
 
     def update_character_card(
         self,
@@ -319,8 +351,17 @@ class AnchorService:
         import_metadata: dict[str, Any] | None = None,
         scope: str = "public",
         project_id: int | None = None,
+        identity: str = "",
+        age: str = "",
+        setting_text: str = "",
+        custom_fields: list[dict[str, Any]] | None = None,
+        raw_text: str | None = None,
+        analysis_status: str | None = None,
+        tag_ids: list[int] | None = None,
     ) -> None:
         _validate_character_scope(scope, project_id)
+        status = _validate_analysis_status(analysis_status) if analysis_status is not None else None
+        custom_fields_json = json.dumps(_normalize_custom_fields(custom_fields), ensure_ascii=False)
         with session(self.database_path) as connection:
             if project_id is not None:
                 self._ensure_project_exists(project_id)
@@ -343,6 +384,12 @@ class AnchorService:
                     import_metadata_json = ?,
                     scope = ?,
                     project_id = ?,
+                    identity = ?,
+                    age = ?,
+                    setting_text = ?,
+                    custom_fields_json = ?,
+                    raw_text = COALESCE(?, raw_text),
+                    analysis_status = COALESCE(?, analysis_status),
                     version = version + 1,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = ? AND deleted_at IS NULL
@@ -363,9 +410,17 @@ class AnchorService:
                     json.dumps(import_metadata or {}, ensure_ascii=False),
                     scope,
                     project_id,
+                    identity.strip(),
+                    age.strip(),
+                    setting_text,
+                    custom_fields_json,
+                    raw_text,
+                    status,
                     card_id,
                 ),
             )
+            if tag_ids is not None:
+                self._replace_character_tags(connection, card_id, tag_ids)
         if cursor.rowcount == 0:
             raise ValueError(f"Character card not found: {card_id}")
 
@@ -380,7 +435,7 @@ class AnchorService:
         if source is None:
             raise ValueError(f"Character card not found: {card_id}")
         _validate_character_scope(target_scope, target_project_id)
-        return self.create_character_card(
+        copied_id = self.create_character_card(
             name=source.name,
             aliases=source.aliases,
             description=source.description,
@@ -405,7 +460,23 @@ class AnchorService:
             project_id=target_project_id,
             source_character_card_id=source.id,
             source_version=source.version,
+            identity=source.identity,
+            age=source.age,
+            setting_text=source.setting_text,
+            custom_fields=source.custom_fields,
+            raw_text=source.raw_text,
+            analysis_status=source.analysis_status,
         )
+        with session(self.database_path) as connection:
+            tag_ids = [
+                int(row["tag_id"])
+                for row in connection.execute(
+                    "SELECT tag_id FROM character_tag_links WHERE character_card_id = ?",
+                    (source.id,),
+                ).fetchall()
+            ]
+            self._replace_character_tags(connection, copied_id, tag_ids)
+        return copied_id
 
     def delete_character_card(self, card_id: int) -> None:
         with session(self.database_path) as connection:
@@ -432,26 +503,41 @@ class AnchorService:
         self,
         scope: str | None = None,
         project_id: int | None = None,
+        tag_id: int | None = None,
+        analysis_status: str | None = None,
+        untagged: bool = False,
     ) -> list[CharacterCard]:
-        clauses = ["deleted_at IS NULL"]
+        clauses = ["c.deleted_at IS NULL"]
         parameters: list[object] = []
         if scope is not None:
             _validate_character_scope(scope, project_id if scope == "project" else None)
-            clauses.append("scope = ?")
+            clauses.append("c.scope = ?")
             parameters.append(scope)
         if project_id is not None:
-            clauses.append("project_id = ?")
+            clauses.append("c.project_id = ?")
             parameters.append(project_id)
+        if analysis_status is not None:
+            clauses.append("c.analysis_status = ?")
+            parameters.append(_validate_analysis_status(analysis_status))
+        if tag_id is not None:
+            clauses.append(
+                "EXISTS (SELECT 1 FROM character_tag_links filter_link "
+                "WHERE filter_link.character_card_id = c.id AND filter_link.tag_id = ?)"
+            )
+            parameters.append(tag_id)
+        if untagged:
+            clauses.append("NOT EXISTS (SELECT 1 FROM character_tag_links tl WHERE tl.character_card_id = c.id)")
         with session(self.database_path) as connection:
             rows = connection.execute(
                 f"""
-                SELECT id, name, aliases_json, description, priority, is_main, relationship_notes,
-                       personality, speech_style, action_constraints, anti_ooc_rules, profile_json,
-                       source_metadata_json, import_metadata_json, version, scope, project_id,
-                       source_character_card_id, source_version, 0 AS sort_order
-                FROM character_cards
+                SELECT c.*, 0 AS sort_order,
+                       COALESCE(GROUP_CONCAT(t.name, char(31)), '') AS tag_names
+                FROM character_cards c
+                LEFT JOIN character_tag_links link ON link.character_card_id = c.id
+                LEFT JOIN character_tags t ON t.id = link.tag_id AND t.deleted_at IS NULL
                 WHERE {' AND '.join(clauses)}
-                ORDER BY updated_at DESC, id DESC
+                GROUP BY c.id
+                ORDER BY c.updated_at DESC, c.id DESC
                 """,
                 parameters,
             ).fetchall()
@@ -461,12 +547,13 @@ class AnchorService:
         with session(self.database_path) as connection:
             row = connection.execute(
                 """
-                SELECT id, name, aliases_json, description, priority, is_main, relationship_notes,
-                       personality, speech_style, action_constraints, anti_ooc_rules, profile_json,
-                       source_metadata_json, import_metadata_json, version, scope, project_id,
-                       source_character_card_id, source_version, 0 AS sort_order
-                FROM character_cards
-                WHERE id = ? AND deleted_at IS NULL
+                SELECT c.*, 0 AS sort_order,
+                       COALESCE(GROUP_CONCAT(t.name, char(31)), '') AS tag_names
+                FROM character_cards c
+                LEFT JOIN character_tag_links link ON link.character_card_id = c.id
+                LEFT JOIN character_tags t ON t.id = link.tag_id AND t.deleted_at IS NULL
+                WHERE c.id = ? AND c.deleted_at IS NULL
+                GROUP BY c.id
                 """,
                 (card_id,),
             ).fetchone()
@@ -505,16 +592,16 @@ class AnchorService:
         with session(self.database_path) as connection:
             rows = connection.execute(
                 """
-                SELECT c.id, c.name, c.aliases_json, c.description, c.priority, c.is_main,
-                       c.relationship_notes, c.personality, c.speech_style, c.action_constraints,
-                       c.anti_ooc_rules, c.profile_json, c.source_metadata_json,
-                       c.import_metadata_json, c.version, c.scope, c.project_id,
-                       c.source_character_card_id, c.source_version, b.sort_order
+                SELECT c.*, b.sort_order,
+                       COALESCE(GROUP_CONCAT(t.name, char(31)), '') AS tag_names
                 FROM project_character_bindings b
                 JOIN character_cards c ON c.id = b.character_card_id
+                LEFT JOIN character_tag_links link ON link.character_card_id = c.id
+                LEFT JOIN character_tags t ON t.id = link.tag_id AND t.deleted_at IS NULL
                 WHERE b.project_id = ?
                   AND b.is_active = 1
                   AND c.deleted_at IS NULL
+                GROUP BY c.id, b.sort_order
                 ORDER BY b.sort_order, c.priority DESC, c.id
                 """,
                 (project_id,),
@@ -528,6 +615,134 @@ class AnchorService:
             if _card_is_relevant(card, chapter_text)
         ]
 
+    def list_character_tags(self) -> list[dict[str, Any]]:
+        with session(self.database_path) as connection:
+            rows = connection.execute(
+                """
+                SELECT t.*, COUNT(c.id) AS resource_count
+                FROM character_tags t
+                LEFT JOIN character_tag_links link ON link.tag_id = t.id
+                LEFT JOIN character_cards c ON c.id = link.character_card_id AND c.deleted_at IS NULL
+                WHERE t.deleted_at IS NULL
+                GROUP BY t.id
+                ORDER BY t.sort_order, t.name
+                """
+            ).fetchall()
+        return [
+            {
+                "id": int(row["id"]),
+                "name": str(row["name"]),
+                "normalized_name": str(row["normalized_name"]),
+                "sort_order": int(row["sort_order"]),
+                "resource_count": int(row["resource_count"]),
+            }
+            for row in rows
+        ]
+
+    def create_character_tag(self, name: str) -> dict[str, Any]:
+        normalized = _required_tag_name(name)
+        key = _normalize_tag_name(normalized)
+        with session(self.database_path) as connection:
+            connection.execute(
+                """
+                INSERT INTO character_tags (name, normalized_name)
+                VALUES (?, ?)
+                ON CONFLICT(normalized_name) WHERE deleted_at IS NULL
+                DO UPDATE SET updated_at = CURRENT_TIMESTAMP
+                """,
+                (normalized, key),
+            )
+        return next(item for item in self.list_character_tags() if item["normalized_name"] == key)
+
+    def rename_character_tag(self, tag_id: int, name: str) -> dict[str, Any]:
+        normalized = _required_tag_name(name)
+        with session(self.database_path) as connection:
+            cursor = connection.execute(
+                """
+                UPDATE character_tags
+                SET name = ?, normalized_name = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND deleted_at IS NULL
+                """,
+                (normalized, _normalize_tag_name(normalized), tag_id),
+            )
+            if cursor.rowcount == 0:
+                raise ValueError(f"Character tag not found: {tag_id}")
+        return next(item for item in self.list_character_tags() if item["id"] == tag_id)
+
+    def delete_character_tag(self, tag_id: int) -> None:
+        with session(self.database_path) as connection:
+            connection.execute("DELETE FROM character_tag_links WHERE tag_id = ?", (tag_id,))
+            cursor = connection.execute(
+                "UPDATE character_tags SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND deleted_at IS NULL",
+                (tag_id,),
+            )
+            if cursor.rowcount == 0:
+                raise ValueError(f"Character tag not found: {tag_id}")
+
+    def set_character_tag(self, card_id: int, tag_id: int, selected: bool) -> CharacterCard:
+        with session(self.database_path) as connection:
+            if connection.execute(
+                "SELECT 1 FROM character_cards WHERE id = ? AND deleted_at IS NULL", (card_id,)
+            ).fetchone() is None:
+                raise ValueError(f"Character card not found: {card_id}")
+            if connection.execute(
+                "SELECT 1 FROM character_tags WHERE id = ? AND deleted_at IS NULL", (tag_id,)
+            ).fetchone() is None:
+                raise ValueError(f"Character tag not found: {tag_id}")
+            if selected:
+                connection.execute(
+                    "INSERT OR IGNORE INTO character_tag_links (character_card_id, tag_id) VALUES (?, ?)",
+                    (card_id, tag_id),
+                )
+            else:
+                connection.execute(
+                    "DELETE FROM character_tag_links WHERE character_card_id = ? AND tag_id = ?",
+                    (card_id, tag_id),
+                )
+        card = self.get_character_card(card_id)
+        if card is None:
+            raise ValueError(f"Character card not found: {card_id}")
+        return card
+
+    def analyze_character_card(
+        self,
+        card_id: int,
+        *,
+        identity: str,
+        age: str,
+        setting_text: str,
+        custom_fields: list[dict[str, Any]],
+        model_id: int | None = None,
+    ) -> None:
+        with session(self.database_path) as connection:
+            row = connection.execute(
+                "SELECT import_metadata_json FROM character_cards WHERE id = ? AND deleted_at IS NULL",
+                (card_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"Character card not found: {card_id}")
+            metadata = _loads_json(str(row["import_metadata_json"] or "{}"), {})
+            if not isinstance(metadata, dict):
+                metadata = {}
+            metadata["last_analyzed_model_id"] = model_id
+            connection.execute(
+                """
+                UPDATE character_cards
+                SET identity = ?, age = ?, setting_text = ?, custom_fields_json = ?,
+                    analysis_status = 'analyzed', import_metadata_json = ?,
+                    version = version + 1, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (
+                    identity.strip(),
+                    age.strip(),
+                    setting_text,
+                    json.dumps(_normalize_custom_fields(custom_fields), ensure_ascii=False),
+                    json.dumps(metadata, ensure_ascii=False),
+                    card_id,
+                ),
+            )
+
     def _ensure_project_exists(self, project_id: int) -> None:
         with session(self.database_path) as connection:
             row = connection.execute(
@@ -536,6 +751,21 @@ class AnchorService:
             ).fetchone()
         if row is None:
             raise ValueError(f"Project not found: {project_id}")
+
+    @staticmethod
+    def _replace_character_tags(connection, card_id: int, tag_ids: list[int]) -> None:
+        connection.execute("DELETE FROM character_tag_links WHERE character_card_id = ?", (card_id,))
+        for tag_id in dict.fromkeys(tag_ids):
+            tag = connection.execute(
+                "SELECT id FROM character_tags WHERE id = ? AND deleted_at IS NULL",
+                (int(tag_id),),
+            ).fetchone()
+            if tag is None:
+                raise ValueError(f"Character tag not found: {tag_id}")
+            connection.execute(
+                "INSERT INTO character_tag_links (character_card_id, tag_id) VALUES (?, ?)",
+                (card_id, int(tag_id)),
+            )
 
     @staticmethod
     def _outline_from_row(row) -> OutlineTemplate:
@@ -574,6 +804,15 @@ class AnchorService:
             source_character_card_id=row["source_character_card_id"],
             source_version=row["source_version"],
             sort_order=row["sort_order"],
+            identity=row["identity"],
+            age=row["age"],
+            setting_text=row["setting_text"],
+            custom_fields_json=row["custom_fields_json"],
+            raw_text=row["raw_text"],
+            analysis_status=row["analysis_status"],
+            cover_path=row["cover_path"],
+            cover_updated_at=row["cover_updated_at"],
+            tags=tuple(item for item in str(row["tag_names"] or "").split(chr(31)) if item),
         )
 
 
@@ -622,6 +861,47 @@ def _validate_character_scope(scope: str, project_id: int | None) -> None:
         raise ValueError("Project character cards require a project.")
     if scope == "public" and project_id is not None:
         raise ValueError("Public character cards cannot belong to a project.")
+
+
+def _validate_analysis_status(value: str) -> str:
+    if value not in {"unanalyzed", "analyzed"}:
+        raise ValueError(f"Unsupported analysis status: {value}")
+    return value
+
+
+def _required_tag_name(value: str) -> str:
+    normalized = " ".join(value.strip().split())
+    if not normalized:
+        raise ValueError("Tag name is required.")
+    if len(normalized) > 40:
+        raise ValueError("Tag name must be 40 characters or fewer.")
+    return normalized
+
+
+def _normalize_tag_name(value: str) -> str:
+    return " ".join(value.strip().split()).casefold()
+
+
+def _normalize_custom_fields(fields: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, field in enumerate(fields or []):
+        label = str(field.get("label") or "").strip()
+        if not label:
+            continue
+        key = label.casefold()
+        if key in seen:
+            raise ValueError(f"Duplicate custom field label: {label}")
+        seen.add(key)
+        normalized.append(
+            {
+                "id": str(field.get("id") or f"field_{index}"),
+                "label": label,
+                "value": str(field.get("value") or ""),
+                "sort_order": len(normalized),
+            }
+        )
+    return normalized
 
 
 def _loads_json(text: str, fallback: Any) -> Any:

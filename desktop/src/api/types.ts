@@ -28,7 +28,7 @@ export type LibraryDocument = {
   word_count: number;
   status: string;
   favorite: boolean;
-  categories: string[];
+  tags: string[];
   created_at: string;
   updated_at: string;
 };
@@ -77,14 +77,6 @@ export type DocumentLibrarySettings = {
   storage_path: string;
 };
 
-export type DocumentCategory = {
-  id: number;
-  name: string;
-  parent_id: number | null;
-  sort_order: number;
-  document_count: number;
-};
-
 export type LibraryDocumentChapter = {
   id: number;
   revision_id: number;
@@ -92,6 +84,8 @@ export type LibraryDocumentChapter = {
   title: string;
   start_line: number | null;
   end_line: number | null;
+  start_offset: number | null;
+  end_offset: number | null;
   word_count: number;
 };
 
@@ -101,6 +95,16 @@ export type LibraryDocumentContent = {
   chapter_id: number | null;
   title: string;
   text: string;
+  start_offset: number | null;
+  end_offset: number | null;
+};
+
+export type ResourceTag = {
+  id: number;
+  name: string;
+  normalized_name: string;
+  sort_order: number;
+  resource_count: number;
 };
 
 export type LibraryDocumentExportResult = {
@@ -432,6 +436,22 @@ export type CharacterCard = {
   source_version: number | null;
   version: number;
   sort_order: number;
+  identity: string;
+  age: string;
+  setting_text: string;
+  custom_fields: CharacterCustomField[];
+  raw_text: string;
+  analysis_status: AnalysisStatus;
+  cover_path: string | null;
+  cover_updated_at: string | null;
+  tags: string[];
+};
+
+export type CharacterCustomField = {
+  id: string;
+  label: string;
+  value: string;
+  sort_order: number;
 };
 
 export type CharacterCardWrite = {
@@ -450,6 +470,13 @@ export type CharacterCardWrite = {
   import_metadata: Record<string, unknown>;
   scope?: 'public' | 'project';
   project_id?: number | null;
+  identity?: string;
+  age?: string;
+  setting_text?: string;
+  custom_fields?: CharacterCustomField[];
+  raw_text?: string;
+  analysis_status?: AnalysisStatus;
+  tag_ids?: number[];
 };
 
 export type AnchorExtractWrite = {
@@ -464,7 +491,8 @@ export type AnchorExtractWrite = {
   project_id?: number | null;
 };
 
-export type MaterialType = 'outline' | 'plot_skeleton' | 'snippet';
+export type AnalysisStatus = 'unanalyzed' | 'analyzed';
+export type MaterialType = 'scene_reference' | 'plot_skeleton';
 export type MaterialScope = 'public' | 'project';
 
 export type Material = {
@@ -476,7 +504,9 @@ export type Material = {
   name: string;
   description: string;
   detail_level: StyleDetailLevel;
+  raw_text: string;
   content: Record<string, unknown>;
+  analysis_status: AnalysisStatus;
   source_metadata: Record<string, unknown>;
   import_metadata: Record<string, unknown>;
   source_material_id: number | null;
@@ -487,7 +517,7 @@ export type Material = {
   version: number;
   created_at: string;
   updated_at: string;
-  categories: string[];
+  tags: string[];
 };
 
 export type MaterialWrite = {
@@ -497,27 +527,49 @@ export type MaterialWrite = {
   name: string;
   description?: string;
   detail_level?: StyleDetailLevel;
+  raw_text?: string;
   content: Record<string, unknown>;
+  analysis_status?: AnalysisStatus;
   source_metadata?: Record<string, unknown>;
   import_metadata?: Record<string, unknown>;
   timeline_start_chapter?: number | null;
   timeline_end_chapter?: number | null;
   sort_order?: number;
-  category_ids?: number[];
+  tag_ids?: number[];
 };
 
 export type MaterialUpdate = Omit<MaterialWrite, 'material_type' | 'scope' | 'project_id' | 'source_metadata' | 'import_metadata'>;
 
-export type MaterialCategory = {
-  id: number;
-  name: string;
-  material_type: MaterialType;
-  sort_order: number;
-  material_count: number;
-};
-
 export type MaterialExtractWrite = AnchorExtractWrite & {
   material_type: MaterialType;
+};
+
+export type SelectionResourceCreate = {
+  source_kind: 'document' | 'project';
+  selected_text: string;
+  name: string;
+  document_id?: number | null;
+  project_id?: number | null;
+  chapter_id?: number | null;
+  start_offset?: number | null;
+  end_offset?: number | null;
+};
+
+export type SplitChapterCandidate = {
+  index: number;
+  title: string;
+  start_line: number;
+  end_line: number;
+  start_offset: number;
+  end_offset: number;
+  word_count: number;
+};
+
+export type SplitPreview = {
+  preview_token: string;
+  revision_id: number;
+  chapter_count: number;
+  chapters: SplitChapterCandidate[];
 };
 
 export type ProjectOutlineBinding = {
