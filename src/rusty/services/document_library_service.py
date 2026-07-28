@@ -755,22 +755,55 @@ class DocumentLibraryService:
         document = self._get_document(document_id)
         current_revision = self._ensure_initial_revision(document_id)
         source_text = Path(current_revision.storage_path).read_text(encoding="utf-8")
+        chapters = self.list_chapters(document_id)
         chapter_text = self._normalize_text(f"{title.strip()}\n\n{text.strip()}")
         if not title.strip():
             raise ValueError("章节标题不能为空。")
         insert_at = len(source_text)
         if position in {"before", "after"}:
-            chapters = self.list_chapters(document_id)
             target = next((chapter for chapter in chapters if chapter.id == current_chapter_id), None)
             if target is None:
                 raise FileNotFoundError(f"找不到章节：{current_chapter_id}")
-            start, end = self._chapter_offsets_from_lines(source_text, target.start_line, target.end_line)
+            start, end = self._chapter_offsets(source_text, target)
             insert_at = start if position == "before" else end
         elif position != "end":
             raise ValueError("插入位置必须是 before、after 或 end。")
-        separator = "\n\n" if insert_at > 0 and not source_text[:insert_at].endswith("\n\n") else ""
-        new_text = source_text[:insert_at] + separator + chapter_text + "\n" + source_text[insert_at:]
-        revision = self._create_text_revision(document, current_revision, new_text, "manual_edit", {"operation": "create_chapter"})
+        leading_separator = "\n\n" if insert_at > 0 and not source_text[:insert_at].endswith("\n\n") else ""
+        trailing_separator = "" if chapter_text.endswith("\n") else "\n"
+        inserted_text = leading_separator + chapter_text + trailing_separator
+        inserted_start = insert_at
+        inserted_end = inserted_start + len(inserted_text)
+        delta = len(inserted_text)
+        new_text = source_text[:insert_at] + inserted_text + source_text[insert_at:]
+        chapter_boundaries: list[dict[str, object]] = []
+        for chapter in chapters:
+            start, end = self._chapter_offsets(source_text, chapter)
+            if start >= insert_at:
+                start += delta
+                end += delta
+            chapter_boundaries.append(
+                {
+                    "title": chapter.title,
+                    "start_offset": start,
+                    "end_offset": end,
+                }
+            )
+        chapter_boundaries.append(
+            {
+                "title": title.strip(),
+                "start_offset": inserted_start,
+                "end_offset": inserted_end,
+            }
+        )
+        chapter_boundaries.sort(key=lambda item: int(item["start_offset"]))
+        revision = self._create_text_revision(
+            document,
+            current_revision,
+            new_text,
+            "manual_edit",
+            {"operation": "create_chapter"},
+            chapter_boundaries=chapter_boundaries,
+        )
         return CleanupResult(document=self._get_document(document_id), revision=revision, created=True)
 
     def preview_regex_split(self, document_id: int, pattern: str) -> SplitPreview:

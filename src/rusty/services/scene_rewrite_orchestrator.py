@@ -269,6 +269,8 @@ class SceneRewriteOrchestrator:
         user_instruction: str = "",
         model_id: int | None = None,
         character_ids: list[int] | None = None,
+        plot_skeleton_material_ids: list[int] | None = None,
+        scene_reference_ids: list[int] | None = None,
         material_ids: list[int] | None = None,
     ) -> dict[str, Any]:
         run = self.get_run(run_id)
@@ -279,6 +281,25 @@ class SceneRewriteOrchestrator:
         if plan["status"] != "confirmed":
             raise ValueError("The rewrite plan must be confirmed before generation.")
         scene_id = int(run["scene_id"])
+        scene = self._require_scene(scene_id)
+        plan_plot_ids = [int(item["material_id"]) for item in plan["materials"]]
+        plot_ids = list(plot_skeleton_material_ids or [])
+        reference_ids = list(scene_reference_ids or [])
+        for legacy_id in material_ids or []:
+            material = self.material_service.get_material(legacy_id)
+            if material is None:
+                raise FileNotFoundError(f"Material not found: {legacy_id}")
+            target = plot_ids if material.material_type == "plot_skeleton" else reference_ids
+            if legacy_id not in target:
+                target.append(legacy_id)
+        if not plot_ids:
+            plot_ids = plan_plot_ids
+        if set(plot_ids) & set(reference_ids):
+            raise ValueError("A material cannot be both a plot skeleton and a scene reference.")
+        self._validate_execution_materials(scene.project_id, plot_ids, reference_ids)
+        if set(plot_ids) != set(plan_plot_ids):
+            raise ValueError("Plot skeleton materials must match the confirmed plan mappings.")
+        retrieval_material_ids = [*plot_ids, *reference_ids]
         with session(self.database_path) as connection:
             connection.execute(
                 """
@@ -304,8 +325,9 @@ class SceneRewriteOrchestrator:
                     "confirmed_skeleton": confirmed_skeleton,
                     "rewrite_plan": plan["plan"],
                     "material_mappings": plan["materials"],
+                    "plot_skeleton_mappings": plan["materials"],
                     "scene_reference_constraints": {
-                        "material_ids": material_ids or [],
+                        "material_ids": reference_ids,
                         "rule": "Scene references are writing guidance only and do not authorize new events.",
                     },
                     "must_preserve_events": plan["plan"].get("preserve", []),
@@ -315,7 +337,7 @@ class SceneRewriteOrchestrator:
                 validator=_validate_rewrite,
                 model_id=model_id,
                 character_ids=character_ids or [],
-                material_ids=material_ids or [int(item["material_id"]) for item in plan["materials"]],
+                material_ids=retrieval_material_ids,
             )
             self.workflow.save_stage_output(
                 scene_id,
@@ -348,7 +370,7 @@ class SceneRewriteOrchestrator:
                 user_instruction=user_instruction,
                 model_id=model_id,
                 character_ids=character_ids or [],
-                material_ids=material_ids or [],
+                material_ids=retrieval_material_ids,
             )
             with session(self.database_path) as connection:
                 connection.execute(
@@ -364,6 +386,26 @@ class SceneRewriteOrchestrator:
         except Exception as exc:
             self._fail_run(run_id, exc)
             raise
+
+    def _validate_execution_materials(
+        self,
+        project_id: int,
+        plot_skeleton_material_ids: list[int],
+        scene_reference_ids: list[int],
+    ) -> None:
+        for material_id, expected_type in [
+            *((material_id, "plot_skeleton") for material_id in plot_skeleton_material_ids),
+            *((material_id, "scene_reference") for material_id in scene_reference_ids),
+        ]:
+            material = self.material_service.get_material(material_id)
+            if material is None:
+                raise FileNotFoundError(f"Material not found: {material_id}")
+            if material.material_type != expected_type:
+                raise ValueError(
+                    f"Material {material_id} must be {expected_type}, not {material.material_type}."
+                )
+            if material.scope == "project" and material.project_id != project_id:
+                raise ValueError(f"Material is not available to this project: {material_id}")
 
     def get_run(self, run_id: int) -> dict[str, Any]:
         with session(self.database_path) as connection:

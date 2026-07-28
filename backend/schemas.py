@@ -518,6 +518,8 @@ class SceneWorkflowExecuteRequest(BaseModel):
     user_instruction: str = ""
     model_id: int | None = None
     character_ids: list[int] = Field(default_factory=list)
+    plot_skeleton_material_ids: list[int] = Field(default_factory=list)
+    scene_reference_ids: list[int] = Field(default_factory=list)
     material_ids: list[int] = Field(default_factory=list)
     chapter_id: int | None = None
     scene_id: int | None = None
