@@ -1329,6 +1329,29 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   grid-column: 1 / -1;
 }
 
+.scene-resource-picker {
+  max-height: 180px;
+  margin: 0;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.scene-resource-picker > label {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  padding: 6px 4px;
+}
+
+.scene-resource-picker small {
+  display: block;
+  color: var(--muted);
+}
+
+.scene-diff {
+  line-height: 1.65;
+}
+
 .scene-workflow-actions {
   display: flex;
   flex-wrap: wrap;

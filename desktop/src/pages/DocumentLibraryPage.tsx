@@ -236,6 +236,7 @@ export function DocumentLibraryPage() {
 
   async function openProcessing(tab: ProcessingTab = 'chapters', targetDocument: LibraryDocument | null = selectedDocument) {
     if (!targetDocument) return;
+    if (workspaceOpen && !confirmDiscardDirty(`切换到“${targetDocument.title}”`)) return;
     setSelectedId(targetDocument.id);
     setProcessingTab(tab);
     setWorkspaceOpen(true);
@@ -304,18 +305,28 @@ export function DocumentLibraryPage() {
 
   async function handleDocumentAction(action: DocumentAction) {
     if (!selectedDocument) return;
+    const labels: Record<DocumentAction, string> = {
+      merge: '合并文档',
+      'create-chapter': '新增章节',
+      'regex-split': '正则分章',
+      'ai-split': 'AI 分章',
+    };
+    if (!confirmDiscardDirty(labels[action])) return;
     setActionDialog(action);
   }
 
-  async function saveCurrentContent(text: string) {
-    if (!selectedDocument || !documentContent) return;
+  async function saveCurrentContent(text: string): Promise<boolean> {
+    if (!selectedDocument || !documentContent) return false;
     try {
       const result = await saveLibraryDocumentContent(selectedDocument.id, text, null, documentContent.chapter_id);
+      setEditorDirty(false);
       await loadLibrary(result.document.id);
       await openProcessing('chapters', result.document);
       setMessage('正文已保存为新版本。');
+      return true;
     } catch (err) {
       setError(errorMessage(err));
+      return false;
     }
   }
 
@@ -360,7 +371,7 @@ export function DocumentLibraryPage() {
 
   async function showDocumentContent(chapterId: number | null) {
     if (!selectedDocument) return;
-    if (editorDirty && !window.confirm('当前正文尚未保存。仍要切换章节吗？')) return;
+    if (!confirmDiscardDirty('切换章节')) return;
     setProcessingBusy(true);
     setError(null);
     try {
@@ -392,6 +403,7 @@ export function DocumentLibraryPage() {
 
   async function applyProcessingTemplate() {
     if (!selectedDocument || !templateId) return;
+    if (!confirmDiscardDirty('应用文字整理模板')) return;
     await runProcessing(async () => {
       const selectedTemplate = templates.find((template) => template.id === templateId);
       let effectiveTemplateId = templateId;
@@ -417,6 +429,7 @@ export function DocumentLibraryPage() {
 
   async function restoreRevision(revisionId: number) {
     if (!selectedDocument) return;
+    if (!confirmDiscardDirty('恢复旧版本')) return;
     await runProcessing(async () => {
       await activateLibraryDocumentRevision(selectedDocument.id, revisionId);
       await loadLibrary(selectedDocument.id);
@@ -467,12 +480,16 @@ export function DocumentLibraryPage() {
     return documents.filter((document, index) => matchesFilter(document, filter, index)).length;
   }
 
+  function confirmDiscardDirty(actionLabel: string): boolean {
+    return !editorDirty || window.confirm(`当前正文有未保存修改。继续“${actionLabel}”将丢失这些修改，是否继续？`);
+  }
+
   if (workspaceOpen && selectedDocument) {
     return (
       <div className="project-workbench document-workbench">
         <header className="workbench-toolbar">
           <div className="project-heading">
-            <button className="button ghost workbench-back-button" onClick={() => { if (!editorDirty || window.confirm('当前正文尚未保存。仍要关闭工作台吗？')) setWorkspaceOpen(false); }} type="button">
+            <button className="button ghost workbench-back-button" onClick={() => { if (confirmDiscardDirty('关闭工作台')) setWorkspaceOpen(false); }} type="button">
               <ArrowLeft size={16} />返回文档库
             </button>
           </div>
@@ -502,7 +519,7 @@ export function DocumentLibraryPage() {
           onContentChange={(chapterId) => void showDocumentContent(chapterId)}
           onExport={() => setExportOpen(true)}
           onDocumentAction={(action) => void handleDocumentAction(action)}
-          onSaveContent={(text) => void saveCurrentContent(text)}
+          onSaveContent={saveCurrentContent}
           onDirtyChange={setEditorDirty}
           onManualMark={async (startOffset, endOffset, title) => {
             if (!documentContent) return;
@@ -518,7 +535,10 @@ export function DocumentLibraryPage() {
           onSaveTemplate={() => void saveProcessingTemplate()}
           onSelectTemplate={selectTemplate}
           onSettingsChange={setTemplateSettings}
-          onTabChange={setProcessingTab}
+          onTabChange={(tab) => {
+            const label = tab === 'cleanup' ? '切换到文字整理' : tab === 'reference' ? '切换到引用范围' : '切换到正文';
+            if (confirmDiscardDirty(label)) setProcessingTab(tab);
+          }}
           onTemplateNameChange={setTemplateName}
           processingBusy={processingBusy}
           referenceScope={referenceScope}
@@ -762,7 +782,7 @@ type DocumentWorkspaceProps = {
   onReorder: (draggedId: number, targetId: number) => void;
   onDocumentAction: (action: DocumentAction) => void;
   onRestore: (revisionId: number) => void;
-  onSaveContent: (text: string) => void;
+  onSaveContent: (text: string) => Promise<boolean>;
   onDirtyChange: (dirty: boolean) => void;
   onManualMark: (startOffset: number, endOffset: number, title: string) => void;
   onSelectionResource: (kind: 'scene' | 'plot' | 'character', text: string, startOffset: number, endOffset: number) => void;
@@ -911,7 +931,7 @@ function EditableTextPreview({
 }: {
   content: LibraryDocumentContent | null;
   loading: boolean;
-  onSave: (text: string) => void;
+  onSave: (text: string) => Promise<boolean>;
   onDirtyChange: (dirty: boolean) => void;
   onManualMark: (startOffset: number, endOffset: number, title: string) => void;
   onSelectionResource: (kind: 'scene' | 'plot' | 'character', text: string, startOffset: number, endOffset: number) => void;
@@ -991,7 +1011,7 @@ function EditableTextPreview({
         {markStart != null ? <button className="button secondary" onClick={() => setMarkStart(null)} type="button">取消标记</button> : null}
         <button className="button secondary" disabled={loading || !content} onClick={() => document.execCommand('undo')} type="button">撤销</button>
         <button className="button secondary" disabled={loading || !content} onClick={() => document.execCommand('redo')} type="button">重做</button>
-        <button className="button secondary" disabled={!dirty || loading || !content} onClick={() => { onSave(text); setDirtyState(false); }} type="button"><Save size={15} />保存</button>
+        <button className="button secondary" disabled={!dirty || loading || !content} onClick={() => { void onSave(text).then((saved) => { if (saved) setDirtyState(false); }); }} type="button"><Save size={15} />保存</button>
       </header>
       <textarea
         className="manuscript-editor"

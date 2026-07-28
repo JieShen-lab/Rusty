@@ -152,7 +152,7 @@ class SceneService:
         self,
         chapter_id: int,
         *,
-        proposed_boundaries: Iterable[int] | None = None,
+        proposed_boundaries: Iterable[int] | Iterable[dict[str, Any]] | None = None,
         source: str = "heuristic",
         replace_proposed: bool = True,
     ) -> list[SceneRecord]:
@@ -164,24 +164,30 @@ class SceneService:
             return current
         if current and not replace_proposed:
             return current
-        boundaries = (
-            self._validate_boundaries(chapter_text, proposed_boundaries)
-            if proposed_boundaries is not None
-            else self._heuristic_boundaries(chapter_text)
-        )
-        ranges = self._ranges_from_boundaries(chapter_text, boundaries)
+        proposed = list(proposed_boundaries) if proposed_boundaries is not None else None
+        if proposed and isinstance(proposed[0], dict):
+            items = self._validate_range_items(chapter_text, proposed)
+        else:
+            boundaries = (
+                self._validate_boundaries(chapter_text, proposed or [])
+                if proposed is not None
+                else self._heuristic_boundaries(chapter_text)
+            )
+            items = self._items_from_ranges(
+                self._ranges_from_boundaries(chapter_text, boundaries),
+                reasons=[source],
+            )
         with session(self.database_path) as connection:
-            connection.execute("DELETE FROM scenes WHERE chapter_id = ? AND user_confirmed = 0", (chapter_id,))
-            self._insert_scenes(
+            self._retire_active_scenes(connection, chapter_id)
+            self._insert_scene_items(
                 connection,
                 project_id=int(source_version["project_id"]),
                 chapter_id=chapter_id,
                 chapter_text=chapter_text,
-                ranges=ranges,
+                items=items,
                 source_version=int(source_version["source_version"]),
                 status="proposed",
                 confirmed=False,
-                reasons=[source],
             )
         return self.list_scenes(chapter_id)
 
@@ -201,36 +207,38 @@ class SceneService:
             )
         return self.list_scenes(chapter_id)
 
-    def adjust_boundaries(self, chapter_id: int, boundaries: Iterable[int]) -> list[SceneRecord]:
+    def adjust_boundaries(
+        self,
+        chapter_id: int,
+        boundaries: Iterable[int] | Iterable[dict[str, Any]],
+    ) -> list[SceneRecord]:
         """Replace boundaries only as an explicit user edit and retain superseded rows."""
         source_version = self.ensure_source_version(chapter_id)
         chapter_text = str(source_version["original_text"])
-        validated = self._validate_boundaries(chapter_text, boundaries)
-        ranges = self._ranges_from_boundaries(chapter_text, validated)
+        submitted = list(boundaries)
+        if submitted and isinstance(submitted[0], dict):
+            items = self._validate_range_items(chapter_text, submitted)
+        else:
+            validated = self._validate_boundaries(chapter_text, submitted)
+            items = self._items_from_ranges(
+                self._ranges_from_boundaries(chapter_text, validated),
+                reasons=["user_adjustment"],
+            )
         with session(self.database_path) as connection:
-            active = connection.execute(
-                "SELECT id, scene_index FROM scenes WHERE chapter_id = ? AND deleted_at IS NULL",
-                (chapter_id,),
-            ).fetchall()
-            for offset, row in enumerate(active, start=1):
-                connection.execute(
-                    """
-                    UPDATE scenes
-                    SET scene_index = ?, deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-                    WHERE id = ?
-                    """,
-                    (-1000000 - offset, int(row["id"])),
-                )
-            self._insert_scenes(
+            self._retire_active_scenes(connection, chapter_id)
+            items = [
+                {**item, "reasons": _unique_strings([*item["reasons"], "user_adjustment"])}
+                for item in items
+            ]
+            self._insert_scene_items(
                 connection,
                 project_id=int(source_version["project_id"]),
                 chapter_id=chapter_id,
                 chapter_text=chapter_text,
-                ranges=ranges,
+                items=items,
                 source_version=int(source_version["source_version"]),
                 status="adjusted",
                 confirmed=True,
-                reasons=["user_adjustment"],
             )
         return self.list_scenes(chapter_id)
 
@@ -441,6 +449,118 @@ class SceneService:
         return [(points[index], points[index + 1]) for index in range(len(points) - 1)]
 
     @staticmethod
+    def _validate_range_items(
+        text: str,
+        boundaries: Iterable[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        submitted = list(boundaries)
+        if not submitted:
+            raise ValueError("At least one scene boundary is required.")
+        normalized: list[dict[str, Any]] = []
+        for index, raw in enumerate(submitted):
+            start = int(raw.get("start_offset", -1))
+            end = int(raw.get("end_offset", -1))
+            if start < 0 or end <= start or end > len(text):
+                raise ValueError(f"Scene boundary {index + 1} is outside the chapter source range.")
+            normalized.append(
+                {
+                    "start_offset": start,
+                    "end_offset": end,
+                    "title": str(raw.get("title") or f"场景 {index + 1}").strip() or f"场景 {index + 1}",
+                    "reasons": _unique_strings(raw.get("reasons") or []),
+                }
+            )
+        starts = [int(item["start_offset"]) for item in normalized]
+        if starts != sorted(starts):
+            raise ValueError("Scene boundaries must be submitted in source order.")
+        expected = 0
+        for index, item in enumerate(normalized):
+            start = int(item["start_offset"])
+            if start != expected:
+                relation = "overlap" if start < expected else "gap"
+                raise ValueError(f"Scene boundary {index + 1} creates a {relation}.")
+            expected = int(item["end_offset"])
+        if expected != len(text):
+            raise ValueError("Scene boundaries must cover the complete chapter source.")
+        return normalized
+
+    @staticmethod
+    def _items_from_ranges(
+        ranges: list[tuple[int, int]],
+        *,
+        reasons: list[str],
+    ) -> list[dict[str, Any]]:
+        return [
+            {
+                "start_offset": start,
+                "end_offset": end,
+                "title": f"场景 {index}",
+                "reasons": list(reasons),
+            }
+            for index, (start, end) in enumerate(ranges, start=1)
+        ]
+
+    @staticmethod
+    def _retire_active_scenes(connection, chapter_id: int) -> None:
+        rows = connection.execute(
+            "SELECT id FROM scenes WHERE chapter_id = ? AND deleted_at IS NULL ORDER BY scene_index",
+            (chapter_id,),
+        ).fetchall()
+        for offset, row in enumerate(rows, start=1):
+            connection.execute(
+                """
+                UPDATE scenes
+                SET scene_index = ?, deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (-1000000 - offset, int(row["id"])),
+            )
+
+    @staticmethod
+    def _insert_scene_items(
+        connection,
+        *,
+        project_id: int,
+        chapter_id: int,
+        chapter_text: str,
+        items: list[dict[str, Any]],
+        source_version: int,
+        status: str,
+        confirmed: bool,
+    ) -> None:
+        for index, item in enumerate(items, start=1):
+            start = int(item["start_offset"])
+            end = int(item["end_offset"])
+            text = chapter_text[start:end]
+            cursor = connection.execute(
+                """
+                INSERT INTO scenes (
+                    project_id, chapter_id, scene_index, title,
+                    original_start_offset, original_end_offset, original_text,
+                    source_version, boundary_reason_json, boundary_status,
+                    scene_type, user_confirmed, confirmed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                          CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE NULL END)
+                """,
+                (
+                    project_id,
+                    chapter_id,
+                    index,
+                    str(item["title"]),
+                    start,
+                    end,
+                    text,
+                    source_version,
+                    json.dumps(item["reasons"], ensure_ascii=False),
+                    status,
+                    SceneService.detect_scene_type(text),
+                    1 if confirmed else 0,
+                    1 if confirmed else 0,
+                ),
+            )
+            SceneService._replace_paragraphs(connection, int(cursor.lastrowid), text, start)
+
+    @staticmethod
     def _insert_scenes(
         connection,
         *,
@@ -558,3 +678,15 @@ def _json_list(value: Any) -> list[Any]:
     except (json.JSONDecodeError, TypeError):
         return []
     return parsed if isinstance(parsed, list) else []
+
+
+def _unique_strings(values: Iterable[Any]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        key = text.casefold()
+        if text and key not in seen:
+            seen.add(key)
+            result.append(text)
+    return result

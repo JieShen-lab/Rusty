@@ -6,6 +6,7 @@ from typing import Any
 
 from rusty.db import initialize_database, session
 from rusty.services.context_service import ContextService
+from rusty.services.anchor_service import AnchorService
 from rusty.services.material_service import MaterialService
 from rusty.services.project_service import default_database_path
 from rusty.services.prompt_compiler import PromptCompiler
@@ -32,6 +33,7 @@ class SceneRewriteOrchestrator:
         self.context_service = ContextService(self.database_path)
         self.workflow = RewriteWorkflowService(self.database_path)
         self.material_service = MaterialService(self.database_path)
+        self.anchor_service = AnchorService(self.database_path)
         self.prompt_compiler = PromptCompiler()
         self.model_service = structured_model_service or StructuredModelService(self.database_path)
         with session(self.database_path) as connection:
@@ -92,7 +94,14 @@ class SceneRewriteOrchestrator:
                     "Every node must be supported by the original text."
                 ),
                 user_instruction=user_instruction,
-                task={"analysis": analysis.value, "mode": mode},
+                task={
+                    "mode": mode,
+                    "scene_analysis": analysis.value,
+                    "source_fidelity_constraint": (
+                        "Every skeleton node must be traceable to the complete original scene; "
+                        "do not invent unsupported facts."
+                    ),
+                },
                 output_protocol=_schema_text("story_skeleton", ["event_nodes"]),
                 validator=_validate_skeleton,
                 model_id=model_id,
@@ -132,6 +141,7 @@ class SceneRewriteOrchestrator:
         scene_reference_ids: list[int] | None = None,
     ) -> dict[str, Any]:
         run = self.get_run(run_id)
+        scene = self._require_scene(int(run["scene_id"]))
         self._require_confirmed_skeleton(skeleton_version_id)
         mappings = material_mappings or []
         if run["mode"] == "expansion" and not mappings:
@@ -142,6 +152,8 @@ class SceneRewriteOrchestrator:
                 raise FileNotFoundError(f"Material not found: {mapping['material_id']}")
             if material.material_type != "plot_skeleton":
                 raise ValueError("Only plot_skeleton materials can create expansion events.")
+            if material.scope == "project" and material.project_id != scene.project_id:
+                raise ValueError(f"Plot skeleton is not available to this project: {material.id}")
             if not mapping.get("event_nodes"):
                 content = _object(material.content_json)
                 mapping["event_nodes"] = content.get("event_nodes", [])
@@ -150,7 +162,21 @@ class SceneRewriteOrchestrator:
             material = self.material_service.get_material(material_id)
             if material is None or material.material_type != "scene_reference":
                 raise ValueError("Scene writing references must use scene_reference materials.")
+            if material.scope == "project" and material.project_id != scene.project_id:
+                raise ValueError(f"Scene reference is not available to this project: {material.id}")
         skeleton_nodes = self._skeleton_nodes(skeleton_version_id)
+        node_ids = {str(node.get("id")) for node in skeleton_nodes}
+        allowed_insertions = {"__start__", "__end__", *node_ids}
+        for mapping in mappings:
+            insertion = str(mapping.get("insertion_after_node") or "")
+            if insertion not in allowed_insertions:
+                raise ValueError(
+                    f"Plot insertion target does not exist in the confirmed skeleton: {insertion}"
+                )
+        scene_reference_constraints = {
+            "material_ids": reference_ids,
+            "rule": "Scene references guide local writing only and cannot create new plot events.",
+        }
         with session(self.database_path) as connection:
             connection.execute(
                 """
@@ -174,6 +200,10 @@ class SceneRewriteOrchestrator:
                     "mode": run["mode"],
                     "confirmed_skeleton": skeleton_nodes,
                     "material_mappings": mappings,
+                    "scene_reference_constraints": scene_reference_constraints,
+                    "expansion_event_rule": (
+                        "Only event nodes from plot_skeleton mappings may create new events."
+                    ),
                 },
                 output_protocol=_schema_text(
                     "rewrite_plan",
@@ -192,7 +222,6 @@ class SceneRewriteOrchestrator:
                 character_ids=character_ids or [],
                 material_ids=[*[int(item["material_id"]) for item in mappings], *reference_ids],
             )
-            scene = self._require_scene(int(run["scene_id"]))
             if run["mode"] == "skeleton_rewrite":
                 plan_id = self.workflow.create_skeleton_rewrite_plan(
                     project_id=scene.project_id,
@@ -260,6 +289,7 @@ class SceneRewriteOrchestrator:
                 (run_id,),
             )
         try:
+            confirmed_skeleton = self._skeleton_nodes(int(plan["skeleton_version_id"]))
             rewrite = self._call_stage(
                 scene_id,
                 stage="rewrite",
@@ -270,6 +300,14 @@ class SceneRewriteOrchestrator:
                 user_instruction=user_instruction,
                 task={
                     **plan["plan"],
+                    "mode": run["mode"],
+                    "confirmed_skeleton": confirmed_skeleton,
+                    "rewrite_plan": plan["plan"],
+                    "material_mappings": plan["materials"],
+                    "scene_reference_constraints": {
+                        "material_ids": material_ids or [],
+                        "rule": "Scene references are writing guidance only and do not authorize new events.",
+                    },
                     "must_preserve_events": plan["plan"].get("preserve", []),
                     "required_end_state": plan["plan"].get("expected_end_state", {}),
                 },
@@ -391,7 +429,7 @@ class SceneRewriteOrchestrator:
             plan_id=int(row["plan_id"]),
             skeleton_version_id=int(row["skeleton_version_id"]),
             facts_after=_object(row["facts_after_json"]),
-            revision_kind="manual",
+            revision_kind="restore",
             parent_version_id=version_id,
         )
 
@@ -410,6 +448,18 @@ class SceneRewriteOrchestrator:
         material_ids: list[int],
     ) -> StructuredModelResult:
         scene = self._require_scene(scene_id)
+        for character_id in character_ids:
+            card = self.anchor_service.get_character_card(character_id)
+            if card is None:
+                raise FileNotFoundError(f"Character card not found: {character_id}")
+            if card.scope == "project" and card.project_id != scene.project_id:
+                raise ValueError(f"Character card is not available to this project: {character_id}")
+        for material_id in material_ids:
+            material = self.material_service.get_material(material_id)
+            if material is None:
+                raise FileNotFoundError(f"Material not found: {material_id}")
+            if material.scope == "project" and material.project_id != scene.project_id:
+                raise ValueError(f"Material is not available to this project: {material_id}")
         retrieval = self.context_service.retrieve(
             scene_id,
             manual_material_ids=material_ids,
@@ -466,6 +516,9 @@ class SceneRewriteOrchestrator:
                 "UPDATE scene_workflow_runs SET status = 'checking', current_stage = 'consistency' WHERE id = ?",
                 (run_id,),
             )
+        source_version = self._rewrite_version(scene_id, source_version_id)
+        ledger = self.scene_service.get_fact_ledger(scene_id)
+        adjacent_states = self._adjacent_scene_states(scene_id)
         check_result = self._call_stage(
             scene_id,
             stage="consistency_check",
@@ -474,7 +527,20 @@ class SceneRewriteOrchestrator:
                 "knowledge states, timeline, transitions, and recent style techniques."
             ),
             user_instruction=user_instruction,
-            task={"plan": plan["plan"], "rewrite_version_id": source_version_id},
+            task={
+                "rewrite_plan": plan["plan"],
+                "candidate_rewrite_text": source_version["rewritten_text"],
+                "facts_after": source_version["facts_after"],
+                "required_start_state": ledger["required_start_state"],
+                "required_end_state": ledger["required_end_state"],
+                "adjacent_scene_states": adjacent_states,
+                "knowledge_states": ledger["knowledge_states"],
+                "objects": ledger["objects"],
+                "location": ledger["location"],
+                "time_state": ledger["time_state"],
+                "relationship_changes": ledger["relationship_changes"],
+                "foreshadowing": ledger["foreshadowing"],
+            },
             output_protocol=_schema_text("consistency", sorted(CONSISTENCY_KEYS)),
             validator=_validate_consistency,
             model_id=model_id,
@@ -504,6 +570,7 @@ class SceneRewriteOrchestrator:
                 "UPDATE scene_workflow_runs SET status = 'repairing', current_stage = 'targeted_repair' WHERE id = ?",
                 (run_id,),
             )
+        repair_targets = _repair_targets(check)
         repair_result = self._call_stage(
             scene_id,
             stage="targeted_repair",
@@ -511,7 +578,15 @@ class SceneRewriteOrchestrator:
                 "Repair only the identified paragraph ranges. Do not rewrite unaffected paragraphs."
             ),
             user_instruction=user_instruction,
-            task={"consistency": check, "rewrite_version_id": source_version_id},
+            task={
+                "consistency_result": check,
+                "repair_source_text": source_version["rewritten_text"],
+                "repair_targets": repair_targets,
+                "repair_constraint": (
+                    "Only paragraphs explicitly identified by paragraph_start and paragraph_end "
+                    "may change; every other paragraph must remain byte-for-byte unchanged."
+                ),
+            },
             output_protocol=_schema_text("targeted_repairs", ["repairs"]),
             validator=_validate_repairs,
             model_id=model_id,
@@ -543,12 +618,20 @@ class SceneRewriteOrchestrator:
                         (repair_id,),
                     ).fetchone()[0]
                 )
+        repaired_version = self._rewrite_version(scene_id, current_version)
         recheck = self._call_stage(
             scene_id,
             stage="consistency_check",
             system_rules="Recheck the repaired scene and report only remaining consistency risks.",
             user_instruction=user_instruction,
-            task={"plan": plan["plan"], "rewrite_version_id": current_version},
+            task={
+                "rewrite_plan": plan["plan"],
+                "candidate_rewrite_text": repaired_version["rewritten_text"],
+                "facts_after": repaired_version["facts_after"],
+                "required_start_state": ledger["required_start_state"],
+                "required_end_state": ledger["required_end_state"],
+                "adjacent_scene_states": adjacent_states,
+            },
             output_protocol=_schema_text("consistency", sorted(CONSISTENCY_KEYS)),
             validator=_validate_consistency,
             model_id=model_id,
@@ -563,6 +646,45 @@ class SceneRewriteOrchestrator:
             result=recheck.value,
         )
         return current_version, recheck.value
+
+    def _rewrite_version(self, scene_id: int, version_id: int) -> dict[str, Any]:
+        with session(self.database_path) as connection:
+            row = connection.execute(
+                """
+                SELECT id, rewritten_text, facts_after_json
+                FROM scene_rewrite_versions
+                WHERE id = ? AND scene_id = ?
+                """,
+                (version_id, scene_id),
+            ).fetchone()
+        if row is None:
+            raise FileNotFoundError(f"Scene rewrite version not found: {version_id}")
+        return {
+            "id": int(row["id"]),
+            "rewritten_text": str(row["rewritten_text"]),
+            "facts_after": _object(row["facts_after_json"]),
+        }
+
+    def _adjacent_scene_states(self, scene_id: int) -> dict[str, Any]:
+        scene = self._require_scene(scene_id)
+        siblings = self.scene_service.list_scenes(scene.chapter_id)
+        index = next(i for i, item in enumerate(siblings) if item.id == scene_id)
+        previous = siblings[index - 1] if index > 0 else None
+        following = siblings[index + 1] if index + 1 < len(siblings) else None
+        return {
+            "previous_scene_id": previous.id if previous else None,
+            "previous_end_state": (
+                self.scene_service.get_fact_ledger(previous.id)["required_end_state"]
+                if previous
+                else {}
+            ),
+            "next_scene_id": following.id if following else None,
+            "next_start_state": (
+                self.scene_service.get_fact_ledger(following.id)["required_start_state"]
+                if following
+                else {}
+            ),
+        }
 
     def _require_scene(self, scene_id: int):
         scene = self.scene_service.get_scene(scene_id)
@@ -687,6 +809,29 @@ def _validate_repairs(value: dict[str, Any]) -> dict[str, Any]:
             }
         )
     return {"repairs": normalized}
+
+
+def _repair_targets(consistency: dict[str, Any]) -> list[dict[str, Any]]:
+    targets: list[dict[str, Any]] = []
+    for issue_kind, issues in consistency.items():
+        if issue_kind == "revision_required" or not isinstance(issues, list):
+            continue
+        for issue in issues:
+            if not isinstance(issue, dict):
+                continue
+            start = issue.get("paragraph_start")
+            end = issue.get("paragraph_end")
+            if start is None or end is None:
+                continue
+            targets.append(
+                {
+                    "issue_kind": issue_kind,
+                    "paragraph_start": int(start),
+                    "paragraph_end": int(end),
+                    "issue": issue,
+                }
+            )
+    return targets
 
 
 def _object(value: Any) -> dict[str, Any]:

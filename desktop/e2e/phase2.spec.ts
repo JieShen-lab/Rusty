@@ -8,6 +8,8 @@ const materials = [
 ];
 const documentItem = { id: 1, title: '示例长篇', author: '作者', description: null, source_filename: 'novel.txt', source_format: 'txt', storage_path: 'novel.txt', source_size_bytes: 100, stored_size_bytes: 100, chapter_count: 1, word_count: 16, status: 'ready', favorite: false, tags: [], created_at: '', updated_at: '' };
 
+const sceneHistory = [{ id: 8, version: 1, revision_kind: 'rewrite', parent_version_id: null as number | null, created_at: '2026-07-28', rewritten_text: '林舟推门而入。' }];
+
 async function mockApi(page: Page) {
   await page.route('http://127.0.0.1:8765/api/**', async (route) => {
     const url = new URL(route.request().url());
@@ -19,7 +21,8 @@ async function mockApi(page: Page) {
       id: 1, name: '林舟', aliases: [], description: '', priority: 50, is_main: true, relationship_notes: '', personality: '', speech_style: '', action_constraints: '', anti_ooc_rules: '', profile: {}, source_metadata: {}, import_metadata: {}, scope: 'public', project_id: null, source_character_card_id: null, source_version: null, version: 1, sort_order: 0, identity: '', age: '', setting_text: '', custom_fields: [], raw_text: '林舟推门而入。', analysis_status: 'unanalyzed', cover_path: null, cover_updated_at: null, tags: ['主角'], created_at: '', updated_at: '',
     }];
     else if (path === '/api/materials') body = materials;
-    else if (/^\/api\/materials\/1\/analyze$/.test(path)) body = { ...materials[0], analysis_status: 'analyzed', content: { summary: '模型分析摘要' } };
+    else if (/^\/api\/materials\/1\/analyze$/.test(path)) body = { material_id: 1, model_id: 1, invocation_id: 9, existing: {}, proposal: { summary: '模型分析摘要' } };
+    else if (/^\/api\/materials\/1\/analysis\/apply$/.test(path)) body = { ...materials[0], analysis_status: 'analyzed', content: { summary: '模型分析摘要' } };
     else if (path === '/api/materials/import-json') body = { imported: [{ index: 0, id: 3, name: '导入场景', material_type: 'scene_reference' }], errors: [] };
     else if (path === '/api/documents') body = [documentItem];
     else if (path === '/api/document-tags') body = [];
@@ -42,7 +45,11 @@ async function mockApi(page: Page) {
     else if (path === '/api/scene-workflows/10/plan') body = { id: 10, project_id: 1, chapter_id: 1, scene_id: 1, mode: 'skeleton_rewrite', status: 'awaiting_plan_confirmation', skeleton_id: 5, skeleton_version_id: 9, plan_id: 7, current_stage: 'plan', error_message: null, plan: { sequence: ['发现钥匙'] } };
     else if (path === '/api/rewrite-plans/7/confirm') body = { id: 7, project_id: 1, chapter_id: 1, scene_id: 1, mode: 'skeleton_rewrite', skeleton_version_id: 6, status: 'confirmed', plan: {}, material_mappings: [], user_instruction: '' };
     else if (path === '/api/scene-workflows/10/execute') body = { id: 10, project_id: 1, chapter_id: 1, scene_id: 1, mode: 'skeleton_rewrite', status: 'completed', skeleton_id: 5, skeleton_version_id: 6, plan_id: 7, current_stage: 'completed', error_message: null, rewrite_version_id: 8, consistency: { revision_required: false } };
-    else if (path === '/api/scenes/1/rewrite-history') body = [{ id: 8, version: 1, rewritten_text: '林舟推门而入。' }];
+    else if (path === '/api/scenes/1/rewrite-history') body = sceneHistory;
+    else if (path === '/api/scenes/1/rewrite-history/8/restore') {
+      if (!sceneHistory.some((item) => item.id === 9)) sceneHistory.unshift({ id: 9, version: 2, revision_kind: 'restore', parent_version_id: 8, created_at: '2026-07-28', rewritten_text: '林舟推门而入。' });
+      body = { id: 9 };
+    }
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
   });
 }
@@ -72,7 +79,9 @@ test('素材 JSON 导入预览与真实 AI 分析 mock 流程', async ({ page })
   await expect(page.getByText(/已导入 1 条素材/)).toBeVisible();
   await page.getByText('雨夜追逐', { exact: true }).first().click();
   await page.getByRole('button', { name: /AI 分析/ }).last().click();
-  await expect(page.getByText(/模型分析完成/)).toBeVisible();
+  await expect(page.getByText(/模型分析建议已生成/)).toBeVisible();
+  await page.getByRole('button', { name: '确认应用' }).click();
+  await expect(page.getByText(/结构化分析建议已确认并保存/)).toBeVisible();
 });
 
 test('角色空字段提醒、自定义字段排序和封面入口', async ({ page }) => {
@@ -109,7 +118,19 @@ test('文档正文右键菜单、手动章节标记与 AI 分章入口', async (
   await expect(page.getByRole('button', { name: 'AI 分章' })).toBeVisible();
 });
 
+test('未保存正文取消切换后仍保留编辑内容', async ({ page }) => {
+  await page.goto('/documents');
+  await page.getByRole('button', { name: '示例长篇，作者' }).dblclick();
+  const editor = page.locator('textarea.manuscript-editor');
+  await editor.fill('未保存内容-UNIQUE');
+  page.once('dialog', (dialog) => dialog.dismiss());
+  await page.getByRole('button', { name: '文字整理' }).click();
+  await expect(editor).toHaveValue('未保存内容-UNIQUE');
+  await expect(page.getByText(/未保存/).first()).toBeVisible();
+});
+
 test('场景改写完成三段确认流程', async ({ page }) => {
+  page.on('dialog', (dialog) => dialog.accept());
   await page.goto('/workspace/1');
   await page.getByRole('button', { name: '场景改写' }).click();
   await page.getByRole('button', { name: /1\. 分析并提取骨架/ }).click();
@@ -119,4 +140,8 @@ test('场景改写完成三段确认流程', async ({ page }) => {
   await page.getByRole('button', { name: /3\. 确认规划并执行/ }).click();
   await expect(page.getByText(/一致性检查/)).toBeVisible();
   await expect(page.getByText('版本历史（原文不被覆盖）')).toBeVisible();
+  await page.getByText(/版本 1/).click();
+  await page.getByRole('button', { name: '恢复为新版本' }).click();
+  await expect(page.getByText(/已从所选历史内容创建新的恢复版本/)).toBeVisible();
+  await expect(page.getByText(/版本 2/)).toBeVisible();
 });

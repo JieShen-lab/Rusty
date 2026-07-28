@@ -542,6 +542,14 @@ export type MaterialWrite = {
 
 export type MaterialUpdate = Omit<MaterialWrite, 'material_type' | 'scope' | 'project_id' | 'source_metadata' | 'import_metadata'>;
 
+export type MaterialAnalysisProposal = {
+  material_id: number;
+  model_id: number;
+  invocation_id: number;
+  proposal: Record<string, unknown>;
+  existing: Record<string, unknown>;
+};
+
 export type MaterialExtractWrite = AnchorExtractWrite & {
   material_type: MaterialType;
 };
@@ -667,10 +675,17 @@ export type SceneRecord = {
   original_text: string;
   source_version: number;
   boundary_reasons: string[];
-  boundary_status: 'proposed' | 'confirmed';
+  boundary_status: 'proposed' | 'confirmed' | 'adjusted';
   scene_type: string;
   user_confirmed: boolean;
   confirmed_at: string | null;
+};
+
+export type SceneBoundaryItem = {
+  start_offset: number;
+  end_offset: number;
+  title: string;
+  reasons: string[];
 };
 
 export type SceneFactLedger = {

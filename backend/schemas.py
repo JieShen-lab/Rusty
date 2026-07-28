@@ -393,10 +393,18 @@ class RewriteTextRequest(BaseModel):
     rewritten_text: str = ""
 
 
+class SceneBoundaryItem(BaseModel):
+    start_offset: int = Field(ge=0)
+    end_offset: int = Field(gt=0)
+    title: str = ""
+    reasons: list[str] = Field(default_factory=list)
+
+
 class SceneBoundaryWriteRequest(BaseModel):
-    boundaries: list[int] | None = None
+    boundaries: list[SceneBoundaryItem] | None = None
     source: str = "ai"
     confirm: bool = False
+    model_id: int | None = None
 
 
 class SceneFactLedgerWriteRequest(BaseModel):
@@ -811,6 +819,12 @@ class MaterialCopyRequest(BaseModel):
 
 class MaterialAnalyzeRequest(BaseModel):
     model_id: int | None = None
+
+
+class MaterialAnalysisApplyRequest(BaseModel):
+    content: dict[str, Any]
+    model_id: int
+    invocation_id: int
 
 
 class MaterialJsonImportRequest(BaseModel):

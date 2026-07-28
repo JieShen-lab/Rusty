@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import {
   analyzeMaterial,
+  applyMaterialAnalysis,
   copyMaterial,
   createMaterial,
   createMaterialTag,
@@ -34,7 +35,7 @@ import {
   renameMaterialTag,
   updateMaterial,
 } from '../api/client';
-import type { AnalysisStatus, Material, MaterialScope, MaterialType, Project, ResourceTag } from '../api/types';
+import type { AnalysisStatus, Material, MaterialAnalysisProposal, MaterialScope, MaterialType, Project, ResourceTag } from '../api/types';
 import { DangerButton } from '../components/DangerButton';
 import {
   LibraryDefinition,
@@ -64,6 +65,7 @@ export function MaterialLibraryPage() {
   const [importOpen, setImportOpen] = useState(false);
   const [rawImportOpen, setRawImportOpen] = useState(false);
   const [extractOpen, setExtractOpen] = useState(false);
+  const [analysisProposal, setAnalysisProposal] = useState<{ material: Material; proposal: MaterialAnalysisProposal } | null>(null);
   const [tagDialog, setTagDialog] = useState<{ mode: 'create' | 'rename'; tag?: ResourceTag } | null>(null);
   const [moreId, setMoreId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
@@ -168,10 +170,11 @@ export function MaterialLibraryPage() {
   }
 
   async function runAnalyze(material: Material) {
+    if (material.analysis_status === 'analyzed' && !window.confirm('该资源已经分析过。重新分析会生成新的结构化建议。原始来源文本会保留，确认继续？')) return;
     await runBusy(async () => {
-      const updated = await analyzeMaterial(material.id);
-      await load(updated.id);
-      setMessage('模型分析完成，结构化结果已保存。');
+      const proposal = await analyzeMaterial(material.id);
+      setAnalysisProposal({ material, proposal });
+      setMessage('模型分析建议已生成，请预览后确认应用。');
     });
   }
 
@@ -435,6 +438,7 @@ export function MaterialLibraryPage() {
           busy={busy}
           projectId={scope === 'project' ? projectId : null}
           scope={scope}
+          tags={tags}
           onClose={() => setExtractOpen(false)}
           onError={setError}
           onFinished={async (saved) => {
@@ -445,6 +449,19 @@ export function MaterialLibraryPage() {
         />
       ) : null}
       {editing ? <MaterialEditor busy={busy} material={editing} tags={tags} onClose={() => setEditing(null)} onSave={saveMaterial} /> : null}
+      {analysisProposal ? <MaterialAnalysisDialog
+        busy={busy}
+        value={analysisProposal}
+        onClose={() => setAnalysisProposal(null)}
+        onConfirm={async () => {
+          await runBusy(async () => {
+            const updated = await applyMaterialAnalysis(analysisProposal.material.id, analysisProposal.proposal);
+            setAnalysisProposal(null);
+            await load(updated.id);
+            setMessage('结构化分析建议已确认并保存。');
+          });
+        }}
+      /> : null}
       {tagDialog ? <TagNameDialog busy={busy} initialName={tagDialog.tag?.name ?? ''} onClose={() => setTagDialog(null)} onSave={saveTag} title={tagDialog.mode === 'rename' ? '重命名素材标签' : '新建素材标签'} /> : null}
     </div>
   );
@@ -458,6 +475,18 @@ type MaterialDraft = {
   analysis_status: AnalysisStatus;
   tag_ids: number[];
 };
+
+function MaterialAnalysisDialog({ busy, onClose, onConfirm, value }: {
+  busy: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+  value: { material: Material; proposal: MaterialAnalysisProposal };
+}) {
+  return <LibraryDialog title={`分析建议：${value.material.name}`} onClose={onClose} footer={<><SecondaryButton disabled={busy} onClick={onClose}>取消</SecondaryButton><PrimaryButton disabled={busy} onClick={onConfirm}>确认应用</PrimaryButton></>}>
+    <p>建议尚未覆盖现有结构化内容。确认后才会保存，原始来源文字保持不变。</p>
+    <div className="library-definition-list">{Object.entries(value.proposal.proposal).map(([key, item]) => <LibraryDefinition key={key} label={key} value={typeof item === 'string' ? item : JSON.stringify(item, null, 2)} />)}</div>
+  </LibraryDialog>;
+}
 
 type NewMaterialDraft = {
   material_type: MaterialType;
@@ -558,17 +587,28 @@ function NewMaterialDialog({ busy, mode, onClose, onSave }: {
   );
 }
 
-function MaterialExtractDialog({ busy, onClose, onError, onFinished, projectId, scope }: {
+type ExtractCandidate = {
+  temporaryId: number;
+  material_type: MaterialType;
+  name: string;
+  description: string;
+  raw_text: string;
+  content: Record<string, unknown>;
+  tag_ids: number[];
+};
+
+function MaterialExtractDialog({ busy, onClose, onError, onFinished, projectId, scope, tags }: {
   busy: boolean;
   onClose: () => void;
   onError: (message: string) => void;
   onFinished: (materials: Material[]) => Promise<void>;
   projectId: number | null;
   scope: MaterialScope;
+  tags: ResourceTag[];
 }) {
   const [sourceText, setSourceText] = useState('');
   const [type, setType] = useState<MaterialType>('scene_reference');
-  const [results, setResults] = useState<Material[]>([]);
+  const [results, setResults] = useState<ExtractCandidate[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [working, setWorking] = useState(false);
   async function extract() {
@@ -582,7 +622,15 @@ function MaterialExtractDialog({ busy, onClose, onError, onFinished, projectId, 
         scope,
         project_id: scope === 'project' ? projectId : null,
       });
-      setResults(response.materials);
+      setResults(response.materials.map((item) => ({
+        temporaryId: item.id,
+        material_type: item.material_type,
+        name: item.name,
+        description: item.description,
+        raw_text: item.raw_text,
+        content: item.content,
+        tag_ids: tags.filter((tag) => item.tags.includes(tag.name)).map((tag) => tag.id),
+      })));
       setSelectedIds(new Set(response.materials.map((item) => item.id)));
     } catch (reason) {
       onError(errorMessage(reason));
@@ -593,35 +641,66 @@ function MaterialExtractDialog({ busy, onClose, onError, onFinished, projectId, 
   async function keepSelected() {
     setWorking(true);
     try {
-      const selected = results.filter((item) => selectedIds.has(item.id));
-      await Promise.all(results.filter((item) => !selectedIds.has(item.id)).map((item) => deleteMaterial(item.id)));
-      await onFinished(selected);
+      const selected = results.filter((item) => selectedIds.has(item.temporaryId));
+      const saved: Material[] = [];
+      const errors: string[] = [];
+      for (const item of selected) {
+        try {
+          saved.push(await createMaterial({
+            material_type: item.material_type,
+            scope,
+            project_id: scope === 'project' ? projectId : null,
+            name: item.name,
+            description: item.description,
+            raw_text: item.raw_text,
+            content: item.content,
+            analysis_status: 'analyzed',
+            import_metadata: { created_by: 'ai_extraction_confirmed' },
+            tag_ids: item.tag_ids,
+          }));
+        } catch (reason) {
+          errors.push(`${item.name}: ${errorMessage(reason)}`);
+        }
+      }
+      await Promise.all(results.map((item) => deleteMaterial(item.temporaryId)));
+      if (errors.length) onError(errors.join('；'));
+      await onFinished(saved);
     } catch (reason) {
       onError(errorMessage(reason));
     } finally {
       setWorking(false);
     }
   }
+  async function cancel() {
+    if (results.length) await Promise.all(results.map((item) => deleteMaterial(item.temporaryId)));
+    onClose();
+  }
   return (
     <LibraryDialog
       footer={results.length ? (
-        <><SecondaryButton disabled={working} onClick={onClose}>取消</SecondaryButton><PrimaryButton disabled={working || selectedIds.size === 0} onClick={() => void keepSelected()}>{working ? '保存中…' : `保存所选（${selectedIds.size}）`}</PrimaryButton></>
-      ) : <><SecondaryButton disabled={working} onClick={onClose}>取消</SecondaryButton><PrimaryButton disabled={working || !sourceText.trim() || busy} onClick={() => void extract()}>{working ? '提取中…' : '开始提取'}</PrimaryButton></>}
-      onClose={onClose}
+        <><SecondaryButton disabled={working} onClick={() => void cancel()}>取消</SecondaryButton><PrimaryButton disabled={working || selectedIds.size === 0} onClick={() => void keepSelected()}>{working ? '保存中…' : `保存所选（${selectedIds.size}）`}</PrimaryButton></>
+      ) : <><SecondaryButton disabled={working} onClick={() => void cancel()}>取消</SecondaryButton><PrimaryButton disabled={working || !sourceText.trim() || busy} onClick={() => void extract()}>{working ? '提取中…' : '开始提取'}</PrimaryButton></>}
+      onClose={() => void cancel()}
       subtitle="先提取结构，再选择要保留的素材"
       title="AI 提取素材"
     >
       {results.length ? (
         <div className="material-extract-results">
           {results.map((item) => (
-            <label key={item.id}>
-              <input checked={selectedIds.has(item.id)} onChange={(event) => setSelectedIds((current) => {
+            <div className="library-form-grid" key={item.temporaryId}>
+              <label>
+              <input checked={selectedIds.has(item.temporaryId)} onChange={(event) => setSelectedIds((current) => {
                 const next = new Set(current);
-                if (event.target.checked) next.add(item.id); else next.delete(item.id);
+                if (event.target.checked) next.add(item.temporaryId); else next.delete(item.temporaryId);
                 return next;
               })} type="checkbox" />
-              <span><strong>{item.name}</strong><small>{typeLabel(item)} · {item.description || '暂无摘要'}</small></span>
+              <span>保存此候选</span>
             </label>
+              <Field label="名称"><input value={item.name} onChange={(event) => setResults((current) => current.map((candidate) => candidate.temporaryId === item.temporaryId ? { ...candidate, name: event.target.value } : candidate))} /></Field>
+              <Field label="类型"><select value={item.material_type} onChange={(event) => setResults((current) => current.map((candidate) => candidate.temporaryId === item.temporaryId ? { ...candidate, material_type: event.target.value as MaterialType } : candidate))}><option value="scene_reference">场景素材</option><option value="plot_skeleton">剧情骨架</option></select></Field>
+              <Field className="wide" label="摘要"><textarea value={item.description} onChange={(event) => setResults((current) => current.map((candidate) => candidate.temporaryId === item.temporaryId ? { ...candidate, description: event.target.value } : candidate))} /></Field>
+              <div className="wide tag-choice-list">{tags.map((tag) => <label key={tag.id}><input checked={item.tag_ids.includes(tag.id)} onChange={(event) => setResults((current) => current.map((candidate) => candidate.temporaryId === item.temporaryId ? { ...candidate, tag_ids: event.target.checked ? [...candidate.tag_ids, tag.id] : candidate.tag_ids.filter((id) => id !== tag.id) } : candidate))} type="checkbox" />{tag.name}</label>)}</div>
+            </div>
           ))}
         </div>
       ) : (

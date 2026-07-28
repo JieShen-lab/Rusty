@@ -620,11 +620,7 @@ class DocumentLibraryService:
         if chapter is None:
             raise FileNotFoundError(f"找不到当前版本的章节：{chapter_id}")
         source_text = Path(revision.storage_path).read_text(encoding="utf-8")
-        start_offset, end_offset = self._chapter_offsets_from_lines(
-            source_text,
-            chapter.start_line,
-            chapter.end_line,
-        )
+        start_offset, end_offset = self._chapter_offsets(source_text, chapter)
         return LibraryDocumentContent(
             document_id=document.id,
             revision_id=revision.id,
@@ -653,12 +649,36 @@ class DocumentLibraryService:
             target = next((chapter for chapter in chapters if chapter.id == chapter_id), None)
             if target is None:
                 raise FileNotFoundError(f"找不到章节：{chapter_id}")
-            start, end = self._chapter_offsets_from_lines(source_text, target.start_line, target.end_line)
-            new_text = source_text[:start] + self._normalize_text(text) + source_text[end:]
+            start, end = self._chapter_offsets(source_text, target)
+            replacement = self._normalize_text(text)
+            new_text = source_text[:start] + replacement + source_text[end:]
+            delta = len(replacement) - (end - start)
+            chapter_boundaries = []
+            for chapter in chapters:
+                chapter_start, chapter_end = self._chapter_offsets(source_text, chapter)
+                if chapter.id == target.id:
+                    chapter_end = chapter_start + len(replacement)
+                elif chapter_start >= end:
+                    chapter_start += delta
+                    chapter_end += delta
+                chapter_boundaries.append(
+                    {
+                        "title": chapter.title,
+                        "start_offset": chapter_start,
+                        "end_offset": chapter_end,
+                    }
+                )
         if title and title.strip():
             self.update_document_metadata(document_id, title=title, author=document.author)
             document = self._get_document(document_id)
-        revision = self._create_text_revision(document, current_revision, new_text, "manual_edit", {})
+        revision = self._create_text_revision(
+            document,
+            current_revision,
+            new_text,
+            "manual_edit",
+            {},
+            chapter_boundaries=chapter_boundaries if chapter_id is not None else None,
+        )
         return CleanupResult(document=self._get_document(document_id), revision=revision, created=True)
 
     def merge_documents(self, document_ids: list[int], title: str, author: str | None = None) -> LibraryDocument:
@@ -850,19 +870,32 @@ class DocumentLibraryService:
         return revision, self.list_chapters(document_id)
 
     def mark_chapter(self, document_id: int, revision_id: int, title: str, start_offset: int, end_offset: int) -> list[LibraryChapter]:
-        if not title.strip():
-            raise ValueError("章节标题不能为空。")
+        normalized_title = title.strip()
+        if not normalized_title:
+            raise ValueError("Chapter title is required.")
         revision = self._ensure_initial_revision(document_id)
         if revision.id != revision_id:
-            raise ValueError("只能标记当前活动版本。")
+            raise ValueError("Only the current active revision can be marked.")
         text = Path(revision.storage_path).read_text(encoding="utf-8")
         if start_offset < 0 or end_offset <= start_offset or end_offset > len(text):
-            raise ValueError("章节 offset 越界或顺序无效。")
+            raise ValueError("Chapter offsets are out of bounds or reversed.")
+        chapters = self.list_chapters(document_id)
+        for chapter in chapters:
+            existing_start, existing_end = self._chapter_offsets(text, chapter)
+            if start_offset < existing_end and end_offset > existing_start:
+                raise ValueError(
+                    f"Chapter range overlaps '{chapter.title}' [{existing_start}, {existing_end})."
+                )
         with session(self.database_path) as connection:
-            max_index = connection.execute(
-                "SELECT COALESCE(MAX(chapter_index), 0) FROM library_document_chapters WHERE revision_id = ?",
-                (revision_id,),
-            ).fetchone()[0]
+            temporary_index = -(
+                int(
+                    connection.execute(
+                        "SELECT COALESCE(MAX(chapter_index), 0) + 1 FROM library_document_chapters WHERE revision_id = ?",
+                        (revision_id,),
+                    ).fetchone()[0]
+                )
+                + 1000000
+            )
             connection.execute(
                 """
                 INSERT INTO library_document_chapters (
@@ -873,8 +906,8 @@ class DocumentLibraryService:
                 (
                     document_id,
                     revision_id,
-                    int(max_index) + 1,
-                    title.strip(),
+                    temporary_index,
+                    normalized_title,
                     text.count("\n", 0, start_offset) + 1,
                     text.count("\n", 0, end_offset) + 1,
                     start_offset,
@@ -882,9 +915,32 @@ class DocumentLibraryService:
                     _count_words(text[start_offset:end_offset]),
                 ),
             )
+            ordered = connection.execute(
+                """
+                SELECT id
+                FROM library_document_chapters
+                WHERE revision_id = ?
+                ORDER BY COALESCE(start_offset, 2147483647), chapter_index
+                """,
+                (revision_id,),
+            ).fetchall()
+            for index, row in enumerate(ordered, start=1):
+                connection.execute(
+                    "UPDATE library_document_chapters SET chapter_index = ? WHERE id = ?",
+                    (-(2000000 + index), int(row["id"])),
+                )
+            for index, row in enumerate(ordered, start=1):
+                connection.execute(
+                    "UPDATE library_document_chapters SET chapter_index = ? WHERE id = ?",
+                    (index, int(row["id"])),
+                )
             connection.execute(
-                "UPDATE library_documents SET chapter_count = chapter_count + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (document_id,),
+                """
+                UPDATE library_documents
+                SET chapter_count = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (len(ordered), document_id),
             )
         return self.list_chapters(document_id)
 
@@ -1027,6 +1083,7 @@ class DocumentLibraryService:
         text: str,
         revision_type: str,
         metadata: dict[str, object],
+        chapter_boundaries: list[dict[str, object]] | None = None,
     ) -> DocumentRevision:
         encoded_text = self._normalize_text(text).encode("utf-8")
         content_hash = hashlib.sha256(encoded_text).hexdigest()
@@ -1057,7 +1114,37 @@ class DocumentLibraryService:
                     ),
                 )
                 revision_id = int(cursor.lastrowid)
-                self._insert_chapters(connection, document.id, revision_id, book.chapters)
+                if chapter_boundaries is None:
+                    self._insert_chapters(connection, document.id, revision_id, book.chapters)
+                    chapter_count = len(book.chapters)
+                else:
+                    normalized_text = encoded_text.decode("utf-8")
+                    ordered = sorted(chapter_boundaries, key=lambda item: int(item["start_offset"]))
+                    for index, boundary in enumerate(ordered, start=1):
+                        start = int(boundary["start_offset"])
+                        end = int(boundary["end_offset"])
+                        if start < 0 or end <= start or end > len(normalized_text):
+                            raise ValueError("Preserved chapter offset is invalid in the new revision.")
+                        connection.execute(
+                            """
+                            INSERT INTO library_document_chapters (
+                                document_id, revision_id, chapter_index, title,
+                                start_line, end_line, start_offset, end_offset, word_count
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                document.id,
+                                revision_id,
+                                index,
+                                str(boundary["title"]),
+                                normalized_text.count("\n", 0, start) + 1,
+                                normalized_text.count("\n", 0, end) + 1,
+                                start,
+                                end,
+                                _count_words(normalized_text[start:end]),
+                            ),
+                        )
+                    chapter_count = len(ordered)
                 connection.execute(
                     """
                     UPDATE library_documents
@@ -1070,7 +1157,7 @@ class DocumentLibraryService:
                         str(storage_path),
                         content_hash,
                         len(encoded_text),
-                        len(book.chapters),
+                        chapter_count,
                         book.total_words,
                         revision_id,
                         document.id,
@@ -1080,6 +1167,20 @@ class DocumentLibraryService:
             storage_path.unlink(missing_ok=True)
             raise
         return self.list_revisions(document.id)[0]
+
+    @staticmethod
+    def _chapter_offsets(text: str, chapter: LibraryChapter) -> tuple[int, int]:
+        if (
+            chapter.start_offset is not None
+            and chapter.end_offset is not None
+            and 0 <= chapter.start_offset < chapter.end_offset <= len(text)
+        ):
+            return chapter.start_offset, chapter.end_offset
+        return DocumentLibraryService._chapter_offsets_from_lines(
+            text,
+            chapter.start_line,
+            chapter.end_line,
+        )
 
     @staticmethod
     def _chapter_offsets_from_lines(text: str, start_line: int | None, end_line: int | None) -> tuple[int, int]:

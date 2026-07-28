@@ -166,6 +166,7 @@ export function CharacterLibraryPage() {
   }
 
   async function runAnalyze(card: CharacterCard) {
+    if (card.analysis_status === 'analyzed' && !window.confirm('该资源已经分析过。重新分析会生成新的结构化建议。原始来源文本会保留，确认继续？')) return;
     await runBusy(async () => {
       const result = await analyzeCharacterCard(card.id);
       setAnalysisProposal({ card, result });

@@ -42,6 +42,7 @@ from rusty.services.rewrite_workflow_service import RewriteWorkflowService
 from rusty.services.resource_analysis_service import ResourceAnalysisService
 from rusty.services.scene_service import SceneService
 from rusty.services.scene_rewrite_orchestrator import SceneRewriteOrchestrator
+from rusty.services.scene_boundary_ai_service import SceneBoundaryAIService
 from rusty.services.style_extraction_service import StyleExtractionService
 from rusty.services.style_service import StyleTemplate, StyleTemplateService
 
@@ -82,6 +83,7 @@ from .schemas import (
     LibraryDocumentOut,
     LibraryDocumentRevisionOut,
     MaterialAnalyzeRequest,
+    MaterialAnalysisApplyRequest,
     MaterialJsonImportRequest,
     MaterialCopyRequest,
     MaterialExtractOut,
@@ -204,6 +206,7 @@ def create_app(
     anchor_service = AnchorService(db_path)
     material_service = MaterialService(db_path)
     scene_service = SceneService(db_path)
+    scene_boundary_ai_service = SceneBoundaryAIService(db_path)
     context_service = ContextService(db_path)
     rewrite_workflow_service = RewriteWorkflowService(db_path)
     resource_analysis_service = ResourceAnalysisService(db_path)
@@ -872,11 +875,25 @@ def create_app(
     def analyze_chapter_scenes(chapter_id: int, payload: SceneBoundaryWriteRequest) -> list[dict[str, Any]]:
         chapter = _require_existing_chapter(project_service, chapter_id)
         _require_project(project_service, chapter.project_id)
-        scenes = scene_service.split_chapter(
-            chapter_id,
-            proposed_boundaries=payload.boundaries,
-            source=payload.source,
-        )
+        if payload.source == "ai" and payload.boundaries is None:
+            scenes = scene_boundary_ai_service.analyze(
+                chapter_id,
+                model_id=payload.model_id,
+            )["scenes"]
+        elif payload.source == "heuristic" and payload.boundaries is None:
+            scenes = scene_service.split_chapter(chapter_id, source="heuristic")
+        elif payload.boundaries is not None:
+            scenes = scene_service.split_chapter(
+                chapter_id,
+                proposed_boundaries=[item.model_dump() for item in payload.boundaries],
+                source=payload.source,
+            )
+        else:
+            raise _http_error(
+                400,
+                "scene_boundary_source_invalid",
+                "Scene analysis source must be ai or heuristic.",
+            )
         if payload.confirm:
             scenes = scene_service.confirm_boundaries(chapter_id)
         return [scene.__dict__ for scene in scenes]
@@ -891,7 +908,13 @@ def create_app(
         _require_project(project_service, chapter.project_id)
         if payload.boundaries is None:
             raise _http_error(400, "scene_boundaries_required", "Manual scene adjustment requires boundaries.")
-        return [scene.__dict__ for scene in scene_service.adjust_boundaries(chapter_id, payload.boundaries)]
+        return [
+            scene.__dict__
+            for scene in scene_service.adjust_boundaries(
+                chapter_id,
+                [item.model_dump() for item in payload.boundaries],
+            )
+        ]
 
     @app.post(
         "/api/chapters/{chapter_id}/scenes/confirm",
@@ -1465,10 +1488,26 @@ def create_app(
         material_service.delete_material(material_id)
         return {"ok": True}
 
-    @app.post("/api/materials/{material_id}/analyze", response_model=MaterialOut, dependencies=[Depends(_require_token)])
-    def analyze_material(material_id: int, payload: MaterialAnalyzeRequest) -> MaterialOut:
-        analyzed, _ = resource_analysis_service.analyze_material(material_id, model_id=payload.model_id)
-        return _material_out(analyzed)
+    @app.post("/api/materials/{material_id}/analyze", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def analyze_material(material_id: int, payload: MaterialAnalyzeRequest) -> dict[str, Any]:
+        proposal = resource_analysis_service.propose_material_analysis(material_id, model_id=payload.model_id)
+        proposal.pop("_result", None)
+        return proposal
+
+    @app.post(
+        "/api/materials/{material_id}/analysis/apply",
+        response_model=MaterialOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def apply_material_analysis(material_id: int, payload: MaterialAnalysisApplyRequest) -> MaterialOut:
+        return _material_out(
+            resource_analysis_service.apply_material_analysis(
+                material_id,
+                content=payload.content,
+                model_id=payload.model_id,
+                invocation_id=payload.invocation_id,
+            )
+        )
 
     @app.post("/api/material-extractions", response_model=MaterialExtractOut, dependencies=[Depends(_require_token)])
     def extract_materials(payload: MaterialExtractRequest) -> MaterialExtractOut:

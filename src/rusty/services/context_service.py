@@ -11,7 +11,9 @@ from rusty.db import initialize_database, session
 from rusty.services.anchor_service import AnchorService
 from rusty.services.material_service import MaterialService
 from rusty.services.project_service import default_database_path
+from rusty.services.prompt_service import PromptService
 from rusty.services.scene_service import SceneRecord, SceneService
+from rusty.services.style_service import StyleTemplateService
 
 
 DEFAULT_PRIORITIES = {
@@ -30,6 +32,27 @@ DEFAULT_PRIORITIES = {
     "style_examples": 13,
     "chapter_summary": 14,
     "global_summary": 15,
+}
+
+STAGE_BLOCK_PRIORITIES = {
+    "stage_task": 3,
+    "scene_analysis": 4,
+    "confirmed_skeleton": 4,
+    "rewrite_plan": 4,
+    "material_mappings": 5,
+    "scene_reference_constraints": 5,
+    "candidate_rewrite_text": 3,
+    "consistency_result": 4,
+    "repair_source_text": 3,
+    "repair_targets": 4,
+}
+
+STAGE_REQUIRED_BLOCKS = {
+    "skeleton": {"scene_analysis"},
+    "planning": {"confirmed_skeleton", "material_mappings"},
+    "rewrite": {"confirmed_skeleton", "rewrite_plan"},
+    "consistency_check": {"rewrite_plan", "candidate_rewrite_text"},
+    "targeted_repair": {"consistency_result", "repair_source_text", "repair_targets"},
 }
 
 
@@ -131,6 +154,8 @@ class ContextService:
         self.scene_service = SceneService(self.database_path)
         self.anchor_service = AnchorService(self.database_path)
         self.material_service = MaterialService(self.database_path)
+        self.prompt_service = PromptService(self.database_path)
+        self.style_service = StyleTemplateService(self.database_path)
         self.budgeter = PromptBudgeter()
         with session(self.database_path) as connection:
             initialize_database(connection)
@@ -387,9 +412,41 @@ class ContextService:
         recent_scene_count: int = 4,
     ) -> dict[str, Any]:
         scene = self._require_scene(scene_id)
-        scene_rules = (rules_by_scene_type or {}).get(scene.scene_type, [])
+        resolved_global_rules = list(global_rules)
+        resolved_rules = {key: list(value) for key, value in (rules_by_scene_type or {}).items()}
+        resolved_examples = list(examples)
+        if not resolved_global_rules and not resolved_rules and not resolved_examples:
+            settings = self.scene_service.project_service.get_project_settings(scene.project_id)
+            style_template = self.style_service.get_project_style_template(scene.project_id)
+            prompt_template = (
+                self.prompt_service.get_template(settings.prompt_template_id)
+                if settings is not None and settings.prompt_template_id is not None
+                else None
+            )
+            if style_template is not None:
+                resolved_global_rules.extend(
+                    text
+                    for text in (
+                        style_template.global_prompt,
+                        style_template.generated_prompt or style_template.rewrite_prompt,
+                    )
+                    if text.strip()
+                )
+                resolved_examples.extend(_style_examples(style_template.style_profile_json))
+            if prompt_template is not None:
+                resolved_global_rules.extend(
+                    text for text in (prompt_template.global_rules, prompt_template.rewrite_rules) if text.strip()
+                )
+                for rule in prompt_template.scene_rules:
+                    if rule.rewrite_prompt.strip():
+                        resolved_rules.setdefault(rule.scene_key, []).append(rule.rewrite_prompt)
+        scene_rules = [
+            rule
+            for scene_key in _scene_rule_keys(scene.scene_type)
+            for rule in resolved_rules.get(scene_key, [])
+        ]
         limited_examples = sorted(
-            (example for example in examples if example.strip()),
+            (example for example in resolved_examples if example.strip()),
             key=lambda text: _jaccard(scene.original_text, text),
             reverse=True,
         )[:3]
@@ -405,15 +462,16 @@ class ContextService:
                 """,
                 (scene.chapter_id, scene.scene_index, recent_scene_count),
             ).fetchall()
-        recent = _unique_terms(
+        recent_values = [
             technique
             for row in rows
             for technique in _json_list(row["recent_techniques_json"])
-        )
-        forbidden = _repeated_techniques(recent)
+        ]
+        recent = _unique_terms(recent_values)
+        forbidden = _repeated_techniques(recent_values)
         context = {
             "scene_type": scene.scene_type,
-            "global_rules": list(global_rules),
+            "global_rules": _unique_terms(resolved_global_rules),
             "scene_rules": list(scene_rules),
             "examples": limited_examples,
             "recent_techniques": recent,
@@ -465,6 +523,31 @@ class ContextService:
         character_context = [
             item for item in retrieval if item["source_type"] == "character_card"
         ]
+        stage_values = {
+            "stage_task": task,
+            "scene_analysis": task.get("scene_analysis", task.get("analysis")),
+            "confirmed_skeleton": task.get("confirmed_skeleton"),
+            "rewrite_plan": task.get("rewrite_plan"),
+            "material_mappings": task.get("material_mappings"),
+            "scene_reference_constraints": task.get("scene_reference_constraints"),
+            "candidate_rewrite_text": task.get("candidate_rewrite_text"),
+            "consistency_result": task.get("consistency_result", task.get("consistency")),
+            "repair_source_text": task.get("repair_source_text"),
+            "repair_targets": task.get("repair_targets"),
+        }
+        required_stage_keys = STAGE_REQUIRED_BLOCKS.get(stage, set())
+        stage_blocks = [
+            PromptBlock(
+                key,
+                _stage_text(value) if not isinstance(value, str) else value,
+                STAGE_BLOCK_PRIORITIES[key],
+                key in required_stage_keys,
+                source_type="scene_workflow",
+                source_id=f"{scene_id}:{stage}:{key}",
+            )
+            for key, value in stage_values.items()
+            if key in required_stage_keys or value not in (None, "", [], {})
+        ]
         blocks = [
             PromptBlock("system_rules", system_rules, 1, True, source_type="system"),
             PromptBlock("user_instruction", user_instruction, 2, True, source_type="user"),
@@ -476,6 +559,7 @@ class ContextService:
                 source_type="scene_original",
                 source_id=str(scene_id),
             ),
+            *stage_blocks,
             PromptBlock("must_preserve_events", _json_text(task.get("must_preserve_events", [])), 4, True),
             PromptBlock("required_end_state", _json_text(task.get("required_end_state", {})), 5, True),
             PromptBlock("story_state", _json_text({"facts": facts, "characters": character_states}), 6),
@@ -484,8 +568,19 @@ class ContextService:
             PromptBlock("foreshadowing", _json_text(facts["foreshadowing"]), 9),
             PromptBlock("character_context", _json_text(character_context), 10),
             PromptBlock("material_context", _json_text(material_context), 11),
+            PromptBlock("global_style_rules", _json_text((style_context or {}).get("global_rules", [])), 12),
             PromptBlock("scene_style_rules", _json_text((style_context or {}).get("scene_rules", [])), 12),
             PromptBlock("style_examples", _json_text((style_context or {}).get("examples", [])), 13),
+            PromptBlock(
+                "recent_style_techniques",
+                _json_text((style_context or {}).get("recent_techniques", [])),
+                13,
+            ),
+            PromptBlock(
+                "forbidden_style_repetitions",
+                _json_text((style_context or {}).get("forbidden_repetitions", [])),
+                12,
+            ),
             PromptBlock("chapter_summary", str(task.get("chapter_summary") or ""), 14),
             PromptBlock("global_summary", str(task.get("global_summary") or ""), 15),
         ]
@@ -688,6 +783,36 @@ def _json_text(value: Any) -> str:
     if value in (None, "", [], {}):
         return ""
     return json.dumps(value, ensure_ascii=False, indent=2)
+
+
+def _stage_text(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, indent=2, default=str)
+
+
+def _scene_rule_keys(scene_type: str) -> tuple[str, ...]:
+    aliases = {
+        "action": ("action", "combat", "combat_scene", "action_scene"),
+        "dialogue": ("dialogue", "dialogue_scene"),
+        "flashback": ("flashback", "memory", "memory_scene"),
+        "general": ("general", "default"),
+    }
+    return aliases.get(scene_type, (scene_type,))
+
+
+def _style_examples(raw_profile: str) -> list[str]:
+    try:
+        parsed = json.loads(raw_profile or "{}")
+    except (TypeError, json.JSONDecodeError):
+        parsed = {}
+    profile = parsed if isinstance(parsed, dict) else {}
+    values: list[str] = []
+    for key in ("examples", "style_examples", "excerpts", "samples"):
+        raw = profile.get(key)
+        if isinstance(raw, list):
+            values.extend(str(item) for item in raw if str(item).strip())
+        elif isinstance(raw, str) and raw.strip():
+            values.append(raw)
+    return values
 
 
 def _json_list(value: Any) -> list[str]:

@@ -581,7 +581,7 @@ export function assignMaterialTag(materialId: number, tagId: number, selected: b
 }
 
 export function analyzeMaterial(materialId: number, modelId?: number | null) {
-  return request<Material>(`/api/materials/${materialId}/analyze`, {
+  return request<import('./types').MaterialAnalysisProposal>(`/api/materials/${materialId}/analyze`, {
     method: 'POST',
     body: JSON.stringify({ model_id: modelId ?? null }),
   });
@@ -593,6 +593,17 @@ export function createMaterial(payload: MaterialWrite) {
 
 export function importMaterial(payload: MaterialWrite) {
   return request<Material>('/api/materials/import', { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export function applyMaterialAnalysis(materialId: number, proposal: import('./types').MaterialAnalysisProposal) {
+  return request<Material>(`/api/materials/${materialId}/analysis/apply`, {
+    method: 'POST',
+    body: JSON.stringify({
+      content: proposal.proposal,
+      model_id: proposal.model_id,
+      invocation_id: proposal.invocation_id,
+    }),
+  });
 }
 
 export function importMaterialJson(value: unknown, defaultScope: MaterialScope, defaultProjectId?: number | null) {
@@ -902,7 +913,12 @@ export function getChapterScenes(chapterId: number) {
 
 export function analyzeChapterScenes(
   chapterId: number,
-  payload: { boundaries?: Array<Record<string, unknown>> | null; source?: string; confirm?: boolean },
+  payload: {
+    boundaries?: import('./types').SceneBoundaryItem[] | null;
+    source?: 'ai' | 'heuristic' | 'user';
+    confirm?: boolean;
+    model_id?: number | null;
+  },
 ) {
   return request<import('./types').SceneRecord[]>(`/api/chapters/${chapterId}/scenes/analyze`, {
     method: 'POST',
@@ -910,7 +926,7 @@ export function analyzeChapterScenes(
   });
 }
 
-export function adjustChapterScenes(chapterId: number, boundaries: Array<Record<string, unknown>>) {
+export function adjustChapterScenes(chapterId: number, boundaries: import('./types').SceneBoundaryItem[]) {
   return request<import('./types').SceneRecord[]>(`/api/chapters/${chapterId}/scenes/adjust`, {
     method: 'POST',
     body: JSON.stringify({ boundaries, source: 'user', confirm: true }),

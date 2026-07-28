@@ -471,18 +471,35 @@ class AnchorService:
             raw_text=source.raw_text,
             analysis_status=source.analysis_status,
         )
-        with session(self.database_path) as connection:
-            tag_ids = [
-                int(row["tag_id"])
-                for row in connection.execute(
-                    "SELECT tag_id FROM character_tag_links WHERE character_card_id = ?",
-                    (source.id,),
-                ).fetchall()
-            ]
-            self._replace_character_tags(connection, copied_id, tag_ids)
+        try:
+            with session(self.database_path) as connection:
+                tag_ids = [
+                    int(row["tag_id"])
+                    for row in connection.execute(
+                        "SELECT tag_id FROM character_tag_links WHERE character_card_id = ?",
+                        (source.id,),
+                    ).fetchall()
+                ]
+                self._replace_character_tags(connection, copied_id, tag_ids)
+            source_cover = self.character_cover_file(source.id)
+            if source.cover_path and source_cover is None:
+                raise ValueError("Source character cover is missing or outside the managed directory.")
+            if source_cover is not None:
+                self.save_character_cover(copied_id, source_cover.read_bytes())
+        except Exception:
+            copied = self.get_character_card(copied_id)
+            copied_cover = copied.cover_path if copied is not None else None
+            with session(self.database_path) as connection:
+                connection.execute("DELETE FROM character_cards WHERE id = ?", (copied_id,))
+            self._remove_managed_cover(copied_cover)
+            raise
         return copied_id
 
     def delete_character_card(self, card_id: int) -> None:
+        card = self.get_character_card(card_id)
+        if card is None:
+            raise ValueError(f"Character card not found: {card_id}")
+        cover_path = card.cover_path
         with session(self.database_path) as connection:
             cursor = connection.execute(
                 """
@@ -502,6 +519,7 @@ class AnchorService:
             )
         if cursor.rowcount == 0:
             raise ValueError(f"Character card not found: {card_id}")
+        self._remove_managed_cover(cover_path)
 
     def list_character_cards(
         self,

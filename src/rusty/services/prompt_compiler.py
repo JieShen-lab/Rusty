@@ -224,6 +224,20 @@ class PromptCompiler:
             raise ValueError("Budgeted scene prompt is missing the complete current scene.")
         if not any(block.get("key") == "user_instruction" for block in user_blocks):
             raise ValueError("Budgeted scene prompt is missing the user instruction block.")
+        required_by_stage = {
+            "skeleton": {"scene_analysis"},
+            "planning": {"confirmed_skeleton", "material_mappings"},
+            "rewrite": {"confirmed_skeleton", "rewrite_plan"},
+            "consistency_check": {"rewrite_plan", "candidate_rewrite_text"},
+            "targeted_repair": {"consistency_result", "repair_source_text", "repair_targets"},
+        }
+        included_keys = {str(block.get("key")) for block in user_blocks}
+        missing_stage_blocks = sorted(required_by_stage.get(stage, set()) - included_keys)
+        if missing_stage_blocks:
+            raise ValueError(
+                "Budgeted scene prompt is missing required stage blocks: "
+                + ", ".join(missing_stage_blocks)
+            )
         system = "\n\n".join(
             f"## {str(block.get('key')).upper()}\n{str(block.get('content') or '')}"
             for block in system_blocks

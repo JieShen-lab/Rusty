@@ -53,6 +53,20 @@ class ResourceAnalysisService:
         self.model_service = structured_model_service or StructuredModelService(self.database_path)
 
     def analyze_material(self, material_id: int, *, model_id: int | None = None) -> tuple[Material, StructuredModelResult]:
+        proposal = self.propose_material_analysis(material_id, model_id=model_id)
+        result = proposal.pop("_result")
+        self.apply_material_analysis(
+            material_id,
+            content=proposal["proposal"],
+            model_id=result.model_id,
+            invocation_id=result.invocation_id,
+        )
+        updated = self.material_service.get_material(material_id)
+        if updated is None:
+            raise RuntimeError("Material disappeared after analysis.")
+        return updated, result
+
+    def propose_material_analysis(self, material_id: int, *, model_id: int | None = None) -> dict[str, Any]:
         material = self.material_service.get_material(material_id)
         if material is None:
             raise FileNotFoundError(f"Material not found: {material_id}")
@@ -72,16 +86,33 @@ class ResourceAnalysisService:
             resource_type="material",
             resource_id=material.id,
         )
+        return {
+            "material_id": material.id,
+            "model_id": result.model_id,
+            "invocation_id": result.invocation_id,
+            "proposal": result.value,
+            "existing": json.loads(material.content_json),
+            "_result": result,
+        }
+
+    def apply_material_analysis(
+        self,
+        material_id: int,
+        *,
+        content: dict[str, Any],
+        model_id: int,
+        invocation_id: int,
+    ) -> Material:
         self.material_service.analyze_material(
-            material.id,
-            content=result.value,
-            model_id=result.model_id,
-            invocation_id=result.invocation_id,
+            material_id,
+            content=content,
+            model_id=model_id,
+            invocation_id=invocation_id,
         )
-        updated = self.material_service.get_material(material.id)
+        updated = self.material_service.get_material(material_id)
         if updated is None:
             raise RuntimeError("Material disappeared after analysis.")
-        return updated, result
+        return updated
 
     def propose_character_analysis(
         self,
