@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
-  BookOpenText,
   Boxes,
   BriefcaseBusiness,
   Copy,
@@ -10,6 +9,7 @@ import {
   LayoutGrid,
   LibraryBig,
   ListTree,
+  MoreHorizontal,
   Pencil,
   Plus,
   Search,
@@ -30,6 +30,8 @@ import {
   getMaterials,
   getProjects,
   importMaterial,
+  importMaterialJson,
+  renameMaterialTag,
   updateMaterial,
 } from '../api/client';
 import type { AnalysisStatus, Material, MaterialScope, MaterialType, Project, ResourceTag } from '../api/types';
@@ -45,8 +47,7 @@ import { SecondaryButton } from '../components/SecondaryButton';
 import { TopBar } from '../components/TopBar';
 import { useAutoDismiss } from '../hooks/useAutoDismiss';
 
-type Filter = 'all' | 'unanalyzed' | 'outline' | 'plot_skeleton' | 'scene_reference' | 'untagged';
-type ViewMode = 'cards' | 'timeline';
+type Filter = 'all' | 'unanalyzed' | 'plot_skeleton' | 'scene_reference' | 'untagged';
 
 export function MaterialLibraryPage() {
   const [scope, setScope] = useState<MaterialScope>('public');
@@ -61,8 +62,10 @@ export function MaterialLibraryPage() {
   const [editing, setEditing] = useState<Material | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [rawImportOpen, setRawImportOpen] = useState(false);
   const [extractOpen, setExtractOpen] = useState(false);
-  const [viewMode, setViewMode] = useState<ViewMode>('cards');
+  const [tagDialog, setTagDialog] = useState<{ mode: 'create' | 'rename'; tag?: ResourceTag } | null>(null);
+  const [moreId, setMoreId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -76,8 +79,7 @@ export function MaterialLibraryPage() {
       if (filter === 'unanalyzed' && material.analysis_status !== 'unanalyzed') return false;
       if (filter === 'untagged' && material.tags.length > 0) return false;
       if (filter === 'scene_reference' && material.material_type !== 'scene_reference') return false;
-      if (filter === 'plot_skeleton' && (material.material_type !== 'plot_skeleton' || isOutline(material))) return false;
-      if (filter === 'outline' && !isOutline(material)) return false;
+      if (filter === 'plot_skeleton' && material.material_type !== 'plot_skeleton') return false;
       if (activeTag && !material.tags.includes(activeTag)) return false;
       if (!normalizedQuery) return true;
       return [
@@ -124,17 +126,17 @@ export function MaterialLibraryPage() {
     setFilter('all');
     setTagId(null);
     setSelectedId(null);
-    if (nextScope === 'public') setViewMode('cards');
   }
 
-  async function addTag() {
-    const name = window.prompt('新建素材标签');
-    if (!name?.trim()) return;
+  async function saveTag(name: string) {
     await runBusy(async () => {
-      const created = await createMaterialTag(name.trim());
+      const created = tagDialog?.mode === 'rename' && tagDialog.tag
+        ? await renameMaterialTag(tagDialog.tag.id, name.trim())
+        : await createMaterialTag(name.trim());
       await load(selectedId);
       setTagId(created.id);
-      setMessage(`已创建标签“${created.name}”。`);
+      setTagDialog(null);
+      setMessage(tagDialog?.mode === 'rename' ? `标签已重命名为“${created.name}”。` : `已创建标签“${created.name}”。`);
     });
   }
 
@@ -166,13 +168,10 @@ export function MaterialLibraryPage() {
   }
 
   async function runAnalyze(material: Material) {
-    const raw = window.prompt('粘贴 AI 分析得到的结构化 JSON。保存前会校验对象格式。', JSON.stringify(material.content, null, 2));
-    if (!raw) return;
     await runBusy(async () => {
-      const parsed = JSON.parse(raw) as Record<string, unknown>;
-      const updated = await analyzeMaterial(material.id, parsed);
+      const updated = await analyzeMaterial(material.id);
       await load(updated.id);
-      setMessage('素材分析结果已保存。');
+      setMessage('模型分析完成，结构化结果已保存。');
     });
   }
 
@@ -199,9 +198,10 @@ export function MaterialLibraryPage() {
         content,
         analysis_status: draft.analysis_status,
         detail_level: material.detail_level,
-        timeline_start_chapter: optionalNumber(draft.timeline_start_chapter),
-        timeline_end_chapter: optionalNumber(draft.timeline_end_chapter),
+        timeline_start_chapter: material.timeline_start_chapter,
+        timeline_end_chapter: material.timeline_end_chapter,
         sort_order: material.sort_order,
+        tag_ids: draft.tag_ids,
       });
       setEditing(null);
       await load(updated.id);
@@ -219,7 +219,6 @@ export function MaterialLibraryPage() {
         description: draft.description,
         raw_text: draft.raw_text,
         content: {
-          ...(draft.kind === 'outline' ? { material_kind: 'outline' } : {}),
           events: [],
         },
         analysis_status: draft.analysis_status,
@@ -242,7 +241,6 @@ export function MaterialLibraryPage() {
         description: draft.description,
         raw_text: draft.raw_text,
         content: {
-          ...(draft.kind === 'outline' ? { material_kind: 'outline' } : {}),
           source_imported: true,
         },
         analysis_status: 'unanalyzed',
@@ -250,6 +248,7 @@ export function MaterialLibraryPage() {
         tag_ids: [],
       });
       setImportOpen(false);
+      setRawImportOpen(false);
       await load(created.id);
       setMessage('素材已导入，等待结构化分析。');
     });
@@ -271,8 +270,7 @@ export function MaterialLibraryPage() {
   const counts = {
     all: materials.length,
     unanalyzed: materials.filter((item) => item.analysis_status === 'unanalyzed').length,
-    outline: materials.filter(isOutline).length,
-    plot_skeleton: materials.filter((item) => item.material_type === 'plot_skeleton' && !isOutline(item)).length,
+    plot_skeleton: materials.filter((item) => item.material_type === 'plot_skeleton').length,
     scene_reference: materials.filter((item) => item.material_type === 'scene_reference').length,
     untagged: materials.filter((item) => item.tags.length === 0).length,
   };
@@ -284,6 +282,7 @@ export function MaterialLibraryPage() {
         actions={(
           <>
             <SecondaryButton disabled={busy} onClick={() => setImportOpen(true)}><FileInput size={16} />导入</SecondaryButton>
+            <SecondaryButton disabled={busy} onClick={() => setRawImportOpen(true)}><FileInput size={16} />导入原始文字</SecondaryButton>
             <SecondaryButton disabled={busy} onClick={() => setExtractOpen(true)}><Sparkles size={16} />AI 提取</SecondaryButton>
             <PrimaryButton disabled={busy || (scope === 'project' && !projectId)} onClick={() => setCreateOpen(true)}><Plus size={16} />新建素材</PrimaryButton>
           </>
@@ -305,20 +304,20 @@ export function MaterialLibraryPage() {
               </select>
             </div>
             <div className="document-tag-heading"><span>素材类型</span></div>
-            <LibrarySidebarItem active={filter === 'outline'} count={counts.outline} icon={<BookOpenText size={16} />} label="大纲" onClick={() => { setFilter('outline'); setTagId(null); }} />
             <LibrarySidebarItem active={filter === 'plot_skeleton'} count={counts.plot_skeleton} icon={<ListTree size={16} />} label="剧情骨架" onClick={() => { setFilter('plot_skeleton'); setTagId(null); }} />
-            <LibrarySidebarItem active={filter === 'scene_reference'} count={counts.scene_reference} icon={<Boxes size={16} />} label="小素材" onClick={() => { setFilter('scene_reference'); setTagId(null); }} />
+            <LibrarySidebarItem active={filter === 'scene_reference'} count={counts.scene_reference} icon={<Boxes size={16} />} label="场景素材" onClick={() => { setFilter('scene_reference'); setTagId(null); }} />
             <div className="document-tag-heading"><span>系统筛选</span></div>
             <LibrarySidebarItem active={filter === 'all' && tagId === null} count={counts.all} icon={<LayoutGrid size={16} />} label="全部" onClick={() => { setFilter('all'); setTagId(null); }} />
             <LibrarySidebarItem active={filter === 'unanalyzed' && tagId === null} count={counts.unanalyzed} icon={<Sparkles size={16} />} label="未分析" onClick={() => { setFilter('unanalyzed'); setTagId(null); }} />
             <LibrarySidebarItem active={filter === 'untagged' && tagId === null} count={counts.untagged} icon={<Tags size={16} />} label="无标签" onClick={() => { setFilter('untagged'); setTagId(null); }} />
             <div className="document-tag-heading">
               <span>我的标签</span>
-              <button aria-label="新建素材标签" className="document-add-tag" disabled={busy} onClick={() => void addTag()} type="button"><FolderPlus size={15} /></button>
+              <button aria-label="新建素材标签" className="document-add-tag" disabled={busy} onClick={() => setTagDialog({ mode: 'create' })} type="button"><FolderPlus size={15} /></button>
             </div>
             {tags.length ? tags.map((item) => (
               <div className="library-tag-row" key={item.id}>
                 <LibrarySidebarItem active={tagId === item.id} count={item.resource_count} icon={<Tag size={16} />} label={item.name} onClick={() => { setTagId(item.id); setFilter('all'); }} />
+                <button aria-label={`重命名标签 ${item.name}`} disabled={busy} onClick={() => setTagDialog({ mode: 'rename', tag: item })} type="button"><Pencil size={13} /></button>
                 <button aria-label={`删除标签 ${item.name}`} disabled={busy} onClick={() => void removeTag(item.id)} type="button"><Trash2 size={13} /></button>
               </div>
             )) : <p className="document-tag-empty">暂无自定义标签</p>}
@@ -334,26 +333,20 @@ export function MaterialLibraryPage() {
                 <input onChange={(event) => setQuery(event.target.value)} placeholder="搜索名称、摘要、原文或标签" type="search" value={query} />
               </label>
             </div>
-            {scope === 'project' ? (
-              <div aria-label="素材视图" className="library-view-switch" role="tablist">
-                <button aria-selected={viewMode === 'cards'} onClick={() => setViewMode('cards')} role="tab" type="button"><LayoutGrid size={15} />卡片</button>
-                <button aria-selected={viewMode === 'timeline'} onClick={() => setViewMode('timeline')} role="tab" type="button"><ListTree size={15} />时间线</button>
-              </div>
-            ) : null}
           </header>
           {loading ? <LibraryEmptyState title="正在读取素材库…" /> : filtered.length ? (
-            viewMode === 'timeline' && scope === 'project'
-              ? <MaterialTimeline materials={filtered} onSelect={setSelectedId} selectedId={selectedId} />
-              : <div className="document-shelf-scroll">
+            <div className="document-shelf-scroll">
                 <div className="library-material-grid">
                   {filtered.map((material) => (
-                    <button
+                    <div
                       aria-pressed={selectedId === material.id}
                       className={`library-material-card ${selectedId === material.id ? 'selected' : ''}`}
                       key={material.id}
                       onClick={() => setSelectedId(material.id)}
                       onDoubleClick={() => setEditing(material)}
-                      type="button"
+                      onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') setSelectedId(material.id); }}
+                      role="button"
+                      tabIndex={0}
                     >
                       <header><strong>{material.name}</strong><span>{typeLabel(material)}</span></header>
                       <p>{material.description || material.raw_text.slice(0, 110) || structuredSummary(material.content)}</p>
@@ -362,7 +355,13 @@ export function MaterialLibraryPage() {
                         <span>{material.analysis_status === 'unanalyzed' ? '未分析' : '已分析'}</span>
                       </div>
                       <div className="document-detail-badges">{material.tags.slice(0, 3).map((name) => <span key={name}>{name}</span>)}</div>
-                    </button>
+                      {material.scope === 'project' ? (
+                        <span className="library-card-more" onClick={(event) => event.stopPropagation()}>
+                          <button aria-haspopup="menu" aria-expanded={moreId === material.id} aria-label="素材更多操作" type="button" onClick={() => setMoreId(moreId === material.id ? null : material.id)}><MoreHorizontal size={15} /></button>
+                          {moreId === material.id ? <span className="library-card-menu" role="menu"><button role="menuitem" type="button" onClick={() => { setMoreId(null); void copySelected(material); }}>添加到公共素材</button></span> : null}
+                        </span>
+                      ) : null}
+                    </div>
                   ))}
                 </div>
               </div>
@@ -392,8 +391,6 @@ export function MaterialLibraryPage() {
                 <section className="document-detail-metadata">
                   <LibraryDefinition label="来源" value={selected.source_material_id ? `素材 #${selected.source_material_id}` : String(selected.source_metadata.source_kind ?? '本地创建')} />
                   <LibraryDefinition label="来源版本" value={selected.source_version ? `v${selected.source_version}` : '—'} />
-                  <LibraryDefinition label="时间线起点" value={selected.timeline_start_chapter ? `第 ${selected.timeline_start_chapter} 章` : '未设置'} />
-                  <LibraryDefinition label="时间线终点" value={selected.timeline_end_chapter ? `第 ${selected.timeline_end_chapter} 章` : '未设置'} />
                   <LibraryDefinition label="更新时间" value={formatDate(selected.updated_at)} />
                 </section>
                 <DetailSection label="描述" value={selected.description} />
@@ -417,7 +414,22 @@ export function MaterialLibraryPage() {
       </div>
 
       {createOpen ? <NewMaterialDialog busy={busy} mode="create" onClose={() => setCreateOpen(false)} onSave={createFromDraft} /> : null}
-      {importOpen ? <NewMaterialDialog busy={busy} mode="import" onClose={() => setImportOpen(false)} onSave={importFromDraft} /> : null}
+      {importOpen ? (
+        <JsonImportDialog
+          busy={busy}
+          onClose={() => setImportOpen(false)}
+          onImport={async (value) => {
+            await runBusy(async () => {
+              const result = await importMaterialJson(value, scope, scope === 'project' ? projectId : null);
+              setImportOpen(false);
+              await load(result.imported[0]?.id ?? selectedId);
+              setMessage(`已导入 ${result.imported.length} 条素材${result.errors.length ? `，${result.errors.length} 条未导入` : ''}。`);
+              if (result.errors.length) setError(result.errors.map((item) => `第 ${item.index + 1} 条：${item.error}`).join('；'));
+            });
+          }}
+        />
+      ) : null}
+      {rawImportOpen ? <NewMaterialDialog busy={busy} mode="import" onClose={() => setRawImportOpen(false)} onSave={importFromDraft} /> : null}
       {extractOpen ? (
         <MaterialExtractDialog
           busy={busy}
@@ -432,7 +444,8 @@ export function MaterialLibraryPage() {
           }}
         />
       ) : null}
-      {editing ? <MaterialEditor busy={busy} material={editing} onClose={() => setEditing(null)} onSave={saveMaterial} /> : null}
+      {editing ? <MaterialEditor busy={busy} material={editing} tags={tags} onClose={() => setEditing(null)} onSave={saveMaterial} /> : null}
+      {tagDialog ? <TagNameDialog busy={busy} initialName={tagDialog.tag?.name ?? ''} onClose={() => setTagDialog(null)} onSave={saveTag} title={tagDialog.mode === 'rename' ? '重命名素材标签' : '新建素材标签'} /> : null}
     </div>
   );
 }
@@ -443,12 +456,10 @@ type MaterialDraft = {
   raw_text: string;
   content: string;
   analysis_status: AnalysisStatus;
-  timeline_start_chapter: string;
-  timeline_end_chapter: string;
+  tag_ids: number[];
 };
 
 type NewMaterialDraft = {
-  kind: 'outline' | 'plot_skeleton' | 'scene_reference';
   material_type: MaterialType;
   name: string;
   description: string;
@@ -456,11 +467,12 @@ type NewMaterialDraft = {
   analysis_status: AnalysisStatus;
 };
 
-function MaterialEditor({ busy, material, onClose, onSave }: {
+function MaterialEditor({ busy, material, onClose, onSave, tags }: {
   busy: boolean;
   material: Material;
   onClose: () => void;
   onSave: (material: Material, draft: MaterialDraft) => void;
+  tags: ResourceTag[];
 }) {
   const [draft, setDraft] = useState<MaterialDraft>({
     name: material.name,
@@ -468,8 +480,7 @@ function MaterialEditor({ busy, material, onClose, onSave }: {
     raw_text: material.raw_text,
     content: JSON.stringify(material.content, null, 2),
     analysis_status: material.analysis_status,
-    timeline_start_chapter: String(material.timeline_start_chapter ?? ''),
-    timeline_end_chapter: String(material.timeline_end_chapter ?? ''),
+    tag_ids: tags.filter((tag) => material.tags.includes(tag.name)).map((tag) => tag.id),
   });
   return (
     <LibraryDialog
@@ -482,9 +493,25 @@ function MaterialEditor({ busy, material, onClose, onSave }: {
         <Field label="素材名称"><input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></Field>
         <Field label="分析状态"><select value={draft.analysis_status} onChange={(event) => setDraft({ ...draft, analysis_status: event.target.value as AnalysisStatus })}><option value="unanalyzed">未分析</option><option value="analyzed">已分析</option></select></Field>
         <Field className="wide" label="描述"><textarea value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} /></Field>
-        <Field label="时间线起始章"><input min="1" type="number" value={draft.timeline_start_chapter} onChange={(event) => setDraft({ ...draft, timeline_start_chapter: event.target.value })} /></Field>
-        <Field label="时间线结束章"><input min="1" type="number" value={draft.timeline_end_chapter} onChange={(event) => setDraft({ ...draft, timeline_end_chapter: event.target.value })} /></Field>
         <Field className="wide" label="原始来源"><textarea value={draft.raw_text} onChange={(event) => setDraft({ ...draft, raw_text: event.target.value })} /></Field>
+        <fieldset className="wide library-tag-picker">
+          <legend>标签</legend>
+          {tags.length ? tags.map((tag) => (
+            <label key={tag.id}>
+              <input
+                checked={draft.tag_ids.includes(tag.id)}
+                type="checkbox"
+                onChange={(event) => setDraft({
+                  ...draft,
+                  tag_ids: event.target.checked
+                    ? [...draft.tag_ids, tag.id]
+                    : draft.tag_ids.filter((id) => id !== tag.id),
+                })}
+              />
+              {tag.name}
+            </label>
+          )) : <small>请先在左侧新建标签。</small>}
+        </fieldset>
       </div>
       <details className="library-advanced-editor">
         <summary>高级结构化编辑（JSON）</summary>
@@ -501,16 +528,12 @@ function NewMaterialDialog({ busy, mode, onClose, onSave }: {
   onSave: (draft: NewMaterialDraft) => void;
 }) {
   const [draft, setDraft] = useState<NewMaterialDraft>({
-    kind: 'scene_reference',
     material_type: 'scene_reference',
     name: '',
     description: '',
     raw_text: '',
     analysis_status: mode === 'import' ? 'unanalyzed' : 'analyzed',
   });
-  function selectKind(kind: NewMaterialDraft['kind']) {
-    setDraft({ ...draft, kind, material_type: kind === 'scene_reference' ? 'scene_reference' : 'plot_skeleton' });
-  }
   return (
     <LibraryDialog
       footer={<><SecondaryButton disabled={busy} onClick={onClose}>取消</SecondaryButton><PrimaryButton disabled={busy || !draft.name.trim() || (mode === 'import' && !draft.raw_text.trim())} onClick={() => onSave(draft)}>{busy ? '处理中…' : mode === 'import' ? '导入' : '创建'}</PrimaryButton></>}
@@ -520,11 +543,10 @@ function NewMaterialDialog({ busy, mode, onClose, onSave }: {
     >
       <div className="material-kind-picker">
         {([
-          ['outline', '大纲', '章节或全书层面的内容方向'],
           ['plot_skeleton', '剧情骨架', '按因果顺序排列的事件节点'],
-          ['scene_reference', '小素材', '可插入场景的局部事件或细节'],
+          ['scene_reference', '场景素材', '为特定场景提供写法、动作和细节参考'],
         ] as const).map(([kind, label, description]) => (
-          <button className={draft.kind === kind ? 'selected' : ''} key={kind} onClick={() => selectKind(kind)} type="button"><strong>{label}</strong><span>{description}</span></button>
+          <button className={draft.material_type === kind ? 'selected' : ''} key={kind} onClick={() => setDraft({ ...draft, material_type: kind })} type="button"><strong>{label}</strong><span>{description}</span></button>
         ))}
       </div>
       <div className="library-form-grid">
@@ -604,31 +626,11 @@ function MaterialExtractDialog({ busy, onClose, onError, onFinished, projectId, 
         </div>
       ) : (
         <div className="library-form-grid">
-          <Field label="提取类型"><select value={type} onChange={(event) => setType(event.target.value as MaterialType)}><option value="scene_reference">小素材</option><option value="plot_skeleton">剧情骨架</option></select></Field>
+          <Field label="提取类型"><select value={type} onChange={(event) => setType(event.target.value as MaterialType)}><option value="scene_reference">场景素材</option><option value="plot_skeleton">剧情骨架</option></select></Field>
           <Field className="wide" label="来源文本"><textarea className="tall" value={sourceText} onChange={(event) => setSourceText(event.target.value)} /></Field>
         </div>
       )}
     </LibraryDialog>
-  );
-}
-
-function MaterialTimeline({ materials, onSelect, selectedId }: { materials: Material[]; onSelect: (id: number) => void; selectedId: number | null }) {
-  const sorted = [...materials].sort((left, right) => (
-    (left.timeline_start_chapter ?? Number.MAX_SAFE_INTEGER) - (right.timeline_start_chapter ?? Number.MAX_SAFE_INTEGER)
-  ));
-  return (
-    <div className="library-material-timeline">
-      <div className="library-timeline-axis"><span>工程素材时间线</span><small>未设置章节的素材显示在末尾</small></div>
-      <div className="library-timeline-list">
-        {sorted.map((material) => (
-          <button className={`library-material-card timeline ${selectedId === material.id ? 'selected' : ''}`} key={material.id} onClick={() => onSelect(material.id)} type="button">
-            <span className="library-timeline-range">{material.timeline_start_chapter ? `第 ${material.timeline_start_chapter} 章` : '未定位'}{material.timeline_end_chapter && material.timeline_end_chapter !== material.timeline_start_chapter ? ` — 第 ${material.timeline_end_chapter} 章` : ''}</span>
-            <header><strong>{material.name}</strong><span>{typeLabel(material)}</span></header>
-            <p>{material.description || material.raw_text.slice(0, 100) || structuredSummary(material.content)}</p>
-          </button>
-        ))}
-      </div>
-    </div>
   );
 }
 
@@ -650,13 +652,78 @@ function Field({ children, className = '', label }: { children: ReactNode; class
   return <label className={className}><span>{label}</span>{children}</label>;
 }
 
-function isOutline(material: Material) {
-  return material.material_type === 'plot_skeleton' && material.content.material_kind === 'outline';
+function TagNameDialog({ busy, initialName, onClose, onSave, title }: {
+  busy: boolean;
+  initialName: string;
+  onClose: () => void;
+  onSave: (name: string) => void;
+  title: string;
+}) {
+  const [name, setName] = useState(initialName);
+  return (
+    <LibraryDialog
+      footer={<><SecondaryButton disabled={busy} onClick={onClose}>取消</SecondaryButton><PrimaryButton disabled={busy || !name.trim()} onClick={() => onSave(name)}>保存</PrimaryButton></>}
+      onClose={onClose}
+      title={title}
+    >
+      <Field label="标签名称"><input autoFocus value={name} onChange={(event) => setName(event.target.value)} /></Field>
+    </LibraryDialog>
+  );
+}
+
+function JsonImportDialog({ busy, onClose, onImport }: {
+  busy: boolean;
+  onClose: () => void;
+  onImport: (value: unknown) => void;
+}) {
+  const [text, setText] = useState('');
+  const [value, setValue] = useState<unknown>(null);
+  const [parseError, setParseError] = useState('');
+  function parse(nextText: string) {
+    setText(nextText);
+    try {
+      const parsed = JSON.parse(nextText) as unknown;
+      if (!parsed || (typeof parsed !== 'object')) throw new Error('JSON 必须是对象或对象数组。');
+      setValue(parsed);
+      setParseError('');
+    } catch (reason) {
+      setValue(null);
+      setParseError(errorMessage(reason));
+    }
+  }
+  async function readFile(file: File | undefined) {
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith('.json')) {
+      setParseError('请选择 .json 文件。');
+      return;
+    }
+    parse(await file.text());
+  }
+  const preview = value ? (Array.isArray(value) ? value : [value]).map((item, index) => {
+    const row = item && typeof item === 'object' ? item as Record<string, unknown> : {};
+    const type = row.material_type === 'scene_reference' ? '场景素材' : row.material_type === 'plot_skeleton' || row.material_type === 'outline' ? '剧情骨架' : '类型无效';
+    return { index, name: String(row.name ?? '未命名'), type, tags: Array.isArray(row.tags) ? row.tags.join(' / ') : '' };
+  }) : [];
+  return (
+    <LibraryDialog
+      footer={<><SecondaryButton disabled={busy} onClick={onClose}>取消</SecondaryButton><PrimaryButton disabled={busy || !value} onClick={() => value && onImport(value)}>确认批量导入</PrimaryButton></>}
+      onClose={onClose}
+      subtitle="只接受 JSON 对象或对象数组；非法项会单独报告。"
+      title="导入 JSON 素材"
+    >
+      <Field label="选择 JSON 文件"><input accept=".json,application/json" type="file" onChange={(event) => void readFile(event.target.files?.[0])} /></Field>
+      <details className="library-advanced-editor" open>
+        <summary>高级 JSON 输入</summary>
+        <textarea className="tall" placeholder='[{"material_type":"scene_reference","name":"示例"}]' value={text} onChange={(event) => parse(event.target.value)} />
+      </details>
+      {parseError ? <div className="inline-alert error" role="alert">{parseError}</div> : null}
+      {preview.length ? <div className="material-extract-results">{preview.map((item) => <div key={item.index}><strong>{item.name}</strong><small>{item.type}{item.tags ? ` · ${item.tags}` : ''}</small></div>)}</div> : null}
+    </LibraryDialog>
+  );
 }
 
 function typeLabel(material: Material) {
-  if (isOutline(material)) return '大纲';
-  return material.material_type === 'plot_skeleton' ? '剧情骨架' : '小素材';
+  return material.material_type === 'plot_skeleton' ? '剧情骨架' : '场景素材';
 }
 
 function structuredSummary(content: Record<string, unknown>) {
@@ -697,10 +764,6 @@ function parseObject(value: string) {
   const parsed = JSON.parse(value) as unknown;
   if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') throw new Error('结构化内容必须是 JSON 对象。');
   return parsed as Record<string, unknown>;
-}
-
-function optionalNumber(value: string) {
-  return value.trim() ? Number(value) : null;
 }
 
 function formatDate(value: string) {

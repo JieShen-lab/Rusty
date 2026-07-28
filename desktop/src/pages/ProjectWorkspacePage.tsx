@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode } from 'react';
-import { ArrowDownToLine, ArrowLeft, ArrowUpToLine, ChevronRight, Download, Eye, EyeOff, Save, Sparkles } from 'lucide-react';
+import { ArrowDownToLine, ArrowLeft, ArrowUpToLine, ChevronRight, Download, Eye, EyeOff, Save, Sparkles, X } from 'lucide-react';
 import {
   analyzeChapterStyle,
   confirmChapterRewrite,
@@ -28,6 +28,17 @@ import {
   saveTargetSkeleton,
   summarizeChapter,
   synthesizeProjectStyle,
+  getChapterScenes,
+  analyzeChapterScenes,
+  confirmChapterScenes,
+  startSceneWorkflow,
+  generateSceneWorkflowPlan,
+  executeSceneWorkflow,
+  confirmStorySkeleton,
+  confirmRewritePlan,
+  getSceneRewriteHistory,
+  reviseStorySkeleton,
+  adjustChapterScenes,
 } from '../api/client';
 import type {
   AnalysisPromptTemplate,
@@ -39,6 +50,8 @@ import type {
   ProjectDetail,
   ProjectPurpose,
   PromptTemplate,
+  SceneRecord,
+  SceneWorkflowRun,
 } from '../api/types';
 
 type Props = { onNavigate: (path: string) => void; projectId: number };
@@ -71,6 +84,9 @@ export function ProjectWorkspacePage({ onNavigate, projectId }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [selectionMenu, setSelectionMenu] = useState<SelectionCapture | null>(null);
+  const [selectionKind, setSelectionKind] = useState<SelectionKind | null>(null);
+  const [scenePanel, setScenePanel] = useState(false);
+  const [scenes, setScenes] = useState<SceneRecord[]>([]);
 
   const purpose: ProjectPurpose = project?.settings?.processing_mode === 'extract' ? 'extract' : 'rewrite';
   const stages = purpose === 'rewrite' ? rewriteStages : extractStages;
@@ -195,11 +211,11 @@ export function ProjectWorkspacePage({ onNavigate, projectId }: Props) {
 
   async function saveSelection(kind: SelectionKind) {
     if (!selectionMenu || !selectedChapter) return;
-    const name = window.prompt(
-      kind === 'character' ? '角色名' : kind === 'scene' ? '素材名称' : '骨架名称',
-      selectionMenu.text.slice(0, 24),
-    );
-    if (!name?.trim()) return;
+    setSelectionKind(kind);
+  }
+
+  async function confirmSelection(name: string) {
+    if (!selectionMenu || !selectionKind || !selectedChapter || !name.trim()) return;
     const payload = {
       source_kind: 'project' as const,
       selected_text: selectionMenu.text,
@@ -209,16 +225,27 @@ export function ProjectWorkspacePage({ onNavigate, projectId }: Props) {
       start_offset: selectionMenu.startOffset,
       end_offset: selectionMenu.endOffset,
     };
-    setSelectionMenu(null);
     setError(null);
     try {
-      if (kind === 'scene') await createSceneMaterialFromSelection(payload);
-      if (kind === 'plot') await createPlotSkeletonFromSelection(payload);
-      if (kind === 'character') await createCharacterFromSelection(payload);
-      setMessage('选区已保存到公共库，状态为未分析。');
+      if (selectionKind === 'scene') await createSceneMaterialFromSelection(payload);
+      if (selectionKind === 'plot') await createPlotSkeletonFromSelection(payload);
+      if (selectionKind === 'character') await createCharacterFromSelection(payload);
+      setSelectionMenu(null);
+      setSelectionKind(null);
+      setMessage('选区已保存，状态为未分析。工程素材默认保存到当前工程。');
     } catch (reason) {
       setError(messageOf(reason));
     }
+  }
+
+  async function openScenePanel() {
+    if (!selectedChapterId) return;
+    setScenePanel(true);
+    try {
+      let items = await getChapterScenes(selectedChapterId);
+      if (!items.length) items = await analyzeChapterScenes(selectedChapterId, { source: 'ai', confirm: false });
+      setScenes(items);
+    } catch (reason) { setError(messageOf(reason)); }
   }
 
   function showSelectionMenu(capture: SelectionCapture) {
@@ -251,7 +278,7 @@ export function ProjectWorkspacePage({ onNavigate, projectId }: Props) {
       <header className="workbench-toolbar">
         <div className="project-heading"><button className="button ghost workbench-back-button" onClick={() => onNavigate('/library')} type="button"><ArrowLeft size={16} />工程列表</button></div>
         <div className="chapter-heading"><div><strong>{selectedChapter?.title || '暂无章节'}</strong>{selectedChapter ? <span className="chapter-meta"><span>{selectedChapter.word_count.toLocaleString()} 字</span><span>章节 {selectedIndex + 1}/{chapters.length}</span><span>{busy ? '正在处理…' : '本地保存'}<i className={`status-dot ${busy ? 'busy' : ''}`} /></span></span> : <span className="chapter-meta">无章节</span>}</div></div>
-        <div className="toolbar-actions"><button aria-label={binderVisible ? '隐藏章节目录' : '显示章节目录'} className="button ghost" onClick={() => setBinderVisible((value) => !value)} type="button">{binderVisible ? <EyeOff size={16} /> : <Eye size={16} />}目录</button><button aria-label={inspectorVisible ? '隐藏检查器' : '显示检查器'} className="button ghost" onClick={() => setInspectorVisible((value) => !value)} type="button">{inspectorVisible ? <EyeOff size={16} /> : <Eye size={16} />}检查器</button></div>
+        <div className="toolbar-actions"><button className="button ghost" disabled={!selectedChapterId} onClick={() => void openScenePanel()} type="button"><Sparkles size={16} />场景改写</button><button aria-label={binderVisible ? '隐藏章节目录' : '显示章节目录'} className="button ghost" onClick={() => setBinderVisible((value) => !value)} type="button">{binderVisible ? <EyeOff size={16} /> : <Eye size={16} />}目录</button><button aria-label={inspectorVisible ? '隐藏检查器' : '显示检查器'} className="button ghost" onClick={() => setInspectorVisible((value) => !value)} type="button">{inspectorVisible ? <EyeOff size={16} /> : <Eye size={16} />}检查器</button></div>
       </header>
 
       <nav className="workflow-rail" aria-label="工程阶段">{stages.map((label, index) => <button aria-current={stage === index ? 'step' : undefined} className={stage === index ? 'active' : ''} key={label} onClick={() => setStage(index)} type="button"><span>{index + 1}</span>{label}</button>)}</nav>
@@ -274,6 +301,122 @@ export function ProjectWorkspacePage({ onNavigate, projectId }: Props) {
           <button onClick={() => void saveSelection('character')} type="button">添加到公共角色卡</button>
         </div>
       ) : null}
+      {selectionKind && selectionMenu ? <SelectionDialog initialName={selectionMenu.text.slice(0, 24)} kind={selectionKind} onClose={() => setSelectionKind(null)} onSave={(name) => void confirmSelection(name)} /> : null}
+      {scenePanel && selectedChapterId ? <SceneRewritePanel busy={busy} chapterId={selectedChapterId} scenes={scenes} setBusy={setBusy} setError={setError} setMessage={setMessage} setScenes={setScenes} onClose={() => setScenePanel(false)} /> : null}
+    </div>
+  );
+}
+
+function SelectionDialog({ initialName, kind, onClose, onSave }: { initialName: string; kind: SelectionKind; onClose: () => void; onSave: (name: string) => void }) {
+  const [name, setName] = useState(initialName);
+  return <div className="document-processing-backdrop"><form className="document-tag-dialog" role="dialog" onSubmit={(event) => { event.preventDefault(); onSave(name); }}><header><h2>{kind === 'character' ? '添加到公共角色卡' : kind === 'scene' ? '添加为场景素材' : '添加为剧情骨架'}</h2><button className="icon-button" onClick={onClose} type="button"><X size={16} /></button></header><label><span>名称</span><input autoFocus value={name} onChange={(event) => setName(event.target.value)} /></label><footer><button className="button secondary" onClick={onClose} type="button">取消</button><button className="button primary" disabled={!name.trim()} type="submit">保存</button></footer></form></div>;
+}
+
+function SceneRewritePanel(props: {
+  busy: boolean;
+  chapterId: number;
+  scenes: SceneRecord[];
+  setBusy: (value: boolean) => void;
+  setError: (value: string | null) => void;
+  setMessage: (value: string | null) => void;
+  setScenes: (value: SceneRecord[]) => void;
+  onClose: () => void;
+}) {
+  const [sceneId, setSceneId] = useState(props.scenes[0]?.id ?? 0);
+  const [mode, setMode] = useState<'skeleton_rewrite' | 'expansion'>('skeleton_rewrite');
+  const [instruction, setInstruction] = useState('');
+  const [characterIds, setCharacterIds] = useState('');
+  const [plotMaterialId, setPlotMaterialId] = useState('');
+  const [sceneMaterialIds, setSceneMaterialIds] = useState('');
+  const [insertion, setInsertion] = useState('场景中部');
+  const [run, setRun] = useState<SceneWorkflowRun | null>(null);
+  const [history, setHistory] = useState<Array<Record<string, unknown>>>([]);
+  const [consistency, setConsistency] = useState<Record<string, unknown> | null>(null);
+  const [skeletonJson, setSkeletonJson] = useState('[]');
+  const selected = props.scenes.find((item) => item.id === sceneId) ?? props.scenes[0];
+  const ids = (value: string) => value.split(/[,\s，]+/).map(Number).filter((item) => Number.isInteger(item) && item > 0);
+  async function perform(action: () => Promise<void>) {
+    props.setBusy(true); props.setError(null);
+    try { await action(); } catch (reason) { props.setError(messageOf(reason)); }
+    finally { props.setBusy(false); }
+  }
+  async function confirmBoundaries() {
+    await perform(async () => {
+      const items = await confirmChapterScenes(props.chapterId);
+      props.setScenes(items);
+      props.setMessage('场景边界已确认。');
+    });
+  }
+  async function start() {
+    if (!selected) return;
+    await perform(async () => {
+      const next = await startSceneWorkflow(selected.id, { mode, user_instruction: instruction, character_ids: ids(characterIds), material_ids: [...ids(plotMaterialId), ...ids(sceneMaterialIds)] });
+      setRun(next);
+      setSkeletonJson(JSON.stringify(next.skeleton_nodes ?? [], null, 2));
+      props.setMessage('场景分析和骨架提取完成，等待确认骨架。');
+    });
+  }
+  async function confirmSkeletonAndPlan() {
+    if (!run?.skeleton_id || !run.skeleton_version_id) return;
+    const currentRun = run;
+    await perform(async () => {
+      const nodes = JSON.parse(skeletonJson) as Record<string, unknown>[];
+      if (!Array.isArray(nodes) || !nodes.length) throw new Error('骨架至少需要一个事件节点。');
+      const revised = await reviseStorySkeleton(currentRun.skeleton_id!, nodes, '用户在工作台确认前编辑');
+      const skeleton = await confirmStorySkeleton(currentRun.skeleton_id!, revised.version);
+      const mappings = mode === 'expansion' ? ids(plotMaterialId).map((materialId) => ({ material_id: materialId, insertion_after_node: insertion, usage_mode: 'required' })) : [];
+      const next = await generateSceneWorkflowPlan(currentRun.id, { skeleton_version_id: skeleton.version_id, user_instruction: instruction, character_ids: ids(characterIds), material_mappings: mappings, scene_reference_ids: ids(sceneMaterialIds) });
+      setRun(next);
+      props.setMessage('改写规划已生成，等待确认。');
+    });
+  }
+  async function saveBoundaries() {
+    await perform(async () => {
+      const items = await adjustChapterScenes(props.chapterId, props.scenes.map((scene) => ({
+        start_offset: scene.original_start_offset,
+        end_offset: scene.original_end_offset,
+        title: scene.title,
+        reasons: scene.boundary_reasons,
+      })));
+      props.setScenes(items);
+      props.setMessage('手动调整后的场景边界已保存并确认。');
+    });
+  }
+  async function confirmPlanAndExecute() {
+    if (!run?.plan_id || !selected) return;
+    await perform(async () => {
+      await confirmRewritePlan(run.plan_id!);
+      const result = await executeSceneWorkflow(run.id, { user_instruction: instruction, character_ids: ids(characterIds), material_ids: [...ids(plotMaterialId), ...ids(sceneMaterialIds)] });
+      setRun(result);
+      setConsistency((result as SceneWorkflowRun & { consistency?: Record<string, unknown> }).consistency ?? null);
+      setHistory(await getSceneRewriteHistory(selected.id));
+      props.setMessage('场景正文生成、一致性检查和必要的定向修复已完成。');
+    });
+  }
+  return (
+    <div className="document-processing-backdrop">
+      <section className="scene-rewrite-dialog" role="dialog" aria-modal="true">
+        <header><div><span>场景级长篇改写</span><h2>场景工作流</h2></div><button className="icon-button" onClick={props.onClose} type="button"><X size={17} /></button></header>
+        <div className="scene-workflow-grid">
+          <aside><h3>场景列表</h3>{props.scenes.map((scene) => <div className={scene.id === sceneId ? 'scene-boundary-row selected' : 'scene-boundary-row'} key={scene.id}><button onClick={() => setSceneId(scene.id)} type="button"><strong>{scene.scene_index}. {scene.title || '未命名场景'}</strong></button><label>起<input type="number" value={scene.original_start_offset} onChange={(event) => props.setScenes(props.scenes.map((item) => item.id === scene.id ? { ...item, original_start_offset: Number(event.target.value) } : item))} /></label><label>止<input type="number" value={scene.original_end_offset} onChange={(event) => props.setScenes(props.scenes.map((item) => item.id === scene.id ? { ...item, original_end_offset: Number(event.target.value) } : item))} /></label></div>)}<button className="button secondary" disabled={props.busy || !props.scenes.length} onClick={() => void saveBoundaries()} type="button">保存手动边界</button><button className="button secondary" disabled={props.busy || !props.scenes.length} onClick={() => void confirmBoundaries()} type="button">确认全部边界</button></aside>
+          <main>
+            <section><h3>边界预览与原文</h3><pre>{selected?.original_text ?? '暂无场景'}</pre></section>
+            <section className="scene-workflow-form">
+              <label><span>模式</span><select value={mode} onChange={(event) => setMode(event.target.value as typeof mode)}><option value="skeleton_rewrite">骨架重写</option><option value="expansion">扩写</option></select></label>
+              <label><span>角色卡 ID</span><input value={characterIds} onChange={(event) => setCharacterIds(event.target.value)} placeholder="例如 1, 2" /></label>
+              {mode === 'expansion' ? <label><span>剧情骨架素材 ID（产生新增事件）</span><input value={plotMaterialId} onChange={(event) => setPlotMaterialId(event.target.value)} /></label> : null}
+              <label><span>场景素材 ID（仅写法参考）</span><input value={sceneMaterialIds} onChange={(event) => setSceneMaterialIds(event.target.value)} /></label>
+              {mode === 'expansion' ? <label><span>插入位置</span><input value={insertion} onChange={(event) => setInsertion(event.target.value)} /></label> : null}
+              <label className="wide"><span>本次用户要求</span><textarea value={instruction} onChange={(event) => setInstruction(event.target.value)} placeholder="留空时使用默认执行要求" /></label>
+            </section>
+            <section><h3>确认流程与执行进度</h3><p>{run ? `${run.current_stage} · ${run.status}` : '尚未开始'}</p><div className="scene-workflow-actions"><button className="button secondary" disabled={props.busy || !selected?.user_confirmed} onClick={() => void start()} type="button">1. 分析并提取骨架</button><button className="button secondary" disabled={props.busy || !run?.skeleton_id} onClick={() => void confirmSkeletonAndPlan()} type="button">2. 确认骨架并生成规划</button><button className="button primary" disabled={props.busy || !run?.plan_id} onClick={() => void confirmPlanAndExecute()} type="button">3. 确认规划并执行</button></div></section>
+            {run?.skeleton_id ? <section><h3>骨架编辑器</h3><textarea value={skeletonJson} onChange={(event) => setSkeletonJson(event.target.value)} /></section> : null}
+            {run?.plan ? <section><h3>改写规划预览</h3><pre>{JSON.stringify(run.plan, null, 2)}</pre></section> : null}
+            {consistency ? <section><h3>一致性问题 / 定向修复</h3><pre>{JSON.stringify(consistency, null, 2)}</pre></section> : null}
+            {history.length ? <section><h3>版本历史（原文不被覆盖）</h3>{history.map((item, index) => <details key={String(item.id ?? index)}><summary>版本 {String(item.version ?? index + 1)}</summary><pre>{String(item.rewritten_text ?? '')}</pre></details>)}</section> : null}
+          </main>
+        </div>
+      </section>
     </div>
   );
 }

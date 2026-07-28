@@ -555,6 +555,59 @@ export type SelectionResourceCreate = {
   chapter_id?: number | null;
   start_offset?: number | null;
   end_offset?: number | null;
+  source_version?: number | null;
+  save_to_public?: boolean;
+  tag_ids?: number[];
+};
+
+export type CharacterAnalysisProposal = {
+  invocation_id: number;
+  model_id: number;
+  proposal: {
+    name: string;
+    identity: string;
+    age: string;
+    setting_text: string;
+    custom_fields: CharacterCustomField[];
+  };
+  merged: {
+    name: string;
+    identity: string;
+    age: string;
+    setting_text: string;
+    custom_fields: CharacterCustomField[];
+  };
+  conflicts: Array<{ field: string; existing: string; proposed: string }>;
+};
+
+export type MaterialJsonImportResult = {
+  imported: Array<{ index: number; id: number; name: string; material_type: MaterialType }>;
+  errors: Array<{ index: number; name: string; error: string }>;
+};
+
+export type AISplitProposal = {
+  proposal_id: number;
+  document_id: number;
+  source_revision_id: number;
+  chapters: Array<{ title: string; start_offset: number; end_offset: number; reason: string }>;
+  model_invocation_id: number;
+};
+
+export type SceneWorkflowRun = {
+  id: number;
+  project_id: number;
+  chapter_id: number;
+  scene_id: number;
+  mode: RewriteMode;
+  status: string;
+  skeleton_id: number | null;
+  skeleton_version_id: number | null;
+  plan_id: number | null;
+  current_stage: string;
+  error_message: string | null;
+  skeleton_nodes?: Record<string, unknown>[];
+  plan?: Record<string, unknown> | null;
+  material_mappings?: Record<string, unknown>[];
 };
 
 export type SplitChapterCandidate = {

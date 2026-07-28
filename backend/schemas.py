@@ -195,6 +195,15 @@ class ManualChapterMarkRequest(BaseModel):
     end_offset: int = Field(ge=0)
 
 
+class AISplitPreviewRequest(BaseModel):
+    model_id: int | None = None
+
+
+class AISplitApplyRequest(BaseModel):
+    proposal_id: int
+    chapters: list[dict[str, Any]] | None = None
+
+
 class LibraryDocumentChapterReorderRequest(BaseModel):
     ordered_chapter_ids: list[int] = Field(min_length=1)
 
@@ -478,6 +487,30 @@ class ConsistencyCheckWriteRequest(BaseModel):
     project_id: int
     check_scope: Literal["scene", "chapter", "volume", "book"]
     result: dict[str, Any]
+
+
+class SceneWorkflowStartRequest(BaseModel):
+    mode: Literal["skeleton_rewrite", "expansion"]
+    user_instruction: str = ""
+    model_id: int | None = None
+    character_ids: list[int] = Field(default_factory=list)
+    material_ids: list[int] = Field(default_factory=list)
+
+
+class SceneWorkflowPlanRequest(BaseModel):
+    skeleton_version_id: int
+    user_instruction: str = ""
+    model_id: int | None = None
+    character_ids: list[int] = Field(default_factory=list)
+    material_mappings: list[dict[str, Any]] = Field(default_factory=list)
+    scene_reference_ids: list[int] = Field(default_factory=list)
+
+
+class SceneWorkflowExecuteRequest(BaseModel):
+    user_instruction: str = ""
+    model_id: int | None = None
+    character_ids: list[int] = Field(default_factory=list)
+    material_ids: list[int] = Field(default_factory=list)
     chapter_id: int | None = None
     scene_id: int | None = None
 
@@ -756,6 +789,8 @@ class MaterialWriteRequest(BaseModel):
 
 
 class MaterialUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str = Field(min_length=1)
     description: str = ""
     detail_level: Literal["brief", "standard", "detailed"] = "standard"
@@ -776,7 +811,12 @@ class MaterialCopyRequest(BaseModel):
 
 class MaterialAnalyzeRequest(BaseModel):
     model_id: int | None = None
-    content: dict[str, Any] | None = None
+
+
+class MaterialJsonImportRequest(BaseModel):
+    value: Any
+    default_scope: Literal["public", "project"] = "public"
+    default_project_id: int | None = None
 
 
 class MaterialExtractRequest(AnchorExtractRequest):
@@ -853,10 +893,18 @@ class CharacterCardCopyRequest(BaseModel):
 
 class CharacterAnalyzeRequest(BaseModel):
     model_id: int | None = None
+
+
+class CharacterAnalysisConfirmRequest(BaseModel):
     identity: str = ""
     age: str = ""
     setting_text: str = ""
     custom_fields: list[dict[str, Any]] = Field(default_factory=list)
+    invocation_id: int | None = None
+
+
+class CharacterCoverWriteRequest(BaseModel):
+    data_base64: str = Field(min_length=1)
 
 
 class SelectionResourceCreateRequest(BaseModel):
@@ -868,6 +916,9 @@ class SelectionResourceCreateRequest(BaseModel):
     chapter_id: int | None = None
     start_offset: int | None = None
     end_offset: int | None = None
+    source_version: int | None = None
+    save_to_public: bool = False
+    tag_ids: list[int] = Field(default_factory=list)
 
 
 class ProjectOutlineBindingRequest(BaseModel):

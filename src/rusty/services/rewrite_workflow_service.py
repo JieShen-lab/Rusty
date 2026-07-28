@@ -232,6 +232,11 @@ class RewriteWorkflowService:
                 material = self.material_service.get_material(material_id)
                 if material is None:
                     raise FileNotFoundError(f"Material not found: {material_id}")
+                if material.material_type != "plot_skeleton":
+                    raise ValueError(
+                        "Only plot_skeleton materials may introduce expansion event nodes; "
+                        "scene_reference materials are writing-context references."
+                    )
                 event_nodes = _normalize_skeleton_nodes(mapping.get("event_nodes", []))
                 if not event_nodes:
                     raise ValueError("Materials must be converted to event nodes before planning.")
@@ -505,16 +510,26 @@ class RewriteWorkflowService:
             "pacing": [],
         }
         previous = None
+        previous_states: dict[str, dict[str, Any]] = {}
+        scene_lengths = [len(scene.original_text) for scene in scenes]
+        median_length = sorted(scene_lengths)[len(scene_lengths) // 2] if scene_lengths else 0
         for scene in scenes:
             ledger = self.scene_service.get_fact_ledger(scene.id)
+            states = {
+                str(item["character_name"]): _json_object(item.get("state"))
+                for item in self.scene_service.list_character_states(scene.id)
+            }
             if previous is not None:
-                if previous["required_end_state"] != ledger["required_start_state"]:
+                state_differences = _state_differences(
+                    previous["required_end_state"],
+                    ledger["required_start_state"],
+                )
+                if state_differences:
                     issues["state_transitions"].append(
                         {
                             "previous_scene_id": previous["scene_id"],
                             "scene_id": scene.id,
-                            "previous_end": previous["required_end_state"],
-                            "current_start": ledger["required_start_state"],
+                            "differences": state_differences,
                         }
                     )
                 if previous["location"] and ledger["location"] and previous["location"] != ledger["location"]:
@@ -526,7 +541,72 @@ class RewriteWorkflowService:
                             "to": ledger["location"],
                         }
                     )
+                    if not _has_transition_marker(ledger):
+                        issues["scene_jumps"].append(
+                            {
+                                "previous_scene_id": previous["scene_id"],
+                                "scene_id": scene.id,
+                                "reason": "location_changed_without_transition",
+                            }
+                        )
+                for name, current_state in states.items():
+                    old_state = previous_states.get(name)
+                    if old_state is None:
+                        continue
+                    for field in ("injuries", "possessions", "known_secrets"):
+                        old_values = set(_string_values(old_state.get(field)))
+                        new_values = set(_string_values(current_state.get(field)))
+                        removed = sorted(old_values - new_values)
+                        if removed:
+                            issues["injuries_and_objects"].append(
+                                {
+                                    "character": name,
+                                    "field": field,
+                                    "previous_scene_id": previous["scene_id"],
+                                    "scene_id": scene.id,
+                                    "removed_without_record": removed,
+                                }
+                            )
+                    old_location = str(old_state.get("location") or "")
+                    new_location = str(current_state.get("location") or "")
+                    if old_location and new_location and old_location != new_location and not _has_transition_marker(ledger):
+                        issues["locations"].append(
+                            {
+                                "character": name,
+                                "previous_scene_id": previous["scene_id"],
+                                "scene_id": scene.id,
+                                "from": old_location,
+                                "to": new_location,
+                            }
+                        )
+                repeated = _repeated_phrases(
+                    str(previous.get("_text") or ""),
+                    scene.original_text,
+                )
+                if repeated:
+                    issues["repetition"].append(
+                        {
+                            "previous_scene_id": previous["scene_id"],
+                            "scene_id": scene.id,
+                            "phrases": repeated,
+                        }
+                    )
+            viewpoint = str(ledger.get("viewpoint") or ledger.get("pov") or "")
+            if viewpoint and viewpoint not in ledger.get("characters_present", []):
+                issues["naming_and_viewpoint"].append(
+                    {"scene_id": scene.id, "viewpoint": viewpoint, "reason": "viewpoint_character_not_present"}
+                )
+            if median_length and (len(scene.original_text) > median_length * 2.5 or len(scene.original_text) < median_length * 0.25):
+                issues["pacing"].append(
+                    {
+                        "scene_id": scene.id,
+                        "character_count": len(scene.original_text),
+                        "median_character_count": median_length,
+                    }
+                )
+            ledger["_text"] = scene.original_text
             previous = ledger
+            previous_states = states
         return {"chapter_id": chapter_id, **issues}
 
     def build_book_check(self, project_id: int) -> dict[str, Any]:
@@ -555,19 +635,106 @@ class RewriteWorkflowService:
         open_threads: dict[str, int] = {}
         resolved: set[str] = set()
         knowledge_by_character: dict[str, set[str]] = {}
+        knowledge_risks: list[dict[str, Any]] = []
         object_holders: dict[str, set[str]] = {}
+        timeline_risks: list[dict[str, Any]] = []
+        relationship_risks: list[dict[str, Any]] = []
+        ability_risks: list[dict[str, Any]] = []
+        last_time_order: float | None = None
+        last_relationships: dict[str, str] = {}
         for ledger in ledgers:
             for thread in ledger.get("open_threads", []):
                 open_threads.setdefault(str(thread), int(ledger["scene_id"]))
             resolved.update(str(thread) for thread in ledger.get("resolved_threads", []))
             for character, knowledge in _json_object(ledger.get("knowledge_states")).items():
-                knowledge_by_character.setdefault(str(character), set()).update(
-                    str(item) for item in (knowledge if isinstance(knowledge, list) else [knowledge])
-                )
+                character_name = str(character)
+                current = set(str(item) for item in (knowledge if isinstance(knowledge, list) else [knowledge]))
+                previous_knowledge = knowledge_by_character.setdefault(character_name, set())
+                forgotten = sorted(previous_knowledge - current) if current else []
+                if forgotten:
+                    knowledge_risks.append(
+                        {
+                            "scene_id": ledger["scene_id"],
+                            "character": character_name,
+                            "forgotten_without_resolution": forgotten,
+                        }
+                    )
+                previous_knowledge.update(current)
             for name, state in _json_object(ledger.get("objects")).items():
                 holder = _json_object(state).get("holder") if isinstance(state, dict) else state
                 if holder:
                     object_holders.setdefault(str(name), set()).add(str(holder))
+            time_state = _json_object(ledger.get("time_state"))
+            raw_order = time_state.get("order", time_state.get("sequence"))
+            if isinstance(raw_order, (int, float)):
+                if last_time_order is not None and float(raw_order) < last_time_order:
+                    timeline_risks.append(
+                        {"scene_id": ledger["scene_id"], "previous_order": last_time_order, "order": raw_order}
+                    )
+                last_time_order = float(raw_order)
+            for change in ledger.get("relationship_changes", []):
+                if not isinstance(change, dict):
+                    continue
+                pair = str(change.get("pair") or change.get("relationship") or "")
+                state = str(change.get("to") or change.get("state") or "")
+                if pair and state:
+                    previous_state = last_relationships.get(pair)
+                    if previous_state and previous_state != state and not change.get("reason"):
+                        relationship_risks.append(
+                            {
+                                "scene_id": ledger["scene_id"],
+                                "relationship": pair,
+                                "from": previous_state,
+                                "to": state,
+                                "reason": "abrupt_change",
+                            }
+                        )
+                    last_relationships[pair] = state
+            changes = _json_object(ledger.get("character_changes"))
+            for character, change in changes.items():
+                if isinstance(change, dict) and change.get("ability_conflict"):
+                    ability_risks.append(
+                        {
+                            "scene_id": ledger["scene_id"],
+                            "character": character,
+                            "conflict": change["ability_conflict"],
+                        }
+                    )
+        with session(self.database_path) as connection:
+            style_rows = connection.execute(
+                """
+                SELECT scene_id, forbidden_repetitions_json
+                FROM scene_style_contexts
+                WHERE scene_id IN (SELECT id FROM scenes WHERE project_id = ?)
+                """,
+                (project_id,),
+            ).fetchall()
+        style_risks = [
+            {"scene_id": int(row["scene_id"]), "techniques": _json_list(row["forbidden_repetitions_json"])}
+            for row in style_rows
+            if _json_list(row["forbidden_repetitions_json"])
+        ]
+        object_risks = [
+            {"object": name, "holders": sorted(holders)}
+            for name, holders in object_holders.items()
+            if len(holders) > 1
+        ]
+        review_scene_ids = sorted(
+            {
+                int(item["scene_id"])
+                for items in (knowledge_risks, timeline_risks, relationship_risks, ability_risks, style_risks)
+                for item in items
+                if item.get("scene_id") is not None
+            }
+            | {
+                int(item["opened_scene_id"])
+                for item in [
+                    {"thread": thread, "opened_scene_id": scene_id}
+                    for thread, scene_id in open_threads.items()
+                    if thread not in resolved
+                ]
+            }
+        )
         return {
             "project_id": project_id,
             "character_growth": [],
@@ -576,17 +743,14 @@ class RewriteWorkflowService:
                 for thread, scene_id in open_threads.items()
                 if thread not in resolved
             ],
-            "timeline_risks": [],
-            "ability_system_risks": [],
-            "relationship_trajectory_risks": [],
+            "knowledge_conflicts": knowledge_risks,
+            "timeline_risks": timeline_risks,
+            "ability_system_risks": ability_risks,
+            "relationship_trajectory_risks": relationship_risks,
             "knowledge_states": {key: sorted(value) for key, value in knowledge_by_character.items()},
-            "object_state_risks": [
-                {"object": name, "holders": sorted(holders)}
-                for name, holders in object_holders.items()
-                if len(holders) > 1
-            ],
-            "style_template_risks": [],
-            "source_scene_ids_to_review": [],
+            "object_state_risks": object_risks,
+            "style_template_risks": style_risks,
+            "source_scene_ids_to_review": review_scene_ids,
         }
 
     def _require_confirmed_skeleton_version(self, version_id: int) -> None:
@@ -676,6 +840,49 @@ def _json_list_of_objects(value: Any) -> list[dict[str, Any]]:
         except (json.JSONDecodeError, TypeError):
             return []
     return [item for item in parsed if isinstance(item, dict)] if isinstance(parsed, list) else []
+
+
+def _json_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    try:
+        parsed = json.loads(str(value or "[]"))
+    except (json.JSONDecodeError, TypeError):
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+def _state_differences(previous: dict[str, Any], current: dict[str, Any]) -> list[dict[str, Any]]:
+    differences = []
+    for key in sorted(set(previous) | set(current)):
+        left, right = previous.get(key), current.get(key)
+        if left not in (None, "", [], {}) and right not in (None, "", [], {}) and left != right:
+            differences.append({"field": key, "previous_end": left, "current_start": right})
+    return differences
+
+
+def _has_transition_marker(ledger: dict[str, Any]) -> bool:
+    markers = ("转场", "抵达", "离开", "前往", "移动", "时间过去", "翌日", "次日")
+    return any(marker in str(event) for event in ledger.get("events", []) for marker in markers)
+
+
+def _string_values(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    return [str(value)] if value not in (None, "") else []
+
+
+def _repeated_phrases(previous: str, current: str) -> list[str]:
+    def phrases(text: str) -> set[str]:
+        normalized = text.replace("\r\n", "\n")
+        return {
+            part.strip()
+            for line in normalized.splitlines()
+            for part in line.replace("！", "。").replace("？", "。").split("。")
+            if len(part.strip()) >= 12
+        }
+
+    return sorted(phrases(previous) & phrases(current))[:8]
 
 
 def _paragraphs(text: str) -> list[str]:

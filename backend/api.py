@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import base64
+import binascii
 import json
 import os
 import re
@@ -13,7 +15,7 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from rusty.db import session
 from rusty.models import ChapterRecord, ExportPlanItem, ParsedBook, ProjectSummary
@@ -30,13 +32,16 @@ from rusty.services.document_library_service import (
     LibraryDocumentContent,
     ProcessingTemplate,
 )
+from rusty.services.document_split_ai_service import DocumentSplitAIService
 from rusty.services.model_service import ModelService
 from rusty.services.pipeline_service import PipelineService
 from rusty.services.project_service import ProjectService, default_database_path
 from rusty.services.prompt_service import PromptService
 from rusty.services.context_service import ContextService
 from rusty.services.rewrite_workflow_service import RewriteWorkflowService
+from rusty.services.resource_analysis_service import ResourceAnalysisService
 from rusty.services.scene_service import SceneService
+from rusty.services.scene_rewrite_orchestrator import SceneRewriteOrchestrator
 from rusty.services.style_extraction_service import StyleExtractionService
 from rusty.services.style_service import StyleTemplate, StyleTemplateService
 
@@ -45,7 +50,11 @@ from .schemas import (
     AnalysisPromptTemplateOut,
     AnalysisPromptTemplateWriteRequest,
     AnchorExtractRequest,
+    AISplitApplyRequest,
+    AISplitPreviewRequest,
     CharacterAnalyzeRequest,
+    CharacterAnalysisConfirmRequest,
+    CharacterCoverWriteRequest,
     CharacterCardOut,
     CharacterCardCopyRequest,
     CharacterCardsExtractOut,
@@ -73,6 +82,7 @@ from .schemas import (
     LibraryDocumentOut,
     LibraryDocumentRevisionOut,
     MaterialAnalyzeRequest,
+    MaterialJsonImportRequest,
     MaterialCopyRequest,
     MaterialExtractOut,
     MaterialExtractRequest,
@@ -118,6 +128,9 @@ from .schemas import (
     SceneRetrievalRequest,
     SceneRewriteVersionWriteRequest,
     SceneStageWriteRequest,
+    SceneWorkflowExecuteRequest,
+    SceneWorkflowPlanRequest,
+    SceneWorkflowStartRequest,
     CharacterStoryStateWriteRequest,
     StorySkeletonRevisionRequest,
     StorySkeletonWriteRequest,
@@ -181,6 +194,7 @@ def create_app(
     project_service = ProjectService(db_path)
     chapter_split_service = ChapterSplitService()
     document_library_service = DocumentLibraryService(db_path)
+    document_split_ai_service = DocumentSplitAIService(db_path)
     pipeline_service = PipelineService(db_path)
     model_service = ModelService(db_path)
     prompt_service = PromptService(db_path)
@@ -192,6 +206,8 @@ def create_app(
     scene_service = SceneService(db_path)
     context_service = ContextService(db_path)
     rewrite_workflow_service = RewriteWorkflowService(db_path)
+    resource_analysis_service = ResourceAnalysisService(db_path)
+    scene_rewrite_orchestrator = SceneRewriteOrchestrator(db_path)
     anchor_extraction_service = AnchorExtractionService(db_path, ai_client=anchor_ai_client or style_ai_client)
 
     app = FastAPI(
@@ -402,6 +418,25 @@ def create_app(
     @app.post("/api/documents/{document_id}/split/regex/preview", response_model=SplitPreview)
     def preview_regex_document_split(document_id: int, payload: RegexSplitPreviewRequest) -> SplitPreview:
         return SplitPreview(**document_library_service.preview_regex_split(document_id, payload.pattern).__dict__)
+
+    @app.post(
+        "/api/documents/{document_id}/split/ai/preview",
+        response_model=dict[str, Any],
+        dependencies=[Depends(_require_token)],
+    )
+    def preview_ai_document_split(document_id: int, payload: AISplitPreviewRequest) -> dict[str, Any]:
+        return document_split_ai_service.preview(document_id, model_id=payload.model_id)
+
+    @app.post(
+        "/api/documents/{document_id}/split/ai/apply",
+        response_model=dict[str, Any],
+        dependencies=[Depends(_require_token)],
+    )
+    def apply_ai_document_split(document_id: int, payload: AISplitApplyRequest) -> dict[str, Any]:
+        result = document_split_ai_service.apply(payload.proposal_id, chapters=payload.chapters)
+        if int(result.get("proposal_id", 0)) != payload.proposal_id or int(result.get("document_id", 0)) != document_id:
+            raise _http_error(409, "split_proposal_mismatch", "AI split proposal mismatch.")
+        return result
 
     @app.post(
         "/api/documents/{document_id}/split/regex/apply",
@@ -1039,6 +1074,46 @@ def create_app(
         _require_project(project_service, project_id)
         return rewrite_workflow_service.build_book_check(project_id)
 
+    @app.post(
+        "/api/scenes/{scene_id}/workflow/start",
+        response_model=dict[str, Any],
+        dependencies=[Depends(_require_token)],
+    )
+    def start_scene_workflow(scene_id: int, payload: SceneWorkflowStartRequest) -> dict[str, Any]:
+        return scene_rewrite_orchestrator.start(scene_id, **payload.model_dump())
+
+    @app.post(
+        "/api/scene-workflows/{run_id}/plan",
+        response_model=dict[str, Any],
+        dependencies=[Depends(_require_token)],
+    )
+    def generate_scene_workflow_plan(run_id: int, payload: SceneWorkflowPlanRequest) -> dict[str, Any]:
+        return scene_rewrite_orchestrator.generate_plan(run_id, **payload.model_dump())
+
+    @app.post(
+        "/api/scene-workflows/{run_id}/execute",
+        response_model=dict[str, Any],
+        dependencies=[Depends(_require_token)],
+    )
+    def execute_scene_workflow(run_id: int, payload: SceneWorkflowExecuteRequest) -> dict[str, Any]:
+        return scene_rewrite_orchestrator.execute(run_id, **payload.model_dump())
+
+    @app.get("/api/scene-workflows/{run_id}", response_model=dict[str, Any])
+    def get_scene_workflow(run_id: int) -> dict[str, Any]:
+        return scene_rewrite_orchestrator.get_run(run_id)
+
+    @app.get("/api/scenes/{scene_id}/rewrite-history", response_model=list[dict[str, Any]])
+    def get_scene_rewrite_history(scene_id: int) -> list[dict[str, Any]]:
+        return scene_rewrite_orchestrator.list_scene_history(scene_id)
+
+    @app.post(
+        "/api/scenes/{scene_id}/rewrite-history/{version_id}/restore",
+        response_model=dict[str, int],
+        dependencies=[Depends(_require_token)],
+    )
+    def restore_scene_rewrite_version(scene_id: int, version_id: int) -> dict[str, int]:
+        return {"id": scene_rewrite_orchestrator.restore_version(scene_id, version_id)}
+
     @app.get("/api/models", response_model=list[ModelOut])
     def list_models() -> list[ModelOut]:
         return [ModelOut(**model.__dict__) for model in model_service.list_models()]
@@ -1337,6 +1412,18 @@ def create_app(
             raise _http_error(500, "material_import_failed", "素材已导入但无法读取。")
         return _material_out(material)
 
+    @app.post(
+        "/api/materials/import-json",
+        response_model=dict[str, list[dict[str, Any]]],
+        dependencies=[Depends(_require_token)],
+    )
+    def import_material_json(payload: MaterialJsonImportRequest) -> dict[str, list[dict[str, Any]]]:
+        return material_service.import_json_items(
+            payload.value,
+            default_scope=payload.default_scope,
+            default_project_id=payload.default_project_id,
+        )
+
     @app.get("/api/materials/{material_id}", response_model=MaterialOut)
     def get_material(material_id: int) -> MaterialOut:
         material = material_service.get_material(material_id)
@@ -1380,15 +1467,7 @@ def create_app(
 
     @app.post("/api/materials/{material_id}/analyze", response_model=MaterialOut, dependencies=[Depends(_require_token)])
     def analyze_material(material_id: int, payload: MaterialAnalyzeRequest) -> MaterialOut:
-        material = material_service.get_material(material_id)
-        if material is None:
-            raise _http_error(404, "material_not_found", f"Material not found: {material_id}")
-        if payload.content is None:
-            raise _http_error(400, "analysis_content_required", "AI analysis client integration requires parsed JSON content.")
-        material_service.analyze_material(material_id, content=payload.content, model_id=payload.model_id)
-        analyzed = material_service.get_material(material_id)
-        if analyzed is None:
-            raise _http_error(404, "material_not_found", f"Material not found: {material_id}")
+        analyzed, _ = resource_analysis_service.analyze_material(material_id, model_id=payload.model_id)
         return _material_out(analyzed)
 
     @app.post("/api/material-extractions", response_model=MaterialExtractOut, dependencies=[Depends(_require_token)])
@@ -1592,29 +1671,77 @@ def create_app(
         anchor_service.delete_character_card(card_id)
         return {"ok": True}
 
-    @app.post("/api/characters/{card_id}/analyze", response_model=CharacterCardOut, dependencies=[Depends(_require_token)])
-    def analyze_character_card(card_id: int, payload: CharacterAnalyzeRequest) -> CharacterCardOut:
-        if anchor_service.get_character_card(card_id) is None:
-            raise _http_error(404, "character_card_not_found", f"Character card not found: {card_id}")
+    @app.post(
+        "/api/characters/{card_id}/analyze",
+        response_model=dict[str, Any],
+        dependencies=[Depends(_require_token)],
+    )
+    def analyze_character_card(card_id: int, payload: CharacterAnalyzeRequest) -> dict[str, Any]:
+        return resource_analysis_service.propose_character_analysis(card_id, model_id=payload.model_id)
+
+    @app.post(
+        "/api/characters/{card_id}/analyze/confirm",
+        response_model=CharacterCardOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def confirm_character_analysis(card_id: int, payload: CharacterAnalysisConfirmRequest) -> CharacterCardOut:
         anchor_service.analyze_character_card(
             card_id,
             identity=payload.identity,
             age=payload.age,
             setting_text=payload.setting_text,
             custom_fields=payload.custom_fields,
-            model_id=payload.model_id,
+            invocation_id=payload.invocation_id,
         )
         card = anchor_service.get_character_card(card_id)
         if card is None:
             raise _http_error(404, "character_card_not_found", f"Character card not found: {card_id}")
         return _character_out(card)
 
+    @app.post(
+        "/api/characters/{card_id}/cover",
+        response_model=CharacterCardOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def save_character_cover(card_id: int, payload: CharacterCoverWriteRequest) -> CharacterCardOut:
+        try:
+            data = base64.b64decode(payload.data_base64, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise _http_error(400, "invalid_cover_data", "Cover data is not valid base64.") from exc
+        return _character_out(anchor_service.save_character_cover(card_id, data))
+
+    @app.post(
+        "/api/characters/{card_id}/cover/delete",
+        response_model=CharacterCardOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def remove_character_cover(card_id: int) -> CharacterCardOut:
+        return _character_out(anchor_service.remove_character_cover(card_id))
+
+    @app.get("/api/characters/{card_id}/cover")
+    def get_character_cover(card_id: int) -> FileResponse:
+        path = anchor_service.character_cover_file(card_id)
+        if path is None:
+            raise _http_error(404, "character_cover_not_found", f"Character cover not found: {card_id}")
+        media_type = {
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".webp": "image/webp",
+        }.get(path.suffix.lower(), "application/octet-stream")
+        return FileResponse(path, media_type=media_type)
+
     def _selection_material_out(payload: SelectionResourceCreateRequest, material_type: str) -> MaterialOut:
         selected_text = _normalize_selection_text(payload.selected_text)
+        target_public = payload.source_kind == "document" or payload.save_to_public
+        scope = "public" if target_public else "project"
+        project_id = None if target_public else payload.project_id
+        if scope == "project" and project_id is None:
+            raise _http_error(400, "project_required", "Project selections require a project_id.")
         material_id = material_service.create_material(
             material_type=material_type,
-            scope="public",
-            project_id=None,
+            scope=scope,
+            project_id=project_id,
             name=payload.name,
             description="",
             raw_text=selected_text,
@@ -1622,7 +1749,7 @@ def create_app(
             analysis_status="unanalyzed",
             source_metadata=_selection_source_metadata(payload),
             import_metadata={"created_by": "selection_context_menu"},
-            tag_ids=[],
+            tag_ids=payload.tag_ids,
         )
         material = material_service.get_material(material_id)
         if material is None:
@@ -2010,6 +2137,8 @@ def _selection_source_metadata(payload: SelectionResourceCreateRequest) -> dict[
         "chapter_id": payload.chapter_id,
         "start_offset": payload.start_offset,
         "end_offset": payload.end_offset,
+        "selection_snapshot": payload.selected_text,
+        "source_version": payload.source_version,
         "captured_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
     }
 

@@ -134,6 +134,39 @@ def _count_words(text: str) -> int:
     return len(re.findall(r"[\w\u4e00-\u9fff]+", text))
 
 
+def _validate_continuous_boundaries(
+    text: str,
+    boundaries: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    if not boundaries:
+        raise ValueError("At least one chapter boundary is required.")
+    normalized = sorted(
+        (
+            {
+                "title": str(item.get("title") or "").strip(),
+                "start_offset": int(item.get("start_offset", -1)),
+                "end_offset": int(item.get("end_offset", -1)),
+                "reason": str(item.get("reason") or ""),
+            }
+            for item in boundaries
+        ),
+        key=lambda item: int(item["start_offset"]),
+    )
+    expected_start = 0
+    for index, item in enumerate(normalized):
+        if not item["title"]:
+            raise ValueError(f"Chapter {index + 1} requires a title.")
+        start, end = int(item["start_offset"]), int(item["end_offset"])
+        if start != expected_start or end <= start or end > len(text):
+            raise ValueError(
+                "Chapter boundaries must be continuous, non-overlapping, and cover the source exactly."
+            )
+        expected_start = end
+    if expected_start != len(text):
+        raise ValueError("Chapter boundaries omit source text.")
+    return normalized
+
+
 class DocumentLibraryService:
     def __init__(
         self,
@@ -765,6 +798,56 @@ class DocumentLibraryService:
                 (len(preview.chapters), document_id),
             )
         return self.list_chapters(document_id)
+
+    def apply_split_boundaries(
+        self,
+        document_id: int,
+        *,
+        source_revision_id: int,
+        boundaries: list[dict[str, object]],
+        revision_type: str,
+        metadata: dict[str, object] | None = None,
+    ) -> tuple[DocumentRevision, list[LibraryChapter]]:
+        document = self._get_document(document_id)
+        current = self._ensure_initial_revision(document_id)
+        if current.id != source_revision_id:
+            raise ValueError("The document changed after the split preview; generate a new preview.")
+        text = Path(current.storage_path).read_text(encoding="utf-8")
+        normalized = _validate_continuous_boundaries(text, boundaries)
+        revision = self._create_text_revision(document, current, text, revision_type, metadata or {})
+        with session(self.database_path) as connection:
+            connection.execute("DELETE FROM library_document_chapters WHERE revision_id = ?", (revision.id,))
+            for index, boundary in enumerate(normalized, start=1):
+                start = int(boundary["start_offset"])
+                end = int(boundary["end_offset"])
+                connection.execute(
+                    """
+                    INSERT INTO library_document_chapters (
+                        document_id, revision_id, chapter_index, title,
+                        start_line, end_line, start_offset, end_offset, word_count
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        document_id,
+                        revision.id,
+                        index,
+                        boundary["title"],
+                        text.count("\n", 0, start) + 1,
+                        text.count("\n", 0, end) + 1,
+                        start,
+                        end,
+                        _count_words(text[start:end]),
+                    ),
+                )
+            connection.execute(
+                """
+                UPDATE library_documents
+                SET chapter_count = ?, word_count = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (len(normalized), _count_words(text), document_id),
+            )
+        return revision, self.list_chapters(document_id)
 
     def mark_chapter(self, document_id: int, revision_id: int, title: str, start_offset: int, end_offset: int) -> list[LibraryChapter]:
         if not title.strip():

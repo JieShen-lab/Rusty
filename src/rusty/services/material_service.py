@@ -251,7 +251,14 @@ class MaterialService:
             if tag_ids is not None:
                 self._replace_tags(connection, material_id, tag_ids)
 
-    def analyze_material(self, material_id: int, *, content: dict[str, Any], model_id: int | None = None) -> None:
+    def analyze_material(
+        self,
+        material_id: int,
+        *,
+        content: dict[str, Any],
+        model_id: int | None = None,
+        invocation_id: int | None = None,
+    ) -> None:
         if not isinstance(content, dict) or not content:
             raise ValueError("Material analysis result must be a non-empty object.")
         with session(self.database_path) as connection:
@@ -263,6 +270,7 @@ class MaterialService:
                 raise FileNotFoundError(f"Material not found: {material_id}")
             metadata = _json_object(str(row["import_metadata_json"]))
             metadata["last_analyzed_model_id"] = model_id
+            metadata["last_analysis_invocation_id"] = invocation_id
             connection.execute(
                 """
                 UPDATE materials
@@ -273,6 +281,59 @@ class MaterialService:
                 """,
                 (json.dumps(content, ensure_ascii=False), json.dumps(metadata, ensure_ascii=False), material_id),
             )
+
+    def import_json_items(
+        self,
+        value: object,
+        *,
+        default_scope: str = "public",
+        default_project_id: int | None = None,
+    ) -> dict[str, list[dict[str, Any]]]:
+        items = value if isinstance(value, list) else [value]
+        if not items or not all(isinstance(item, dict) for item in items):
+            raise ValueError("Material JSON import requires an object or an array of objects.")
+        imported: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        for index, raw_item in enumerate(items):
+            item = dict(raw_item)
+            try:
+                original_type = str(item.get("material_type") or item.get("type") or "").strip()
+                material_type = "plot_skeleton" if original_type == "outline" else _validate_type(original_type)
+                scope = str(item.get("scope") or default_scope)
+                project_id = item.get("project_id", default_project_id)
+                if project_id is not None:
+                    project_id = int(project_id)
+                tag_ids = self._tag_ids_from_names(item.get("tags", []))
+                import_metadata = _json_object_value(item.get("import_metadata"))
+                if original_type == "outline":
+                    import_metadata["legacy_material_type"] = "outline"
+                import_metadata["created_by"] = "json_batch_import"
+                material_id = self.create_material(
+                    material_type=material_type,
+                    scope=scope,
+                    project_id=project_id,
+                    name=str(item.get("name") or ""),
+                    description=str(item.get("description") or ""),
+                    detail_level=str(item.get("detail_level") or "standard"),
+                    raw_text=str(item.get("raw_text") or ""),
+                    content=_json_object_value(item.get("content")),
+                    analysis_status=str(item.get("analysis_status") or "unanalyzed"),
+                    source_metadata=_json_object_value(item.get("source_metadata")),
+                    import_metadata=import_metadata,
+                    tag_ids=tag_ids,
+                )
+                material = self.get_material(material_id)
+                imported.append(
+                    {
+                        "index": index,
+                        "id": material_id,
+                        "name": material.name if material else str(item.get("name") or ""),
+                        "material_type": material_type,
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001
+                errors.append({"index": index, "name": str(item.get("name") or ""), "error": str(exc)})
+        return {"imported": imported, "errors": errors}
 
     def delete_material(self, material_id: int) -> None:
         with session(self.database_path) as connection:
@@ -348,6 +409,27 @@ class MaterialService:
                 """
             ).fetchall()
         return [self._row_to_tag(row) for row in rows]
+
+    def _tag_ids_from_names(self, value: object) -> list[int]:
+        if value in (None, ""):
+            return []
+        if not isinstance(value, list):
+            raise ValueError("tags must be an array of names.")
+        existing = {tag.normalized_name: tag.id for tag in self.list_tags()}
+        ids: list[int] = []
+        for raw_name in value:
+            name = str(raw_name).strip()
+            if not name:
+                continue
+            normalized = _normalize_tag_name(name)
+            tag_id = existing.get(normalized)
+            if tag_id is None:
+                tag = self.create_tag(name)
+                tag_id = tag.id
+                existing[tag.normalized_name] = tag.id
+            if tag_id not in ids:
+                ids.append(tag_id)
+        return ids
 
     def create_tag(self, name: str) -> MaterialTag:
         normalized_name = _required_tag_name(name)
@@ -556,3 +638,11 @@ def _json_object(value: str) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _json_object_value(value: object) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError("Expected a JSON object.")
+    return dict(value)

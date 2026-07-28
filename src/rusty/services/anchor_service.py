@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import struct
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -715,6 +717,7 @@ class AnchorService:
         setting_text: str,
         custom_fields: list[dict[str, Any]],
         model_id: int | None = None,
+        invocation_id: int | None = None,
     ) -> None:
         with session(self.database_path) as connection:
             row = connection.execute(
@@ -727,6 +730,7 @@ class AnchorService:
             if not isinstance(metadata, dict):
                 metadata = {}
             metadata["last_analyzed_model_id"] = model_id
+            metadata["last_analysis_invocation_id"] = invocation_id
             connection.execute(
                 """
                 UPDATE character_cards
@@ -744,6 +748,84 @@ class AnchorService:
                     card_id,
                 ),
             )
+
+    def save_character_cover(self, card_id: int, data: bytes) -> CharacterCard:
+        current = self.get_character_card(card_id)
+        if current is None:
+            raise ValueError(f"Character card not found: {card_id}")
+        extension, width, height = _inspect_cover(data)
+        if len(data) > 5 * 1024 * 1024:
+            raise ValueError("Character cover must be 5 MB or smaller.")
+        if width is not None and height is not None and (width > 4096 or height > 4096):
+            raise ValueError("Character cover dimensions must not exceed 4096×4096.")
+        cover_dir = self.database_path.parent / "assets" / "character-covers"
+        cover_dir.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha256(data).hexdigest()
+        target = cover_dir / f"{card_id}-{digest[:20]}.{extension}"
+        target.write_bytes(data)
+        relative = target.relative_to(self.database_path.parent).as_posix()
+        with session(self.database_path) as connection:
+            connection.execute(
+                """
+                UPDATE character_cards
+                SET cover_path = ?, cover_updated_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND deleted_at IS NULL
+                """,
+                (relative, card_id),
+            )
+        self._remove_managed_cover(current.cover_path, excluding=relative)
+        updated = self.get_character_card(card_id)
+        if updated is None:
+            raise RuntimeError("Character card disappeared after cover update.")
+        return updated
+
+    def remove_character_cover(self, card_id: int) -> CharacterCard:
+        current = self.get_character_card(card_id)
+        if current is None:
+            raise ValueError(f"Character card not found: {card_id}")
+        with session(self.database_path) as connection:
+            connection.execute(
+                """
+                UPDATE character_cards
+                SET cover_path = NULL, cover_updated_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (card_id,),
+            )
+        self._remove_managed_cover(current.cover_path)
+        updated = self.get_character_card(card_id)
+        if updated is None:
+            raise RuntimeError("Character card disappeared after cover removal.")
+        return updated
+
+    def character_cover_file(self, card_id: int) -> Path | None:
+        card = self.get_character_card(card_id)
+        if card is None or not card.cover_path:
+            return None
+        path = (self.database_path.parent / card.cover_path).resolve()
+        root = (self.database_path.parent / "assets" / "character-covers").resolve()
+        if root not in path.parents or not path.is_file():
+            return None
+        return path
+
+    def _remove_managed_cover(self, value: str | None, *, excluding: str | None = None) -> None:
+        if not value or value == excluding:
+            return
+        with session(self.database_path) as connection:
+            count = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM character_cards WHERE cover_path = ? AND deleted_at IS NULL",
+                    (value,),
+                ).fetchone()[0]
+            )
+        if count:
+            return
+        path = (self.database_path.parent / value).resolve()
+        root = (self.database_path.parent / "assets" / "character-covers").resolve()
+        if root in path.parents and path.is_file():
+            path.unlink()
 
     def _ensure_project_exists(self, project_id: int) -> None:
         with session(self.database_path) as connection:
@@ -890,9 +972,9 @@ def _normalize_custom_fields(fields: list[dict[str, Any]] | None) -> list[dict[s
     normalized: list[dict[str, Any]] = []
     seen: set[str] = set()
     for index, field in enumerate(fields or []):
-        label = str(field.get("label") or "").strip()
+        label = " ".join(str(field.get("label") or "").strip().split())
         if not label:
-            continue
+            raise ValueError(f"Custom field {index + 1} requires a label.")
         key = label.casefold()
         if key in seen:
             raise ValueError(f"Duplicate custom field label: {label}")
@@ -906,6 +988,36 @@ def _normalize_custom_fields(fields: list[dict[str, Any]] | None) -> list[dict[s
             }
         )
     return normalized
+
+
+def _inspect_cover(data: bytes) -> tuple[str, int | None, int | None]:
+    if data.startswith(b"\x89PNG\r\n\x1a\n") and len(data) >= 24:
+        width, height = struct.unpack(">II", data[16:24])
+        return "png", width, height
+    if data.startswith(b"\xff\xd8"):
+        index = 2
+        while index + 9 < len(data):
+            if data[index] != 0xFF:
+                index += 1
+                continue
+            marker = data[index + 1]
+            index += 2
+            if marker in {0xD8, 0xD9}:
+                continue
+            if index + 2 > len(data):
+                break
+            length = int.from_bytes(data[index : index + 2], "big")
+            if marker in {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB}:
+                if index + 7 > len(data):
+                    break
+                height = int.from_bytes(data[index + 3 : index + 5], "big")
+                width = int.from_bytes(data[index + 5 : index + 7], "big")
+                return "jpg", width, height
+            index += max(length, 2)
+        return "jpg", None, None
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "webp", None, None
+    raise ValueError("Character cover must be a PNG, JPEG, or WebP image.")
 
 
 def _loads_json(text: str, fallback: Any) -> Any:

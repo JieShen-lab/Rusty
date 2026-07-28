@@ -143,6 +143,9 @@ class ContextService:
         next_preview_chars: int = 800,
     ) -> dict[str, Any]:
         scene = self._require_scene(scene_id)
+        chapter = self.scene_service.project_service.get_chapter(scene.chapter_id)
+        if chapter is None:
+            raise FileNotFoundError(f"Chapter not found: {scene.chapter_id}")
         siblings = self.scene_service.list_scenes(scene.chapter_id)
         index = next(i for i, item in enumerate(siblings) if item.id == scene.id)
         previous = siblings[index - 1] if index > 0 else None
@@ -269,7 +272,11 @@ class ContextService:
             )
             structural = (
                 material.project_id == scene.project_id
-                and _timeline_matches(material.timeline_start_chapter, material.timeline_end_chapter, scene.scene_index)
+                and _timeline_matches(
+                    material.timeline_start_chapter,
+                    material.timeline_end_chapter,
+                    chapter.chapter_index,
+                )
             )
             matched_terms = [term for term in search_terms if term and term.casefold() in content.casefold()]
             if structural:
@@ -447,6 +454,7 @@ class ContextService:
         model_id: int | None = None,
     ) -> dict[str, Any]:
         scene = self._require_scene(scene_id)
+        user_instruction = user_instruction.strip() or "按已确认的计划执行，不添加额外用户偏好。"
         window = self.build_sliding_window(scene_id)
         facts = self.scene_service.get_fact_ledger(scene_id)
         character_states = self.scene_service.list_character_states(scene_id)
@@ -631,6 +639,8 @@ def _character_content(card) -> str:
             "limitations": card.action_constraints,
             "background": card.profile.get("background", ""),
             "immutable_rules": card.anti_ooc_rules,
+            "setting": card.setting_text,
+            "custom_fields": card.custom_fields,
         },
         ensure_ascii=False,
     )

@@ -18,17 +18,22 @@ import {
 } from 'lucide-react';
 import {
   analyzeCharacterCard,
+  confirmCharacterAnalysis,
   copyCharacterCard,
   createCharacterCard,
   createCharacterTag,
   deleteCharacterCard,
   deleteCharacterTag,
+  renameCharacterTag,
   getCharacterCards,
   getCharacterTags,
   getProjects,
   updateCharacterCard,
+  saveCharacterCover,
+  removeCharacterCover,
+  characterCoverUrl,
 } from '../api/client';
-import type { AnalysisStatus, CharacterCard, CharacterCustomField, Project, ResourceTag } from '../api/types';
+import type { AnalysisStatus, CharacterAnalysisProposal, CharacterCard, CharacterCustomField, Project, ResourceTag } from '../api/types';
 import { DangerButton } from '../components/DangerButton';
 import {
   LibraryDefinition,
@@ -59,6 +64,8 @@ export function CharacterLibraryPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [analysisProposal, setAnalysisProposal] = useState<{ card: CharacterCard; result: CharacterAnalysisProposal } | null>(null);
+  const [tagDialog, setTagDialog] = useState<{ mode: 'create' | 'rename'; tag?: ResourceTag } | null>(null);
 
   const selected = cards.find((item) => item.id === selectedId) ?? null;
   const activeTag = tags.find((tag) => tag.id === tagId)?.name ?? null;
@@ -119,14 +126,15 @@ export function CharacterLibraryPage() {
     setEditing(emptyCharacter(scope, projectId));
   }
 
-  async function addTag() {
-    const name = window.prompt('新建角色标签');
-    if (!name?.trim()) return;
+  async function saveTag(name: string) {
     await runBusy(async () => {
-      const tag = await createCharacterTag(name.trim());
+      const tag = tagDialog?.mode === 'rename' && tagDialog.tag
+        ? await renameCharacterTag(tagDialog.tag.id, name.trim())
+        : await createCharacterTag(name.trim());
       await load(selectedId);
       setTagId(tag.id);
-      setMessage(`已创建标签“${tag.name}”。`);
+      setTagDialog(null);
+      setMessage(tagDialog?.mode === 'rename' ? `标签已重命名为“${tag.name}”。` : `已创建标签“${tag.name}”。`);
     });
   }
 
@@ -158,28 +166,10 @@ export function CharacterLibraryPage() {
   }
 
   async function runAnalyze(card: CharacterCard) {
-    const raw = window.prompt('粘贴 AI 分析得到的结构化 JSON。保存前会校验对象格式。', JSON.stringify({
-      identity: card.identity,
-      age: card.age,
-      setting_text: card.setting_text,
-      custom_fields: card.custom_fields,
-    }, null, 2));
-    if (!raw) return;
     await runBusy(async () => {
-      const parsed = JSON.parse(raw) as {
-        identity?: string;
-        age?: string;
-        setting_text?: string;
-        custom_fields?: CharacterCustomField[];
-      };
-      const updated = await analyzeCharacterCard(card.id, {
-        identity: parsed.identity ?? '',
-        age: parsed.age ?? '',
-        setting_text: parsed.setting_text ?? '',
-        custom_fields: parsed.custom_fields ?? [],
-      });
-      await load(updated.id);
-      setMessage('角色分析结果已保存。');
+      const result = await analyzeCharacterCard(card.id);
+      setAnalysisProposal({ card, result });
+      setMessage('模型分析完成，请确认字段差异后保存。');
     });
   }
 
@@ -200,16 +190,16 @@ export function CharacterLibraryPage() {
     await runBusy(async () => {
       const payload = {
         name: draft.name.trim(),
-        aliases: splitValues(draft.aliases),
-        description: draft.description,
-        priority: draft.priority,
-        is_main: draft.is_main,
-        relationship_notes: draft.relationship_notes,
-        personality: draft.personality,
-        speech_style: draft.speech_style,
-        action_constraints: draft.action_constraints,
-        anti_ooc_rules: draft.anti_ooc_rules,
-        profile: draft.profile,
+        aliases: card.aliases,
+        description: card.description,
+        priority: card.priority,
+        is_main: card.is_main,
+        relationship_notes: card.relationship_notes,
+        personality: card.personality,
+        speech_style: card.speech_style,
+        action_constraints: card.action_constraints,
+        anti_ooc_rules: card.anti_ooc_rules,
+        profile: card.profile,
         source_metadata: card.source_metadata,
         import_metadata: card.import_metadata,
         scope: card.scope,
@@ -220,6 +210,7 @@ export function CharacterLibraryPage() {
         custom_fields: normalizeFields(draft.custom_fields),
         raw_text: draft.raw_text,
         analysis_status: draft.analysis_status,
+        tag_ids: draft.tag_ids,
       };
       const saved = card.id ? await updateCharacterCard(card.id, payload) : await createCharacterCard(payload);
       setEditing(null);
@@ -283,11 +274,12 @@ export function CharacterLibraryPage() {
             <LibrarySidebarItem active={filter === 'untagged' && tagId === null} count={counts.untagged} icon={<Tags size={16} />} label="无标签" onClick={() => { setFilter('untagged'); setTagId(null); }} />
             <div className="document-tag-heading">
               <span>我的标签</span>
-              <button aria-label="新建角色标签" className="document-add-tag" disabled={busy} onClick={() => void addTag()} type="button"><FolderPlus size={15} /></button>
+              <button aria-label="新建角色标签" className="document-add-tag" disabled={busy} onClick={() => setTagDialog({ mode: 'create' })} type="button"><FolderPlus size={15} /></button>
             </div>
             {tags.length ? tags.map((item) => (
               <div className="library-tag-row" key={item.id}>
                 <LibrarySidebarItem active={tagId === item.id} count={item.resource_count} icon={<Tag size={16} />} label={item.name} onClick={() => { setTagId(item.id); setFilter('all'); }} />
+                <button aria-label={`重命名标签 ${item.name}`} disabled={busy} onClick={() => setTagDialog({ mode: 'rename', tag: item })} type="button"><Pencil size={13} /></button>
                 <button aria-label={`删除标签 ${item.name}`} disabled={busy} onClick={() => void removeTag(item.id)} type="button"><Trash2 size={13} /></button>
               </div>
             )) : <p className="document-tag-empty">暂无自定义标签</p>}
@@ -317,7 +309,7 @@ export function CharacterLibraryPage() {
                     type="button"
                   >
                     <div className="library-character-cover" style={{ '--character-cover': coverColor(card.name) } as CSSProperties}>
-                      <UserRound size={28} />
+                      {card.cover_path ? <img alt="" src={`${characterCoverUrl(card.id)}?v=${encodeURIComponent(card.cover_updated_at ?? '')}`} /> : <span>{card.name.trim().slice(0, 1) || <UserRound size={28} />}</span>}
                     </div>
                     <div className="library-character-card-body">
                       <strong>{card.name}</strong>
@@ -347,7 +339,7 @@ export function CharacterLibraryPage() {
             <>
               <div className="document-detail-scroll">
                 <section className="character-detail-identity">
-                  <div className="character-detail-avatar"><UserRound size={30} /></div>
+                  <div className="character-detail-avatar">{selected.cover_path ? <img alt={`${selected.name} 封面`} src={`${characterCoverUrl(selected.id)}?v=${encodeURIComponent(selected.cover_updated_at ?? '')}`} /> : <span>{selected.name.slice(0, 1) || <UserRound size={30} />}</span>}</div>
                   <div>
                     <h3>{selected.name}</h3>
                     <p>{selected.aliases.length ? selected.aliases.join(' / ') : '暂无别名'}</p>
@@ -367,16 +359,8 @@ export function CharacterLibraryPage() {
                   <LibraryDefinition label="分析状态" value={selected.analysis_status === 'analyzed' ? '已分析' : '未分析'} />
                   <LibraryDefinition label="更新时间" value={formatDateTime(selected.updated_at)} />
                 </section>
-                <DetailSection label="人物简介" value={selected.description || selected.setting_text} />
+                <DetailSection label="设定" value={selected.setting_text} />
                 <DetailSection label="角色标签" value={selected.tags.join(' / ')} />
-                <DetailSection label="长期性格" value={selected.personality} />
-                <DetailSection label="核心动机" value={profileText(selected.profile, 'core_motivation')} />
-                <DetailSection label="外貌" value={profileText(selected.profile, 'appearance')} />
-                <DetailSection label="说话方式" value={selected.speech_style} />
-                <DetailSection label="能力" value={profileText(selected.profile, 'abilities')} />
-                <DetailSection label="限制" value={selected.action_constraints} />
-                <DetailSection label="背景" value={profileText(selected.profile, 'background')} />
-                <DetailSection label="不可改变的设定" value={selected.anti_ooc_rules} />
                 {selected.custom_fields.length ? (
                   <section>
                     <div className="document-detail-heading"><span>其他稳定信息</span></div>
@@ -396,55 +380,54 @@ export function CharacterLibraryPage() {
           ) : <LibraryEmptyState description="单击中央区域中的角色卡后，稳定设定和来源信息会显示在这里。" title="选择一个角色查看详情" />}
         </aside>
       </div>
-      {editing ? <CharacterEditor busy={busy} card={editing} onClose={() => setEditing(null)} onSave={save} /> : null}
+      {editing ? <CharacterEditor busy={busy} card={editing} tags={tags} onClose={() => setEditing(null)} onSave={save} onCoverChanged={async (id) => { await load(id); setEditing(null); }} /> : null}
+      {analysisProposal ? <CharacterAnalysisDialog busy={busy} proposal={analysisProposal} onClose={() => setAnalysisProposal(null)} onConfirm={async () => {
+        await runBusy(async () => {
+          const updated = await confirmCharacterAnalysis(analysisProposal.card.id, {
+            ...analysisProposal.result.merged,
+            invocation_id: analysisProposal.result.invocation_id,
+          });
+          setAnalysisProposal(null);
+          await load(updated.id);
+          setMessage('已按确认结果保存角色分析。');
+        });
+      }} /> : null}
+      {tagDialog ? <TagNameDialog busy={busy} initialName={tagDialog.tag?.name ?? ''} onClose={() => setTagDialog(null)} onSave={saveTag} title={tagDialog.mode === 'rename' ? '重命名角色标签' : '新建角色标签'} /> : null}
     </div>
   );
 }
 
 type CharacterDraft = {
   name: string;
-  aliases: string;
-  description: string;
   identity: string;
   age: string;
   setting_text: string;
-  personality: string;
-  speech_style: string;
-  action_constraints: string;
-  anti_ooc_rules: string;
-  relationship_notes: string;
-  priority: number;
-  is_main: boolean;
-  profile: Record<string, unknown>;
   custom_fields: CharacterCustomField[];
   raw_text: string;
   analysis_status: AnalysisStatus;
+  tag_ids: number[];
 };
 
-function CharacterEditor({ busy, card, onClose, onSave }: {
+function CharacterEditor({ busy, card, onClose, onSave, onCoverChanged, tags }: {
   busy: boolean;
   card: CharacterCard;
   onClose: () => void;
   onSave: (card: CharacterCard, draft: CharacterDraft) => void;
+  onCoverChanged: (id: number) => void;
+  tags: ResourceTag[];
 }) {
+  const [showMissing, setShowMissing] = useState(false);
+  const [fieldError, setFieldError] = useState('');
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [draft, setDraft] = useState<CharacterDraft>({
     name: card.name,
-    aliases: card.aliases.join('、'),
-    description: card.description,
     identity: card.identity,
     age: card.age,
     setting_text: card.setting_text,
-    personality: card.personality,
-    speech_style: card.speech_style,
-    action_constraints: card.action_constraints,
-    anti_ooc_rules: card.anti_ooc_rules,
-    relationship_notes: card.relationship_notes,
-    priority: card.priority,
-    is_main: card.is_main,
-    profile: card.profile,
     custom_fields: card.custom_fields,
     raw_text: card.raw_text,
     analysis_status: card.analysis_status,
+    tag_ids: tags.filter((tag) => card.tags.includes(tag.name)).map((tag) => tag.id),
   });
   function updateField(index: number, patch: Partial<CharacterCustomField>) {
     setDraft((current) => ({
@@ -452,32 +435,72 @@ function CharacterEditor({ busy, card, onClose, onSave }: {
       custom_fields: current.custom_fields.map((field, itemIndex) => itemIndex === index ? { ...field, ...patch } : field),
     }));
   }
+  function moveField(from: number, to: number) {
+    if (to < 0 || to >= draft.custom_fields.length || from === to) return;
+    const next = [...draft.custom_fields];
+    const [item] = next.splice(from, 1);
+    next.splice(to, 0, item);
+    setDraft({ ...draft, custom_fields: next.map((field, index) => ({ ...field, sort_order: index })) });
+  }
+  function requestSave() {
+    const labels = draft.custom_fields.map((field) => field.label.trim().toLocaleLowerCase());
+    if (labels.some((label) => !label)) {
+      setFieldError('自定义属性名不能为空。');
+      return;
+    }
+    if (new Set(labels).size !== labels.length) {
+      setFieldError('同一角色中不能存在重复的自定义属性名。');
+      return;
+    }
+    setFieldError('');
+    if (!draft.identity.trim() || !draft.age.trim() || !draft.setting_text.trim()) {
+      setShowMissing(true);
+      return;
+    }
+    onSave(card, draft);
+  }
+  async function uploadCover(file: File | undefined) {
+    if (!file || !card.id) return;
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
+      setFieldError('封面只支持 PNG、JPEG 或 WebP。');
+      return;
+    }
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    let binary = '';
+    bytes.forEach((value) => { binary += String.fromCharCode(value); });
+    await saveCharacterCover(card.id, btoa(binary));
+    onCoverChanged(card.id);
+  }
   return (
     <LibraryDialog
-      footer={<><SecondaryButton disabled={busy} onClick={onClose}>取消</SecondaryButton><PrimaryButton disabled={busy || !draft.name.trim()} onClick={() => onSave(card, draft)}>{busy ? '保存中…' : '保存'}</PrimaryButton></>}
+      footer={<><SecondaryButton disabled={busy} onClick={onClose}>取消</SecondaryButton><PrimaryButton disabled={busy || !draft.name.trim()} onClick={requestSave}>{busy ? '保存中…' : '保存'}</PrimaryButton></>}
       onClose={onClose}
       subtitle={card.id ? `角色 #${card.id} · v${card.version}` : '新角色'}
       title={card.id ? '编辑角色卡' : '新建角色卡'}
     >
       <div className="library-form-grid">
         <Field label="角色名称"><input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></Field>
-        <Field label="别名"><input placeholder="使用顿号或逗号分隔" value={draft.aliases} onChange={(event) => setDraft({ ...draft, aliases: event.target.value })} /></Field>
         <Field label="身份"><input value={draft.identity} onChange={(event) => setDraft({ ...draft, identity: event.target.value })} /></Field>
         <Field label="年龄"><input value={draft.age} onChange={(event) => setDraft({ ...draft, age: event.target.value })} /></Field>
-        <Field className="wide" label="人物简介"><textarea value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} /></Field>
-        <Field className="wide" label="长期设定"><textarea value={draft.setting_text} onChange={(event) => setDraft({ ...draft, setting_text: event.target.value })} /></Field>
-        <Field label="长期性格"><textarea value={draft.personality} onChange={(event) => setDraft({ ...draft, personality: event.target.value })} /></Field>
-        <Field label="说话方式"><textarea value={draft.speech_style} onChange={(event) => setDraft({ ...draft, speech_style: event.target.value })} /></Field>
-        <Field label="能力与限制"><textarea value={draft.action_constraints} onChange={(event) => setDraft({ ...draft, action_constraints: event.target.value })} /></Field>
-        <Field label="不可改变的设定"><textarea value={draft.anti_ooc_rules} onChange={(event) => setDraft({ ...draft, anti_ooc_rules: event.target.value })} /></Field>
+        <Field className="wide" label="设定"><textarea value={draft.setting_text} onChange={(event) => setDraft({ ...draft, setting_text: event.target.value })} /></Field>
+        <div className="wide character-cover-editor">
+          <span>自定义封面</span>
+          {card.id ? <><input accept="image/png,image/jpeg,image/webp" type="file" onChange={(event) => void uploadCover(event.target.files?.[0])} /><SecondaryButton disabled={busy || !card.cover_path} onClick={async () => { await removeCharacterCover(card.id); onCoverChanged(card.id); }}>移除封面</SecondaryButton></> : <small>先保存角色卡后即可上传封面。</small>}
+        </div>
+        <fieldset className="wide library-tag-picker">
+          <legend>标签</legend>
+          {tags.map((tag) => <label key={tag.id}><input checked={draft.tag_ids.includes(tag.id)} type="checkbox" onChange={(event) => setDraft({ ...draft, tag_ids: event.target.checked ? [...draft.tag_ids, tag.id] : draft.tag_ids.filter((id) => id !== tag.id) })} />{tag.name}</label>)}
+        </fieldset>
       </div>
       <section className="library-form-section">
         <div className="document-detail-heading"><span>自定义稳定信息</span></div>
         <div className="custom-field-list">
           {draft.custom_fields.map((field, index) => (
-            <div className="custom-field-row" key={field.id}>
+            <div className="custom-field-row" draggable key={field.id} onDragStart={() => setDragIndex(index)} onDragOver={(event) => event.preventDefault()} onDrop={() => { if (dragIndex !== null) moveField(dragIndex, index); setDragIndex(null); }}>
               <input placeholder="字段名" value={field.label} onChange={(event) => updateField(index, { label: event.target.value })} />
               <input placeholder="内容" value={field.value} onChange={(event) => updateField(index, { value: event.target.value })} />
+              <button aria-label="上移字段" disabled={index === 0} onClick={() => moveField(index, index - 1)} type="button">↑</button>
+              <button aria-label="下移字段" disabled={index === draft.custom_fields.length - 1} onClick={() => moveField(index, index + 1)} type="button">↓</button>
               <button aria-label="删除字段" onClick={() => setDraft({ ...draft, custom_fields: draft.custom_fields.filter((_, itemIndex) => itemIndex !== index) })} type="button"><Trash2 size={14} /></button>
             </div>
           ))}
@@ -488,12 +511,67 @@ function CharacterEditor({ busy, card, onClose, onSave }: {
         <summary>高级来源文本</summary>
         <textarea value={draft.raw_text} onChange={(event) => setDraft({ ...draft, raw_text: event.target.value })} />
       </details>
+      {fieldError ? <div className="inline-alert error" role="alert">{fieldError}</div> : null}
+      {showMissing ? (
+        <div className="library-confirm-panel" role="dialog" aria-label="空字段保存提醒">
+          <p>以下信息尚未填写：</p>
+          <ul>{!draft.identity.trim() ? <li>身份</li> : null}{!draft.age.trim() ? <li>年龄</li> : null}{!draft.setting_text.trim() ? <li>设定</li> : null}</ul>
+          <div><SecondaryButton onClick={() => setShowMissing(false)}>返回补充</SecondaryButton><PrimaryButton onClick={() => onSave(card, draft)}>仍然保存</PrimaryButton></div>
+        </div>
+      ) : null}
     </LibraryDialog>
   );
 }
 
 function Field({ children, className = '', label }: { children: ReactNode; className?: string; label: string }) {
   return <label className={className}><span>{label}</span>{children}</label>;
+}
+
+function TagNameDialog({ busy, initialName, onClose, onSave, title }: {
+  busy: boolean;
+  initialName: string;
+  onClose: () => void;
+  onSave: (name: string) => void;
+  title: string;
+}) {
+  const [name, setName] = useState(initialName);
+  return (
+    <LibraryDialog
+      footer={<><SecondaryButton disabled={busy} onClick={onClose}>取消</SecondaryButton><PrimaryButton disabled={busy || !name.trim()} onClick={() => onSave(name)}>保存</PrimaryButton></>}
+      onClose={onClose}
+      title={title}
+    >
+      <Field label="标签名称"><input autoFocus value={name} onChange={(event) => setName(event.target.value)} /></Field>
+    </LibraryDialog>
+  );
+}
+
+function CharacterAnalysisDialog({ busy, onClose, onConfirm, proposal }: {
+  busy: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+  proposal: { card: CharacterCard; result: CharacterAnalysisProposal };
+}) {
+  const { result } = proposal;
+  return (
+    <LibraryDialog
+      footer={<><SecondaryButton disabled={busy} onClick={onClose}>取消</SecondaryButton><PrimaryButton disabled={busy} onClick={onConfirm}>{busy ? '保存中…' : '确认并保存'}</PrimaryButton></>}
+      onClose={onClose}
+      subtitle="已有非空字段不会被模型自动覆盖。"
+      title="确认角色分析"
+    >
+      {result.conflicts.length ? (
+        <div className="analysis-conflict-list">
+          {result.conflicts.map((conflict) => <div key={conflict.field}><strong>{conflict.field}</strong><p>已有：{conflict.existing}</p><p>模型建议：{conflict.proposed}</p></div>)}
+        </div>
+      ) : <p>未发现与已有非空字段冲突的建议。</p>}
+      <div className="library-form-grid">
+        <LibraryDefinition label="身份" value={result.merged.identity || '未填写'} />
+        <LibraryDefinition label="年龄" value={result.merged.age || '未填写'} />
+        <LibraryDefinition label="设定" value={result.merged.setting_text || '未填写'} />
+      </div>
+    </LibraryDialog>
+  );
 }
 
 function DetailSection({ label, value }: { label: string; value: string }) {

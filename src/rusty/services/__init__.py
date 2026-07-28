@@ -7,6 +7,9 @@ from .material_service import Material, MaterialService
 from .context_service import ContextService, PromptBlock, PromptBudgeter
 from .rewrite_workflow_service import RewriteWorkflowService
 from .scene_service import SceneRecord, SceneService
+from .scene_rewrite_orchestrator import SceneRewriteOrchestrator
+from .resource_analysis_service import ResourceAnalysisService
+from .structured_model_service import StructuredModelService
 from .pipeline_service import PipelineResult, PipelineService
 from .prompt_service import PromptService, PromptTemplate
 from .prompt_package_extraction_service import PromptPackageExtractionService

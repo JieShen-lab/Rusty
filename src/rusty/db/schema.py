@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .connection import session
 
-CURRENT_SCHEMA_VERSION = 15
+CURRENT_SCHEMA_VERSION = 16
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -1722,6 +1722,172 @@ def _migrate_to_v15(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_to_v16(connection: sqlite3.Connection) -> None:
+    """Add auditable model calls and migrate legacy character fields without data loss."""
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS model_invocations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            invocation_kind TEXT NOT NULL,
+            project_id INTEGER,
+            document_id INTEGER,
+            chapter_id INTEGER,
+            scene_id INTEGER,
+            resource_type TEXT,
+            resource_id INTEGER,
+            model_id INTEGER,
+            stage TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'running'
+                CHECK (status IN ('running', 'completed', 'failed', 'invalid')),
+            request_json TEXT NOT NULL DEFAULT '{}',
+            output_schema_json TEXT NOT NULL DEFAULT '{}',
+            response_text TEXT NOT NULL DEFAULT '',
+            parsed_json TEXT NOT NULL DEFAULT '{}',
+            validation_json TEXT NOT NULL DEFAULT '{}',
+            token_usage_json TEXT NOT NULL DEFAULT '{}',
+            elapsed_ms INTEGER,
+            error_type TEXT,
+            error_message TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            completed_at TEXT,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL,
+            FOREIGN KEY (document_id) REFERENCES library_documents(id) ON DELETE SET NULL,
+            FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE SET NULL,
+            FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE SET NULL,
+            FOREIGN KEY (model_id) REFERENCES ai_models(id) ON DELETE SET NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_model_invocations_resource
+            ON model_invocations(resource_type, resource_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_model_invocations_scene
+            ON model_invocations(scene_id, stage, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS document_split_proposals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            document_id INTEGER NOT NULL,
+            source_revision_id INTEGER NOT NULL,
+            proposal_kind TEXT NOT NULL CHECK (proposal_kind IN ('ai', 'regex', 'manual')),
+            status TEXT NOT NULL DEFAULT 'draft'
+                CHECK (status IN ('draft', 'applied', 'cancelled')),
+            boundaries_json TEXT NOT NULL DEFAULT '[]',
+            unmatched_json TEXT NOT NULL DEFAULT '{}',
+            model_invocation_id INTEGER,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            applied_revision_id INTEGER,
+            applied_at TEXT,
+            FOREIGN KEY (document_id) REFERENCES library_documents(id) ON DELETE CASCADE,
+            FOREIGN KEY (source_revision_id) REFERENCES library_document_revisions(id) ON DELETE CASCADE,
+            FOREIGN KEY (model_invocation_id) REFERENCES model_invocations(id) ON DELETE SET NULL,
+            FOREIGN KEY (applied_revision_id) REFERENCES library_document_revisions(id) ON DELETE SET NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS scene_workflow_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            chapter_id INTEGER NOT NULL,
+            scene_id INTEGER NOT NULL,
+            mode TEXT NOT NULL CHECK (mode IN ('skeleton_rewrite', 'expansion')),
+            status TEXT NOT NULL DEFAULT 'analyzing'
+                CHECK (status IN (
+                    'analyzing', 'awaiting_skeleton', 'planning', 'awaiting_plan',
+                    'generating', 'checking', 'repairing', 'completed', 'failed'
+                )),
+            skeleton_id INTEGER,
+            skeleton_version_id INTEGER,
+            plan_id INTEGER,
+            current_stage TEXT NOT NULL DEFAULT 'analysis',
+            error_message TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            completed_at TEXT,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE,
+            FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE,
+            FOREIGN KEY (skeleton_id) REFERENCES story_skeletons(id) ON DELETE SET NULL,
+            FOREIGN KEY (skeleton_version_id) REFERENCES story_skeleton_versions(id) ON DELETE SET NULL,
+            FOREIGN KEY (plan_id) REFERENCES rewrite_plans(id) ON DELETE SET NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_scene_workflow_runs_scene
+            ON scene_workflow_runs(scene_id, created_at DESC);
+        """
+    )
+    rows = connection.execute(
+        """
+        SELECT id, description, personality, speech_style, action_constraints,
+               anti_ooc_rules, relationship_notes, profile_json, custom_fields_json
+        FROM character_cards
+        WHERE deleted_at IS NULL
+        """
+    ).fetchall()
+    labels = (
+        ("description", "人物简介"),
+        ("personality", "长期性格"),
+        ("speech_style", "说话方式"),
+        ("action_constraints", "能力与限制"),
+        ("anti_ooc_rules", "不可改变的设定"),
+        ("relationship_notes", "关系说明"),
+    )
+    for row in rows:
+        existing = _safe_json_list(row["custom_fields_json"])
+        normalized = {
+            " ".join(str(item.get("label") or "").strip().split()).casefold()
+            for item in existing
+            if isinstance(item, dict)
+        }
+        additions: list[dict[str, object]] = []
+        for column, label in labels:
+            value = str(row[column] or "").strip()
+            if value and label.casefold() not in normalized:
+                additions.append(
+                    {
+                        "id": f"legacy-{column}",
+                        "label": label,
+                        "value": value,
+                        "sort_order": len(existing) + len(additions),
+                    }
+                )
+        profile = _safe_json_object(row["profile_json"])
+        for key, value in profile.items():
+            if value in (None, "", [], {}):
+                continue
+            label = str(key).strip() or "旧版属性"
+            if " ".join(label.split()).casefold() in normalized:
+                continue
+            rendered = (
+                json.dumps(value, ensure_ascii=False)
+                if isinstance(value, (dict, list))
+                else str(value)
+            )
+            additions.append(
+                {
+                    "id": f"legacy-profile-{len(additions)}",
+                    "label": label,
+                    "value": rendered,
+                    "sort_order": len(existing) + len(additions),
+                }
+            )
+        if additions:
+            connection.execute(
+                "UPDATE character_cards SET custom_fields_json = ? WHERE id = ?",
+                (json.dumps([*existing, *additions], ensure_ascii=False), row["id"]),
+            )
+
+
+def _safe_json_list(value: object) -> list[dict[str, object]]:
+    try:
+        parsed = json.loads(str(value or "[]"))
+    except (TypeError, ValueError):
+        return []
+    return [item for item in parsed if isinstance(item, dict)] if isinstance(parsed, list) else []
+
+
+def _safe_json_object(value: object) -> dict[str, object]:
+    try:
+        parsed = json.loads(str(value or "{}"))
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def _ensure_v14_tag_tables(connection: sqlite3.Connection) -> None:
     connection.executescript(
         """
@@ -2071,6 +2237,7 @@ MIGRATIONS = {
     13: _migrate_to_v13,
     14: _migrate_to_v14,
     15: _migrate_to_v15,
+    16: _migrate_to_v16,
 }
 
 
