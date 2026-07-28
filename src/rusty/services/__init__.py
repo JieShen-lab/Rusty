@@ -4,6 +4,9 @@ from .analysis_service import AnalysisService
 from .chapter_split_service import ChapterSplitService
 from .model_service import ModelConfig, ModelService, ModelTestResult
 from .material_service import Material, MaterialService
+from .context_service import ContextService, PromptBlock, PromptBudgeter
+from .rewrite_workflow_service import RewriteWorkflowService
+from .scene_service import SceneRecord, SceneService
 from .pipeline_service import PipelineResult, PipelineService
 from .prompt_service import PromptService, PromptTemplate
 from .prompt_package_extraction_service import PromptPackageExtractionService

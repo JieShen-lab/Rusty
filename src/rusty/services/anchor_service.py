@@ -57,6 +57,8 @@ class CharacterCard:
     cover_path: str | None = None
     cover_updated_at: str | None = None
     tags: tuple[str, ...] = ()
+    created_at: str = ""
+    updated_at: str = ""
 
     @property
     def aliases(self) -> list[str]:
@@ -813,6 +815,8 @@ class AnchorService:
             cover_path=row["cover_path"],
             cover_updated_at=row["cover_updated_at"],
             tags=tuple(item for item in str(row["tag_names"] or "").split(chr(31)) if item),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
         )
 
 

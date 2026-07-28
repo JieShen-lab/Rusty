@@ -199,6 +199,57 @@ class PromptCompiler:
         )
         return self._compiled(rewrite_mode, system, user, contract, template, stage="rewrite")
 
+    def compile_scene_stage(
+        self,
+        *,
+        stage: str,
+        compilation: dict[str, Any],
+        output_protocol: str,
+        provenance: dict[str, Any] | None = None,
+    ) -> CompiledRequest:
+        """Compile a budgeted scene snapshot without rejoining and truncating it."""
+        blocks = compilation.get("blocks")
+        if not isinstance(blocks, list):
+            raise ValueError("Scene prompt compilation requires budgeted blocks.")
+        included = [
+            block
+            for block in blocks
+            if isinstance(block, dict) and bool(block.get("included", True))
+        ]
+        system_blocks = [block for block in included if block.get("key") == "system_rules"]
+        user_blocks = [block for block in included if block.get("key") != "system_rules"]
+        if not system_blocks:
+            raise ValueError("Budgeted scene prompt is missing required system rules.")
+        if not any(block.get("key") == "current_original_scene" for block in user_blocks):
+            raise ValueError("Budgeted scene prompt is missing the complete current scene.")
+        if not any(block.get("key") == "user_instruction" for block in user_blocks):
+            raise ValueError("Budgeted scene prompt is missing the user instruction block.")
+        system = "\n\n".join(
+            f"## {str(block.get('key')).upper()}\n{str(block.get('content') or '')}"
+            for block in system_blocks
+        )
+        user = "\n\n".join(
+            f"## {str(block.get('key')).upper()}\n{str(block.get('content') or '')}"
+            for block in user_blocks
+        )
+        user += f"\n\n## OUTPUT PROTOCOL\n{output_protocol}"
+        return CompiledRequest(
+            stage=stage,
+            messages=(
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ),
+            expected_output=output_protocol,
+            provenance={
+                "compiler": "rusty-scene-budgeted",
+                "prompt_compilation_id": compilation.get("id"),
+                "used_input_tokens": compilation.get("used_input_tokens"),
+                "reserved_output_tokens": compilation.get("reserved_output_tokens"),
+                **(provenance or {}),
+            },
+            ruleset_id=f"rusty.native.scene.{stage}.v1",
+        )
+
     @staticmethod
     def _compiled(
         label: str,

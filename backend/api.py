@@ -34,6 +34,9 @@ from rusty.services.model_service import ModelService
 from rusty.services.pipeline_service import PipelineService
 from rusty.services.project_service import ProjectService, default_database_path
 from rusty.services.prompt_service import PromptService
+from rusty.services.context_service import ContextService
+from rusty.services.rewrite_workflow_service import RewriteWorkflowService
+from rusty.services.scene_service import SceneService
 from rusty.services.style_extraction_service import StyleExtractionService
 from rusty.services.style_service import StyleTemplate, StyleTemplateService
 
@@ -109,6 +112,18 @@ from .schemas import (
     PipelineRunResponse,
     RetryStageRequest,
     RewriteTextRequest,
+    SceneBoundaryWriteRequest,
+    SceneContextCompileRequest,
+    SceneFactLedgerWriteRequest,
+    SceneRetrievalRequest,
+    SceneRewriteVersionWriteRequest,
+    SceneStageWriteRequest,
+    CharacterStoryStateWriteRequest,
+    StorySkeletonRevisionRequest,
+    StorySkeletonWriteRequest,
+    RewritePlanWriteRequest,
+    TargetedRepairWriteRequest,
+    ConsistencyCheckWriteRequest,
     RegexSplitApplyRequest,
     RegexSplitPreviewRequest,
     ResourceTagAssignmentRequest,
@@ -174,6 +189,9 @@ def create_app(
     style_extraction_service = StyleExtractionService(db_path, ai_client=style_ai_client)
     anchor_service = AnchorService(db_path)
     material_service = MaterialService(db_path)
+    scene_service = SceneService(db_path)
+    context_service = ContextService(db_path)
+    rewrite_workflow_service = RewriteWorkflowService(db_path)
     anchor_extraction_service = AnchorExtractionService(db_path, ai_client=anchor_ai_client or style_ai_client)
 
     app = FastAPI(
@@ -804,6 +822,222 @@ def create_app(
         _require_project(project_service, chapter.project_id)
         pipeline_service.confirm_rewrite(chapter_id)
         return _chapter_detail(_require_existing_chapter(project_service, chapter_id), pipeline_service)
+
+    @app.get("/api/chapters/{chapter_id}/scenes", response_model=list[dict[str, Any]])
+    def list_chapter_scenes(chapter_id: int) -> list[dict[str, Any]]:
+        chapter = _require_existing_chapter(project_service, chapter_id)
+        _require_project(project_service, chapter.project_id)
+        return [scene.__dict__ for scene in scene_service.list_scenes(chapter_id)]
+
+    @app.post(
+        "/api/chapters/{chapter_id}/scenes/analyze",
+        response_model=list[dict[str, Any]],
+        dependencies=[Depends(_require_token)],
+    )
+    def analyze_chapter_scenes(chapter_id: int, payload: SceneBoundaryWriteRequest) -> list[dict[str, Any]]:
+        chapter = _require_existing_chapter(project_service, chapter_id)
+        _require_project(project_service, chapter.project_id)
+        scenes = scene_service.split_chapter(
+            chapter_id,
+            proposed_boundaries=payload.boundaries,
+            source=payload.source,
+        )
+        if payload.confirm:
+            scenes = scene_service.confirm_boundaries(chapter_id)
+        return [scene.__dict__ for scene in scenes]
+
+    @app.post(
+        "/api/chapters/{chapter_id}/scenes/adjust",
+        response_model=list[dict[str, Any]],
+        dependencies=[Depends(_require_token)],
+    )
+    def adjust_chapter_scenes(chapter_id: int, payload: SceneBoundaryWriteRequest) -> list[dict[str, Any]]:
+        chapter = _require_existing_chapter(project_service, chapter_id)
+        _require_project(project_service, chapter.project_id)
+        if payload.boundaries is None:
+            raise _http_error(400, "scene_boundaries_required", "Manual scene adjustment requires boundaries.")
+        return [scene.__dict__ for scene in scene_service.adjust_boundaries(chapter_id, payload.boundaries)]
+
+    @app.post(
+        "/api/chapters/{chapter_id}/scenes/confirm",
+        response_model=list[dict[str, Any]],
+        dependencies=[Depends(_require_token)],
+    )
+    def confirm_chapter_scenes(chapter_id: int) -> list[dict[str, Any]]:
+        chapter = _require_existing_chapter(project_service, chapter_id)
+        _require_project(project_service, chapter.project_id)
+        return [scene.__dict__ for scene in scene_service.confirm_boundaries(chapter_id)]
+
+    @app.get("/api/scenes/{scene_id}/facts", response_model=dict[str, Any])
+    def get_scene_facts(scene_id: int) -> dict[str, Any]:
+        return scene_service.get_fact_ledger(scene_id)
+
+    @app.post(
+        "/api/scenes/{scene_id}/facts",
+        response_model=dict[str, Any],
+        dependencies=[Depends(_require_token)],
+    )
+    def save_scene_facts(scene_id: int, payload: SceneFactLedgerWriteRequest) -> dict[str, Any]:
+        return scene_service.save_fact_ledger(
+            scene_id,
+            payload.facts,
+            source_kind=payload.source_kind,
+            model_id=payload.model_id,
+            prompt_compilation_id=payload.prompt_compilation_id,
+        )
+
+    @app.get("/api/scenes/{scene_id}/character-states", response_model=list[dict[str, Any]])
+    def list_scene_character_states(scene_id: int) -> list[dict[str, Any]]:
+        return scene_service.list_character_states(scene_id)
+
+    @app.post(
+        "/api/scenes/{scene_id}/character-states",
+        response_model=dict[str, Any],
+        dependencies=[Depends(_require_token)],
+    )
+    def save_scene_character_state(scene_id: int, payload: CharacterStoryStateWriteRequest) -> dict[str, Any]:
+        return scene_service.save_character_state(
+            scene_id,
+            payload.character_name,
+            payload.state,
+            character_card_id=payload.character_card_id,
+        )
+
+    @app.post(
+        "/api/story-skeletons",
+        response_model=dict[str, Any],
+        dependencies=[Depends(_require_token)],
+    )
+    def create_story_skeleton(payload: StorySkeletonWriteRequest) -> dict[str, Any]:
+        value = rewrite_workflow_service.create_skeleton(**payload.model_dump())
+        return value.__dict__
+
+    @app.post(
+        "/api/story-skeletons/{skeleton_id}/versions",
+        response_model=dict[str, Any],
+        dependencies=[Depends(_require_token)],
+    )
+    def revise_story_skeleton(skeleton_id: int, payload: StorySkeletonRevisionRequest) -> dict[str, Any]:
+        return rewrite_workflow_service.revise_skeleton(
+            skeleton_id,
+            payload.nodes,
+            change_note=payload.change_note,
+        ).__dict__
+
+    @app.post(
+        "/api/story-skeletons/{skeleton_id}/confirm",
+        response_model=dict[str, Any],
+        dependencies=[Depends(_require_token)],
+    )
+    def confirm_story_skeleton(skeleton_id: int, version: int | None = None) -> dict[str, Any]:
+        return rewrite_workflow_service.confirm_skeleton(skeleton_id, version).__dict__
+
+    @app.post(
+        "/api/rewrite-plans",
+        response_model=dict[str, Any],
+        dependencies=[Depends(_require_token)],
+    )
+    def create_rewrite_plan(payload: RewritePlanWriteRequest) -> dict[str, Any]:
+        values = payload.model_dump()
+        mode = values.pop("mode")
+        material_mappings = values.pop("material_mappings")
+        if mode == "skeleton_rewrite":
+            plan_id = rewrite_workflow_service.create_skeleton_rewrite_plan(**values)
+        else:
+            plan_id = rewrite_workflow_service.create_expansion_plan(
+                **values,
+                material_mappings=material_mappings,
+            )
+        return rewrite_workflow_service.get_plan(plan_id)
+
+    @app.get("/api/rewrite-plans/{plan_id}", response_model=dict[str, Any])
+    def get_rewrite_plan(plan_id: int) -> dict[str, Any]:
+        return rewrite_workflow_service.get_plan(plan_id)
+
+    @app.post(
+        "/api/rewrite-plans/{plan_id}/confirm",
+        response_model=dict[str, Any],
+        dependencies=[Depends(_require_token)],
+    )
+    def confirm_rewrite_plan(plan_id: int) -> dict[str, Any]:
+        return rewrite_workflow_service.confirm_plan(plan_id)
+
+    @app.post(
+        "/api/scenes/{scene_id}/stages",
+        response_model=dict[str, int],
+        dependencies=[Depends(_require_token)],
+    )
+    def save_scene_stage(scene_id: int, payload: SceneStageWriteRequest) -> dict[str, int]:
+        stage_id = rewrite_workflow_service.save_stage_output(
+            scene_id,
+            payload.stage,
+            payload.output,
+            plan_id=payload.plan_id,
+            prompt_compilation_id=payload.prompt_compilation_id,
+            status=payload.status,
+        )
+        return {"id": stage_id}
+
+    @app.post(
+        "/api/scenes/{scene_id}/retrieval",
+        response_model=list[dict[str, Any]],
+        dependencies=[Depends(_require_token)],
+    )
+    def retrieve_scene_context(scene_id: int, payload: SceneRetrievalRequest) -> list[dict[str, Any]]:
+        return context_service.retrieve(scene_id, **payload.model_dump())
+
+    @app.post(
+        "/api/scenes/{scene_id}/prompt-compile",
+        response_model=dict[str, Any],
+        dependencies=[Depends(_require_token)],
+    )
+    def compile_scene_prompt(scene_id: int, payload: SceneContextCompileRequest) -> dict[str, Any]:
+        return context_service.compile_scene_context(scene_id, **payload.model_dump())
+
+    @app.post(
+        "/api/scenes/{scene_id}/rewrite-versions",
+        response_model=dict[str, int],
+        dependencies=[Depends(_require_token)],
+    )
+    def save_scene_rewrite_version(scene_id: int, payload: SceneRewriteVersionWriteRequest) -> dict[str, int]:
+        version_id = rewrite_workflow_service.save_rewrite_version(
+            scene_id,
+            payload.rewritten_text,
+            plan_id=payload.plan_id,
+            skeleton_version_id=payload.skeleton_version_id,
+            prompt_compilation_id=payload.prompt_compilation_id,
+            facts_after=payload.facts_after,
+        )
+        return {"id": version_id}
+
+    @app.post(
+        "/api/scenes/{scene_id}/targeted-repairs",
+        response_model=dict[str, int],
+        dependencies=[Depends(_require_token)],
+    )
+    def save_targeted_repair(scene_id: int, payload: TargetedRepairWriteRequest) -> dict[str, int]:
+        repair_id = rewrite_workflow_service.targeted_repair(scene_id=scene_id, **payload.model_dump())
+        return {"id": repair_id}
+
+    @app.post(
+        "/api/consistency-checks",
+        response_model=dict[str, int],
+        dependencies=[Depends(_require_token)],
+    )
+    def save_consistency_check(payload: ConsistencyCheckWriteRequest) -> dict[str, int]:
+        check_id = rewrite_workflow_service.save_consistency_check(**payload.model_dump())
+        return {"id": check_id}
+
+    @app.get("/api/chapters/{chapter_id}/continuity-check", response_model=dict[str, Any])
+    def check_chapter_continuity(chapter_id: int) -> dict[str, Any]:
+        chapter = _require_existing_chapter(project_service, chapter_id)
+        _require_project(project_service, chapter.project_id)
+        return rewrite_workflow_service.build_chapter_check(chapter_id)
+
+    @app.get("/api/projects/{project_id}/book-consistency-check", response_model=dict[str, Any])
+    def check_project_book_consistency(project_id: int) -> dict[str, Any]:
+        _require_project(project_service, project_id)
+        return rewrite_workflow_service.build_book_check(project_id)
 
     @app.get("/api/models", response_model=list[ModelOut])
     def list_models() -> list[ModelOut]:
@@ -1754,6 +1988,8 @@ def _character_out(card: CharacterCard) -> CharacterCardOut:
         cover_path=card.cover_path,
         cover_updated_at=card.cover_updated_at,
         tags=list(card.tags),
+        created_at=card.created_at,
+        updated_at=card.updated_at,
     )
 
 

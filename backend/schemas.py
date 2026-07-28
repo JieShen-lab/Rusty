@@ -384,6 +384,104 @@ class RewriteTextRequest(BaseModel):
     rewritten_text: str = ""
 
 
+class SceneBoundaryWriteRequest(BaseModel):
+    boundaries: list[int] | None = None
+    source: str = "ai"
+    confirm: bool = False
+
+
+class SceneFactLedgerWriteRequest(BaseModel):
+    facts: dict[str, Any] = Field(default_factory=dict)
+    source_kind: str = "analysis"
+    model_id: int | None = None
+    prompt_compilation_id: int | None = None
+
+
+class CharacterStoryStateWriteRequest(BaseModel):
+    character_name: str = Field(min_length=1)
+    character_card_id: int | None = None
+    state: dict[str, Any] = Field(default_factory=dict)
+
+
+class StorySkeletonWriteRequest(BaseModel):
+    project_id: int
+    chapter_id: int
+    scene_id: int | None = None
+    scope: Literal["scene", "chapter", "volume", "book"] = "scene"
+    source_kind: str = "original_analysis"
+    nodes: list[dict[str, Any]] = Field(min_length=1)
+
+
+class StorySkeletonRevisionRequest(BaseModel):
+    nodes: list[dict[str, Any]] = Field(min_length=1)
+    change_note: str = ""
+
+
+class RewritePlanWriteRequest(BaseModel):
+    project_id: int
+    chapter_id: int
+    scene_id: int
+    mode: Literal["skeleton_rewrite", "expansion"]
+    skeleton_version_id: int
+    plan: dict[str, Any]
+    material_mappings: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class SceneStageWriteRequest(BaseModel):
+    stage: Literal["analysis", "planning", "rewrite", "consistency_check", "targeted_repair"]
+    output: dict[str, Any]
+    plan_id: int | None = None
+    prompt_compilation_id: int | None = None
+    status: Literal["pending", "running", "completed", "failed", "needs_confirmation"] = "completed"
+
+
+class SceneRewriteVersionWriteRequest(BaseModel):
+    rewritten_text: str = Field(min_length=1)
+    plan_id: int
+    skeleton_version_id: int
+    prompt_compilation_id: int | None = None
+    facts_after: dict[str, Any] = Field(default_factory=dict)
+
+
+class TargetedRepairWriteRequest(BaseModel):
+    source_version_id: int
+    paragraph_start: int = Field(ge=0)
+    paragraph_end: int = Field(ge=0)
+    issues: list[Any] = Field(default_factory=list)
+    replacement_text: str = Field(min_length=1)
+    affected_facts: dict[str, Any] = Field(default_factory=dict)
+
+
+class SceneContextCompileRequest(BaseModel):
+    stage: str
+    system_rules: str
+    user_instruction: str = ""
+    task: dict[str, Any] = Field(default_factory=dict)
+    model_context_tokens: int = Field(default=32768, ge=1024)
+    reserved_output_tokens: int = Field(default=4096, ge=1)
+    retrieval_results: list[dict[str, Any]] = Field(default_factory=list)
+    style_context: dict[str, Any] = Field(default_factory=dict)
+    model_id: int | None = None
+
+
+class SceneRetrievalRequest(BaseModel):
+    keywords: list[str] = Field(default_factory=list)
+    character_names: list[str] = Field(default_factory=list)
+    location: str = ""
+    time_hint: str = ""
+    manual_material_ids: list[int] = Field(default_factory=list)
+    manual_character_ids: list[int] = Field(default_factory=list)
+    limit: int = Field(default=24, ge=1, le=100)
+
+
+class ConsistencyCheckWriteRequest(BaseModel):
+    project_id: int
+    check_scope: Literal["scene", "chapter", "volume", "book"]
+    result: dict[str, Any]
+    chapter_id: int | None = None
+    scene_id: int | None = None
+
+
 class ProjectSettingsUpdateRequest(BaseModel):
     model_id: int | None = None
     prompt_template_id: int | None = None
@@ -719,6 +817,8 @@ class CharacterCardOut(BaseModel):
     cover_path: str | None = None
     cover_updated_at: str | None = None
     tags: list[str] = Field(default_factory=list)
+    created_at: str = ""
+    updated_at: str = ""
 
 
 class CharacterCardWriteRequest(BaseModel):

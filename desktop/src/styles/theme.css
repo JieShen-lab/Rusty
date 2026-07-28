@@ -53,6 +53,20 @@
   --accent-violet: #6b5cc5;
   --radius-card: 12px;
   --radius-button: 8px;
+
+  /* Library tokens are measured from the existing document library. */
+  --library-header-height: 58px;
+  --library-sidebar-width: 210px;
+  --library-inspector-width: 310px;
+  --library-panel-radius: 12px;
+  --library-control-height: 36px;
+  --library-button-height: 40px;
+  --library-icon-size: 16px;
+  --library-panel-gap: 0px;
+  --library-page-padding: 18px;
+  --library-title-size: 16px;
+  --library-body-size: 12px;
+  --library-muted-size: 10px;
 }
 
 :root[data-theme="dark"] {
