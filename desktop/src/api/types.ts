@@ -618,6 +618,14 @@ export type SceneWorkflowRun = {
   material_mappings?: Record<string, unknown>[];
 };
 
+export type SceneWorkflowExecutePayload = {
+  user_instruction?: string;
+  model_id?: number | null;
+  character_ids?: number[];
+  plot_skeleton_material_ids?: number[];
+  scene_reference_ids?: number[];
+};
+
 export type SplitChapterCandidate = {
   index: number;
   title: string;

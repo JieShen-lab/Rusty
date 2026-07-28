@@ -9,8 +9,10 @@ const materials = [
 const documentItem = { id: 1, title: '示例长篇', author: '作者', description: null, source_filename: 'novel.txt', source_format: 'txt', storage_path: 'novel.txt', source_size_bytes: 100, stored_size_bytes: 100, chapter_count: 1, word_count: 16, status: 'ready', favorite: false, tags: [], created_at: '', updated_at: '' };
 
 const sceneHistory = [{ id: 8, version: 1, revision_kind: 'rewrite', parent_version_id: null as number | null, created_at: '2026-07-28', rewritten_text: '林舟推门而入。' }];
+let workflowPlanRequests: Array<Record<string, unknown>> = [];
 
 async function mockApi(page: Page) {
+  let skeletonNodes: Array<Record<string, unknown>> = [{ id: 'n1', event: '发现钥匙' }];
   await page.route('http://127.0.0.1:8765/api/**', async (route) => {
     const url = new URL(route.request().url());
     const path = url.pathname;
@@ -39,10 +41,21 @@ async function mockApi(page: Page) {
     else if (path === '/api/prompts' || path === '/api/analysis-prompts' || path === '/api/projects/1/export-plan') body = [];
     else if (path === '/api/projects/1/style-synthesis') body = { prompt_template_id: null };
     else if (path === '/api/chapters/1/scenes') body = [{ id: 1, project_id: 1, chapter_id: 1, parent_scene_id: null, scene_index: 1, title: '发现钥匙', original_start_offset: 0, original_end_offset: 16, original_text: '林舟推门而入，看见桌上的钥匙。', source_version: 1, boundary_reasons: [], boundary_status: 'confirmed', scene_type: 'discovery', user_confirmed: true, confirmed_at: '' }];
-    else if (path === '/api/scenes/1/workflow/start') body = { id: 10, project_id: 1, chapter_id: 1, scene_id: 1, mode: 'skeleton_rewrite', status: 'awaiting_skeleton_confirmation', skeleton_id: 5, skeleton_version_id: 6, plan_id: null, current_stage: 'skeleton', error_message: null, skeleton_nodes: [{ id: 'n1', event: '发现钥匙' }] };
-    else if (path === '/api/story-skeletons/5/versions') body = { skeleton_id: 5, version_id: 9, version: 2, status: 'draft', nodes: [{ id: 'n1', event: '发现钥匙' }] };
-    else if (path === '/api/story-skeletons/5/confirm') body = { skeleton_id: 5, version_id: 6, version: 1, status: 'confirmed', nodes: [{ id: 'n1', event: '发现钥匙' }] };
-    else if (path === '/api/scene-workflows/10/plan') body = { id: 10, project_id: 1, chapter_id: 1, scene_id: 1, mode: 'skeleton_rewrite', status: 'awaiting_plan_confirmation', skeleton_id: 5, skeleton_version_id: 9, plan_id: 7, current_stage: 'plan', error_message: null, plan: { sequence: ['发现钥匙'] } };
+    else if (path === '/api/scenes/1/workflow/start') {
+      const request = route.request().postDataJSON() as Record<string, unknown>;
+      body = { id: 10, project_id: 1, chapter_id: 1, scene_id: 1, mode: request.mode, status: 'awaiting_skeleton_confirmation', skeleton_id: 5, skeleton_version_id: 6, plan_id: null, current_stage: 'skeleton', error_message: null, skeleton_nodes: skeletonNodes };
+    }
+    else if (path === '/api/story-skeletons/5/versions') {
+      const request = route.request().postDataJSON() as { nodes?: Array<Record<string, unknown>> };
+      skeletonNodes = request.nodes ?? skeletonNodes;
+      body = { skeleton_id: 5, version_id: 9, version: 2, status: 'draft', nodes: skeletonNodes };
+    }
+    else if (path === '/api/story-skeletons/5/confirm') body = { skeleton_id: 5, version_id: 9, version: 2, status: 'confirmed', nodes: skeletonNodes };
+    else if (path === '/api/scene-workflows/10/plan') {
+      const request = route.request().postDataJSON() as Record<string, unknown>;
+      workflowPlanRequests.push(request);
+      body = { id: 10, project_id: 1, chapter_id: 1, scene_id: 1, mode: 'expansion', status: 'awaiting_plan_confirmation', skeleton_id: 5, skeleton_version_id: 9, plan_id: 7, current_stage: 'plan', error_message: null, plan: { sequence: ['发现钥匙'] } };
+    }
     else if (path === '/api/rewrite-plans/7/confirm') body = { id: 7, project_id: 1, chapter_id: 1, scene_id: 1, mode: 'skeleton_rewrite', skeleton_version_id: 6, status: 'confirmed', plan: {}, material_mappings: [], user_instruction: '' };
     else if (path === '/api/scene-workflows/10/execute') body = { id: 10, project_id: 1, chapter_id: 1, scene_id: 1, mode: 'skeleton_rewrite', status: 'completed', skeleton_id: 5, skeleton_version_id: 6, plan_id: 7, current_stage: 'completed', error_message: null, rewrite_version_id: 8, consistency: { revision_required: false } };
     else if (path === '/api/scenes/1/rewrite-history') body = sceneHistory;
@@ -55,6 +68,7 @@ async function mockApi(page: Page) {
 }
 
 test.beforeEach(async ({ page }) => {
+  workflowPlanRequests = [];
   page.on('pageerror', (error) => console.error(`pageerror: ${error.message}`));
   page.on('console', (message) => {
     if (message.type() === 'error') console.error(`console: ${message.text()}`);
@@ -144,4 +158,41 @@ test('场景改写完成三段确认流程', async ({ page }) => {
   await page.getByRole('button', { name: '恢复为新版本' }).click();
   await expect(page.getByText(/已从所选历史内容创建新的恢复版本/)).toBeVisible();
   await expect(page.getByText(/版本 2/)).toBeVisible();
+});
+
+test('编辑骨架后插入位置实时使用新节点 ID', async ({ page }) => {
+  await page.goto('/workspace/1');
+  await page.getByRole('button', { name: '场景改写' }).click();
+  await page.locator('.scene-workflow-form label').filter({ hasText: '模式' }).locator('select').selectOption('expansion');
+  await page.getByText('误会解除', { exact: true }).click();
+  await page.getByRole('button', { name: /1\. 分析并提取骨架/ }).click();
+  const editor = page.getByRole('heading', { name: '骨架编辑器' }).locator('..').locator('textarea');
+  await editor.fill(JSON.stringify([{ id: 'NEW-NODE-ID', event: '新的事件节点' }], null, 2));
+  const insertion = page.locator('.scene-workflow-form label').filter({ hasText: '插入位置' }).locator('select');
+  await expect(insertion.locator('option[value="n1"]')).toHaveCount(0);
+  await expect(insertion.locator('option[value="NEW-NODE-ID"]')).toHaveText(/新的事件节点/);
+  await insertion.selectOption('NEW-NODE-ID');
+  await page.getByRole('button', { name: /2\. 确认骨架并生成规划/ }).click();
+  await expect.poll(() => workflowPlanRequests.length).toBe(1);
+  const mappings = workflowPlanRequests[0].material_mappings as Array<Record<string, unknown>>;
+  expect(mappings[0].insertion_after_node).toBe('NEW-NODE-ID');
+});
+
+test('非法骨架不会发送规划请求', async ({ page }) => {
+  await page.goto('/workspace/1');
+  await page.getByRole('button', { name: '场景改写' }).click();
+  await page.locator('.scene-workflow-form label').filter({ hasText: '模式' }).locator('select').selectOption('expansion');
+  await page.getByText('误会解除', { exact: true }).click();
+  await page.getByRole('button', { name: /1\. 分析并提取骨架/ }).click();
+  const editor = page.getByRole('heading', { name: '骨架编辑器' }).locator('..').locator('textarea');
+  for (const [value, error] of [
+    ['[{', '骨架 JSON 格式无效'],
+    [JSON.stringify([{ id: 'DUP', event: 'A' }, { id: 'DUP', event: 'B' }]), '骨架节点 id 重复'],
+    [JSON.stringify([{ id: 'NO-EVENT' }]), '缺少非空 event'],
+  ]) {
+    await editor.fill(value);
+    await expect(page.getByRole('heading', { name: '骨架编辑器' }).locator('..').getByRole('alert')).toContainText(error);
+    await page.getByRole('button', { name: /2\. 确认骨架并生成规划/ }).click();
+    expect(workflowPlanRequests).toHaveLength(0);
+  }
 });

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode } from 'react';
 import { ArrowDownToLine, ArrowLeft, ArrowUpToLine, ChevronRight, Download, Eye, EyeOff, Save, Sparkles, X } from 'lucide-react';
 import {
@@ -343,7 +343,17 @@ function SceneRewritePanel(props: {
   const [diffView, setDiffView] = useState<{ title: string; text: string } | null>(null);
   const [consistency, setConsistency] = useState<Record<string, unknown> | null>(null);
   const [skeletonJson, setSkeletonJson] = useState('[]');
+  const parsedSkeleton = useMemo(() => parseEditableSkeleton(skeletonJson), [skeletonJson]);
   const selected = props.scenes.find((item) => item.id === sceneId) ?? props.scenes[0];
+  useEffect(() => {
+    if (
+      insertion !== '__start__'
+      && insertion !== '__end__'
+      && !parsedSkeleton.nodes.some((node) => node.id === insertion)
+    ) {
+      setInsertion('__start__');
+    }
+  }, [insertion, parsedSkeleton.nodes]);
   useEffect(() => {
     const projectId = props.scenes[0]?.project_id;
     if (!projectId) return;
@@ -390,10 +400,17 @@ function SceneRewritePanel(props: {
   }
   async function confirmSkeletonAndPlan() {
     if (!run?.skeleton_id || !run.skeleton_version_id) return;
+    if (parsedSkeleton.error) {
+      props.setError(parsedSkeleton.error);
+      return;
+    }
+    if (mode === 'expansion' && !plotMaterialIds.length) {
+      props.setError('扩写模式至少需要选择一个剧情骨架素材。');
+      return;
+    }
     const currentRun = run;
     await perform(async () => {
-      const nodes = JSON.parse(skeletonJson) as Record<string, unknown>[];
-      if (!Array.isArray(nodes) || !nodes.length) throw new Error('骨架至少需要一个事件节点。');
+      const nodes = parsedSkeleton.nodes;
       const revised = await reviseStorySkeleton(currentRun.skeleton_id!, nodes, '用户在工作台确认前编辑');
       const skeleton = await confirmStorySkeleton(currentRun.skeleton_id!, revised.version);
       const mappings = mode === 'expansion' ? plotMaterialIds.map((materialId) => ({ material_id: materialId, insertion_after_node: insertion, usage_mode: 'required' })) : [];
@@ -418,7 +435,12 @@ function SceneRewritePanel(props: {
     if (!run?.plan_id || !selected) return;
     await perform(async () => {
       await confirmRewritePlan(run.plan_id!);
-      const result = await executeSceneWorkflow(run.id, { user_instruction: instruction, character_ids: characterIds, material_ids: [...plotMaterialIds, ...sceneMaterialIds] });
+      const result = await executeSceneWorkflow(run.id, {
+        user_instruction: instruction,
+        character_ids: characterIds,
+        plot_skeleton_material_ids: plotMaterialIds,
+        scene_reference_ids: sceneMaterialIds,
+      });
       setRun(result);
       setConsistency((result as SceneWorkflowRun & { consistency?: Record<string, unknown> }).consistency ?? null);
       setHistory(await getSceneRewriteHistory(selected.id));
@@ -465,11 +487,11 @@ function SceneRewritePanel(props: {
                 onChange={setSceneMaterialIds}
                 describe={(item) => `${item.scope === 'project' ? '当前工程' : '公共库'} · ${item.tags.join('、') || '无标签'}`}
               />
-              {mode === 'expansion' ? <label><span>插入位置</span><select value={insertion} onChange={(event) => setInsertion(event.target.value)}><option value="__start__">场景开头</option>{(run?.skeleton_nodes ?? []).map((node, index) => <option key={String(node.id ?? index)} value={String(node.id ?? '')}>在“{String(node.event ?? `节点 ${index + 1}`)}”之后</option>)}<option value="__end__">场景结尾</option></select></label> : null}
+              {mode === 'expansion' ? <label><span>插入位置</span><select value={insertion} onChange={(event) => setInsertion(event.target.value)}><option value="__start__">场景开头</option>{parsedSkeleton.nodes.map((node) => <option key={node.id} value={node.id}>在“{node.event}”之后</option>)}<option value="__end__">场景结尾</option></select></label> : null}
               <label className="wide"><span>本次用户要求</span><textarea value={instruction} onChange={(event) => setInstruction(event.target.value)} placeholder="留空时使用默认执行要求" /></label>
             </section>
             <section><h3>确认流程与执行进度</h3><p>{run ? `${run.current_stage} · ${run.status}` : '尚未开始'}</p><div className="scene-workflow-actions"><button className="button secondary" disabled={props.busy || !selected?.user_confirmed} onClick={() => void start()} type="button">1. 分析并提取骨架</button><button className="button secondary" disabled={props.busy || !run?.skeleton_id} onClick={() => void confirmSkeletonAndPlan()} type="button">2. 确认骨架并生成规划</button><button className="button primary" disabled={props.busy || !run?.plan_id} onClick={() => void confirmPlanAndExecute()} type="button">3. 确认规划并执行</button></div></section>
-            {run?.skeleton_id ? <section><h3>骨架编辑器</h3><textarea value={skeletonJson} onChange={(event) => setSkeletonJson(event.target.value)} /></section> : null}
+            {run?.skeleton_id ? <section><h3>骨架编辑器</h3><textarea value={skeletonJson} onChange={(event) => { setSkeletonJson(event.target.value); props.setError(null); }} />{parsedSkeleton.error ? <p role="alert">{parsedSkeleton.error}</p> : null}</section> : null}
             {run?.plan ? <section><h3>改写规划预览</h3><pre>{JSON.stringify(run.plan, null, 2)}</pre></section> : null}
             {consistency ? <section><h3>一致性问题 / 定向修复</h3><pre>{JSON.stringify(consistency, null, 2)}</pre></section> : null}
             {diffView ? <section><h3>{diffView.title}</h3><pre className="scene-diff">{diffView.text}</pre><button className="button secondary" onClick={() => setDiffView(null)} type="button">关闭对比</button></section> : null}
@@ -500,6 +522,38 @@ function ResourcePicker<T extends SelectableResource>({ label, items, selected, 
 function resourceMatches(name: string, description: string, tags: string[], query: string) {
   const needle = query.trim().toLocaleLowerCase();
   return !needle || [name, description, ...tags].join(' ').toLocaleLowerCase().includes(needle);
+}
+
+function parseEditableSkeleton(value: string): {
+  nodes: Array<Record<string, unknown> & { id: string; event: string }>;
+  error: string | null;
+} {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return { nodes: [], error: '骨架 JSON 格式无效，请修正后再生成规划。' };
+  }
+  if (!Array.isArray(parsed) || !parsed.length) {
+    return { nodes: [], error: '骨架必须是非空数组。' };
+  }
+  const nodes: Array<Record<string, unknown> & { id: string; event: string }> = [];
+  const ids = new Set<string>();
+  for (let index = 0; index < parsed.length; index += 1) {
+    const candidate = parsed[index];
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+      return { nodes: [], error: `骨架节点 ${index + 1} 必须是对象。` };
+    }
+    const node = candidate as Record<string, unknown>;
+    const id = String(node.id ?? '').trim();
+    const event = String(node.event ?? '').trim();
+    if (!id) return { nodes: [], error: `骨架节点 ${index + 1} 缺少非空 id。` };
+    if (!event) return { nodes: [], error: `骨架节点 ${index + 1} 缺少非空 event。` };
+    if (ids.has(id)) return { nodes: [], error: `骨架节点 id 重复：${id}` };
+    ids.add(id);
+    nodes.push({ ...node, id, event });
+  }
+  return { nodes, error: null };
 }
 
 function dedupeResources<T extends SelectableResource>(items: T[]): T[] {

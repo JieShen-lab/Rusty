@@ -1100,7 +1100,7 @@ export function generateSceneWorkflowPlan(runId: number, payload: Record<string,
   });
 }
 
-export function executeSceneWorkflow(runId: number, payload: Record<string, unknown>) {
+export function executeSceneWorkflow(runId: number, payload: import('./types').SceneWorkflowExecutePayload) {
   return request<import('./types').SceneWorkflowRun & {
     rewrite_version_id: number;
     consistency: Record<string, unknown>;
