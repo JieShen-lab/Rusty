@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .connection import session
 
-CURRENT_SCHEMA_VERSION = 14
+CURRENT_SCHEMA_VERSION = 16
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -1312,6 +1312,582 @@ def _migrate_to_v14(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_to_v15(connection: sqlite3.Connection) -> None:
+    """Add the scene-first long-form rewrite model without replacing legacy data."""
+    _add_column_if_missing(connection, "chapters", "volume_id", "volume_id INTEGER")
+    _add_column_if_missing(connection, "chapters", "source_start_offset", "source_start_offset INTEGER")
+    _add_column_if_missing(connection, "chapters", "source_end_offset", "source_end_offset INTEGER")
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS story_volumes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            volume_index INTEGER NOT NULL,
+            title TEXT NOT NULL DEFAULT '',
+            original_start_offset INTEGER,
+            original_end_offset INTEGER,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (project_id, volume_index),
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS chapter_source_versions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            document_id INTEGER,
+            chapter_id INTEGER NOT NULL,
+            source_version INTEGER NOT NULL DEFAULT 1,
+            original_start_offset INTEGER NOT NULL DEFAULT 0,
+            original_end_offset INTEGER NOT NULL,
+            original_text TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (chapter_id, source_version),
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (document_id) REFERENCES library_documents(id) ON DELETE SET NULL,
+            FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS scenes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            chapter_id INTEGER NOT NULL,
+            parent_scene_id INTEGER,
+            scene_index INTEGER NOT NULL,
+            title TEXT NOT NULL DEFAULT '',
+            original_start_offset INTEGER NOT NULL,
+            original_end_offset INTEGER NOT NULL,
+            original_text TEXT NOT NULL,
+            source_version INTEGER NOT NULL DEFAULT 1,
+            boundary_reason_json TEXT NOT NULL DEFAULT '[]',
+            boundary_status TEXT NOT NULL DEFAULT 'proposed'
+                CHECK (boundary_status IN ('proposed', 'confirmed', 'adjusted')),
+            scene_type TEXT NOT NULL DEFAULT 'general',
+            user_confirmed INTEGER NOT NULL DEFAULT 0,
+            confirmed_at TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            deleted_at TEXT,
+            UNIQUE (chapter_id, scene_index),
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE,
+            FOREIGN KEY (parent_scene_id) REFERENCES scenes(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS scene_paragraphs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scene_id INTEGER NOT NULL,
+            paragraph_index INTEGER NOT NULL,
+            original_start_offset INTEGER NOT NULL,
+            original_end_offset INTEGER NOT NULL,
+            original_text TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (scene_id, paragraph_index),
+            FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS scene_fact_ledgers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scene_id INTEGER NOT NULL,
+            ledger_version INTEGER NOT NULL DEFAULT 1,
+            facts_json TEXT NOT NULL DEFAULT '{}',
+            schema_version TEXT NOT NULL DEFAULT 'rusty.scene_facts.v1',
+            source_kind TEXT NOT NULL DEFAULT 'analysis',
+            model_id INTEGER,
+            prompt_compilation_id INTEGER,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (scene_id, ledger_version),
+            FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE,
+            FOREIGN KEY (model_id) REFERENCES ai_models(id) ON DELETE SET NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS character_story_states (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            scene_id INTEGER NOT NULL,
+            character_card_id INTEGER,
+            character_name TEXT NOT NULL,
+            state_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (scene_id, character_name),
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE,
+            FOREIGN KEY (character_card_id) REFERENCES character_cards(id) ON DELETE SET NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS story_skeletons (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            chapter_id INTEGER,
+            scene_id INTEGER,
+            scope TEXT NOT NULL DEFAULT 'scene' CHECK (scope IN ('scene', 'chapter', 'volume', 'book')),
+            source_kind TEXT NOT NULL DEFAULT 'original_analysis',
+            status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'confirmed', 'superseded')),
+            current_version INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE,
+            FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS story_skeleton_versions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            skeleton_id INTEGER NOT NULL,
+            version INTEGER NOT NULL,
+            nodes_json TEXT NOT NULL DEFAULT '[]',
+            change_note TEXT NOT NULL DEFAULT '',
+            confirmed_at TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (skeleton_id, version),
+            FOREIGN KEY (skeleton_id) REFERENCES story_skeletons(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS rewrite_plans (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            chapter_id INTEGER NOT NULL,
+            scene_id INTEGER,
+            mode TEXT NOT NULL CHECK (mode IN ('skeleton_rewrite', 'expansion')),
+            skeleton_version_id INTEGER NOT NULL,
+            plan_json TEXT NOT NULL DEFAULT '{}',
+            status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'confirmed', 'executed', 'cancelled')),
+            confirmed_at TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE,
+            FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE,
+            FOREIGN KEY (skeleton_version_id) REFERENCES story_skeleton_versions(id) ON DELETE RESTRICT
+        );
+
+        CREATE TABLE IF NOT EXISTS rewrite_plan_materials (
+            plan_id INTEGER NOT NULL,
+            material_id INTEGER NOT NULL,
+            insertion_after_node TEXT,
+            insertion_before_node TEXT,
+            insertion_scene_offset INTEGER,
+            usage_mode TEXT NOT NULL DEFAULT 'reference'
+                CHECK (usage_mode IN ('required', 'reference')),
+            event_nodes_json TEXT NOT NULL DEFAULT '[]',
+            impact_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (plan_id, material_id),
+            FOREIGN KEY (plan_id) REFERENCES rewrite_plans(id) ON DELETE CASCADE,
+            FOREIGN KEY (material_id) REFERENCES materials(id) ON DELETE RESTRICT
+        );
+
+        CREATE TABLE IF NOT EXISTS prompt_compilations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            chapter_id INTEGER,
+            scene_id INTEGER,
+            stage TEXT NOT NULL,
+            model_id INTEGER,
+            max_input_tokens INTEGER NOT NULL,
+            reserved_output_tokens INTEGER NOT NULL,
+            used_input_tokens INTEGER NOT NULL,
+            snapshot_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE,
+            FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE,
+            FOREIGN KEY (model_id) REFERENCES ai_models(id) ON DELETE SET NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS prompt_compilation_blocks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            compilation_id INTEGER NOT NULL,
+            block_key TEXT NOT NULL,
+            content TEXT NOT NULL,
+            priority INTEGER NOT NULL,
+            required INTEGER NOT NULL DEFAULT 0,
+            token_count INTEGER NOT NULL DEFAULT 0,
+            source_type TEXT NOT NULL DEFAULT '',
+            source_id TEXT NOT NULL DEFAULT '',
+            included INTEGER NOT NULL DEFAULT 1,
+            decision TEXT NOT NULL DEFAULT 'included',
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY (compilation_id) REFERENCES prompt_compilations(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS retrieval_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            scene_id INTEGER NOT NULL,
+            query_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS retrieval_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            retrieval_run_id INTEGER NOT NULL,
+            retrieval_type TEXT NOT NULL
+                CHECK (retrieval_type IN ('manual', 'structure', 'keyword', 'relationship', 'vector')),
+            source_type TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            source_location TEXT NOT NULL DEFAULT '',
+            content TEXT NOT NULL DEFAULT '',
+            relevance_reason TEXT NOT NULL DEFAULT '',
+            confidence REAL NOT NULL DEFAULT 0,
+            included_in_prompt INTEGER NOT NULL DEFAULT 0,
+            token_count INTEGER NOT NULL DEFAULT 0,
+            rank_order INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY (retrieval_run_id) REFERENCES retrieval_runs(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS scene_style_contexts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scene_id INTEGER NOT NULL,
+            scene_type TEXT NOT NULL DEFAULT 'general',
+            global_rules_json TEXT NOT NULL DEFAULT '[]',
+            scene_rules_json TEXT NOT NULL DEFAULT '[]',
+            examples_json TEXT NOT NULL DEFAULT '[]',
+            recent_techniques_json TEXT NOT NULL DEFAULT '[]',
+            forbidden_repetitions_json TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS scene_generation_stages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scene_id INTEGER NOT NULL,
+            plan_id INTEGER,
+            stage TEXT NOT NULL
+                CHECK (stage IN ('analysis', 'planning', 'rewrite', 'consistency_check', 'targeted_repair')),
+            status TEXT NOT NULL DEFAULT 'pending'
+                CHECK (status IN ('pending', 'running', 'completed', 'failed', 'needs_confirmation')),
+            output_json TEXT NOT NULL DEFAULT '{}',
+            prompt_compilation_id INTEGER,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE,
+            FOREIGN KEY (plan_id) REFERENCES rewrite_plans(id) ON DELETE SET NULL,
+            FOREIGN KEY (prompt_compilation_id) REFERENCES prompt_compilations(id) ON DELETE SET NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS scene_rewrite_versions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scene_id INTEGER NOT NULL,
+            plan_id INTEGER,
+            skeleton_version_id INTEGER,
+            version INTEGER NOT NULL,
+            rewritten_text TEXT NOT NULL,
+            revision_kind TEXT NOT NULL DEFAULT 'generation'
+                CHECK (revision_kind IN ('generation', 'manual', 'targeted_repair')),
+            parent_version_id INTEGER,
+            prompt_compilation_id INTEGER,
+            facts_after_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (scene_id, version),
+            FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE,
+            FOREIGN KEY (plan_id) REFERENCES rewrite_plans(id) ON DELETE SET NULL,
+            FOREIGN KEY (skeleton_version_id) REFERENCES story_skeleton_versions(id) ON DELETE SET NULL,
+            FOREIGN KEY (parent_version_id) REFERENCES scene_rewrite_versions(id) ON DELETE SET NULL,
+            FOREIGN KEY (prompt_compilation_id) REFERENCES prompt_compilations(id) ON DELETE SET NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS targeted_repairs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scene_id INTEGER NOT NULL,
+            source_version_id INTEGER NOT NULL,
+            result_version_id INTEGER,
+            paragraph_start INTEGER NOT NULL,
+            paragraph_end INTEGER NOT NULL,
+            issues_json TEXT NOT NULL DEFAULT '[]',
+            before_text TEXT NOT NULL,
+            after_text TEXT NOT NULL DEFAULT '',
+            affected_facts_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE,
+            FOREIGN KEY (source_version_id) REFERENCES scene_rewrite_versions(id) ON DELETE RESTRICT,
+            FOREIGN KEY (result_version_id) REFERENCES scene_rewrite_versions(id) ON DELETE SET NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS consistency_checks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            chapter_id INTEGER,
+            scene_id INTEGER,
+            check_scope TEXT NOT NULL CHECK (check_scope IN ('scene', 'chapter', 'volume', 'book')),
+            result_json TEXT NOT NULL DEFAULT '{}',
+            revision_required INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE,
+            FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_chapter_source_versions_chapter
+            ON chapter_source_versions(chapter_id, source_version);
+        CREATE INDEX IF NOT EXISTS idx_scenes_chapter_order
+            ON scenes(chapter_id, scene_index);
+        CREATE INDEX IF NOT EXISTS idx_scene_facts_scene_version
+            ON scene_fact_ledgers(scene_id, ledger_version);
+        CREATE INDEX IF NOT EXISTS idx_character_story_states_project_name
+            ON character_story_states(project_id, character_name, scene_id);
+        CREATE INDEX IF NOT EXISTS idx_prompt_blocks_compilation_order
+            ON prompt_compilation_blocks(compilation_id, sort_order);
+        CREATE INDEX IF NOT EXISTS idx_retrieval_results_run_rank
+            ON retrieval_results(retrieval_run_id, rank_order);
+        CREATE INDEX IF NOT EXISTS idx_scene_rewrites_scene_version
+            ON scene_rewrite_versions(scene_id, version DESC);
+
+        CREATE TRIGGER IF NOT EXISTS prevent_original_chapter_text_update
+        BEFORE UPDATE OF original_text ON chapters
+        WHEN NEW.original_text <> OLD.original_text
+        BEGIN
+            SELECT RAISE(ABORT, 'chapter original_text is immutable');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS prevent_source_version_update
+        BEFORE UPDATE ON chapter_source_versions
+        BEGIN
+            SELECT RAISE(ABORT, 'chapter source versions are immutable');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS prevent_source_version_delete
+        BEFORE DELETE ON chapter_source_versions
+        BEGIN
+            SELECT RAISE(ABORT, 'chapter source versions are immutable');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS prevent_scene_original_update
+        BEFORE UPDATE OF original_text, original_start_offset, original_end_offset ON scenes
+        WHEN NEW.original_text <> OLD.original_text
+          OR NEW.original_start_offset <> OLD.original_start_offset
+          OR NEW.original_end_offset <> OLD.original_end_offset
+        BEGIN
+            SELECT RAISE(ABORT, 'scene original source range is immutable');
+        END;
+        """
+    )
+    connection.execute(
+        """
+        INSERT OR IGNORE INTO story_volumes (project_id, volume_index, title)
+        SELECT id, 1, ''
+        FROM projects
+        """
+    )
+    connection.execute(
+        """
+        UPDATE chapters
+        SET
+            volume_id = COALESCE(
+                volume_id,
+                (SELECT id FROM story_volumes v WHERE v.project_id = chapters.project_id AND v.volume_index = 1)
+            ),
+            source_start_offset = COALESCE(
+                source_start_offset,
+                (
+                    SELECT COALESCE(SUM(length(previous.original_text)), 0)
+                    FROM chapters previous
+                    WHERE previous.project_id = chapters.project_id
+                      AND previous.chapter_index < chapters.chapter_index
+                )
+            ),
+            source_end_offset = COALESCE(
+                source_end_offset,
+                (
+                    SELECT COALESCE(SUM(length(previous.original_text)), 0)
+                    FROM chapters previous
+                    WHERE previous.project_id = chapters.project_id
+                      AND previous.chapter_index <= chapters.chapter_index
+                )
+            )
+        """
+    )
+    connection.execute(
+        """
+        INSERT OR IGNORE INTO chapter_source_versions (
+            project_id, document_id, chapter_id, source_version,
+            original_start_offset, original_end_offset, original_text, content_hash
+        )
+        SELECT
+            c.project_id,
+            pd.document_id,
+            c.id,
+            1,
+            COALESCE(c.source_start_offset, 0),
+            COALESCE(c.source_end_offset, length(c.original_text)),
+            c.original_text,
+            lower(hex(cast(c.original_text AS blob)))
+        FROM chapters c
+        LEFT JOIN project_documents pd ON pd.project_id = c.project_id
+        """
+    )
+
+
+def _migrate_to_v16(connection: sqlite3.Connection) -> None:
+    """Add auditable model calls and migrate legacy character fields without data loss."""
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS model_invocations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            invocation_kind TEXT NOT NULL,
+            project_id INTEGER,
+            document_id INTEGER,
+            chapter_id INTEGER,
+            scene_id INTEGER,
+            resource_type TEXT,
+            resource_id INTEGER,
+            model_id INTEGER,
+            stage TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'running'
+                CHECK (status IN ('running', 'completed', 'failed', 'invalid')),
+            request_json TEXT NOT NULL DEFAULT '{}',
+            output_schema_json TEXT NOT NULL DEFAULT '{}',
+            response_text TEXT NOT NULL DEFAULT '',
+            parsed_json TEXT NOT NULL DEFAULT '{}',
+            validation_json TEXT NOT NULL DEFAULT '{}',
+            token_usage_json TEXT NOT NULL DEFAULT '{}',
+            elapsed_ms INTEGER,
+            error_type TEXT,
+            error_message TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            completed_at TEXT,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL,
+            FOREIGN KEY (document_id) REFERENCES library_documents(id) ON DELETE SET NULL,
+            FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE SET NULL,
+            FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE SET NULL,
+            FOREIGN KEY (model_id) REFERENCES ai_models(id) ON DELETE SET NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_model_invocations_resource
+            ON model_invocations(resource_type, resource_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_model_invocations_scene
+            ON model_invocations(scene_id, stage, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS document_split_proposals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            document_id INTEGER NOT NULL,
+            source_revision_id INTEGER NOT NULL,
+            proposal_kind TEXT NOT NULL CHECK (proposal_kind IN ('ai', 'regex', 'manual')),
+            status TEXT NOT NULL DEFAULT 'draft'
+                CHECK (status IN ('draft', 'applied', 'cancelled')),
+            boundaries_json TEXT NOT NULL DEFAULT '[]',
+            unmatched_json TEXT NOT NULL DEFAULT '{}',
+            model_invocation_id INTEGER,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            applied_revision_id INTEGER,
+            applied_at TEXT,
+            FOREIGN KEY (document_id) REFERENCES library_documents(id) ON DELETE CASCADE,
+            FOREIGN KEY (source_revision_id) REFERENCES library_document_revisions(id) ON DELETE CASCADE,
+            FOREIGN KEY (model_invocation_id) REFERENCES model_invocations(id) ON DELETE SET NULL,
+            FOREIGN KEY (applied_revision_id) REFERENCES library_document_revisions(id) ON DELETE SET NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS scene_workflow_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            chapter_id INTEGER NOT NULL,
+            scene_id INTEGER NOT NULL,
+            mode TEXT NOT NULL CHECK (mode IN ('skeleton_rewrite', 'expansion')),
+            status TEXT NOT NULL DEFAULT 'analyzing'
+                CHECK (status IN (
+                    'analyzing', 'awaiting_skeleton', 'planning', 'awaiting_plan',
+                    'generating', 'checking', 'repairing', 'completed', 'failed'
+                )),
+            skeleton_id INTEGER,
+            skeleton_version_id INTEGER,
+            plan_id INTEGER,
+            current_stage TEXT NOT NULL DEFAULT 'analysis',
+            error_message TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            completed_at TEXT,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE,
+            FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE,
+            FOREIGN KEY (skeleton_id) REFERENCES story_skeletons(id) ON DELETE SET NULL,
+            FOREIGN KEY (skeleton_version_id) REFERENCES story_skeleton_versions(id) ON DELETE SET NULL,
+            FOREIGN KEY (plan_id) REFERENCES rewrite_plans(id) ON DELETE SET NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_scene_workflow_runs_scene
+            ON scene_workflow_runs(scene_id, created_at DESC);
+        """
+    )
+    rows = connection.execute(
+        """
+        SELECT id, description, personality, speech_style, action_constraints,
+               anti_ooc_rules, relationship_notes, profile_json, custom_fields_json
+        FROM character_cards
+        WHERE deleted_at IS NULL
+        """
+    ).fetchall()
+    labels = (
+        ("description", "人物简介"),
+        ("personality", "长期性格"),
+        ("speech_style", "说话方式"),
+        ("action_constraints", "能力与限制"),
+        ("anti_ooc_rules", "不可改变的设定"),
+        ("relationship_notes", "关系说明"),
+    )
+    for row in rows:
+        existing = _safe_json_list(row["custom_fields_json"])
+        normalized = {
+            " ".join(str(item.get("label") or "").strip().split()).casefold()
+            for item in existing
+            if isinstance(item, dict)
+        }
+        additions: list[dict[str, object]] = []
+        for column, label in labels:
+            value = str(row[column] or "").strip()
+            if value and label.casefold() not in normalized:
+                additions.append(
+                    {
+                        "id": f"legacy-{column}",
+                        "label": label,
+                        "value": value,
+                        "sort_order": len(existing) + len(additions),
+                    }
+                )
+        profile = _safe_json_object(row["profile_json"])
+        for key, value in profile.items():
+            if value in (None, "", [], {}):
+                continue
+            label = str(key).strip() or "旧版属性"
+            if " ".join(label.split()).casefold() in normalized:
+                continue
+            rendered = (
+                json.dumps(value, ensure_ascii=False)
+                if isinstance(value, (dict, list))
+                else str(value)
+            )
+            additions.append(
+                {
+                    "id": f"legacy-profile-{len(additions)}",
+                    "label": label,
+                    "value": rendered,
+                    "sort_order": len(existing) + len(additions),
+                }
+            )
+        if additions:
+            connection.execute(
+                "UPDATE character_cards SET custom_fields_json = ? WHERE id = ?",
+                (json.dumps([*existing, *additions], ensure_ascii=False), row["id"]),
+            )
+
+
+def _safe_json_list(value: object) -> list[dict[str, object]]:
+    try:
+        parsed = json.loads(str(value or "[]"))
+    except (TypeError, ValueError):
+        return []
+    return [item for item in parsed if isinstance(item, dict)] if isinstance(parsed, list) else []
+
+
+def _safe_json_object(value: object) -> dict[str, object]:
+    try:
+        parsed = json.loads(str(value or "{}"))
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def _ensure_v14_tag_tables(connection: sqlite3.Connection) -> None:
     connection.executescript(
         """
@@ -1660,6 +2236,8 @@ MIGRATIONS = {
     12: _migrate_to_v12,
     13: _migrate_to_v13,
     14: _migrate_to_v14,
+    15: _migrate_to_v15,
+    16: _migrate_to_v16,
 }
 
 

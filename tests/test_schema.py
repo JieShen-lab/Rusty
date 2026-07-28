@@ -9,10 +9,59 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from rusty.db import CURRENT_SCHEMA_VERSION, connect, initialize_database
-from rusty.db.schema import _migrate_to_v14
+from rusty.db.schema import _migrate_to_v14, _migrate_to_v15
 
 
 class SchemaTests(unittest.TestCase):
+    def test_v14_database_migrates_to_v15_with_immutable_source_snapshot(self) -> None:
+        connection = sqlite3.connect(":memory:")
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.executescript(
+            """
+            CREATE TABLE projects (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE library_documents (id INTEGER PRIMARY KEY);
+            CREATE TABLE project_documents (
+                project_id INTEGER PRIMARY KEY,
+                document_id INTEGER
+            );
+            CREATE TABLE chapters (
+                id INTEGER PRIMARY KEY,
+                project_id INTEGER NOT NULL,
+                chapter_index INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                original_text TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            INSERT INTO projects (id, name) VALUES (1, 'legacy');
+            INSERT INTO chapters (id, project_id, chapter_index, title, original_text)
+            VALUES (10, 1, 1, 'chapter', 'immutable legacy source');
+            """
+        )
+
+        _migrate_to_v15(connection)
+        _migrate_to_v15(connection)
+
+        source = connection.execute(
+            "SELECT original_text, source_version FROM chapter_source_versions WHERE chapter_id = 10"
+        ).fetchone()
+        scene_tables = {
+            row[0]
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+        self.assertEqual("immutable legacy source", source["original_text"])
+        self.assertEqual(1, source["source_version"])
+        self.assertIn("scenes", scene_tables)
+        self.assertIn("scene_fact_ledgers", scene_tables)
+        self.assertIn("prompt_compilations", scene_tables)
+        self.assertIn("rewrite_plans", scene_tables)
+        with self.assertRaises(sqlite3.IntegrityError):
+            connection.execute("UPDATE chapters SET original_text = 'changed' WHERE id = 10")
+
     def test_initialize_database_creates_expected_tables(self) -> None:
         connection = sqlite3.connect(":memory:")
         initialize_database(connection)

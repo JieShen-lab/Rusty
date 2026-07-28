@@ -580,10 +580,10 @@ export function assignMaterialTag(materialId: number, tagId: number, selected: b
   });
 }
 
-export function analyzeMaterial(materialId: number, content: Record<string, unknown>, modelId?: number | null) {
-  return request<Material>(`/api/materials/${materialId}/analyze`, {
+export function analyzeMaterial(materialId: number, modelId?: number | null) {
+  return request<import('./types').MaterialAnalysisProposal>(`/api/materials/${materialId}/analyze`, {
     method: 'POST',
-    body: JSON.stringify({ model_id: modelId ?? null, content }),
+    body: JSON.stringify({ model_id: modelId ?? null }),
   });
 }
 
@@ -593,6 +593,28 @@ export function createMaterial(payload: MaterialWrite) {
 
 export function importMaterial(payload: MaterialWrite) {
   return request<Material>('/api/materials/import', { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export function applyMaterialAnalysis(materialId: number, proposal: import('./types').MaterialAnalysisProposal) {
+  return request<Material>(`/api/materials/${materialId}/analysis/apply`, {
+    method: 'POST',
+    body: JSON.stringify({
+      content: proposal.proposal,
+      model_id: proposal.model_id,
+      invocation_id: proposal.invocation_id,
+    }),
+  });
+}
+
+export function importMaterialJson(value: unknown, defaultScope: MaterialScope, defaultProjectId?: number | null) {
+  return request<import('./types').MaterialJsonImportResult>('/api/materials/import-json', {
+    method: 'POST',
+    body: JSON.stringify({
+      value,
+      default_scope: defaultScope,
+      default_project_id: defaultProjectId ?? null,
+    }),
+  });
 }
 
 export function updateMaterial(materialId: number, payload: MaterialUpdate) {
@@ -675,9 +697,43 @@ export function assignCharacterTag(cardId: number, tagId: number, selected: bool
 
 export function analyzeCharacterCard(
   cardId: number,
-  payload: { identity: string; age: string; setting_text: string; custom_fields: import('./types').CharacterCustomField[]; model_id?: number | null },
+  modelId?: number | null,
 ) {
-  return request<CharacterCard>(`/api/characters/${cardId}/analyze`, { method: 'POST', body: JSON.stringify(payload) });
+  return request<import('./types').CharacterAnalysisProposal>(`/api/characters/${cardId}/analyze`, {
+    method: 'POST',
+    body: JSON.stringify({ model_id: modelId ?? null }),
+  });
+}
+
+export function confirmCharacterAnalysis(
+  cardId: number,
+  payload: {
+    identity: string;
+    age: string;
+    setting_text: string;
+    custom_fields: import('./types').CharacterCustomField[];
+    invocation_id: number;
+  },
+) {
+  return request<CharacterCard>(`/api/characters/${cardId}/analyze/confirm`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function saveCharacterCover(cardId: number, dataBase64: string) {
+  return request<CharacterCard>(`/api/characters/${cardId}/cover`, {
+    method: 'POST',
+    body: JSON.stringify({ data_base64: dataBase64 }),
+  });
+}
+
+export function removeCharacterCover(cardId: number) {
+  return request<CharacterCard>(`/api/characters/${cardId}/cover/delete`, { method: 'POST' });
+}
+
+export function characterCoverUrl(cardId: number) {
+  return `${apiBase()}/api/characters/${cardId}/cover`;
 }
 
 export function createSceneMaterialFromSelection(payload: SelectionResourceCreate) {
@@ -849,4 +905,217 @@ export function saveChapterRewrite(chapterId: number, rewrittenText: string) {
 
 export function confirmChapterRewrite(chapterId: number) {
   return request<import('./types').ChapterDetail>(`/api/chapters/${chapterId}/confirm-rewrite`, { method: 'POST' });
+}
+
+export function getChapterScenes(chapterId: number) {
+  return request<import('./types').SceneRecord[]>(`/api/chapters/${chapterId}/scenes`);
+}
+
+export function analyzeChapterScenes(
+  chapterId: number,
+  payload: {
+    boundaries?: import('./types').SceneBoundaryItem[] | null;
+    source?: 'ai' | 'heuristic' | 'user';
+    confirm?: boolean;
+    model_id?: number | null;
+  },
+) {
+  return request<import('./types').SceneRecord[]>(`/api/chapters/${chapterId}/scenes/analyze`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function adjustChapterScenes(chapterId: number, boundaries: import('./types').SceneBoundaryItem[]) {
+  return request<import('./types').SceneRecord[]>(`/api/chapters/${chapterId}/scenes/adjust`, {
+    method: 'POST',
+    body: JSON.stringify({ boundaries, source: 'user', confirm: true }),
+  });
+}
+
+export function confirmChapterScenes(chapterId: number) {
+  return request<import('./types').SceneRecord[]>(`/api/chapters/${chapterId}/scenes/confirm`, { method: 'POST' });
+}
+
+export function getSceneFacts(sceneId: number) {
+  return request<import('./types').SceneFactLedger>(`/api/scenes/${sceneId}/facts`);
+}
+
+export function saveSceneFacts(sceneId: number, facts: Record<string, unknown>, sourceKind = 'user') {
+  return request<import('./types').SceneFactLedger>(`/api/scenes/${sceneId}/facts`, {
+    method: 'POST',
+    body: JSON.stringify({ facts, source_kind: sourceKind }),
+  });
+}
+
+export function getSceneCharacterStates(sceneId: number) {
+  return request<import('./types').CharacterStoryState[]>(`/api/scenes/${sceneId}/character-states`);
+}
+
+export function saveSceneCharacterState(
+  sceneId: number,
+  payload: { character_name: string; character_card_id?: number | null; state: Record<string, unknown> },
+) {
+  return request<import('./types').CharacterStoryState>(`/api/scenes/${sceneId}/character-states`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function createStorySkeleton(payload: {
+  project_id: number;
+  chapter_id: number;
+  scene_id?: number | null;
+  scope?: string;
+  source_kind?: string;
+  nodes: Record<string, unknown>[];
+}) {
+  return request<import('./types').StorySkeletonVersion>('/api/story-skeletons', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function reviseStorySkeleton(
+  skeletonId: number,
+  nodes: Record<string, unknown>[],
+  changeNote = '',
+) {
+  return request<import('./types').StorySkeletonVersion>(`/api/story-skeletons/${skeletonId}/versions`, {
+    method: 'POST',
+    body: JSON.stringify({ nodes, change_note: changeNote }),
+  });
+}
+
+export function confirmStorySkeleton(skeletonId: number, version?: number) {
+  const query = version === undefined ? '' : `?version=${version}`;
+  return request<import('./types').StorySkeletonVersion>(`/api/story-skeletons/${skeletonId}/confirm${query}`, {
+    method: 'POST',
+  });
+}
+
+export function createRewritePlan(payload: Record<string, unknown>) {
+  return request<import('./types').RewritePlan>('/api/rewrite-plans', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function getRewritePlan(planId: number) {
+  return request<import('./types').RewritePlan>(`/api/rewrite-plans/${planId}`);
+}
+
+export function confirmRewritePlan(planId: number) {
+  return request<import('./types').RewritePlan>(`/api/rewrite-plans/${planId}/confirm`, { method: 'POST' });
+}
+
+export function retrieveSceneContext(sceneId: number, payload: Record<string, unknown>) {
+  return request<import('./types').RetrievalResult[]>(`/api/scenes/${sceneId}/retrieval`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function compileScenePrompt(sceneId: number, payload: Record<string, unknown>) {
+  return request<import('./types').PromptCompilation>(`/api/scenes/${sceneId}/prompt-compile`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function saveSceneStage(sceneId: number, payload: Record<string, unknown>) {
+  return request<{ id: number }>(`/api/scenes/${sceneId}/stages`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function saveSceneRewriteVersion(sceneId: number, payload: Record<string, unknown>) {
+  return request<{ id: number }>(`/api/scenes/${sceneId}/rewrite-versions`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function saveTargetedRepair(sceneId: number, payload: Record<string, unknown>) {
+  return request<{ id: number }>(`/api/scenes/${sceneId}/targeted-repairs`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function saveConsistencyCheck(payload: Record<string, unknown>) {
+  return request<{ id: number }>('/api/consistency-checks', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function checkChapterContinuity(chapterId: number) {
+  return request<Record<string, unknown>>(`/api/chapters/${chapterId}/continuity-check`);
+}
+
+export function checkBookConsistency(projectId: number) {
+  return request<Record<string, unknown>>(`/api/projects/${projectId}/book-consistency-check`);
+}
+
+export function previewAIDocumentSplit(documentId: number, modelId?: number | null) {
+  return request<import('./types').AISplitProposal>(`/api/documents/${documentId}/split/ai/preview`, {
+    method: 'POST',
+    body: JSON.stringify({ model_id: modelId ?? null }),
+  });
+}
+
+export function applyAIDocumentSplit(
+  documentId: number,
+  proposalId: number,
+  chapters: import('./types').AISplitProposal['chapters'],
+) {
+  return request<{ document_id: number; revision_id: number; chapters: import('./types').LibraryDocumentChapter[] }>(
+    `/api/documents/${documentId}/split/ai/apply`,
+    { method: 'POST', body: JSON.stringify({ proposal_id: proposalId, chapters }) },
+  );
+}
+
+export function startSceneWorkflow(
+  sceneId: number,
+  payload: {
+    mode: import('./types').RewriteMode;
+    user_instruction?: string;
+    model_id?: number | null;
+    character_ids?: number[];
+    material_ids?: number[];
+  },
+) {
+  return request<import('./types').SceneWorkflowRun>(`/api/scenes/${sceneId}/workflow/start`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function generateSceneWorkflowPlan(runId: number, payload: Record<string, unknown>) {
+  return request<import('./types').SceneWorkflowRun>(`/api/scene-workflows/${runId}/plan`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function executeSceneWorkflow(runId: number, payload: Record<string, unknown>) {
+  return request<import('./types').SceneWorkflowRun & {
+    rewrite_version_id: number;
+    consistency: Record<string, unknown>;
+  }>(`/api/scene-workflows/${runId}/execute`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function getSceneRewriteHistory(sceneId: number) {
+  return request<Array<Record<string, unknown>>>(`/api/scenes/${sceneId}/rewrite-history`);
+}
+
+export function restoreSceneRewriteVersion(sceneId: number, versionId: number) {
+  return request<{ id: number }>(`/api/scenes/${sceneId}/rewrite-history/${versionId}/restore`, {
+    method: 'POST',
+  });
 }

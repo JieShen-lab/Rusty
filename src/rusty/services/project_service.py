@@ -177,6 +177,53 @@ class ProjectService:
                 """,
                 chapter_rows,
             )
+            volume_cursor = connection.execute(
+                """
+                INSERT INTO story_volumes (project_id, volume_index, title)
+                VALUES (?, 1, '')
+                """,
+                (project_id,),
+            )
+            volume_id = int(volume_cursor.lastrowid)
+            source_offset = 0
+            inserted_chapters = connection.execute(
+                """
+                SELECT id, original_text
+                FROM chapters
+                WHERE project_id = ?
+                ORDER BY chapter_index
+                """,
+                (project_id,),
+            ).fetchall()
+            for row in inserted_chapters:
+                original_text = str(row["original_text"])
+                end_offset = source_offset + len(original_text)
+                connection.execute(
+                    """
+                    UPDATE chapters
+                    SET volume_id = ?, source_start_offset = ?, source_end_offset = ?
+                    WHERE id = ?
+                    """,
+                    (volume_id, source_offset, end_offset, int(row["id"])),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO chapter_source_versions (
+                        project_id, chapter_id, source_version,
+                        original_start_offset, original_end_offset,
+                        original_text, content_hash
+                    ) VALUES (?, ?, 1, ?, ?, ?, ?)
+                    """,
+                    (
+                        project_id,
+                        int(row["id"]),
+                        source_offset,
+                        end_offset,
+                        original_text,
+                        hashlib.sha256(original_text.encode("utf-8")).hexdigest(),
+                    ),
+                )
+                source_offset = end_offset
             chapter_plan_rows = connection.execute(
                 """
                 SELECT id, chapter_index, title

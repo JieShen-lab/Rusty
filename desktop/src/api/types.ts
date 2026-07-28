@@ -445,6 +445,8 @@ export type CharacterCard = {
   cover_path: string | null;
   cover_updated_at: string | null;
   tags: string[];
+  created_at: string;
+  updated_at: string;
 };
 
 export type CharacterCustomField = {
@@ -540,6 +542,14 @@ export type MaterialWrite = {
 
 export type MaterialUpdate = Omit<MaterialWrite, 'material_type' | 'scope' | 'project_id' | 'source_metadata' | 'import_metadata'>;
 
+export type MaterialAnalysisProposal = {
+  material_id: number;
+  model_id: number;
+  invocation_id: number;
+  proposal: Record<string, unknown>;
+  existing: Record<string, unknown>;
+};
+
 export type MaterialExtractWrite = AnchorExtractWrite & {
   material_type: MaterialType;
 };
@@ -553,6 +563,59 @@ export type SelectionResourceCreate = {
   chapter_id?: number | null;
   start_offset?: number | null;
   end_offset?: number | null;
+  source_version?: number | null;
+  save_to_public?: boolean;
+  tag_ids?: number[];
+};
+
+export type CharacterAnalysisProposal = {
+  invocation_id: number;
+  model_id: number;
+  proposal: {
+    name: string;
+    identity: string;
+    age: string;
+    setting_text: string;
+    custom_fields: CharacterCustomField[];
+  };
+  merged: {
+    name: string;
+    identity: string;
+    age: string;
+    setting_text: string;
+    custom_fields: CharacterCustomField[];
+  };
+  conflicts: Array<{ field: string; existing: string; proposed: string }>;
+};
+
+export type MaterialJsonImportResult = {
+  imported: Array<{ index: number; id: number; name: string; material_type: MaterialType }>;
+  errors: Array<{ index: number; name: string; error: string }>;
+};
+
+export type AISplitProposal = {
+  proposal_id: number;
+  document_id: number;
+  source_revision_id: number;
+  chapters: Array<{ title: string; start_offset: number; end_offset: number; reason: string }>;
+  model_invocation_id: number;
+};
+
+export type SceneWorkflowRun = {
+  id: number;
+  project_id: number;
+  chapter_id: number;
+  scene_id: number;
+  mode: RewriteMode;
+  status: string;
+  skeleton_id: number | null;
+  skeleton_version_id: number | null;
+  plan_id: number | null;
+  current_stage: string;
+  error_message: string | null;
+  skeleton_nodes?: Record<string, unknown>[];
+  plan?: Record<string, unknown> | null;
+  material_mappings?: Record<string, unknown>[];
 };
 
 export type SplitChapterCandidate = {
@@ -598,4 +661,116 @@ export type PipelineRunResult = {
   skipped: number;
   failed: number;
   paused: boolean;
+};
+
+export type SceneRecord = {
+  id: number;
+  project_id: number;
+  chapter_id: number;
+  parent_scene_id: number | null;
+  scene_index: number;
+  title: string;
+  original_start_offset: number;
+  original_end_offset: number;
+  original_text: string;
+  source_version: number;
+  boundary_reasons: string[];
+  boundary_status: 'proposed' | 'confirmed' | 'adjusted';
+  scene_type: string;
+  user_confirmed: boolean;
+  confirmed_at: string | null;
+};
+
+export type SceneBoundaryItem = {
+  start_offset: number;
+  end_offset: number;
+  title: string;
+  reasons: string[];
+};
+
+export type SceneFactLedger = {
+  scene_id: number;
+  events: unknown[];
+  characters_present: string[];
+  character_changes: Record<string, unknown>;
+  location: string;
+  time_state: Record<string, unknown>;
+  objects: Record<string, unknown>;
+  knowledge_states: Record<string, unknown>;
+  relationship_changes: unknown[];
+  open_threads: unknown[];
+  resolved_threads: unknown[];
+  foreshadowing: unknown[];
+  required_start_state: Record<string, unknown>;
+  required_end_state: Record<string, unknown>;
+  [key: string]: unknown;
+};
+
+export type CharacterStoryState = {
+  id: number;
+  scene_id: number;
+  character_card_id: number | null;
+  character_name: string;
+  state: Record<string, unknown>;
+};
+
+export type PromptContextBlock = {
+  key: string;
+  content: string;
+  priority: number;
+  required: boolean;
+  token_count: number;
+  source_type: string;
+  source_id: string;
+  included: boolean;
+  decision: string;
+};
+
+export type PromptCompilation = {
+  id: number;
+  stage: string;
+  max_input_tokens: number;
+  reserved_output_tokens: number;
+  used_input_tokens: number;
+  blocks: PromptContextBlock[];
+  context: Record<string, unknown>;
+};
+
+export type StorySkeletonVersion = {
+  skeleton_id: number;
+  version_id: number;
+  version: number;
+  status: 'draft' | 'confirmed';
+  nodes: Record<string, unknown>[];
+};
+
+export type RewriteMode = 'skeleton_rewrite' | 'expansion';
+
+export type RewritePlan = {
+  id: number;
+  project_id: number;
+  chapter_id: number;
+  scene_id: number;
+  mode: RewriteMode;
+  skeleton_version_id: number;
+  status: 'draft' | 'confirmed' | 'executed';
+  plan: Record<string, unknown>;
+  material_mappings: Record<string, unknown>[];
+  user_instruction: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type RetrievalResult = {
+  retrieval_run_id: number;
+  retrieval_type: 'manual' | 'structure' | 'keyword' | 'relationship' | 'vector';
+  source_type: string;
+  source_id: string;
+  source_location: string;
+  relevance_reason: string;
+  confidence: number;
+  included_in_prompt: boolean;
+  token_count: number;
+  content: string;
+  rank_order: number;
 };
