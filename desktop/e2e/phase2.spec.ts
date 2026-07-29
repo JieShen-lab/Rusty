@@ -6,13 +6,24 @@ const materials = [
   { id: 1, material_type: 'scene_reference', scope: 'public', project_id: null, project_name: null, name: '雨夜追逐', description: '雨夜动作参考', detail_level: 'standard', raw_text: '', content: {}, analysis_status: 'unanalyzed', source_metadata: {}, import_metadata: {}, source_material_id: null, source_version: null, timeline_start_chapter: null, timeline_end_chapter: null, sort_order: 0, version: 1, created_at: '', updated_at: '', tags: [] },
   { id: 2, material_type: 'plot_skeleton', scope: 'public', project_id: null, project_name: null, name: '误会解除', description: '事件骨架', detail_level: 'standard', raw_text: '', content: {}, analysis_status: 'analyzed', source_metadata: {}, import_metadata: {}, source_material_id: null, source_version: null, timeline_start_chapter: null, timeline_end_chapter: null, sort_order: 0, version: 1, created_at: '', updated_at: '', tags: [] },
 ];
-const documentItem = { id: 1, title: '示例长篇', author: '作者', description: null, source_filename: 'novel.txt', source_format: 'txt', storage_path: 'novel.txt', source_size_bytes: 100, stored_size_bytes: 100, chapter_count: 1, word_count: 16, status: 'ready', favorite: false, tags: [], created_at: '', updated_at: '' };
+const baseDocumentItems = [
+  { id: 1, title: '示例长篇', author: '作者', description: null, source_filename: 'novel.txt', source_format: 'txt', storage_path: 'D:/Rusty/novel-v2.txt', source_size_bytes: 100, stored_size_bytes: 100, chapter_count: 1, word_count: 16, status: 'ready', favorite: false, tags: ['长篇'], is_project_document: false, category_ids: [11, 12], categories: ['研究', '待整理'], project_ids: [], created_at: '2026-07-29 10:00:00', updated_at: '' },
+  { id: 2, title: '工程原稿', author: '工程作者', description: null, source_filename: 'project.txt', source_format: 'txt', storage_path: 'D:/Rusty/project-v1.txt', source_size_bytes: 80, stored_size_bytes: 80, chapter_count: 1, word_count: 12, status: 'ready', favorite: false, tags: ['长篇'], is_project_document: true, category_ids: [11], categories: ['研究'], project_ids: [1], created_at: '2026-07-28 10:00:00', updated_at: '' },
+  { id: 3, title: '普通资料', author: '资料作者', description: null, source_filename: 'reference.txt', source_format: 'txt', storage_path: 'D:/Rusty/reference-v1.txt', source_size_bytes: 60, stored_size_bytes: 60, chapter_count: 1, word_count: 10, status: 'ready', favorite: false, tags: [], is_project_document: false, category_ids: [11], categories: ['研究'], project_ids: [], created_at: '2026-07-27 10:00:00', updated_at: '' },
+];
+const documentTags = [{ id: 21, name: '长篇', normalized_name: '长篇', sort_order: 0, resource_count: 2 }];
+const documentCategories = [
+  { id: 11, name: '研究', normalized_name: '研究', sort_order: 0, resource_count: 3 },
+  { id: 12, name: '待整理', normalized_name: '待整理', sort_order: 1, resource_count: 1 },
+];
 
 const sceneHistory = [{ id: 8, version: 1, revision_kind: 'rewrite', parent_version_id: null as number | null, created_at: '2026-07-28', rewritten_text: '林舟推门而入。' }];
 let workflowPlanRequests: Array<Record<string, unknown>> = [];
+let tagAssignmentRequests: Array<{ documentId: number; tagId: number; selected: boolean }> = [];
 
 async function mockApi(page: Page) {
   let skeletonNodes: Array<Record<string, unknown>> = [{ id: 'n1', event: '发现钥匙' }];
+  let documentItems = baseDocumentItems.map((item) => ({ ...item, tags: [...item.tags], category_ids: [...item.category_ids], categories: [...item.categories] }));
   await page.route('http://127.0.0.1:8765/api/**', async (route) => {
     const url = new URL(route.request().url());
     const path = url.pathname;
@@ -26,13 +37,50 @@ async function mockApi(page: Page) {
     else if (/^\/api\/materials\/1\/analyze$/.test(path)) body = { material_id: 1, model_id: 1, invocation_id: 9, existing: {}, proposal: { summary: '模型分析摘要' } };
     else if (/^\/api\/materials\/1\/analysis\/apply$/.test(path)) body = { ...materials[0], analysis_status: 'analyzed', content: { summary: '模型分析摘要' } };
     else if (path === '/api/materials/import-json') body = { imported: [{ index: 0, id: 3, name: '导入场景', material_type: 'scene_reference' }], errors: [] };
-    else if (path === '/api/documents') body = [documentItem];
-    else if (path === '/api/document-tags') body = [];
+    else if (path === '/api/documents') body = documentItems;
+    else if (path === '/api/document-tags') body = documentTags;
+    else if (path === '/api/document-categories') body = documentCategories;
+    else if (/^\/api\/documents\/\d+\/tags\/\d+$/.test(path)) {
+      const [, , , documentIdText, , tagIdText] = path.split('/');
+      const documentId = Number(documentIdText);
+      const tagId = Number(tagIdText);
+      const selected = Boolean((route.request().postDataJSON() as { selected: boolean }).selected);
+      tagAssignmentRequests.push({ documentId, tagId, selected });
+      documentItems = documentItems.map((item) => item.id === documentId
+        ? { ...item, tags: selected ? ['长篇'] : [] }
+        : item);
+      body = documentItems.find((item) => item.id === documentId);
+    }
+    else if (/^\/api\/documents\/\d+\/categories\/\d+$/.test(path)) {
+      const [, , , documentIdText, , categoryIdText] = path.split('/');
+      const documentId = Number(documentIdText);
+      const categoryId = Number(categoryIdText);
+      const selected = Boolean((route.request().postDataJSON() as { selected: boolean }).selected);
+      documentItems = documentItems.map((item) => {
+        if (item.id !== documentId) return item;
+        const category = documentCategories.find((candidate) => candidate.id === categoryId);
+        return {
+          ...item,
+          category_ids: selected ? [...new Set([...item.category_ids, categoryId])] : item.category_ids.filter((id) => id !== categoryId),
+          categories: selected && category ? [...new Set([...item.categories, category.name])] : item.categories.filter((name) => name !== category?.name),
+        };
+      });
+      body = documentItems.find((item) => item.id === documentId);
+    }
     else if (path === '/api/document-library/settings') body = { storage_path: 'D:/Rusty', exists: true };
     else if (path === '/api/document-processing-templates') body = [];
-    else if (path === '/api/documents/1/revisions') body = [{ id: 1, document_id: 1, revision_number: 1, revision_type: 'import', storage_path: 'novel.txt', word_count: 16, created_at: '' }];
-    else if (path === '/api/documents/1/chapters') body = [{ id: 1, document_id: 1, revision_id: 1, index: 1, title: '第一章', start_line: 1, end_line: 2, start_offset: 0, end_offset: 16, word_count: 16 }];
-    else if (path === '/api/documents/1/content') body = { document_id: 1, revision_id: 1, chapter_id: 1, title: '第一章', text: '林舟推门而入，看见桌上的钥匙。', start_offset: 0, end_offset: 16 };
+    else if (/^\/api\/documents\/\d+\/revisions$/.test(path)) {
+      const documentId = Number(path.split('/')[3]);
+      body = [{ id: documentId, document_id: documentId, revision_number: 1, revision_type: 'import', storage_path: documentItems.find((item) => item.id === documentId)?.storage_path, word_count: 16, created_at: '' }];
+    }
+    else if (/^\/api\/documents\/\d+\/chapters$/.test(path)) {
+      const documentId = Number(path.split('/')[3]);
+      body = [{ id: documentId, document_id: documentId, revision_id: documentId, index: 1, title: '第一章', start_line: 1, end_line: 2, start_offset: 0, end_offset: 16, word_count: 16 }];
+    }
+    else if (/^\/api\/documents\/\d+\/content$/.test(path)) {
+      const documentId = Number(path.split('/')[3]);
+      body = { document_id: documentId, revision_id: documentId, chapter_id: documentId, title: '第一章', text: '林舟推门而入，看见桌上的钥匙。', start_offset: 0, end_offset: 16 };
+    }
     else if (path === '/api/projects/1') body = { id: 1, name: '示例工程', author: '', purpose: 'rewrite', status: 'ready', source_path: '', workspace_path: '', total_chapters: 1, total_words: 16, processed_chapters: 0, settings: { processing_mode: 'rewrite' }, created_at: '', updated_at: '' };
     else if (path === '/api/projects/1/chapters') body = [{ id: 1, project_id: 1, index: 1, title: '第一章', original_text: '林舟推门而入，看见桌上的钥匙。', rewritten_text: '', word_count: 16, status: 'pending', created_at: '', updated_at: '' }];
     else if (path === '/api/chapters/1') body = { chapter: { id: 1, project_id: 1, index: 1, title: '第一章', original_text: '林舟推门而入，看见桌上的钥匙。', rewritten_text: '', word_count: 16, status: 'pending', created_at: '', updated_at: '' }, ai_outputs: { plot_summary: '', expanded_plot: '', plot_characters: [], style_analysis: {}, reviewed_style_analysis: {}, style_analysis_status: '' } };
@@ -69,6 +117,7 @@ async function mockApi(page: Page) {
 
 test.beforeEach(async ({ page }) => {
   workflowPlanRequests = [];
+  tagAssignmentRequests = [];
   page.on('pageerror', (error) => console.error(`pageerror: ${error.message}`));
   page.on('console', (message) => {
     if (message.type() === 'error') console.error(`console: ${message.text()}`);
@@ -111,8 +160,55 @@ test('角色空字段提醒、自定义字段排序和封面入口', async ({ pa
 test('文档库在常用桌面窗口无横向溢出', async ({ page }) => {
   await page.goto('/documents');
   await expect(page.getByText('文档库', { exact: true }).first()).toBeVisible();
-  const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
-  expect(overflow).toBe(false);
+  await expect(page.getByText('收藏', { exact: true })).toHaveCount(0);
+  for (const viewport of [
+    { width: 1280, height: 720 },
+    { width: 1440, height: 900 },
+    { width: 1920, height: 1080 },
+  ]) {
+    await page.setViewportSize(viewport);
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
+    expect(overflow).toBe(false);
+  }
+});
+
+test('普通文档与工程文档严格分离并复用同一工作台', async ({ page }) => {
+  await page.goto('/documents');
+  await expect(page.getByRole('button', { name: '示例长篇，作者' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '普通资料，资料作者' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '工程原稿，工程作者' })).toHaveCount(0);
+  await page.locator('.document-tag-panel').getByRole('button', { name: /工程文档/ }).click();
+  await expect(page.getByRole('button', { name: '工程原稿，工程作者' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '示例长篇，作者' })).toHaveCount(0);
+  await page.getByRole('button', { name: '工程原稿，工程作者' }).dblclick();
+  await expect(page.locator('textarea.manuscript-editor')).toBeVisible();
+  await expect(page.getByText('工程原稿', { exact: true }).first()).toBeVisible();
+});
+
+test('分类标签和搜索按交集筛选且标签胶囊不修改关联', async ({ page }) => {
+  await page.goto('/documents');
+  await expect(page.locator('.document-detail-panel').getByRole('button', { name: '研究' })).toBeVisible();
+  await expect(page.locator('.document-detail-panel').getByRole('button', { name: '待整理' })).toBeVisible();
+  await page.locator('.document-tag-panel').getByRole('button', { name: /研究/ }).click();
+  await page.locator('.document-detail-panel').getByRole('button', { name: '长篇', exact: true }).click();
+  await page.getByRole('searchbox', { name: '搜索文档' }).fill('示例');
+  await expect(page.getByRole('button', { name: '示例长篇，作者' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '普通资料，资料作者' })).toHaveCount(0);
+  expect(tagAssignmentRequests).toHaveLength(0);
+  await expect(page.getByRole('button', { name: /分类：研究/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /标签：长篇/ })).toBeVisible();
+});
+
+test('标签管理弹窗显式移除关联并显示当前版本文件', async ({ page }) => {
+  await page.goto('/documents');
+  await expect(page.getByText('D:/Rusty/novel-v2.txt', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '管理当前文档标签' }).click();
+  const dialog = page.getByRole('dialog', { name: '管理标签' });
+  await dialog.getByRole('checkbox', { name: '长篇' }).uncheck();
+  await dialog.getByRole('button', { name: '保存关联' }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(tagAssignmentRequests).toEqual([{ documentId: 1, tagId: 21, selected: false }]);
+  await expect(page.locator('.document-detail-panel').getByRole('button', { name: '长篇', exact: true })).toHaveCount(0);
 });
 
 test('文档正文右键菜单、手动章节标记与 AI 分章入口', async ({ page }) => {
@@ -127,7 +223,16 @@ test('文档正文右键菜单、手动章节标记与 AI 分章入口', async (
   await expect(page.getByRole('button', { name: '添加为场景素材' })).toBeVisible();
   await expect(page.getByRole('button', { name: '添加为剧情骨架' })).toBeVisible();
   await expect(page.getByRole('button', { name: '添加到公共角色卡' })).toBeVisible();
-  await page.keyboard.press('Escape');
+  await editor.click({ position: { x: 20, y: 20 } });
+  await expect(page.getByRole('button', { name: '添加为场景素材' })).toHaveCount(0);
+  await editor.evaluate((node: HTMLTextAreaElement) => {
+    node.focus();
+    node.setSelectionRange(0, 4);
+    node.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 500, clientY: 300 }));
+  });
+  await page.getByRole('button', { name: '添加为场景素材' }).click();
+  await expect(page.getByRole('dialog').filter({ hasText: '场景素材名称' })).toBeVisible();
+  await page.getByRole('button', { name: '取消' }).last().click();
   await expect(page.getByRole('button', { name: '标记章节开始' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'AI 分章' })).toBeVisible();
 });

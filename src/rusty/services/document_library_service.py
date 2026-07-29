@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -34,6 +35,10 @@ class LibraryDocument:
     status: str
     favorite: bool
     tags: list[str]
+    is_project_document: bool
+    category_ids: list[int]
+    categories: list[str]
+    project_ids: list[int]
     created_at: str
     updated_at: str
 
@@ -75,6 +80,15 @@ class CleanupResult:
 
 @dataclass(frozen=True)
 class LibraryTag:
+    id: int
+    name: str
+    normalized_name: str
+    sort_order: int
+    resource_count: int
+
+
+@dataclass(frozen=True)
+class LibraryCategory:
     id: int
     name: str
     normalized_name: str
@@ -188,13 +202,35 @@ class DocumentLibraryService:
             rows = connection.execute(
                 """
                 SELECT d.*,
-                       COALESCE(GROUP_CONCAT(t.name, char(31)), '') AS tag_names
+                       COALESCE((
+                           SELECT GROUP_CONCAT(tags.name, char(31))
+                           FROM document_tag_links links
+                           JOIN document_tags tags ON tags.id = links.tag_id
+                           WHERE links.document_id = d.id AND tags.deleted_at IS NULL
+                       ), '') AS tag_names,
+                       COALESCE((
+                           SELECT GROUP_CONCAT(categories.id, char(31))
+                           FROM document_category_links links
+                           JOIN document_categories categories ON categories.id = links.category_id
+                           WHERE links.document_id = d.id AND categories.deleted_at IS NULL
+                       ), '') AS category_ids,
+                       COALESCE((
+                           SELECT GROUP_CONCAT(categories.name, char(31))
+                           FROM document_category_links links
+                           JOIN document_categories categories ON categories.id = links.category_id
+                           WHERE links.document_id = d.id AND categories.deleted_at IS NULL
+                       ), '') AS category_names,
+                       EXISTS(
+                           SELECT 1 FROM project_documents projects
+                           WHERE projects.document_id = d.id
+                       ) AS is_project_document,
+                       COALESCE((
+                           SELECT GROUP_CONCAT(projects.project_id, char(31))
+                           FROM project_documents projects
+                           WHERE projects.document_id = d.id
+                       ), '') AS project_ids
                 FROM library_documents d
-                LEFT JOIN document_tag_links link ON link.document_id = d.id
-                LEFT JOIN document_tags t
-                    ON t.id = link.tag_id AND t.deleted_at IS NULL
                 WHERE d.deleted_at IS NULL
-                GROUP BY d.id
                 ORDER BY d.created_at DESC, d.id DESC
                 """
             ).fetchall()
@@ -384,6 +420,117 @@ class DocumentLibraryService:
                 )
         return self._get_document(document_id)
 
+    def list_categories(self) -> list[LibraryCategory]:
+        with session(self.database_path) as connection:
+            rows = connection.execute(
+                """
+                SELECT category.id, category.name, category.normalized_name,
+                       category.sort_order, COUNT(document.id) AS document_count
+                FROM document_categories category
+                LEFT JOIN document_category_links links ON links.category_id = category.id
+                LEFT JOIN library_documents document
+                  ON document.id = links.document_id AND document.deleted_at IS NULL
+                WHERE category.deleted_at IS NULL
+                GROUP BY category.id
+                ORDER BY category.sort_order, category.name
+                """
+            ).fetchall()
+        return [
+            LibraryCategory(
+                id=int(row["id"]),
+                name=str(row["name"]),
+                normalized_name=str(row["normalized_name"]),
+                sort_order=int(row["sort_order"]),
+                resource_count=int(row["document_count"]),
+            )
+            for row in rows
+        ]
+
+    def create_category(self, name: str) -> LibraryCategory:
+        display_name, normalized_name = self._normalize_category_name(name)
+        with session(self.database_path) as connection:
+            connection.execute(
+                """
+                INSERT INTO document_categories (name, normalized_name)
+                VALUES (?, ?)
+                ON CONFLICT(normalized_name) WHERE deleted_at IS NULL
+                DO UPDATE SET updated_at = CURRENT_TIMESTAMP
+                """,
+                (display_name, normalized_name),
+            )
+        return next(
+            category
+            for category in self.list_categories()
+            if category.normalized_name == normalized_name
+        )
+
+    def rename_category(self, category_id: int, name: str) -> LibraryCategory:
+        display_name, normalized_name = self._normalize_category_name(name)
+        try:
+            with session(self.database_path) as connection:
+                cursor = connection.execute(
+                    """
+                    UPDATE document_categories
+                    SET name = ?, normalized_name = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ? AND deleted_at IS NULL
+                    """,
+                    (display_name, normalized_name, category_id),
+                )
+                if cursor.rowcount == 0:
+                    raise FileNotFoundError(f"找不到文档分类：{category_id}")
+        except sqlite3.IntegrityError as exc:
+            raise ValueError(f"文档分类“{display_name}”已存在。") from exc
+        return next(category for category in self.list_categories() if category.id == category_id)
+
+    def delete_category(self, category_id: int) -> None:
+        with session(self.database_path) as connection:
+            connection.execute(
+                "DELETE FROM document_category_links WHERE category_id = ?",
+                (category_id,),
+            )
+            cursor = connection.execute(
+                """
+                UPDATE document_categories
+                SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND deleted_at IS NULL
+                """,
+                (category_id,),
+            )
+            if cursor.rowcount == 0:
+                raise FileNotFoundError(f"找不到文档分类：{category_id}")
+
+    def set_document_category(
+        self,
+        document_id: int,
+        category_id: int,
+        selected: bool,
+    ) -> LibraryDocument:
+        self._get_document(document_id)
+        with session(self.database_path) as connection:
+            category = connection.execute(
+                "SELECT id FROM document_categories WHERE id = ? AND deleted_at IS NULL",
+                (category_id,),
+            ).fetchone()
+            if category is None:
+                raise FileNotFoundError(f"找不到文档分类：{category_id}")
+            if selected:
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO document_category_links (document_id, category_id)
+                    VALUES (?, ?)
+                    """,
+                    (document_id, category_id),
+                )
+            else:
+                connection.execute(
+                    """
+                    DELETE FROM document_category_links
+                    WHERE document_id = ? AND category_id = ?
+                    """,
+                    (document_id, category_id),
+                )
+        return self._get_document(document_id)
+
     def import_document(self, source_path: str | Path) -> DocumentImportResult:
         path = Path(source_path).expanduser().resolve()
         if path.suffix.lower() not in SUPPORTED_DOCUMENT_SUFFIXES:
@@ -471,11 +618,6 @@ class DocumentLibraryService:
 
     def ensure_project_document(self, project_id: int, source_path: str | Path) -> LibraryDocument:
         result = self.import_document(source_path)
-        tags = self.list_tags()
-        project_tag = next((item for item in tags if item.name == "工程"), None)
-        if project_tag is None:
-            project_tag = self.create_tag("工程")
-        self.set_document_tag(result.document.id, project_tag.id, True)
         with session(self.database_path) as connection:
             project = connection.execute(
                 "SELECT id FROM projects WHERE id = ? AND deleted_at IS NULL",
@@ -1288,20 +1430,15 @@ class DocumentLibraryService:
         with session(self.database_path) as connection:
             row = connection.execute(
                 """
-                SELECT d.*,
-                       COALESCE(GROUP_CONCAT(c.name, char(31)), '') AS tag_names
+                SELECT d.id
                 FROM library_documents d
-                LEFT JOIN document_tag_links link ON link.document_id = d.id
-                LEFT JOIN document_tags c
-                    ON c.id = link.tag_id AND c.deleted_at IS NULL
                 WHERE d.content_hash = ? AND d.deleted_at IS NULL
-                GROUP BY d.id
                 ORDER BY d.id
                 LIMIT 1
                 """,
                 (content_hash,),
             ).fetchone()
-        return self._row_to_document(row) if row is not None else None
+        return self._get_document(int(row["id"])) if row is not None else None
 
     def _get_template(self, template_id: int) -> ProcessingTemplate:
         with session(self.database_path) as connection:
@@ -1372,13 +1509,35 @@ class DocumentLibraryService:
             row = connection.execute(
                 """
                 SELECT d.*,
-                       COALESCE(GROUP_CONCAT(c.name, char(31)), '') AS tag_names
+                       COALESCE((
+                           SELECT GROUP_CONCAT(tags.name, char(31))
+                           FROM document_tag_links links
+                           JOIN document_tags tags ON tags.id = links.tag_id
+                           WHERE links.document_id = d.id AND tags.deleted_at IS NULL
+                       ), '') AS tag_names,
+                       COALESCE((
+                           SELECT GROUP_CONCAT(categories.id, char(31))
+                           FROM document_category_links links
+                           JOIN document_categories categories ON categories.id = links.category_id
+                           WHERE links.document_id = d.id AND categories.deleted_at IS NULL
+                       ), '') AS category_ids,
+                       COALESCE((
+                           SELECT GROUP_CONCAT(categories.name, char(31))
+                           FROM document_category_links links
+                           JOIN document_categories categories ON categories.id = links.category_id
+                           WHERE links.document_id = d.id AND categories.deleted_at IS NULL
+                       ), '') AS category_names,
+                       EXISTS(
+                           SELECT 1 FROM project_documents projects
+                           WHERE projects.document_id = d.id
+                       ) AS is_project_document,
+                       COALESCE((
+                           SELECT GROUP_CONCAT(projects.project_id, char(31))
+                           FROM project_documents projects
+                           WHERE projects.document_id = d.id
+                       ), '') AS project_ids
                 FROM library_documents d
-                LEFT JOIN document_tag_links link ON link.document_id = d.id
-                LEFT JOIN document_tags c
-                    ON c.id = link.tag_id AND c.deleted_at IS NULL
                 WHERE d.id = ? AND d.deleted_at IS NULL
-                GROUP BY d.id
                 """,
                 (document_id,),
             ).fetchone()
@@ -1553,6 +1712,21 @@ class DocumentLibraryService:
     def _row_to_document(row) -> LibraryDocument:
         raw_tags = str(row["tag_names"] or "")
         tags = [name for name in raw_tags.split(chr(31)) if name]
+        category_ids = [
+            int(value)
+            for value in str(row["category_ids"] or "").split(chr(31))
+            if value
+        ]
+        categories = [
+            name
+            for name in str(row["category_names"] or "").split(chr(31))
+            if name
+        ]
+        project_ids = [
+            int(value)
+            for value in str(row["project_ids"] or "").split(chr(31))
+            if value
+        ]
         return LibraryDocument(
             id=int(row["id"]),
             title=str(row["title"]),
@@ -1568,9 +1742,22 @@ class DocumentLibraryService:
             status=str(row["status"]),
             favorite=bool(row["favorite"]),
             tags=tags,
+            is_project_document=bool(row["is_project_document"]),
+            category_ids=category_ids,
+            categories=categories,
+            project_ids=project_ids,
             created_at=str(row["created_at"]),
             updated_at=str(row["updated_at"]),
         )
+
+    @staticmethod
+    def _normalize_category_name(name: str) -> tuple[str, str]:
+        display_name = " ".join(name.strip().split())
+        if not display_name:
+            raise ValueError("分类名称不能为空。")
+        if len(display_name) > 40:
+            raise ValueError("分类名称不能超过 40 个字符。")
+        return display_name, display_name.casefold()
 
     @staticmethod
     def _row_to_template(row) -> ProcessingTemplate:

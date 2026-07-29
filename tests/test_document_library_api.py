@@ -54,6 +54,16 @@ class DocumentLibraryApiTests(unittest.TestCase):
                     headers={"X-Rusty-Token": "document-test-token"},
                     json={"selected": True},
                 )
+                category = client.post(
+                    "/api/document-categories",
+                    headers={"X-Rusty-Token": "document-test-token"},
+                    json={"name": "研究"},
+                )
+                category_assigned = client.post(
+                    f"/api/documents/{document_id}/categories/{category.json()['id']}",
+                    headers={"X-Rusty-Token": "document-test-token"},
+                    json={"selected": True},
+                )
                 chapters = client.get(f"/api/documents/{document_id}/chapters")
                 content = client.get(f"/api/documents/{document_id}/content")
                 reordered = client.post(
@@ -97,6 +107,10 @@ class DocumentLibraryApiTests(unittest.TestCase):
             self.assertEqual("测试作者", updated.json()["author"])
             self.assertEqual(200, tag.status_code)
             self.assertEqual(["资料"], assigned.json()["tags"])
+            self.assertEqual(200, category.status_code)
+            self.assertEqual(["研究"], category_assigned.json()["categories"])
+            self.assertEqual([category.json()["id"]], category_assigned.json()["category_ids"])
+            self.assertFalse(category_assigned.json()["is_project_document"])
             self.assertGreaterEqual(len(chapters.json()), 1)
             self.assertEqual(200, content.status_code)
             self.assertIn("正文。", content.json()["text"])

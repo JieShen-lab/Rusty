@@ -10,10 +10,79 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from docx import Document
 from ebooklib import epub
 
+from rusty.db import session
+from rusty.models import ParsedBook, ParsedChapter
+from rusty.services.project_service import ProjectService
 from rusty.services.document_library_service import DocumentLibraryService
 
 
 class DocumentLibraryServiceTests(unittest.TestCase):
+    def test_categories_are_many_to_many_and_independent_from_tags(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            source = root / "classified.txt"
+            source.write_text("正文", encoding="utf-8")
+            service = DocumentLibraryService(root / "rusty.db", root / "library")
+            document = service.import_document(source).document
+            first = service.create_category("参考")
+            second = service.create_category("待整理")
+            tag = service.create_tag("长篇")
+            second = service.rename_category(second.id, "归档")
+            with self.assertRaisesRegex(ValueError, "已存在"):
+                service.rename_category(second.id, "参考")
+
+            service.set_document_category(document.id, first.id, True)
+            service.set_document_category(document.id, second.id, True)
+            service.set_document_tag(document.id, tag.id, True)
+            assigned = service.list_documents()[0]
+
+            self.assertEqual({first.id, second.id}, set(assigned.category_ids))
+            self.assertEqual({"参考", "归档"}, set(assigned.categories))
+            self.assertEqual(["长篇"], assigned.tags)
+            service.delete_category(first.id)
+            remaining = service.list_documents()[0]
+            self.assertEqual([second.id], remaining.category_ids)
+            self.assertEqual(["归档"], remaining.categories)
+            self.assertEqual(["长篇"], remaining.tags)
+            self.assertTrue(Path(remaining.storage_path).is_file())
+
+    def test_project_document_uses_relation_without_creating_legacy_tag(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            source = root / "project-source.txt"
+            source.write_text("工程正文", encoding="utf-8")
+            database = root / "rusty.db"
+            service = DocumentLibraryService(database, root / "library")
+            ordinary = service.import_document(source).document
+            self.assertFalse(ordinary.is_project_document)
+            project_id = ProjectService(database).create_project(
+                ParsedBook(
+                    title="工程",
+                    author="",
+                    language="zh",
+                    source_path=source,
+                    source_format="txt",
+                    source_encoding="utf-8",
+                    chapters=[ParsedChapter(index=1, title="第一章", text="工程正文")],
+                ),
+                root / "workspace",
+            )
+
+            linked = service.ensure_project_document(project_id, source)
+
+            self.assertTrue(linked.is_project_document)
+            self.assertEqual([project_id], linked.project_ids)
+            self.assertNotIn("工程", linked.tags)
+            self.assertNotIn("工程", [tag.name for tag in service.list_tags()])
+            with session(database) as connection:
+                self.assertEqual(
+                    linked.id,
+                    connection.execute(
+                        "SELECT document_id FROM project_documents WHERE project_id = ?",
+                        (project_id,),
+                    ).fetchone()[0],
+                )
+
     def test_default_cleanup_template_versions_text_and_can_restore_import(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)

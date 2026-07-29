@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { DragEvent, MouseEvent, ReactNode } from 'react';
 import {
   ArrowLeft,
@@ -19,16 +19,17 @@ import {
   Search,
   Scissors,
   Settings2,
-  Star,
   Trash2,
   WandSparkles,
   X,
 } from 'lucide-react';
 import {
   activateLibraryDocumentRevision,
+  assignDocumentCategory,
   assignDocumentTag,
   cleanupLibraryDocument,
   createCharacterFromSelection,
+  createDocumentCategory,
   createDocumentTag,
   createLibraryDocumentChapter,
   createPlotSkeletonFromSelection,
@@ -37,6 +38,7 @@ import {
   deleteLibraryDocument,
   exportLibraryDocument,
   getDocumentTags,
+  getDocumentCategories,
   getDocumentLibrarySettings,
   getDocumentProcessingTemplates,
   getLibraryDocumentChapters,
@@ -58,6 +60,7 @@ import {
 import type {
   DocumentProcessingSettings,
   DocumentProcessingTemplate,
+  DocumentCategory,
   LibraryDocument,
   LibraryDocumentChapter,
   LibraryDocumentContent,
@@ -68,6 +71,7 @@ import type {
 } from '../api/types';
 import { PrimaryButton } from '../components/PrimaryButton';
 import { SecondaryButton } from '../components/SecondaryButton';
+import { DangerButton } from '../components/DangerButton';
 import { TopBar } from '../components/TopBar';
 import { useAutoDismiss } from '../hooks/useAutoDismiss';
 
@@ -77,11 +81,11 @@ type ReferenceScope = 'book' | 'chapters' | 'paragraphs';
 
 const systemFilters = [
   { key: 'all', label: '全部文档', icon: LibraryBig },
-  { key: 'favorite', label: '收藏', icon: Star },
   { key: 'project', label: '工程文档', icon: FolderOpen },
   { key: 'recent', label: '最近导入', icon: Clock3 },
   { key: 'untagged', label: '无标签', icon: Folder },
 ] as const;
+type SystemFilter = typeof systemFilters[number]['key'];
 
 const palettes = ['indigo', 'terracotta', 'jade', 'slate', 'ochre', 'plum', 'bluegray'] as const;
 
@@ -96,8 +100,11 @@ const fallbackSettings: DocumentProcessingSettings = {
 export function DocumentLibraryPage() {
   const [documents, setDocuments] = useState<LibraryDocument[]>([]);
   const [tags, setTags] = useState<ResourceTag[]>([]);
+  const [categories, setCategories] = useState<DocumentCategory[]>([]);
   const [libraryPath, setLibraryPath] = useState('');
-  const [activeFilter, setActiveFilter] = useState('all');
+  const [systemFilter, setSystemFilter] = useState<SystemFilter>('all');
+  const [activeCategoryId, setActiveCategoryId] = useState<number | null>(null);
+  const [activeTagId, setActiveTagId] = useState<number | null>(null);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [searchText, setSearchText] = useState('');
   const [busy, setBusy] = useState(false);
@@ -117,8 +124,7 @@ export function DocumentLibraryPage() {
   const [selectedChapterId, setSelectedChapterId] = useState<number | null>(null);
   const [referenceScope, setReferenceScope] = useState<ReferenceScope>('book');
   const [exportOpen, setExportOpen] = useState(false);
-  const [tagDialogOpen, setTagDialogOpen] = useState(false);
-  const [tagName, setTagName] = useState('');
+  const [resourceManager, setResourceManager] = useState<'category' | 'tag' | null>(null);
   const [editingMetadata, setEditingMetadata] = useState<'title' | 'author' | null>(null);
   const [metadataTitle, setMetadataTitle] = useState('');
   const [metadataAuthor, setMetadataAuthor] = useState('');
@@ -127,11 +133,19 @@ export function DocumentLibraryPage() {
   const [editorDirty, setEditorDirty] = useState(false);
 
   const query = searchText.trim().toLocaleLowerCase();
-  const userTags = tags.filter((tag) => tag.name !== '工程');
-  const visibleDocuments = documents.filter((document, index) => (
-    matchesFilter(document, activeFilter, index)
-    && (!query || `${document.title} ${document.author ?? ''} ${document.source_filename}`.toLocaleLowerCase().includes(query))
-  ));
+  const systemDocuments = useMemo(
+    () => documentsForSystemFilter(documents, systemFilter),
+    [documents, systemFilter],
+  );
+  const activeTag = tags.find((tag) => tag.id === activeTagId) ?? null;
+  const visibleDocuments = useMemo(
+    () => systemDocuments.filter((document) => (
+      (activeCategoryId == null || document.category_ids.includes(activeCategoryId))
+      && (activeTag == null || document.tags.includes(activeTag.name))
+      && (!query || `${document.title} ${document.author ?? ''} ${document.source_filename}`.toLocaleLowerCase().includes(query))
+    )),
+    [activeCategoryId, activeTag, query, systemDocuments],
+  );
   const selectedDocument = documents.find((document) => document.id === selectedId) ?? null;
 
   useAutoDismiss(message, setMessage);
@@ -143,16 +157,23 @@ export function DocumentLibraryPage() {
     setEditingMetadata(null);
   }, [selectedDocument?.id]);
 
+  useEffect(() => {
+    if (workspaceOpen || visibleDocuments.some((document) => document.id === selectedId)) return;
+    setSelectedId(visibleDocuments[0]?.id ?? null);
+  }, [systemFilter, activeCategoryId, activeTagId, query, visibleDocuments, workspaceOpen]);
+
   async function loadLibrary(preferredId?: number | null) {
     setError(null);
     try {
-      const [documentItems, tagItems, settings] = await Promise.all([
+      const [documentItems, tagItems, categoryItems, settings] = await Promise.all([
         getLibraryDocuments(),
         getDocumentTags(),
+        getDocumentCategories(),
         getDocumentLibrarySettings(),
       ]);
       setDocuments(documentItems);
       setTags(tagItems);
+      setCategories(categoryItems);
       setLibraryPath(settings.storage_path);
       const nextId = preferredId !== undefined ? preferredId : selectedId;
       setSelectedId(documentItems.some((document) => document.id === nextId) ? nextId : documentItems[0]?.id ?? null);
@@ -189,23 +210,32 @@ export function DocumentLibraryPage() {
     });
   }
 
-  async function addTag() {
-    const name = tagName.trim();
-    if (!name) return;
+  async function createManagedResource(kind: 'category' | 'tag', name: string) {
     await runBusy(async () => {
-      const created = await createDocumentTag(name);
-      setTags((current) => [...current, created]);
-      setTagName('');
-      setTagDialogOpen(false);
-      setMessage(`已创建标签“${created.name}”。`);
-    });
+      const created = kind === 'category'
+        ? await createDocumentCategory(name)
+        : await createDocumentTag(name);
+      if (kind === 'category') setCategories((current) => [...current, created as DocumentCategory]);
+      else setTags((current) => [...current, created as ResourceTag]);
+      setMessage(`已创建${kind === 'category' ? '分类' : '标签'}“${created.name}”。`);
+    }, false);
   }
 
-  async function toggleTag(tag: ResourceTag, selected: boolean) {
+  async function applyManagedResources(kind: 'category' | 'tag', selectedIds: number[]) {
     if (!selectedDocument) return;
+    const currentIds = kind === 'category'
+      ? selectedDocument.category_ids
+      : tags.filter((tag) => selectedDocument.tags.includes(tag.name)).map((tag) => tag.id);
+    const allIds = new Set([...currentIds, ...selectedIds]);
     await runBusy(async () => {
-      await assignDocumentTag(selectedDocument.id, tag.id, selected);
+      await Promise.all([...allIds].map((id) => (
+        kind === 'category'
+          ? assignDocumentCategory(selectedDocument.id, id, selectedIds.includes(id))
+          : assignDocumentTag(selectedDocument.id, id, selectedIds.includes(id))
+      )));
       await loadLibrary(selectedDocument.id);
+      setResourceManager(null);
+      setMessage(`${kind === 'category' ? '分类' : '标签'}关联已保存。`);
     }, false);
   }
 
@@ -234,9 +264,12 @@ export function DocumentLibraryPage() {
     }, false);
   }
 
-  async function openProcessing(tab: ProcessingTab = 'chapters', targetDocument: LibraryDocument | null = selectedDocument) {
-    if (!targetDocument) return;
-    if (workspaceOpen && !confirmDiscardDirty(`切换到“${targetDocument.title}”`)) return;
+  async function openProcessing(
+    tab: ProcessingTab = 'chapters',
+    targetDocument: LibraryDocument | null = selectedDocument,
+  ): Promise<boolean> {
+    if (!targetDocument) return false;
+    if (workspaceOpen && !confirmDiscardDirty(`切换到“${targetDocument.title}”`)) return false;
     setSelectedId(targetDocument.id);
     setProcessingTab(tab);
     setWorkspaceOpen(true);
@@ -260,12 +293,18 @@ export function DocumentLibraryPage() {
         setTemplateId(defaultTemplate.id);
         setTemplateSettings(defaultTemplate.settings);
       }
+      return true;
     } catch (err) {
       setError(errorMessage(err));
       setWorkspaceOpen(false);
+      return false;
     } finally {
       setProcessingBusy(false);
     }
+  }
+
+  async function openAnalysisWorkspace() {
+    if (await openProcessing('chapters')) setActionDialog('ai-split');
   }
 
   async function reorderChapters(draggedId: number, targetId: number) {
@@ -476,8 +515,12 @@ export function DocumentLibraryPage() {
     }
   }
 
-  function filterCount(filter: string) {
-    return documents.filter((document, index) => matchesFilter(document, filter, index)).length;
+  function filterCount(filter: SystemFilter) {
+    return documentsForSystemFilter(documents, filter).length;
+  }
+
+  function categoryCount(categoryId: number) {
+    return systemDocuments.filter((document) => document.category_ids.includes(categoryId)).length;
   }
 
   function confirmDiscardDirty(actionLabel: string): boolean {
@@ -624,20 +667,26 @@ export function DocumentLibraryPage() {
       <div className="document-library-layout">
         <aside className="document-tag-panel">
           <header>
-            <h2>文档标签</h2>
+            <h2>文档筛选</h2>
           </header>
-          <nav aria-label="文档标签">
+          <nav aria-label="文档筛选">
             {systemFilters.map(({ icon: Icon, key, label }) => (
-              <TagFilterButton active={activeFilter === key} count={filterCount(key)} icon={<Icon size={16} />} key={key} label={label} onClick={() => setActiveFilter(key)} />
+              <TagFilterButton active={systemFilter === key} count={filterCount(key)} icon={<Icon size={16} />} key={key} label={label} onClick={() => setSystemFilter(key)} />
             ))}
             <div className="document-tag-heading">
-              <span>我的标签</span>
-              <button aria-label="新增标签" className="document-add-tag" disabled={busy} onClick={() => setTagDialogOpen(true)} title="新增标签" type="button"><FolderPlus size={15} /></button>
+              <span>我的分类</span>
+              <button aria-label="管理分类" className="document-add-tag" disabled={busy} onClick={() => setResourceManager('category')} title="管理分类" type="button"><Plus size={15} /></button>
             </div>
-            {userTags.length ? userTags.map((tag) => {
-              const key = `tag:${tag.name}`;
-              return <TagFilterButton active={activeFilter === key} count={tag.resource_count} icon={<Folder size={16} />} key={tag.id} label={tag.name} onClick={() => setActiveFilter(key)} />;
-            }) : <p className="document-tag-empty">暂无自定义标签</p>}
+            {categories.length ? categories.map((category) => (
+              <TagFilterButton
+                active={activeCategoryId === category.id}
+                count={categoryCount(category.id)}
+                icon={<Folder size={16} />}
+                key={category.id}
+                label={category.name}
+                onClick={() => setActiveCategoryId(activeCategoryId === category.id ? null : category.id)}
+              />
+            )) : <p className="document-tag-empty">暂无自定义分类</p>}
           </nav>
         </aside>
 
@@ -648,6 +697,12 @@ export function DocumentLibraryPage() {
                 <Search size={15} /><span className="sr-only">搜索文档</span>
                 <input onChange={(event) => setSearchText(event.target.value)} placeholder="搜索标题或作者" type="search" value={searchText} />
               </label>
+              {activeCategoryId != null || activeTag ? (
+                <div className="document-active-filters" aria-label="当前筛选条件">
+                  {activeCategoryId != null ? <button onClick={() => setActiveCategoryId(null)} type="button">分类：{categories.find((item) => item.id === activeCategoryId)?.name ?? activeCategoryId}<X size={12} /></button> : null}
+                  {activeTag ? <button onClick={() => setActiveTagId(null)} type="button">标签：{activeTag.name}<X size={12} /></button> : null}
+                </div>
+              ) : null}
             </div>
           </header>
           {loading ? <ShelfMessage title="正在读取文档库…" /> : visibleDocuments.length ? (
@@ -664,6 +719,7 @@ export function DocumentLibraryPage() {
                     type="button"
                   >
                     <DefaultBookCover document={document} />
+                    {document.is_project_document ? <span className="document-project-marker">工程文档</span> : null}
                   </button>
                 ))}
               </div>
@@ -727,31 +783,52 @@ export function DocumentLibraryPage() {
                   <Definition label="字数" value={formatNumber(selectedDocument.word_count)} />
                 </section>
                 <section>
-                  <div className="document-detail-heading"><span>标签</span></div>
-                  {userTags.length ? (
+                  <div className="document-detail-heading"><span>分类</span><button aria-label="管理当前文档分类" className="document-inline-plus" onClick={() => setResourceManager('category')} type="button"><Plus size={14} /></button></div>
+                  {selectedDocument.categories.length ? (
                     <div className="document-tag-checks">
-                      {userTags.map((tag) => (
+                      {selectedDocument.category_ids.map((categoryId, index) => (
                         <button
-                          aria-pressed={selectedDocument.tags.includes(tag.name)}
-                          className={selectedDocument.tags.includes(tag.name) ? 'selected' : ''}
+                          aria-pressed={activeCategoryId === categoryId}
+                          className={activeCategoryId === categoryId ? 'selected' : ''}
+                          key={categoryId}
+                          type="button"
+                          onClick={() => setActiveCategoryId(categoryId)}
+                        >
+                          {selectedDocument.categories[index]}
+                        </button>
+                      ))}
+                    </div>
+                  ) : <p className="document-resource-empty">未设置分类</p>}
+                </section>
+                <section>
+                  <div className="document-detail-heading"><span>标签</span><button aria-label="管理当前文档标签" className="document-inline-plus" onClick={() => setResourceManager('tag')} type="button"><Plus size={14} /></button></div>
+                  {selectedDocument.tags.length ? (
+                    <div className="document-tag-checks">
+                      {tags.filter((tag) => selectedDocument.tags.includes(tag.name)).map((tag) => (
+                        <button
+                          aria-pressed={activeTagId === tag.id}
+                          className={activeTagId === tag.id ? 'selected' : ''}
                           key={tag.id}
                           type="button"
-                          disabled={busy}
-                          onClick={() => void toggleTag(tag, !selectedDocument.tags.includes(tag.name))}
+                          onClick={() => setActiveTagId(tag.id)}
                         >
                           {tag.name}
                         </button>
                       ))}
                     </div>
-                  ) : <button className="document-inline-action" onClick={() => setTagDialogOpen(true)} type="button"><FolderPlus size={14} />创建第一个标签</button>}
-                </section>
-                <section className="document-library-location">
-                  <div title={libraryPath}>{libraryPath || '正在读取目录…'}</div>
+                  ) : <p className="document-resource-empty">未设置标签</p>}
                 </section>
               </div>
+              <section className="document-library-location document-current-file">
+                <span>当前版本文件</span>
+                <div title={selectedDocument.storage_path}>{selectedDocument.storage_path}</div>
+                <small title={libraryPath}>文档库存储目录：{libraryPath || '正在读取目录…'}</small>
+              </section>
               <footer className="library-detail-footer">
-                <SecondaryButton onClick={() => void deleteDocument()}><Trash2 size={15} />删除</SecondaryButton>
-                <SecondaryButton onClick={() => setExportOpen(true)}><Download size={15} />导出</SecondaryButton>
+                <SecondaryButton onClick={() => void openProcessing('chapters')}><BookOpenText size={15} />编辑</SecondaryButton>
+                <SecondaryButton onClick={() => void openAnalysisWorkspace()}><WandSparkles size={15} />AI 分析</SecondaryButton>
+                <SecondaryButton onClick={() => setExportOpen(true)}><Download size={15} />导出文档</SecondaryButton>
+                <DangerButton onClick={() => void deleteDocument()}><Trash2 size={15} />删除</DangerButton>
               </footer>
             </>
           ) : <ShelfMessage title="选择一本书查看详情" />}
@@ -759,13 +836,15 @@ export function DocumentLibraryPage() {
       </div>
 
       {exportOpen && selectedDocument ? <ExportDialog busy={busy} document={selectedDocument} onClose={() => setExportOpen(false)} onExport={(format) => void exportDocument(format)} /> : null}
-      {tagDialogOpen ? (
-        <TagDialog
+      {resourceManager ? (
+        <ResourceAssignmentDialog
           busy={busy}
-          name={tagName}
-          onChange={setTagName}
-          onClose={() => { setTagDialogOpen(false); setTagName(''); }}
-          onSubmit={() => void addTag()}
+          document={selectedDocument}
+          items={resourceManager === 'category' ? categories : tags}
+          kind={resourceManager}
+          onApply={(selectedIds) => void applyManagedResources(resourceManager, selectedIds)}
+          onClose={() => setResourceManager(null)}
+          onCreate={(name) => void createManagedResource(resourceManager, name)}
         />
       ) : null}
     </div>
@@ -944,6 +1023,7 @@ function EditableTextPreview({
   const [markEnd, setMarkEnd] = useState<number | null>(null);
   const [markTitle, setMarkTitle] = useState('');
   const editorRef = useRef<HTMLTextAreaElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setText(content?.text ?? '');
@@ -963,6 +1043,28 @@ function EditableTextPreview({
     window.addEventListener('beforeunload', guard);
     return () => window.removeEventListener('beforeunload', guard);
   }, [dirty]);
+
+  useEffect(() => {
+    if (!menu) return;
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      if (event.button === 0 && !menuRef.current?.contains(event.target as Node)) setMenu(null);
+    };
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') setMenu(null);
+    };
+    const closeMenu = () => setMenu(null);
+    const editor = editorRef.current;
+    window.addEventListener('pointerdown', closeOnOutsidePointer, true);
+    window.addEventListener('keydown', closeOnEscape);
+    window.addEventListener('resize', closeMenu);
+    editor?.addEventListener('scroll', closeMenu, { passive: true });
+    return () => {
+      window.removeEventListener('pointerdown', closeOnOutsidePointer, true);
+      window.removeEventListener('keydown', closeOnEscape);
+      window.removeEventListener('resize', closeMenu);
+      editor?.removeEventListener('scroll', closeMenu);
+    };
+  }, [menu]);
 
   function setDirtyState(next: boolean) {
     setDirty(next);
@@ -1022,7 +1124,7 @@ function EditableTextPreview({
         value={loading && !content ? '正在读取正文…' : text}
       />
       {menu ? (
-        <div className="selection-resource-menu" style={{ left: menu.x, top: menu.y }}>
+        <div className="selection-resource-menu" ref={menuRef} style={{ left: menu.x, top: menu.y }}>
           <button onClick={() => { onSelectionResource('scene', menu.text, menu.startOffset, menu.endOffset); setMenu(null); }} type="button">添加为场景素材</button>
           <button onClick={() => { onSelectionResource('plot', menu.text, menu.startOffset, menu.endOffset); setMenu(null); }} type="button">添加为剧情骨架</button>
           <button onClick={() => { onSelectionResource('character', menu.text, menu.startOffset, menu.endOffset); setMenu(null); }} type="button">添加到公共角色卡</button>
@@ -1197,35 +1299,65 @@ function ChapterBoundaryPreview({ chapters, count }: { chapters: Array<{ title: 
   return <div className="document-split-preview"><strong>匹配章节：{count}</strong>{chapters.map((chapter, index) => <div key={`${chapter.start_offset}-${index}`}><span>{chapter.title}</span><small>{chapter.start_offset}–{chapter.end_offset} · {chapter.word_count} 字</small></div>)}<p>{gaps.length ? `未匹配区间：${gaps.join('、')}` : '未匹配开头或中间内容：无；尾部由最后一章终点标识。'}</p></div>;
 }
 
-function TagDialog({
+function ResourceAssignmentDialog({
   busy,
-  name,
-  onChange,
+  document,
+  items,
+  kind,
+  onApply,
   onClose,
-  onSubmit,
+  onCreate,
 }: {
   busy: boolean;
-  name: string;
-  onChange: (name: string) => void;
+  document: LibraryDocument | null;
+  items: Array<DocumentCategory | ResourceTag>;
+  kind: 'category' | 'tag';
+  onApply: (selectedIds: number[]) => void;
   onClose: () => void;
-  onSubmit: () => void;
+  onCreate: (name: string) => void;
 }) {
+  const initialSelected = kind === 'category'
+    ? document?.category_ids ?? []
+    : items.filter((item) => document?.tags.includes(item.name)).map((item) => item.id);
+  const [selectedIds, setSelectedIds] = useState<number[]>(initialSelected);
+  const [name, setName] = useState('');
+  const label = kind === 'category' ? '分类' : '标签';
   return (
     <div className="document-processing-backdrop" role="presentation">
-      <form
-        aria-labelledby="document-tag-title"
+      <section
+        aria-labelledby="document-resource-title"
         aria-modal="true"
-        className="document-tag-dialog"
-        onSubmit={(event) => { event.preventDefault(); onSubmit(); }}
+        className="document-tag-dialog document-resource-dialog"
         role="dialog"
       >
         <header>
-          <div><span>文档标签</span><h2 id="document-tag-title">创建新标签</h2></div>
-          <button aria-label="关闭标签窗口" className="icon-button" onClick={onClose} type="button"><X size={17} /></button>
+          <div><span>文档{label}</span><h2 id="document-resource-title">管理{label}</h2></div>
+          <button aria-label={`关闭${label}窗口`} className="icon-button" onClick={onClose} type="button"><X size={17} /></button>
         </header>
-        <label><span className="form-label">标签名称</span><input autoFocus className="form-input" maxLength={40} onChange={(event) => onChange(event.target.value)} placeholder="例如：写作参考" value={name} /></label>
-        <footer><SecondaryButton onClick={onClose}>取消</SecondaryButton><PrimaryButton disabled={busy || !name.trim()} type="submit">创建标签</PrimaryButton></footer>
-      </form>
+        <div className="document-resource-options">
+          {document ? items.map((item) => (
+            <label key={item.id}>
+              <input
+                checked={selectedIds.includes(item.id)}
+                disabled={busy}
+                onChange={(event) => setSelectedIds((current) => (
+                  event.target.checked
+                    ? [...current, item.id]
+                    : current.filter((id) => id !== item.id)
+                ))}
+                type="checkbox"
+              />
+              <span>{item.name}</span>
+            </label>
+          )) : <p>先创建分类；选择文档后可分配关联。</p>}
+          {document && !items.length ? <p>尚无可用{label}。</p> : null}
+        </div>
+        <form className="document-resource-create" onSubmit={(event) => { event.preventDefault(); if (name.trim()) { onCreate(name.trim()); setName(''); } }}>
+          <input className="form-input" maxLength={40} onChange={(event) => setName(event.target.value)} placeholder={`新${label}名称`} value={name} />
+          <SecondaryButton disabled={busy || !name.trim()} type="submit"><Plus size={14} />新建</SecondaryButton>
+        </form>
+        <footer><SecondaryButton onClick={onClose}>取消</SecondaryButton><PrimaryButton disabled={busy || !document} onClick={() => onApply(selectedIds)}>保存关联</PrimaryButton></footer>
+      </section>
     </div>
   );
 }
@@ -1278,13 +1410,21 @@ function NumberField({ label, max = 8, onChange, value }: { label: string; max?:
   return <label><span className="form-label">{label}</span><input className="form-input" max={max} min={0} onChange={(event) => onChange(Number(event.target.value))} type="number" value={value} /></label>;
 }
 
-function matchesFilter(document: LibraryDocument, filter: string, index: number) {
-  if (filter === 'all') return true;
-  if (filter === 'recent') return index < 5;
-  if (filter === 'favorite') return document.favorite;
-  if (filter === 'project') return document.tags.includes('工程');
-  if (filter === 'untagged') return document.tags.length === 0;
-  return filter.startsWith('tag:') && document.tags.includes(filter.slice('tag:'.length));
+function documentsForSystemFilter(
+  documents: LibraryDocument[],
+  filter: SystemFilter,
+): LibraryDocument[] {
+  if (filter === 'project') return documents.filter((document) => document.is_project_document);
+  const ordinaryDocuments = documents.filter((document) => !document.is_project_document);
+  if (filter === 'recent') {
+    return [...ordinaryDocuments]
+      .sort((left, right) => right.created_at.localeCompare(left.created_at) || right.id - left.id)
+      .slice(0, 5);
+  }
+  if (filter === 'untagged') {
+    return ordinaryDocuments.filter((document) => document.tags.length === 0);
+  }
+  return ordinaryDocuments;
 }
 
 function revisionLabel(revisionType: string) {

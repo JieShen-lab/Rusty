@@ -29,8 +29,20 @@ export type LibraryDocument = {
   status: string;
   favorite: boolean;
   tags: string[];
+  is_project_document: boolean;
+  category_ids: number[];
+  categories: string[];
+  project_ids: number[];
   created_at: string;
   updated_at: string;
+};
+
+export type DocumentCategory = {
+  id: number;
+  name: string;
+  normalized_name: string;
+  sort_order: number;
+  resource_count: number;
 };
 
 export type LibraryDocumentImportResult = {

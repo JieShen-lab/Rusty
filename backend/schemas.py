@@ -31,6 +31,10 @@ class LibraryDocumentOut(BaseModel):
     status: str
     favorite: bool
     tags: list[str] = Field(default_factory=list)
+    is_project_document: bool = False
+    category_ids: list[int] = Field(default_factory=list)
+    categories: list[str] = Field(default_factory=list)
+    project_ids: list[int] = Field(default_factory=list)
     created_at: str
     updated_at: str
 
@@ -105,6 +109,14 @@ class ResourceTagOut(BaseModel):
     id: int
     name: str
     normalized_name: str = ""
+    sort_order: int = 0
+    resource_count: int = 0
+
+
+class DocumentCategoryOut(BaseModel):
+    id: int
+    name: str
+    normalized_name: str
     sort_order: int = 0
     resource_count: int = 0
 
