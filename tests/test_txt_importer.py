@@ -7,7 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from rusty.exporters import build_txt_export
-from rusty.importers.txt import DEFAULT_CHAPTER_PATTERN, split_chapters
+from rusty.importers.txt import DEFAULT_CHAPTER_PATTERN, split_chapters, split_document_structure
 from rusty.models import ChapterRecord, count_text_units
 
 
@@ -37,8 +37,23 @@ class TxtImporterTests(unittest.TestCase):
         chapters = split_chapters("没有章节标题\n只有正文", chapter_pattern=DEFAULT_CHAPTER_PATTERN)
 
         self.assertEqual(1, len(chapters))
-        self.assertEqual("正文", chapters[0].title)
+        self.assertEqual("第一章", chapters[0].title)
         self.assertEqual("没有章节标题\n只有正文", chapters[0].text)
+
+    def test_volume_and_chapter_titles_are_parsed_as_distinct_levels(self) -> None:
+        chapters, volumes = split_document_structure(
+            "第七卷 雨夜\n\n第787章 雨夜\n正文一。\n\n第788章 风声\n正文二。\n"
+        )
+
+        self.assertEqual(["第七卷 雨夜"], [volume.title for volume in volumes])
+        self.assertEqual(["第787章 雨夜", "第788章 风声"], [chapter.title for chapter in chapters])
+        self.assertEqual([1, 1], [chapter.volume_index for chapter in chapters])
+
+    def test_real_chapter_does_not_add_default_first_chapter(self) -> None:
+        chapters, volumes = split_document_structure("第787章 雨夜\n正文。")
+
+        self.assertEqual([], volumes)
+        self.assertEqual(["第787章 雨夜"], [chapter.title for chapter in chapters])
 
     def test_build_txt_export_uses_rewritten_text_when_available(self) -> None:
         chapters = [

@@ -4,12 +4,19 @@ import sqlite3
 import sys
 import unittest
 import json
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from rusty.db import CURRENT_SCHEMA_VERSION, connect, initialize_database
-from rusty.db.schema import _migrate_to_v14, _migrate_to_v15, _migrate_to_v17, _migrate_to_v18
+from rusty.db.schema import (
+    _migrate_to_v14,
+    _migrate_to_v15,
+    _migrate_to_v17,
+    _migrate_to_v18,
+    _migrate_to_v19,
+)
 
 
 class SchemaTests(unittest.TestCase):
@@ -95,6 +102,7 @@ class SchemaTests(unittest.TestCase):
         self.assertIn("document_categories", table_names)
         self.assertIn("document_category_links", table_names)
         self.assertIn("library_document_drafts", table_names)
+        self.assertIn("library_document_volumes", table_names)
         self.assertIn("project_outline_bindings", table_names)
         self.assertIn("project_character_bindings", table_names)
         self.assertIn("chapter_stage_status", table_names)
@@ -163,6 +171,76 @@ class SchemaTests(unittest.TestCase):
             """
         )
         self.assertEqual(2, connection.execute("SELECT COUNT(*) FROM library_document_drafts").fetchone()[0])
+
+    def test_v18_to_v19_promotes_only_unmistakable_volume_chapters_idempotently(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            text = "卷首语\n第七卷 雨夜\n第787章 雨夜\n正文。"
+            source = Path(directory) / "legacy.txt"
+            source.write_text(text, encoding="utf-8")
+            volume_start = text.index("第七卷")
+            chapter_start = text.index("第787章")
+            connection = sqlite3.connect(":memory:")
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.executescript(
+                """
+                CREATE TABLE library_documents (
+                    id INTEGER PRIMARY KEY,
+                    current_revision_id INTEGER,
+                    chapter_count INTEGER NOT NULL,
+                    deleted_at TEXT
+                );
+                CREATE TABLE library_document_revisions (
+                    id INTEGER PRIMARY KEY,
+                    document_id INTEGER NOT NULL,
+                    storage_path TEXT NOT NULL
+                );
+                CREATE TABLE library_document_chapters (
+                    id INTEGER PRIMARY KEY,
+                    document_id INTEGER NOT NULL,
+                    revision_id INTEGER NOT NULL,
+                    chapter_index INTEGER NOT NULL,
+                    title TEXT NOT NULL,
+                    start_offset INTEGER,
+                    end_offset INTEGER,
+                    UNIQUE(revision_id, chapter_index)
+                );
+                """
+            )
+            connection.execute(
+                "INSERT INTO library_documents VALUES (1, 10, 3, NULL)"
+            )
+            connection.execute(
+                "INSERT INTO library_document_revisions VALUES (10, 1, ?)",
+                (str(source),),
+            )
+            connection.executemany(
+                """
+                INSERT INTO library_document_chapters
+                    (id, document_id, revision_id, chapter_index, title, start_offset, end_offset)
+                VALUES (?, 1, 10, ?, ?, ?, ?)
+                """,
+                [
+                    (20, 1, "卷首语", 0, volume_start),
+                    (21, 2, "第七卷 雨夜", volume_start, chapter_start),
+                    (22, 3, "第787章 雨夜", chapter_start, len(text)),
+                ],
+            )
+
+            _migrate_to_v19(connection)
+            _migrate_to_v19(connection)
+
+            volumes = connection.execute(
+                "SELECT * FROM library_document_volumes"
+            ).fetchall()
+            chapters = connection.execute(
+                "SELECT title, volume_id FROM library_document_chapters ORDER BY chapter_index"
+            ).fetchall()
+            self.assertEqual(["第七卷 雨夜"], [row["title"] for row in volumes])
+            self.assertEqual(["卷首语", "第787章 雨夜"], [row["title"] for row in chapters])
+            self.assertIsNone(chapters[0]["volume_id"])
+            self.assertEqual(volumes[0]["id"], chapters[1]["volume_id"])
+            self.assertEqual(2, connection.execute("SELECT chapter_count FROM library_documents").fetchone()[0])
 
     def test_v16_document_tags_migrate_to_v17_categories_idempotently(self) -> None:
         connection = sqlite3.connect(":memory:")

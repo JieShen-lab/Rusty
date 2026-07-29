@@ -78,6 +78,9 @@ from .schemas import (
     LibraryDocumentCleanupResponse,
     LibraryDocumentChapterOut,
     LibraryDocumentChapterReorderRequest,
+    LibraryDocumentDirectoryOut,
+    LibraryDocumentVolumeOut,
+    LibraryDocumentVolumeRenameRequest,
     LibraryDocumentContentOut,
     LibraryDocumentDraftOut,
     LibraryDocumentDraftScopeRequest,
@@ -428,6 +431,26 @@ def create_app(
         return [_library_chapter_out(chapter) for chapter in document_library_service.list_chapters(document_id)]
 
     @app.get(
+        "/api/documents/{document_id}/directory",
+        response_model=LibraryDocumentDirectoryOut,
+    )
+    def get_library_document_directory(document_id: int) -> LibraryDocumentDirectoryOut:
+        directory = document_library_service.get_directory(document_id)
+        return LibraryDocumentDirectoryOut(
+            volumes=[
+                LibraryDocumentVolumeOut(
+                    **volume.__dict__,
+                    chapters=[_library_chapter_out(chapter) for chapter in chapters],
+                )
+                for volume, chapters in directory.volumes
+            ],
+            unassigned_chapters=[
+                _library_chapter_out(chapter)
+                for chapter in directory.unassigned_chapters
+            ],
+        )
+
+    @app.get(
         "/api/documents/{document_id}/content",
         response_model=LibraryDocumentContentOut,
     )
@@ -618,8 +641,30 @@ def create_app(
             for chapter in document_library_service.reorder_chapters(
                 document_id,
                 payload.ordered_chapter_ids,
+                payload.volume_assignments,
             )
         ]
+
+    @app.post(
+        "/api/documents/{document_id}/volumes/{volume_id}",
+        response_model=LibraryDocumentCleanupResponse,
+        dependencies=[Depends(_require_token)],
+    )
+    def rename_library_document_volume(
+        document_id: int,
+        volume_id: int,
+        payload: LibraryDocumentVolumeRenameRequest,
+    ) -> LibraryDocumentCleanupResponse:
+        result = document_library_service.rename_volume(
+            document_id,
+            volume_id,
+            payload.title,
+        )
+        return LibraryDocumentCleanupResponse(
+            document=_library_document_out(result.document),
+            revision=_document_revision_out(result.revision),
+            created=result.created,
+        )
 
     @app.post(
         "/api/documents/{document_id}/delete",

@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sqlite3
 from pathlib import Path
 
 from .connection import session
 
-CURRENT_SCHEMA_VERSION = 18
+CURRENT_SCHEMA_VERSION = 19
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -662,6 +663,20 @@ CREATE TABLE IF NOT EXISTS library_document_revisions (
     FOREIGN KEY (parent_revision_id) REFERENCES library_document_revisions(id) ON DELETE SET NULL
 );
 
+CREATE TABLE IF NOT EXISTS library_document_volumes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    document_id INTEGER NOT NULL,
+    revision_id INTEGER NOT NULL,
+    volume_index INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    start_offset INTEGER NOT NULL,
+    end_offset INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (revision_id, volume_index),
+    FOREIGN KEY (document_id) REFERENCES library_documents(id) ON DELETE CASCADE,
+    FOREIGN KEY (revision_id) REFERENCES library_document_revisions(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS library_document_chapters (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     document_id INTEGER NOT NULL,
@@ -672,10 +687,12 @@ CREATE TABLE IF NOT EXISTS library_document_chapters (
     end_line INTEGER,
     start_offset INTEGER,
     end_offset INTEGER,
+    volume_id INTEGER,
     word_count INTEGER NOT NULL DEFAULT 0,
     UNIQUE (revision_id, chapter_index),
     FOREIGN KEY (document_id) REFERENCES library_documents(id) ON DELETE CASCADE,
-    FOREIGN KEY (revision_id) REFERENCES library_document_revisions(id) ON DELETE CASCADE
+    FOREIGN KEY (revision_id) REFERENCES library_document_revisions(id) ON DELETE CASCADE,
+    FOREIGN KEY (volume_id) REFERENCES library_document_volumes(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS library_document_drafts (
@@ -715,6 +732,10 @@ CREATE INDEX IF NOT EXISTS idx_library_revisions_document_number
     ON library_document_revisions(document_id, revision_number DESC);
 CREATE INDEX IF NOT EXISTS idx_library_chapters_revision_order
     ON library_document_chapters(revision_id, chapter_index);
+CREATE INDEX IF NOT EXISTS idx_library_volumes_revision_order
+    ON library_document_volumes(revision_id, volume_index);
+CREATE INDEX IF NOT EXISTS idx_library_chapters_volume_order
+    ON library_document_chapters(volume_id, chapter_index);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_library_drafts_document_full
     ON library_document_drafts(document_id)
     WHERE chapter_id IS NULL;
@@ -2092,6 +2113,139 @@ def _migrate_to_v18(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_to_v19(connection: sqlite3.Connection) -> None:
+    """Promote unmistakable legacy volume pseudo-chapters into a hierarchy."""
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS library_document_volumes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            document_id INTEGER NOT NULL,
+            revision_id INTEGER NOT NULL,
+            volume_index INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            start_offset INTEGER NOT NULL,
+            end_offset INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (revision_id, volume_index),
+            FOREIGN KEY (document_id) REFERENCES library_documents(id) ON DELETE CASCADE,
+            FOREIGN KEY (revision_id) REFERENCES library_document_revisions(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_library_volumes_revision_order
+            ON library_document_volumes(revision_id, volume_index);
+        """
+    )
+    _add_column_if_missing(
+        connection,
+        "library_document_chapters",
+        "volume_id",
+        "volume_id INTEGER REFERENCES library_document_volumes(id) ON DELETE SET NULL",
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_library_chapters_volume_order "
+        "ON library_document_chapters(volume_id, chapter_index)"
+    )
+    volume_pattern = re.compile(
+        r"^\s*(?:第[一二三四五六七八九十百千万零〇两0-9]+卷|卷[一二三四五六七八九十百千万零〇两0-9]+)(?:\s.*|[：:].*)?\s*$"
+    )
+    revisions = connection.execute(
+        """
+        SELECT r.id, r.document_id, r.storage_path
+        FROM library_document_revisions r
+        JOIN library_documents d ON d.current_revision_id = r.id
+        WHERE d.deleted_at IS NULL
+        """
+    ).fetchall()
+    for revision in revisions:
+        revision_id = int(revision["id"])
+        if connection.execute(
+            "SELECT 1 FROM library_document_volumes WHERE revision_id = ? LIMIT 1",
+            (revision_id,),
+        ).fetchone():
+            continue
+        path = Path(str(revision["storage_path"]))
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8")
+        chapters = connection.execute(
+            """
+            SELECT *
+            FROM library_document_chapters
+            WHERE revision_id = ?
+            ORDER BY chapter_index
+            """,
+            (revision_id,),
+        ).fetchall()
+        volume_rows = [row for row in chapters if volume_pattern.fullmatch(str(row["title"]))]
+        if not volume_rows:
+            continue
+        volume_ids: list[tuple[int, int, int]] = []
+        for index, row in enumerate(volume_rows, start=1):
+            start = int(row["start_offset"]) if row["start_offset"] is not None else 0
+            next_start = (
+                int(volume_rows[index]["start_offset"])
+                if index < len(volume_rows) and volume_rows[index]["start_offset"] is not None
+                else len(text)
+            )
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO library_document_volumes (
+                    document_id, revision_id, volume_index, title, start_offset, end_offset
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(revision["document_id"]),
+                    revision_id,
+                    index,
+                    str(row["title"]).strip(),
+                    start,
+                    next_start,
+                ),
+            )
+            volume_id = int(cursor.lastrowid) if cursor.lastrowid else int(
+                connection.execute(
+                    "SELECT id FROM library_document_volumes WHERE revision_id = ? AND volume_index = ?",
+                    (revision_id, index),
+                ).fetchone()["id"]
+            )
+            volume_ids.append((volume_id, start, next_start))
+        volume_chapter_ids = {int(row["id"]) for row in volume_rows}
+        for row in chapters:
+            chapter_id = int(row["id"])
+            if chapter_id in volume_chapter_ids:
+                continue
+            start = int(row["start_offset"]) if row["start_offset"] is not None else -1
+            volume_id = next(
+                (item[0] for item in volume_ids if item[1] < start < item[2]),
+                None,
+            )
+            connection.execute(
+                "UPDATE library_document_chapters SET volume_id = ? WHERE id = ?",
+                (volume_id, chapter_id),
+            )
+        connection.executemany(
+            "DELETE FROM library_document_chapters WHERE id = ?",
+            [(chapter_id,) for chapter_id in volume_chapter_ids],
+        )
+        remaining = connection.execute(
+            "SELECT id FROM library_document_chapters WHERE revision_id = ? ORDER BY chapter_index",
+            (revision_id,),
+        ).fetchall()
+        for index, row in enumerate(remaining, start=1):
+            connection.execute(
+                "UPDATE library_document_chapters SET chapter_index = ? WHERE id = ?",
+                (-(1000000 + index), int(row["id"])),
+            )
+        for index, row in enumerate(remaining, start=1):
+            connection.execute(
+                "UPDATE library_document_chapters SET chapter_index = ? WHERE id = ?",
+                (index, int(row["id"])),
+            )
+        connection.execute(
+            "UPDATE library_documents SET chapter_count = ? WHERE id = ?",
+            (len(remaining), int(revision["document_id"])),
+        )
+
+
 def _safe_json_list(value: object) -> list[dict[str, object]]:
     try:
         parsed = json.loads(str(value or "[]"))
@@ -2460,6 +2614,7 @@ MIGRATIONS = {
     16: _migrate_to_v16,
     17: _migrate_to_v17,
     18: _migrate_to_v18,
+    19: _migrate_to_v19,
 }
 
 

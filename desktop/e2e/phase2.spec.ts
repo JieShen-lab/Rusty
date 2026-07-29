@@ -28,7 +28,8 @@ async function mockApi(page: Page) {
   let documentRevisionNumber = 1;
   let documentBody = '林舟推门而入，看见桌上的钥匙。';
   let documentChapterTitle = '第一章';
-  let extraChapter: { id: number; document_id: number; revision_id: number; index: number; title: string; start_line: number; end_line: number; start_offset: number; end_offset: number; word_count: number } | null = null;
+  let volumeTitle = '第七卷 雨夜';
+  let extraChapter: { id: number; document_id: number; revision_id: number; index: number; title: string; start_line: number; end_line: number; start_offset: number; end_offset: number; word_count: number; volume_id: number } | null = null;
   await page.route('http://127.0.0.1:8765/api/**', async (route) => {
     const url = new URL(route.request().url());
     const path = url.pathname;
@@ -74,6 +75,12 @@ async function mockApi(page: Page) {
     }
     else if (path === '/api/document-library/settings') body = { storage_path: 'D:/Rusty', exists: true };
     else if (path === '/api/document-processing-templates') body = [];
+    else if (path === '/api/documents/merge' && route.request().method() === 'POST') {
+      const request = route.request().postDataJSON() as { title: string };
+      const merged = { ...documentItems[0], id: 4, title: request.title, source_filename: 'merged.txt', storage_path: 'D:/Rusty/merged.txt', category_ids: [], categories: [], tags: [], chapter_count: 2 };
+      documentItems = [...documentItems, merged];
+      body = merged;
+    }
     else if (/^\/api\/documents\/\d+\/revisions$/.test(path)) {
       const documentId = Number(path.split('/')[3]);
       body = Array.from({ length: documentRevisionNumber }, (_, index) => ({ id: documentId * 10 + index + 1, document_id: documentId, revision_number: index + 1, revision_type: index ? 'manual_edit' : 'import', storage_path: index + 1 === documentRevisionNumber ? documentItems.find((item) => item.id === documentId)?.storage_path : `D:/Rusty/novel-v${index + 1}.txt`, word_count: 16, created_at: '' })).reverse();
@@ -82,13 +89,27 @@ async function mockApi(page: Page) {
       const documentId = Number(path.split('/')[3]);
       const request = route.request().postDataJSON() as { title: string; text: string };
       documentRevisionNumber += 1;
-      extraChapter = { id: 999, document_id: documentId, revision_id: documentId * 10 + documentRevisionNumber, index: 2, title: request.title, start_line: 3, end_line: 4, start_offset: 30, end_offset: 30 + request.title.length + request.text.length + 2, word_count: Array.from(request.title + request.text).filter((value) => !/\s/u.test(value)).length };
+      extraChapter = { id: 999, document_id: documentId, revision_id: documentId * 10 + documentRevisionNumber, index: 2, title: request.title, start_line: 3, end_line: 4, start_offset: 30, end_offset: 30 + request.title.length + request.text.length + 2, word_count: Array.from(request.title + request.text).filter((value) => !/\s/u.test(value)).length, volume_id: 701 };
       documentItems = documentItems.map((item) => item.id === documentId ? { ...item, chapter_count: 2 } : item);
       body = { document: documentItems.find((item) => item.id === documentId), revision: { id: documentId * 10 + documentRevisionNumber, document_id: documentId, revision_number: documentRevisionNumber, revision_type: 'manual_edit', storage_path: `D:/Rusty/novel-v${documentRevisionNumber}.txt`, template_id: null, parent_revision_id: documentId * 10 + documentRevisionNumber - 1, created_at: '' }, created: true, created_chapter_id: 999 };
     }
     else if (/^\/api\/documents\/\d+\/chapters$/.test(path)) {
       const documentId = Number(path.split('/')[3]);
-      body = [{ id: documentId * 100 + documentRevisionNumber, document_id: documentId, revision_id: documentId * 10 + documentRevisionNumber, index: 1, title: documentChapterTitle, start_line: 1, end_line: 2, start_offset: 0, end_offset: documentBody.length + documentChapterTitle.length + 2, word_count: Array.from(documentChapterTitle + documentBody).filter((value) => !/\s/u.test(value)).length }, ...(extraChapter ? [extraChapter] : [])];
+      body = [{ id: documentId * 100 + documentRevisionNumber, document_id: documentId, revision_id: documentId * 10 + documentRevisionNumber, index: 1, title: documentChapterTitle, start_line: 1, end_line: 2, start_offset: 0, end_offset: documentBody.length + documentChapterTitle.length + 2, word_count: Array.from(documentChapterTitle + documentBody).filter((value) => !/\s/u.test(value)).length, volume_id: 701 }, ...(extraChapter ? [extraChapter] : [])];
+    }
+    else if (/^\/api\/documents\/\d+\/directory$/.test(path)) {
+      const documentId = Number(path.split('/')[3]);
+      const chapter = { id: documentId * 100 + documentRevisionNumber, document_id: documentId, revision_id: documentId * 10 + documentRevisionNumber, index: 1, title: documentChapterTitle, start_line: 1, end_line: 2, start_offset: 0, end_offset: documentBody.length + documentChapterTitle.length + 2, word_count: Array.from(documentChapterTitle + documentBody).filter((value) => !/\s/u.test(value)).length, volume_id: 701 };
+      body = {
+        volumes: [{ id: 701, revision_id: documentId * 10 + documentRevisionNumber, index: 1, title: volumeTitle, start_offset: 0, end_offset: 100, word_count: 24, chapters: [chapter, ...(extraChapter ? [extraChapter] : [])] }],
+        unassigned_chapters: [],
+      };
+    }
+    else if (/^\/api\/documents\/\d+\/volumes\/701$/.test(path)) {
+      const request = route.request().postDataJSON() as { title: string };
+      volumeTitle = request.title;
+      documentRevisionNumber += 1;
+      body = { document: documentItems[0], revision: { id: 99, document_id: 1, revision_number: documentRevisionNumber, revision_type: 'manual_edit', storage_path: 'D:/Rusty/novel-volume.txt', template_id: null, parent_revision_id: 11, created_at: '' }, created: true };
     }
     else if (/^\/api\/documents\/\d+\/draft$/.test(path) && route.request().method() === 'GET') {
       const requestedChapterId = url.searchParams.has('chapter_id') ? Number(url.searchParams.get('chapter_id')) : null;
@@ -336,6 +357,49 @@ test('新增章节按目录序号解析锚点并自动选中新章节', async ({
   await dialog.getByRole('button', { name: '保存为新版本' }).click();
   await expect(page.locator('.chapter-row[aria-current="page"]').getByText('插入的新章')).toBeVisible();
   await expect(page.locator('.document-editor-title input')).toHaveValue('插入的新章');
+});
+
+test('卷目录可折叠、点击章节并独立修改卷标题', async ({ page }) => {
+  await page.goto('/documents');
+  await page.getByRole('button', { name: '示例长篇，作者' }).dblclick();
+  const volumeTitle = page.getByLabel('卷标题：第七卷 雨夜');
+  await expect(volumeTitle).toHaveValue('第七卷 雨夜');
+  await expect(page.locator('.document-volume-row').getByText('24 字')).toBeVisible();
+  const toggle = page.locator('.document-volume-toggle');
+  await toggle.click();
+  await expect(page.locator('.chapter-row')).toHaveCount(0);
+  await toggle.click();
+  await page.locator('.chapter-row').first().click();
+  await expect(page.locator('textarea.manuscript-editor')).toHaveValue('林舟推门而入，看见桌上的钥匙。');
+  await volumeTitle.fill('第七卷 新雨');
+  await volumeTitle.blur();
+  await expect(page.getByLabel('卷标题：第七卷 新雨')).toHaveValue('第七卷 新雨');
+});
+
+test('合并弹窗使用分类树且合并结果保留卷目录', async ({ page }) => {
+  await page.goto('/documents');
+  await page.getByRole('button', { name: '示例长篇，作者' }).dblclick();
+  await page.getByRole('button', { name: '合并文档' }).click();
+  const dialog = page.getByRole('dialog').filter({ hasText: '合并文档' });
+  await expect(dialog.getByRole('heading', { name: '研究' })).toBeVisible();
+  await dialog.getByRole('checkbox', { name: '普通资料' }).check();
+  await dialog.getByLabel('新文档标题').fill('层级合并本');
+  await dialog.getByRole('button', { name: '创建新文档' }).click();
+  await expect(page.getByRole('button', { name: '层级合并本，作者' })).toBeVisible();
+  await page.getByRole('button', { name: '层级合并本，作者' }).dblclick();
+  await expect(page.getByLabel('卷标题：第七卷 雨夜')).toBeVisible();
+  await expect(page.getByRole('button', { name: '导出文档' })).toBeVisible();
+});
+
+test('卷目录在深色主题和桌面宽度下无横向溢出', async ({ page }) => {
+  await page.goto('/documents');
+  await page.getByRole('button', { name: '示例长篇，作者' }).dblclick();
+  await page.getByRole('button', { name: '切换到深色模式' }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  for (const viewport of [{ width: 1280, height: 720 }, { width: 1440, height: 900 }]) {
+    await page.setViewportSize(viewport);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)).toBe(false);
+  }
 });
 
 test('场景改写完成三段确认流程', async ({ page }) => {

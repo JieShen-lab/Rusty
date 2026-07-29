@@ -894,6 +894,15 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .chapter-row { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; align-items: center; gap: 7px; width: 100%; min-height: 38px; cursor: pointer; border: 0; border-left: 3px solid transparent; border-radius: 6px; background: transparent; padding: 0 7px; text-align: left; }
 .chapter-row:hover { background: var(--paper-muted); }
 .chapter-row.selected { border-left-color: transparent; background: var(--accent-soft); }
+.document-volume-group { display: grid; gap: 2px; margin: 3px 0; }
+.document-volume-row { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center; gap: 4px; min-height: 38px; border-radius: 6px; background: var(--paper-muted); padding: 0 7px 0 3px; }
+.document-volume-toggle { display: grid; cursor: pointer; place-items: center; border: 0; background: transparent; color: var(--muted); padding: 4px; }
+.document-volume-toggle svg { transition: transform 140ms ease; }
+.document-volume-toggle svg.expanded { transform: rotate(90deg); }
+.document-volume-row input { min-width: 0; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--ink); padding: 4px; font-size: 12px; font-weight: 600; }
+.document-volume-row input:focus { border-color: var(--selected-border); outline: none; background: var(--paper); }
+.document-volume-row > span { color: var(--muted); font-size: 9px; white-space: nowrap; }
+.document-volume-chapters { display: grid; gap: 1px; padding-left: 12px; }
 .chapter-number { color: var(--muted); font-size: 11px; text-align: right; }
 .chapter-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chapter-state { border-radius: 4px; padding: 3px 5px; color: var(--muted); background: var(--paper-muted); font-size: 9px; white-space: nowrap; }
@@ -1452,6 +1461,11 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   border-radius: 7px;
   padding: 7px 9px;
 }
+.document-merge-category-tree { max-height: min(52vh, 440px); overflow: auto; }
+.document-merge-category-tree > section { display: grid; gap: 4px; border: 1px solid var(--border); border-radius: 7px; padding: 8px; }
+.document-merge-category-tree > section h3 { display: flex; align-items: center; gap: 5px; margin: 0 0 3px; color: var(--muted); font-size: 11px; }
+.document-merge-category-tree > section label { display: flex; align-items: center; gap: 7px; min-height: 28px; }
+.document-merge-order { display: grid !important; gap: 5px; }
 .library-character-card-body { display: grid; min-width: 0; align-content: start; gap: 5px; }
 .library-character-card-body > strong { overflow: hidden; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
 .library-character-card-body > span { overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }

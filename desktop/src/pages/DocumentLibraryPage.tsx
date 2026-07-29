@@ -49,7 +49,7 @@ import {
   getDocumentCategories,
   getDocumentLibrarySettings,
   getDocumentProcessingTemplates,
-  getLibraryDocumentChapters,
+  getLibraryDocumentDirectory,
   getLibraryDocumentContent,
   getLibraryDocumentRevisions,
   getLibraryDocuments,
@@ -65,6 +65,7 @@ import {
   commitLibraryDocumentDraft,
   getLibraryDocumentDraft,
   saveLibraryDocumentDraft,
+  renameLibraryDocumentVolume,
   updateLibraryDocument,
 } from '../api/client';
 import type {
@@ -76,6 +77,8 @@ import type {
   LibraryDocumentContent,
   LibraryDocumentRevision,
   LibraryDocumentDraft,
+  LibraryDocumentDirectory,
+  LibraryDocumentVolume,
   ResourceTag,
   AISplitProposal,
   SplitPreview,
@@ -131,6 +134,7 @@ export function DocumentLibraryPage() {
   const [templateSettings, setTemplateSettings] = useState<DocumentProcessingSettings>(fallbackSettings);
   const [revisions, setRevisions] = useState<LibraryDocumentRevision[]>([]);
   const [chapters, setChapters] = useState<LibraryDocumentChapter[]>([]);
+  const [volumes, setVolumes] = useState<LibraryDocumentVolume[]>([]);
   const [documentContent, setDocumentContent] = useState<LibraryDocumentContent | null>(null);
   const [documentDraft, setDocumentDraft] = useState<LibraryDocumentDraft | null>(null);
   const [selectedChapterId, setSelectedChapterId] = useState<number | null>(null);
@@ -201,6 +205,16 @@ export function DocumentLibraryPage() {
   useEffect(() => {
     void loadLibrary();
   }, []);
+
+  function applyDirectory(directory: LibraryDocumentDirectory): LibraryDocumentChapter[] {
+    const allChapters = [
+      ...directory.unassigned_chapters,
+      ...directory.volumes.flatMap((volume) => volume.chapters),
+    ].sort((left, right) => left.index - right.index);
+    setVolumes(directory.volumes);
+    setChapters(allChapters);
+    return allChapters;
+  }
 
   async function importDocument() {
     const sourcePath = await window.rustyDesktop?.selectLibraryDocumentFile?.();
@@ -289,11 +303,12 @@ export function DocumentLibraryPage() {
     setProcessingBusy(true);
     setError(null);
     try {
-      const [templateItems, revisionItems, chapterItems] = await Promise.all([
+      const [templateItems, revisionItems, directory] = await Promise.all([
         getDocumentProcessingTemplates(),
         getLibraryDocumentRevisions(targetDocument.id),
-        getLibraryDocumentChapters(targetDocument.id),
+        getLibraryDocumentDirectory(targetDocument.id),
       ]);
+      const chapterItems = applyDirectory(directory);
       const firstChapterId = chapterItems[0]?.id ?? null;
       const [content, draft] = await Promise.all([
         getLibraryDocumentContent(targetDocument.id, firstChapterId),
@@ -301,7 +316,6 @@ export function DocumentLibraryPage() {
       ]);
       setTemplates(templateItems);
       setRevisions(revisionItems);
-      setChapters(chapterItems);
       setSelectedChapterId(firstChapterId);
       setDocumentContent(content);
       setDocumentDraft(draft);
@@ -324,20 +338,31 @@ export function DocumentLibraryPage() {
     if (await openProcessing('chapters')) setActionDialog('split');
   }
 
-  async function reorderChapters(draggedId: number, targetId: number) {
+  async function reorderChapters(
+    draggedId: number,
+    targetId: number | null,
+    targetVolumeId: number | null,
+  ) {
     if (!selectedDocument || draggedId === targetId) return;
     const previous = chapters;
     const reordered = [...chapters];
     const fromIndex = reordered.findIndex((chapter) => chapter.id === draggedId);
-    const toIndex = reordered.findIndex((chapter) => chapter.id === targetId);
-    if (fromIndex < 0 || toIndex < 0) return;
+    if (fromIndex < 0) return;
     const [moved] = reordered.splice(fromIndex, 1);
-    reordered.splice(toIndex, 0, moved);
+    const targetIndex = targetId == null
+      ? reordered.reduce(
+        (last, chapter, index) => chapter.volume_id === targetVolumeId ? index + 1 : last,
+        reordered.length,
+      )
+      : reordered.findIndex((chapter) => chapter.id === targetId);
+    if (targetIndex < 0) return;
+    reordered.splice(targetIndex, 0, { ...moved, volume_id: targetVolumeId });
     setChapters(reordered.map((chapter, index) => ({ ...chapter, index: index + 1 })));
     try {
       const saved = await reorderLibraryDocumentChapters(
         selectedDocument.id,
         reordered.map((chapter) => chapter.id),
+        { [draggedId]: targetVolumeId },
       );
       setChapters(saved);
       setMessage('章节顺序已保存。');
@@ -345,6 +370,20 @@ export function DocumentLibraryPage() {
       setChapters(previous);
       setError(errorMessage(err));
     }
+  }
+
+  async function renameVolume(volumeId: number, title: string) {
+    if (!selectedDocument || !title.trim()) return;
+    if (!(await flushEditorDraft('修改卷标题'))) return;
+    await runProcessing(async () => {
+      const result = await renameLibraryDocumentVolume(
+        selectedDocument.id,
+        volumeId,
+        title.trim(),
+      );
+      await refreshWorkspaceDocument(result.document, null);
+      setMessage('卷标题已保存为新版本。');
+    });
   }
 
   async function deleteDocument(document: LibraryDocument | null = selectedDocument) {
@@ -386,10 +425,11 @@ export function DocumentLibraryPage() {
     try {
       const selectedIndex = chapters.find((chapter) => chapter.id === documentContent.chapter_id)?.index ?? null;
       const result = await commitLibraryDocumentDraft(selectedDocument.id, documentContent.chapter_id);
-      const [revisionItems, chapterItems] = await Promise.all([
+      const [revisionItems, directory] = await Promise.all([
         getLibraryDocumentRevisions(selectedDocument.id),
-        getLibraryDocumentChapters(selectedDocument.id),
+        getLibraryDocumentDirectory(selectedDocument.id),
       ]);
+      const chapterItems = applyDirectory(directory);
       const chapterId = selectedIndex == null
         ? null
         : chapterItems.find((chapter) => chapter.index === selectedIndex)?.id ?? chapterItems[0]?.id ?? null;
@@ -399,7 +439,6 @@ export function DocumentLibraryPage() {
       ]);
       setDocuments((current) => current.map((item) => item.id === result.document.id ? result.document : item));
       setRevisions(revisionItems);
-      setChapters(chapterItems);
       setSelectedChapterId(chapterId);
       setDocumentContent(content);
       setDocumentDraft(draft);
@@ -505,12 +544,12 @@ export function DocumentLibraryPage() {
       }
       const result = await cleanupLibraryDocument(selectedDocument.id, effectiveTemplateId);
       await loadLibrary(selectedDocument.id);
-      const [revisionItems, chapterItems] = await Promise.all([
+      const [revisionItems, directory] = await Promise.all([
         getLibraryDocumentRevisions(selectedDocument.id),
-        getLibraryDocumentChapters(selectedDocument.id),
+        getLibraryDocumentDirectory(selectedDocument.id),
       ]);
+      const chapterItems = applyDirectory(directory);
       setRevisions(revisionItems);
-      setChapters(chapterItems);
       setSelectedChapterId(null);
       setDocumentContent(await getLibraryDocumentContent(selectedDocument.id));
       setDocumentDraft(null);
@@ -525,7 +564,7 @@ export function DocumentLibraryPage() {
     await runProcessing(async () => {
       await activateLibraryDocumentRevision(selectedDocument.id, revisionId);
       await loadLibrary(selectedDocument.id);
-      setChapters(await getLibraryDocumentChapters(selectedDocument.id));
+      applyDirectory(await getLibraryDocumentDirectory(selectedDocument.id));
       setSelectedChapterId(null);
       setDocumentContent(await getLibraryDocumentContent(selectedDocument.id));
       setDocumentDraft(await getLibraryDocumentDraft(selectedDocument.id));
@@ -591,10 +630,11 @@ export function DocumentLibraryPage() {
     document: LibraryDocument,
     chapterId: number | null,
   ): Promise<void> {
-    const [revisionItems, chapterItems] = await Promise.all([
+    const [revisionItems, directory] = await Promise.all([
       getLibraryDocumentRevisions(document.id),
-      getLibraryDocumentChapters(document.id),
+      getLibraryDocumentDirectory(document.id),
     ]);
+    const chapterItems = applyDirectory(directory);
     const resolvedChapterId = chapterId != null && chapterItems.some((item) => item.id === chapterId)
       ? chapterId
       : chapterItems[0]?.id ?? null;
@@ -604,7 +644,6 @@ export function DocumentLibraryPage() {
     ]);
     setDocuments((current) => current.map((item) => item.id === document.id ? document : item));
     setRevisions(revisionItems);
-    setChapters(chapterItems);
     setSelectedChapterId(resolvedChapterId);
     setDocumentContent(content);
     setDocumentDraft(draft);
@@ -641,6 +680,7 @@ export function DocumentLibraryPage() {
         <DocumentWorkspace
           ref={editorControllerRef}
           chapters={chapters}
+          volumes={volumes}
           content={documentContent}
           draft={documentDraft}
           document={selectedDocument}
@@ -668,7 +708,8 @@ export function DocumentLibraryPage() {
             });
           }}
           onSelectionResource={(kind, text, startOffset, endOffset) => void saveSelection(kind, text, startOffset, endOffset)}
-          onReorder={(draggedId, targetId) => void reorderChapters(draggedId, targetId)}
+          onRenameVolume={(volumeId, title) => void renameVolume(volumeId, title)}
+          onReorder={(draggedId, targetId, targetVolumeId) => void reorderChapters(draggedId, targetId, targetVolumeId)}
           processingBusy={processingBusy}
           selectedChapterId={selectedChapterId}
         />
@@ -702,6 +743,7 @@ export function DocumentLibraryPage() {
           <DocumentActionDialog
             action={actionDialog}
             busy={busy}
+            categories={categories}
             chapters={chapters}
             currentChapterId={selectedChapterId}
             currentDocument={selectedDocument}
@@ -971,12 +1013,14 @@ export function DocumentLibraryPage() {
 
 type DocumentWorkspaceProps = {
   chapters: LibraryDocumentChapter[];
+  volumes: LibraryDocumentVolume[];
   content: LibraryDocumentContent | null;
   draft: LibraryDocumentDraft | null;
   document: LibraryDocument;
   onContentChange: (chapterId: number | null) => void;
   onExport: () => void;
-  onReorder: (draggedId: number, targetId: number) => void;
+  onReorder: (draggedId: number, targetId: number | null, targetVolumeId: number | null) => void;
+  onRenameVolume: (volumeId: number, title: string) => void;
   onDocumentAction: (action: DocumentAction) => void;
   onOpenCleanup: () => void;
   onOpenRevisions: () => void;
@@ -1026,8 +1070,10 @@ const DocumentWorkspace = forwardRef<DocumentEditorController, DocumentWorkspace
         liveChapterId={props.selectedChapterId}
         liveWordCount={liveCount}
         onContentChange={props.onContentChange}
+        onRenameVolume={props.onRenameVolume}
         onReorder={props.onReorder}
         selectedChapterId={props.selectedChapterId}
+        volumes={props.volumes}
       />
       <main className="workspace-center document-workspace-main">
         <div className="document-workspace-content">
@@ -1088,50 +1134,115 @@ function WorkspaceChapterNav({
   liveChapterId,
   liveWordCount,
   onContentChange,
+  onRenameVolume,
   onReorder,
   selectedChapterId,
+  volumes,
 }: {
   chapters: LibraryDocumentChapter[];
   liveChapterId: number | null;
   liveWordCount: number;
   onContentChange: (chapterId: number | null) => void;
-  onReorder: (draggedId: number, targetId: number) => void;
+  onRenameVolume: (volumeId: number, title: string) => void;
+  onReorder: (draggedId: number, targetId: number | null, targetVolumeId: number | null) => void;
   selectedChapterId: number | null;
+  volumes: LibraryDocumentVolume[];
 }) {
   const listRef = useRef<HTMLElement>(null);
+  const [collapsed, setCollapsed] = useState<Set<number>>(() => new Set());
 
   function startDrag(event: DragEvent<HTMLButtonElement>, chapterId: number) {
     event.dataTransfer.effectAllowed = 'move';
     event.dataTransfer.setData('text/plain', String(chapterId));
   }
 
-  function dropChapter(event: DragEvent<HTMLButtonElement>, targetId: number) {
+  function dropChapter(
+    event: DragEvent<HTMLElement>,
+    targetId: number | null,
+    volumeId: number | null,
+  ) {
     event.preventDefault();
     const draggedId = Number(event.dataTransfer.getData('text/plain'));
-    if (Number.isFinite(draggedId)) onReorder(draggedId, targetId);
+    if (Number.isFinite(draggedId)) onReorder(draggedId, targetId, volumeId);
   }
+
+  const unassigned = chapters.filter((chapter) => chapter.volume_id == null);
+  const directoryItems: Array<
+    | { kind: 'chapter'; sort: number; chapter: LibraryDocumentChapter }
+    | { kind: 'volume'; sort: number; volume: LibraryDocumentVolume }
+  > = [
+    ...unassigned.map((chapter) => ({ kind: 'chapter' as const, sort: chapter.index, chapter })),
+    ...volumes.map((volume) => ({
+      kind: 'volume' as const,
+      sort: Math.min(
+        ...chapters.filter((chapter) => chapter.volume_id === volume.id).map((chapter) => chapter.index),
+        Number.MAX_SAFE_INTEGER - volumes.length + volume.index,
+      ),
+      volume,
+    })),
+  ].sort((left, right) => left.sort - right.sort);
+  const renderChapter = (chapter: LibraryDocumentChapter) => (
+    <button
+      aria-current={selectedChapterId === chapter.id ? 'page' : undefined}
+      className={`chapter-row draggable ${selectedChapterId === chapter.id ? 'selected' : ''}`}
+      draggable
+      key={chapter.id}
+      onClick={() => onContentChange(chapter.id)}
+      onDragOver={(event) => event.preventDefault()}
+      onDragStart={(event) => startDrag(event, chapter.id)}
+      onDrop={(event) => dropChapter(event, chapter.id, chapter.volume_id)}
+      type="button"
+    >
+      <span className="chapter-number">{chapter.index}</span>
+      <span className="chapter-name" title={chapter.title}>{chapter.title}</span>
+      <span className="chapter-state">{formatNumber(chapter.id === liveChapterId ? liveWordCount : chapter.word_count)} 字</span>
+    </button>
+  );
 
   return (
     <aside className="chapter-binder document-workspace-chapters">
       <div className="binder-heading"><h2>章节目录</h2><span>共 {chapters.length} 章</span></div>
       <nav className="chapter-list" ref={listRef}>
-        {chapters.map((chapter) => (
-          <button
-            aria-current={selectedChapterId === chapter.id ? 'page' : undefined}
-            className={`chapter-row draggable ${selectedChapterId === chapter.id ? 'selected' : ''}`}
-            draggable
-            key={chapter.id}
-            onClick={() => onContentChange(chapter.id)}
-            onDragOver={(event) => event.preventDefault()}
-            onDragStart={(event) => startDrag(event, chapter.id)}
-            onDrop={(event) => dropChapter(event, chapter.id)}
-            type="button"
-          >
-            <span className="chapter-number">{chapter.index}</span>
-            <span className="chapter-name" title={chapter.title}>{chapter.title}</span>
-            <span className="chapter-state">{formatNumber(chapter.id === liveChapterId ? liveWordCount : chapter.word_count)} 字</span>
-          </button>
-        ))}
+        {directoryItems.map((item) => {
+          if (item.kind === 'chapter') return renderChapter(item.chapter);
+          const volume = item.volume;
+          const volumeChapters = chapters.filter((chapter) => chapter.volume_id === volume.id);
+          const isCollapsed = collapsed.has(volume.id);
+          return (
+            <section className="document-volume-group" key={volume.id}>
+              <div
+                className="document-volume-row"
+                onDragOver={(event) => event.preventDefault()}
+                onDrop={(event) => dropChapter(event, null, volume.id)}
+              >
+                <button
+                  aria-expanded={!isCollapsed}
+                  className="document-volume-toggle"
+                  onClick={() => setCollapsed((current) => {
+                    const next = new Set(current);
+                    if (next.has(volume.id)) next.delete(volume.id);
+                    else next.add(volume.id);
+                    return next;
+                  })}
+                  type="button"
+                >
+                  <ChevronRight className={isCollapsed ? '' : 'expanded'} size={15} />
+                </button>
+                <input
+                  aria-label={`卷标题：${volume.title}`}
+                  defaultValue={volume.title}
+                  onBlur={(event) => {
+                    if (event.target.value.trim() && event.target.value.trim() !== volume.title) {
+                      onRenameVolume(volume.id, event.target.value);
+                    }
+                  }}
+                />
+                <span>{formatNumber(volume.word_count)} 字</span>
+              </div>
+              {!isCollapsed ? <div className="document-volume-chapters">{volumeChapters.map(renderChapter)}</div> : null}
+            </section>
+          );
+        })}
         {chapters.length === 0 ? <div className="compact-empty">文档中没有章节。</div> : null}
       </nav>
       <div className="binder-footer">
@@ -1545,6 +1656,7 @@ function SelectionNameDialog({ initialName, kind, onClose, onSave }: {
 function DocumentActionDialog(props: {
   action: DocumentAction;
   busy: boolean;
+  categories: DocumentCategory[];
   chapters: LibraryDocumentChapter[];
   currentChapterId: number | null;
   currentDocument: LibraryDocument;
@@ -1593,9 +1705,41 @@ function DocumentActionDialog(props: {
         {props.action === 'merge' ? (
           <>
             <label><span className="form-label">新文档标题</span><input className="form-input" value={title} onChange={(event) => setTitle(event.target.value)} /></label>
-            <div className="document-merge-list">
-              {props.documents.map((document) => <label key={document.id}><input checked={selected.includes(document.id)} disabled={document.id === props.currentDocument.id} type="checkbox" onChange={(event) => setSelected(event.target.checked ? [...selected, document.id] : selected.filter((id) => id !== document.id))} />{document.title}</label>)}
+            <div className="document-merge-list document-merge-category-tree">
+              {[
+                ...props.categories.map((category) => ({
+                  id: `category-${category.id}`,
+                  label: category.name,
+                  documents: props.documents.filter((document) => document.category_ids.includes(category.id)),
+                })),
+                {
+                  id: 'uncategorized',
+                  label: '未分类',
+                  documents: props.documents.filter((document) => document.category_ids.length === 0),
+                },
+              ].filter((group) => group.documents.length > 0).map((group) => (
+                <section key={group.id}>
+                  <h3><Folder size={14} />{group.label}</h3>
+                  {group.documents.map((document) => (
+                    <label key={`${group.id}-${document.id}`}>
+                      <input
+                        checked={selected.includes(document.id)}
+                        disabled={document.id === props.currentDocument.id}
+                        type="checkbox"
+                        onChange={(event) => setSelected(
+                          event.target.checked
+                            ? [...new Set([...selected, document.id])]
+                            : selected.filter((id) => id !== document.id),
+                        )}
+                      />
+                      {document.title}
+                    </label>
+                  ))}
+                </section>
+              ))}
+              <div className="document-merge-order">
               {selected.map((id, index) => <div key={id}><span>{index + 1}. {props.documents.find((item) => item.id === id)?.title}</span><button onClick={() => moveDocument(index, -1)} type="button">↑</button><button onClick={() => moveDocument(index, 1)} type="button">↓</button></div>)}
+              </div>
             </div>
             <footer><SecondaryButton onClick={props.onClose}>取消</SecondaryButton><PrimaryButton disabled={props.busy || selected.length < 2 || !title.trim()} onClick={() => props.onMerge(selected, title.trim())}>创建新文档</PrimaryButton></footer>
           </>
