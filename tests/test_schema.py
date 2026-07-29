@@ -124,6 +124,51 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(CURRENT_SCHEMA_VERSION, version)
         self.assertEqual(1, split_rule_count)
 
+    def test_initialize_database_upgrades_v18_chapters_before_creating_volume_index(self) -> None:
+        connection = sqlite3.connect(":memory:")
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.executescript(
+            """
+            CREATE TABLE schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            INSERT INTO schema_migrations(version) VALUES (18);
+
+            CREATE TABLE library_document_chapters (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                document_id INTEGER NOT NULL,
+                revision_id INTEGER NOT NULL,
+                chapter_index INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                start_line INTEGER,
+                end_line INTEGER,
+                start_offset INTEGER,
+                end_offset INTEGER,
+                word_count INTEGER NOT NULL DEFAULT 0,
+                UNIQUE (revision_id, chapter_index)
+            );
+            """
+        )
+
+        initialize_database(connection)
+
+        columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(library_document_chapters)")
+        }
+        indexes = {
+            row["name"]
+            for row in connection.execute("PRAGMA index_list(library_document_chapters)")
+        }
+        version = connection.execute(
+            "SELECT MAX(version) FROM schema_migrations"
+        ).fetchone()[0]
+        self.assertIn("volume_id", columns)
+        self.assertIn("idx_library_chapters_volume_order", indexes)
+        self.assertEqual(CURRENT_SCHEMA_VERSION, version)
+
     def test_v17_to_v18_draft_migration_is_idempotent_and_scopes_null_chapter(self) -> None:
         connection = sqlite3.connect(":memory:")
         connection.row_factory = sqlite3.Row

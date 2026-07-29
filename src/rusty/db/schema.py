@@ -734,8 +734,6 @@ CREATE INDEX IF NOT EXISTS idx_library_chapters_revision_order
     ON library_document_chapters(revision_id, chapter_index);
 CREATE INDEX IF NOT EXISTS idx_library_volumes_revision_order
     ON library_document_volumes(revision_id, volume_index);
-CREATE INDEX IF NOT EXISTS idx_library_chapters_volume_order
-    ON library_document_chapters(volume_id, chapter_index);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_library_drafts_document_full
     ON library_document_drafts(document_id)
     WHERE chapter_id IS NULL;
