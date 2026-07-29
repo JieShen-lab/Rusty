@@ -66,9 +66,43 @@ async function mockApi(page: Page) {
     else if (path === '/api/characters/extract/preview') body = { preview_token: 'preview-test', source_summary: { kind: 'ai_extraction', label: 'AI 文本提取' }, candidates: [{ candidate_id: 'alice', selected: true, name: '林舟', aliases: [], description: '调查者', identity: '调查者', age: '', setting_text: '', relationship_notes: '寻找阿音', personality: '冷静', speech_style: '', action_constraints: '', anti_ooc_rules: '', profile: {}, custom_fields: [], suggested_tags: ['主角', '冷静'], evidence_summary: '林舟主动调查钥匙。' }, { candidate_id: 'ayin', selected: true, name: '阿音', aliases: [], description: '线索提供者', identity: '', age: '', setting_text: '', relationship_notes: '', personality: '', speech_style: '', action_constraints: '', anti_ooc_rules: '', profile: {}, custom_fields: [], suggested_tags: [], evidence_summary: '阿音递出钥匙。' }] };
     else if (path === '/api/characters/extract/apply') body = { created: [{ candidate_id: 'alice', card_id: 8, error: null }, { candidate_id: 'ayin', card_id: 9, error: null }], errors: [] };
     else if (path === '/api/projects/1/characters') body = { character_cards: [projectCharacter] };
+    else if (path === '/api/projects/1/materials') body = materials.filter((item) => !url.searchParams.get('material_type') || item.material_type === url.searchParams.get('material_type')).map((item) => ({
+      ...item,
+      general_tags: item.tags,
+      applicable_scene_tags: [],
+      category_ids: [],
+      categories: [],
+      source_summary: { kind: 'manual', label: '本地创建' },
+    }));
     else if (/^\/api\/projects\/\d+\/characters$/.test(path)) body = { character_cards: [] };
     else if (path === '/api/characters') body = url.searchParams.has('category_id') ? [publicCharacter] : [publicCharacter];
-    else if (path === '/api/materials') body = materials;
+    else if (path === '/api/material-categories') body = [];
+    else if (path === '/api/material-ai-settings') body = [
+      { task_type: 'narrative_to_plot_skeleton', model_id: 1, detail_level: 'standard', max_candidates: 6, generate_tags: true, custom_requirements: '', system_prompt: '只使用来源证据。', updated_at: '' },
+      { task_type: 'plot_text_to_normalized_skeleton', model_id: 1, detail_level: 'standard', max_candidates: 6, generate_tags: true, custom_requirements: '', system_prompt: '不添加新情节。', updated_at: '' },
+      { task_type: 'source_text_to_scene_material', model_id: 1, detail_level: 'standard', max_candidates: 6, generate_tags: true, custom_requirements: '', system_prompt: '只整理场景写法。', updated_at: '' },
+    ];
+    else if (path === '/api/material-extractions/preview') body = {
+      preview_token: 'material-preview',
+      task_type: 'source_text_to_scene_material',
+      material_type: 'scene_reference',
+      source_summary: { kind: 'pasted_text', label: '粘贴文本' },
+      candidates: [{
+        candidate_id: 'scene-1', selected: true, name: '雨夜追逐', description: '雨夜动作参考',
+        content: { schema_version: 1, summary: '雨夜追逐的动作与感官提示。' },
+        suggested_general_tags: ['动作'], suggested_applicable_scene_tags: ['雨夜'],
+        evidence_summary: '原文明确包含雨夜和追逐。',
+      }],
+    };
+    else if (path === '/api/material-extractions/apply') body = { created: [{ candidate_id: 'scene-1', material_id: 1, error: null }], errors: [] };
+    else if (path === '/api/materials') body = materials.map((item) => ({
+      ...item,
+      general_tags: item.tags,
+      applicable_scene_tags: [],
+      category_ids: [],
+      categories: [],
+      source_summary: { kind: 'manual', label: '本地创建' },
+    }));
     else if (/^\/api\/materials\/1\/analyze$/.test(path)) body = { material_id: 1, model_id: 1, invocation_id: 9, existing: {}, proposal: { summary: '模型分析摘要' } };
     else if (/^\/api\/materials\/1\/analysis\/apply$/.test(path)) body = { ...materials[0], analysis_status: 'analyzed', content: { summary: '模型分析摘要' } };
     else if (path === '/api/materials/import-json') body = { imported: [{ index: 0, id: 3, name: '导入场景', material_type: 'scene_reference' }], errors: [] };
@@ -219,18 +253,26 @@ test('素材库只显示两种类型且无时间线主视图', async ({ page }) 
   await expect(page.getByRole('tab', { name: '时间线' })).toHaveCount(0);
 });
 
-test('素材 JSON 导入预览与真实 AI 分析 mock 流程', async ({ page }) => {
+test('素材库使用统一范围、结构化新建与 AI 候选确认流程', async ({ page }) => {
   await page.goto('/materials');
-  await page.getByRole('button', { name: '导入', exact: true }).click();
-  await page.locator('textarea').fill('[{"material_type":"scene_reference","name":"导入场景","tags":["雨夜"]}]');
-  await expect(page.getByText('导入场景', { exact: true })).toBeVisible();
-  await page.getByRole('button', { name: '确认批量导入' }).click();
-  await expect(page.getByText(/已导入 1 条素材/)).toBeVisible();
-  await page.getByText('雨夜追逐', { exact: true }).first().click();
-  await page.getByRole('button', { name: /AI 分析/ }).last().click();
-  await expect(page.getByText(/模型分析建议已生成/)).toBeVisible();
-  await page.getByRole('button', { name: '确认应用' }).click();
-  await expect(page.getByText(/结构化分析建议已确认并保存/)).toBeVisible();
+  const sidebar = page.locator('.material-library-sidebar');
+  await expect(sidebar.getByText('公共素材', { exact: true })).toHaveCount(0);
+  await expect(sidebar.getByText('工程素材', { exact: true })).toHaveCount(0);
+  await expect(sidebar.getByText('我的标签', { exact: true })).toHaveCount(0);
+  await expect(sidebar.getByText('全部内容', { exact: true })).toHaveCount(2);
+  await expect(sidebar.getByText('最近导入', { exact: true })).toHaveCount(2);
+  await expect(page.getByRole('button', { name: /AI 分析/ })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '新建剧情骨架', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '新建场景素材', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '新建场景素材', exact: true }).click();
+  await page.getByRole('tab', { name: '从来源整理' }).click();
+  await page.getByLabel('来源文本').fill('雨夜里，人物沿着湿滑屋顶快速追逐。');
+  await page.getByRole('button', { name: /生成候选/ }).click();
+  await expect(page.getByRole('heading', { name: '确认候选素材' })).toBeVisible();
+  await expect(page.getByText('原文明确包含雨夜和追逐。')).toBeVisible();
+  await expect(page.getByText('雨夜', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '确认创建' }).click();
+  await expect(page.getByText(/已创建 1 条素材/)).toBeVisible();
 });
 
 test('角色库按工程和公共分类导航，标签只在右侧筛选且摘要保持紧凑', async ({ page }) => {
@@ -400,19 +442,24 @@ test('文档正文右键菜单、编辑命令与统一分章入口', async ({ pa
     node.setSelectionRange(0, 4);
     node.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 500, clientY: 300 }));
   });
-  await expect(page.getByRole('button', { name: '添加为场景素材' })).toBeVisible();
-  await expect(page.getByRole('button', { name: '添加为剧情骨架' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '添加为场景素材来源' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '添加为剧情骨架来源' })).toBeVisible();
   await expect(page.getByRole('button', { name: '提取角色卡' })).toBeVisible();
   await editor.click({ position: { x: 20, y: 20 } });
-  await expect(page.getByRole('button', { name: '添加为场景素材' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '添加为场景素材来源' })).toHaveCount(0);
   await editor.evaluate((node: HTMLTextAreaElement) => {
     node.focus();
     node.setSelectionRange(0, 4);
     node.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 500, clientY: 300 }));
   });
-  await page.getByRole('button', { name: '添加为场景素材' }).click();
-  await expect(page.getByRole('dialog').filter({ hasText: '场景素材名称' })).toBeVisible();
+  await page.getByRole('button', { name: '添加为场景素材来源' }).click();
+  await expect(page).toHaveURL(/\/materials$/);
+  await expect(page.getByRole('dialog').filter({ hasText: '新建场景素材' })).toBeVisible();
+  await expect(page.getByRole('tab', { name: '从来源整理' })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByLabel('来源文本')).not.toHaveValue('');
   await page.getByRole('button', { name: '取消' }).last().click();
+  await page.goBack();
+  await page.getByRole('button', { name: '示例长篇，作者' }).dblclick();
   await expect(page.getByRole('button', { name: '标记章节', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '分章', exact: true })).toHaveCount(1);
   await expect(page.getByRole('button', { name: 'AI 分章', exact: true })).toHaveCount(0);
