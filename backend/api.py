@@ -82,7 +82,14 @@ from .schemas import (
     ChapterDetailOut,
     ChapterErrorOut,
     ChapterOut,
+    BranchCreateRequest,
+    CanonChangeRunResponse,
+    CanonChangeScanRequest,
+    CanonPatchResponse,
+    CanonPatchReviewRequest,
     CreateProjectRequest,
+    LegacyAnalysisExportResponse,
+    LegacyProjectCreateRequest,
     ErrorResponse,
     ExportPlanItemOut,
     ExportPlanUpdateRequest,
@@ -160,6 +167,14 @@ from .schemas import (
     OutlineTemplateOut,
     OutlineTemplateWriteRequest,
     PipelineRunResponse,
+    PlotGenerationExecuteRequest,
+    PlotGenerationRunResponse,
+    PlotGenerationSeamConfirmRequest,
+    PlotGenerationSkeletonConfirmRequest,
+    PlotGenerationStartRequest,
+    ProseRewriteExecuteRequest,
+    ProseRewritePlanRequest,
+    ProseRewriteRunResponse,
     RetryStageRequest,
     RewriteTextRequest,
     SceneBoundaryWriteRequest,
@@ -185,6 +200,7 @@ from .schemas import (
     ResourceTagRenameRequest,
     SelectionResourceCreateRequest,
     StageStatusOut,
+    StoryBranchResponse,
     StyleTemplateExtractRequest,
     StyleTemplateExportResponse,
     StyleTemplateImportRequest,
@@ -229,6 +245,7 @@ def create_app(
     style_ai_client=None,
     anchor_ai_client=None,
     prompt_package_ai_client=None,
+    workflow_ai_client=None,
 ) -> FastAPI:
     db_path = Path(database_path) if database_path is not None else Path(
         os.environ.get("RUSTY_DATABASE_PATH", default_database_path())
@@ -252,9 +269,15 @@ def create_app(
     resource_analysis_service = ResourceAnalysisService(db_path)
     scene_rewrite_orchestrator = SceneRewriteOrchestrator(db_path)
     branch_service = BranchService(db_path)
-    plot_generation_orchestrator = PlotGenerationOrchestrator(db_path)
-    prose_rewrite_orchestrator = ProseRewriteOrchestrator(db_path)
-    canon_change_orchestrator = CanonChangeOrchestrator(db_path)
+    plot_generation_orchestrator = PlotGenerationOrchestrator(
+        db_path, ai_client=workflow_ai_client
+    )
+    prose_rewrite_orchestrator = ProseRewriteOrchestrator(
+        db_path, ai_client=workflow_ai_client
+    )
+    canon_change_orchestrator = CanonChangeOrchestrator(
+        db_path, ai_client=workflow_ai_client
+    )
     anchor_extraction_service = AnchorExtractionService(db_path, ai_client=anchor_ai_client or style_ai_client)
 
     app = FastAPI(
@@ -820,25 +843,53 @@ def create_app(
         document_library_service.ensure_project_document(project_id, state.source_path)
         return _project_out(_require_project(project_service, project_id))
 
+    @app.get(
+        "/api/projects/{project_id}/legacy-analysis/export",
+        response_model=LegacyAnalysisExportResponse,
+    )
+    def export_legacy_analysis(project_id: int) -> dict[str, Any]:
+        return project_service.export_legacy_analysis(project_id)
+
+    @app.post(
+        "/api/projects/{project_id}/legacy-analysis/create-project",
+        response_model=ProjectOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def create_project_from_legacy(
+        project_id: int, payload: LegacyProjectCreateRequest
+    ) -> ProjectOut:
+        target_id = project_service.create_from_legacy(
+            project_id, **payload.model_dump()
+        )
+        return _project_out(_require_project(project_service, target_id))
+
     @app.post("/api/projects/{project_id}/delete", dependencies=[Depends(_require_token)])
     def delete_project(project_id: int) -> dict[str, bool]:
         _require_project(project_service, project_id)
         project_service.delete_project(project_id)
         return {"ok": True}
 
-    @app.get("/api/projects/{project_id}/branches", response_model=list[dict[str, Any]])
+    @app.get("/api/projects/{project_id}/branches", response_model=list[StoryBranchResponse])
     def list_story_branches(project_id: int) -> list[dict[str, Any]]:
         _require_project(project_service, project_id)
         return branch_service.list_branches(project_id)
 
-    @app.post("/api/projects/{project_id}/branches", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
-    def create_story_branch(project_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+    @app.get("/api/branches/{branch_id}", response_model=StoryBranchResponse)
+    def get_story_branch(branch_id: int) -> dict[str, Any]:
+        return branch_service.get_branch(branch_id)
+
+    @app.get("/api/branches/{branch_id}/chapters", response_model=list[dict[str, Any]])
+    def list_story_branch_chapters(branch_id: int) -> list[dict[str, Any]]:
+        return branch_service.list_chapters(branch_id)
+
+    @app.post("/api/projects/{project_id}/branches", response_model=StoryBranchResponse, dependencies=[Depends(_require_token)])
+    def create_story_branch(project_id: int, payload: BranchCreateRequest) -> dict[str, Any]:
         project = _require_project(project_service, project_id)
         if project.project_kind != "branch":
             raise _http_error(409, "branch_project_required", "Branches require a branch project.")
-        values = dict(payload)
-        start_anchor = dict(values.get("start_anchor") or {})
-        return_anchor = dict(values["return_anchor"]) if values.get("return_anchor") else None
+        values = payload.model_dump()
+        start_anchor = values["start_anchor"]
+        return_anchor = values["return_anchor"]
         if not start_anchor.get("source_hash"):
             source_text = "\n\n".join(
                 chapter.original_text for chapter in project_service.list_chapters(project_id)
@@ -849,8 +900,8 @@ def create_app(
                 return_anchor.setdefault("source_hash", source_hash)
         return branch_service.create_branch(
             project_id=project_id,
-            name=str(values.get("name") or "Generated branch"),
-            branch_mode=str(values.get("branch_mode") or "fork"),
+            name=values["name"],
+            branch_mode=values["branch_mode"],
             start_anchor=start_anchor,
             return_anchor=return_anchor,
             parent_branch_id=values.get("parent_branch_id"),
@@ -863,43 +914,71 @@ def create_app(
         branch_service.delete_branch(branch_id)
         return {"ok": True}
 
-    @app.post("/api/plot-generation/runs", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
-    def start_plot_generation(payload: dict[str, Any]) -> dict[str, Any]:
-        return plot_generation_orchestrator.start(**payload)
+    @app.post("/api/plot-generation/runs", response_model=PlotGenerationRunResponse, dependencies=[Depends(_require_token)])
+    def start_plot_generation(payload: PlotGenerationStartRequest) -> dict[str, Any]:
+        return plot_generation_orchestrator.start(**payload.model_dump())
 
-    @app.post("/api/plot-generation/runs/{run_id}/seams", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
-    def confirm_plot_generation_seams(run_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+    @app.get(
+        "/api/plot-generation/runs/{run_id}",
+        response_model=PlotGenerationRunResponse,
+    )
+    def get_plot_generation_run(run_id: int) -> dict[str, Any]:
+        return plot_generation_orchestrator.get_run(run_id)
+
+    @app.post("/api/plot-generation/runs/{run_id}/seams", response_model=PlotGenerationRunResponse, dependencies=[Depends(_require_token)])
+    def confirm_plot_generation_seams(run_id: int, payload: PlotGenerationSeamConfirmRequest) -> dict[str, Any]:
         return plot_generation_orchestrator.confirm_seams(
             run_id,
-            list(payload.get("seams") or []),
-            current_source_text=str(payload.get("current_source_text") or ""),
+            [seam.model_dump() for seam in payload.seams],
+            current_source_text=payload.current_source_text,
         )
 
-    @app.post("/api/plot-generation/runs/{run_id}/execute", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
-    def execute_plot_generation(run_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+    @app.post("/api/plot-generation/runs/{run_id}/skeleton", response_model=PlotGenerationRunResponse, dependencies=[Depends(_require_token)])
+    def confirm_plot_generation_skeleton(
+        run_id: int, payload: PlotGenerationSkeletonConfirmRequest
+    ) -> dict[str, Any]:
+        return plot_generation_orchestrator.confirm_target_skeleton(
+            run_id, payload.target_skeleton
+        )
+
+    @app.post("/api/plot-generation/runs/{run_id}/execute", response_model=PlotGenerationRunResponse, dependencies=[Depends(_require_token)])
+    def execute_plot_generation(run_id: int, payload: PlotGenerationExecuteRequest) -> dict[str, Any]:
         return plot_generation_orchestrator.execute(
             run_id,
-            generated_scenes=list(payload.get("generated_scenes") or []),
-            final_state=dict(payload.get("final_state") or {}),
+            max_scenes=payload.max_scenes,
         )
 
-    @app.post("/api/prose-rewrite/runs", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
-    def plan_prose_rewrite(payload: dict[str, Any]) -> dict[str, Any]:
-        return prose_rewrite_orchestrator.plan(**payload)
+    @app.post("/api/prose-rewrite/runs", response_model=ProseRewriteRunResponse, dependencies=[Depends(_require_token)])
+    def plan_prose_rewrite(payload: ProseRewritePlanRequest) -> dict[str, Any]:
+        return prose_rewrite_orchestrator.plan(**payload.model_dump())
 
-    @app.post("/api/prose-rewrite/runs/{run_id}/execute", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
-    def execute_prose_rewrite(run_id: int, payload: dict[str, Any]) -> dict[str, Any]:
-        return prose_rewrite_orchestrator.execute(run_id, **payload)
+    @app.get(
+        "/api/prose-rewrite/runs/{run_id}",
+        response_model=ProseRewriteRunResponse,
+    )
+    def get_prose_rewrite_run(run_id: int) -> dict[str, Any]:
+        return prose_rewrite_orchestrator.get_run(run_id)
 
-    @app.post("/api/canon-change/runs", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
-    def scan_canon_change(payload: dict[str, Any]) -> dict[str, Any]:
-        return canon_change_orchestrator.scan(**payload)
+    @app.post("/api/prose-rewrite/runs/{run_id}/execute", response_model=ProseRewriteRunResponse, dependencies=[Depends(_require_token)])
+    def execute_prose_rewrite(run_id: int, payload: ProseRewriteExecuteRequest) -> dict[str, Any]:
+        return prose_rewrite_orchestrator.execute(run_id, **payload.model_dump())
 
-    @app.post("/api/canon-change/patches/{patch_id}/review", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
-    def review_canon_patch(patch_id: int, payload: dict[str, Any]) -> dict[str, Any]:
-        return canon_change_orchestrator.review_patch(patch_id, **payload)
+    @app.post("/api/canon-change/runs", response_model=CanonChangeRunResponse, dependencies=[Depends(_require_token)])
+    def scan_canon_change(payload: CanonChangeScanRequest) -> dict[str, Any]:
+        return canon_change_orchestrator.scan(**payload.model_dump())
 
-    @app.post("/api/canon-change/runs/{run_id}/apply", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    @app.get(
+        "/api/canon-change/runs/{run_id}",
+        response_model=CanonChangeRunResponse,
+    )
+    def get_canon_change_run(run_id: int) -> dict[str, Any]:
+        return canon_change_orchestrator.get_run(run_id)
+
+    @app.post("/api/canon-change/patches/{patch_id}/review", response_model=CanonPatchResponse, dependencies=[Depends(_require_token)])
+    def review_canon_patch(patch_id: int, payload: CanonPatchReviewRequest) -> dict[str, Any]:
+        return canon_change_orchestrator.review_patch(patch_id, **payload.model_dump())
+
+    @app.post("/api/canon-change/runs/{run_id}/apply", response_model=CanonChangeRunResponse, dependencies=[Depends(_require_token)])
     def apply_canon_change(run_id: int) -> dict[str, Any]:
         return canon_change_orchestrator.apply(run_id)
 
@@ -1261,7 +1340,14 @@ def create_app(
         dependencies=[Depends(_require_token)],
     )
     def create_story_skeleton(payload: StorySkeletonWriteRequest) -> dict[str, Any]:
-        value = rewrite_workflow_service.create_skeleton(**payload.model_dump())
+        values = payload.model_dump()
+        structured = values.pop("structured_skeleton")
+        if structured is not None:
+            values.pop("nodes")
+            values["skeleton"] = structured
+            value = rewrite_workflow_service.create_structured_skeleton(**values)
+        else:
+            value = rewrite_workflow_service.create_skeleton(**values)
         return value.__dict__
 
     @app.post(
@@ -1270,11 +1356,22 @@ def create_app(
         dependencies=[Depends(_require_token)],
     )
     def revise_story_skeleton(skeleton_id: int, payload: StorySkeletonRevisionRequest) -> dict[str, Any]:
+        if payload.structured_skeleton is not None:
+            return rewrite_workflow_service.revise_structured_skeleton(
+                skeleton_id,
+                payload.structured_skeleton,
+                change_note=payload.change_note,
+            ).__dict__
         return rewrite_workflow_service.revise_skeleton(
-            skeleton_id,
-            payload.nodes,
-            change_note=payload.change_note,
+            skeleton_id, payload.nodes, change_note=payload.change_note
         ).__dict__
+
+    @app.get("/api/chapters/{chapter_id}/story-skeleton", response_model=dict[str, Any])
+    def get_chapter_story_skeleton(chapter_id: int) -> dict[str, Any]:
+        skeleton = rewrite_workflow_service.get_preferred_chapter_skeleton(chapter_id)
+        if not skeleton:
+            raise FileNotFoundError(f"Story skeleton not found for chapter: {chapter_id}")
+        return skeleton
 
     @app.post(
         "/api/story-skeletons/{skeleton_id}/confirm",

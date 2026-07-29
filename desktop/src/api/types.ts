@@ -258,10 +258,240 @@ export type StoryBranch = {
   id: number;
   project_id: number;
   parent_branch_id: number | null;
+  base_source_kind: 'original' | 'branch';
+  base_source_version_id: number | null;
   name: string;
   branch_mode: 'open_continuation' | 'fork' | 'fork_and_rejoin';
   downstream_strategy: 'replace' | 'reference' | 'rejoin';
   status: string;
+  start_anchor?: StoryAnchor | null;
+  return_anchor?: StoryAnchor | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type WorkflowObject = { [key: string]: unknown };
+
+export type SourceRange = {
+  start: number;
+  end: number;
+};
+
+export type StoryAnchor = {
+  anchor_type:
+    | 'document_end'
+    | 'chapter_start'
+    | 'chapter_end'
+    | 'scene_start'
+    | 'scene_end'
+    | 'skeleton_node'
+    | 'text_offset'
+    | 'branch_chapter'
+    | 'branch_scene';
+  chapter_id?: number | null;
+  scene_id?: number | null;
+  skeleton_version_id?: number | null;
+  node_id?: string | null;
+  branch_chapter_id?: number | null;
+  branch_scene_id?: number | null;
+  text_offset?: number | null;
+  side?: 'before' | 'after' | 'at' | null;
+  source_version_id?: number | null;
+  source_hash?: string | null;
+};
+
+export type BranchCreateRequest = {
+  name: string;
+  branch_mode: 'open_continuation' | 'fork' | 'fork_and_rejoin';
+  parent_branch_id?: number | null;
+  start_anchor: StoryAnchor;
+  return_anchor?: StoryAnchor | null;
+  base_source_version_id?: number | null;
+  downstream_strategy?: 'replace' | 'reference' | 'rejoin' | null;
+};
+
+export type SeamProposal = {
+  id?: number | null;
+  seam_kind: 'entry' | 'return';
+  operation: 'keep' | 'insert_before' | 'insert_after' | 'replace_range';
+  original_text: string;
+  proposed_text: string;
+  source_range: SourceRange;
+  source_hash: string;
+  reason: string;
+  status: 'draft' | 'confirmed' | 'rejected';
+};
+
+export type StructuredEventNode = {
+  id: string;
+  order: number;
+  event_type: string;
+  summary: string;
+  participants: string[];
+  location: string;
+  time_state: WorkflowObject;
+  causes: string[];
+  effects: string[];
+  locked: boolean;
+  source_span: WorkflowObject | null;
+  confidence: number;
+  motivation?: unknown;
+  knowledge_changes?: unknown;
+};
+
+export type StructuredSkeleton = {
+  metadata: WorkflowObject;
+  event_nodes: StructuredEventNode[];
+  causal_links: unknown[];
+  character_state_changes: unknown[];
+  location_changes: unknown[];
+  time_changes: unknown[];
+  object_changes: unknown[];
+  knowledge_changes: unknown[];
+  relationship_changes: unknown[];
+  foreshadowing: unknown[];
+  open_threads: unknown[];
+  resolved_threads: unknown[];
+  required_start_state: WorkflowObject;
+  required_end_state: WorkflowObject;
+  editable_points: unknown[];
+  source_references: unknown[];
+};
+
+export type PlotGenerationStartRequest = {
+  project_id: number;
+  generation_mode: 'bounded_insert' | 'open_continuation' | 'fork' | 'fork_and_rejoin';
+  start_anchor: StoryAnchor;
+  return_anchor?: StoryAnchor | null;
+  user_direction: string;
+  selected_character_ids?: number[];
+  selected_material_ids?: number[];
+  style_profile_id?: number | null;
+  parent_branch_id?: number | null;
+  branch_name?: string;
+};
+
+export type PlotGenerationSeamConfirmRequest = {
+  seams: SeamProposal[];
+  current_source_text: string;
+};
+
+export type GeneratedSceneRequest = {
+  title?: string;
+  text: string;
+  facts_after?: WorkflowObject;
+};
+
+export type PlotGenerationExecuteRequest = {
+  max_scenes?: number | null;
+};
+
+export type PlotGenerationRun = {
+  id: number;
+  project_id: number;
+  branch_id: number | null;
+  generation_mode: PlotGenerationStartRequest['generation_mode'];
+  output_topology: 'in_place' | 'branch';
+  status: string;
+  stage: string;
+  start_anchor: StoryAnchor;
+  return_anchor: StoryAnchor | null;
+  start_state: WorkflowObject;
+  required_return_state: WorkflowObject;
+  target_skeleton: StructuredSkeleton;
+  context: WorkflowObject;
+  seams: SeamProposal[] | WorkflowObject;
+  issues: WorkflowObject[] | WorkflowObject;
+  result: WorkflowObject;
+  scene_plan: WorkflowObject;
+  fact_ledger: WorkflowObject;
+};
+
+export type ProseRewritePlanRequest = {
+  project_id: number;
+  chapter_id: number;
+  source_skeleton: StructuredSkeleton;
+  preservation_policy: WorkflowObject;
+  style_profile_id?: number | null;
+  user_direction?: string;
+};
+
+export type ProseRewriteExecuteRequest = {
+  auto_repair?: boolean;
+};
+
+export type ProseRewriteRun = {
+  id: number;
+  project_id: number;
+  chapter_id: number;
+  status: string;
+  source_skeleton: StructuredSkeleton;
+  preservation_policy: WorkflowObject;
+  target_skeleton: StructuredSkeleton;
+  rewrite_plan: WorkflowObject;
+  rewritten_text: string | null;
+  issues: WorkflowObject[];
+};
+
+export type CanonChangeScanRequest = {
+  project_id: number;
+  old_fact: WorkflowObject;
+  new_fact: WorkflowObject;
+  effective_order: number;
+  branch_id?: number | null;
+};
+
+export type CanonPatchReviewRequest = {
+  decision: 'accepted' | 'rejected' | 'edited' | 'skipped';
+  replacement_text?: string | null;
+};
+
+export type CanonPatch = {
+  id: number;
+  run_id: number;
+  route_kind: string;
+  target_id: number;
+  source_range: SourceRange;
+  source_hash: string;
+  original_text: string;
+  replacement_text: string;
+  impact_type: string;
+  reason: string;
+  confidence: number;
+  evidence: unknown[];
+  requires_confirmation: boolean;
+  status: string;
+};
+
+export type CanonChangeRun = {
+  id: number;
+  project_id: number;
+  branch_id: number | null;
+  effective_order: number;
+  status: string;
+  old_fact: WorkflowObject;
+  new_fact: WorkflowObject;
+  fact_ledger: WorkflowObject;
+  consistency_issues: WorkflowObject[];
+  patches: CanonPatch[];
+};
+
+export type LegacyAnalysisExport = {
+  schema: 'rusty.legacy_analysis_export.v1';
+  project: WorkflowObject;
+  metadata: WorkflowObject;
+  chapter_analyses: WorkflowObject[];
+  character_analyses: WorkflowObject[];
+  style_analysis: WorkflowObject;
+  generated_prompts: WorkflowObject[];
+  structured_skeletons: WorkflowObject[];
+};
+
+export type LegacyProjectCreateRequest = {
+  target_project_kind: 'rewrite' | 'branch';
+  copy_source_text: true;
+  copy_analysis_results: boolean;
+  project_name?: string | null;
 };
 
 export type ChapterSplitOptions = {
@@ -923,6 +1153,15 @@ export type StorySkeletonVersion = {
   version: number;
   status: 'draft' | 'confirmed';
   nodes: Record<string, unknown>[];
+  structured?: StructuredSkeleton | null;
+};
+
+export type PreferredStorySkeleton = {
+  format: 'structured' | 'legacy_summary' | 'missing';
+  skeleton_id?: number;
+  version?: number;
+  structured?: StructuredSkeleton;
+  legacy_summary?: string;
 };
 
 export type RewriteMode = 'skeleton_rewrite' | 'expansion';

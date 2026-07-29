@@ -5,8 +5,11 @@ from pathlib import Path
 from typing import Any
 
 from rusty.db import initialize_database, session
+from rusty.services.context_service import ContextService
 from rusty.services.project_service import ProjectService, default_database_path
+from rusty.services.shared_analysis_service import SkeletonExtractionService
 from rusty.services.structured_skeleton import validate_structured_skeleton
+from rusty.services.workflow_ai import WorkflowAI
 
 
 PRESERVATION_FIELDS = {
@@ -23,9 +26,19 @@ PRESERVATION_FIELDS = {
 
 
 class ProseRewriteOrchestrator:
-    def __init__(self, database_path: str | Path | None = None) -> None:
-        self.database_path = Path(database_path) if database_path is not None else default_database_path()
+    def __init__(
+        self,
+        database_path: str | Path | None = None,
+        *,
+        ai_client=None,
+    ) -> None:
+        self.database_path = (
+            Path(database_path) if database_path is not None else default_database_path()
+        )
         self.projects = ProjectService(self.database_path)
+        self.contexts = ContextService(self.database_path)
+        self.skeletons = SkeletonExtractionService(self.database_path)
+        self.ai = WorkflowAI(self.database_path, ai_client=ai_client)
         with session(self.database_path) as connection:
             initialize_database(connection)
 
@@ -36,8 +49,8 @@ class ProseRewriteOrchestrator:
         chapter_id: int,
         source_skeleton: dict[str, Any],
         preservation_policy: dict[str, Any],
-        target_skeleton: dict[str, Any],
-        rewrite_plan: dict[str, Any],
+        style_profile_id: int | None = None,
+        user_direction: str = "",
     ) -> dict[str, Any]:
         project = self.projects.get_project(project_id)
         chapter = self.projects.get_chapter(chapter_id)
@@ -46,10 +59,27 @@ class ProseRewriteOrchestrator:
         if chapter is None or chapter.project_id != project_id:
             raise FileNotFoundError(f"Chapter not found in project: {chapter_id}")
         source = validate_structured_skeleton(source_skeleton)
-        target = validate_structured_skeleton(target_skeleton)
-        unknown = set(preservation_policy).difference(PRESERVATION_FIELDS | {"locked_node_ids"})
+        unknown = set(preservation_policy).difference(
+            PRESERVATION_FIELDS | {"locked_node_ids"}
+        )
         if unknown:
             raise ValueError(f"Unknown preservation policy fields: {sorted(unknown)}")
+        proposed = self.ai.generate_json(
+            project_id=project_id,
+            stage="prose_rewrite_plan",
+            payload={
+                "source_text": chapter.original_text,
+                "source_skeleton": source,
+                "preservation_policy": preservation_policy,
+                "style_profile_id": style_profile_id,
+                "user_direction": user_direction,
+            },
+            output_contract='{"target_skeleton":StructuredSkeleton,"rewrite_plan":object}',
+        )
+        target = validate_structured_skeleton(proposed.get("target_skeleton"))
+        rewrite_plan = proposed.get("rewrite_plan")
+        if not isinstance(rewrite_plan, dict):
+            raise ValueError("AI rewrite plan must be an object.")
         issues = compare_skeletons(source, target, preservation_policy)
         if issues:
             raise ValueError(f"Target skeleton violates preservation policy: {issues}")
@@ -67,23 +97,69 @@ class ProseRewriteOrchestrator:
                     json.dumps(source, ensure_ascii=False),
                     json.dumps(preservation_policy, ensure_ascii=False),
                     json.dumps(target, ensure_ascii=False),
-                    json.dumps(rewrite_plan, ensure_ascii=False),
+                    json.dumps(
+                        {
+                            **rewrite_plan,
+                            "style_profile_id": style_profile_id,
+                            "user_direction": user_direction,
+                        },
+                        ensure_ascii=False,
+                    ),
                 ),
             )
         return self.get_run(int(cursor.lastrowid))
 
-    def execute(
-        self,
-        run_id: int,
-        *,
-        rewritten_text: str,
-        observed_skeleton: dict[str, Any],
-    ) -> dict[str, Any]:
+    def execute(self, run_id: int, *, auto_repair: bool = True) -> dict[str, Any]:
         run = self.get_run(run_id)
-        observed = validate_structured_skeleton(observed_skeleton)
+        chapter = self.projects.get_chapter(int(run["chapter_id"]))
+        if chapter is None:
+            raise FileNotFoundError("Rewrite source chapter not found.")
+        generated = self.ai.generate_json(
+            project_id=int(run["project_id"]),
+            stage="prose_rewrite_generate",
+            payload={
+                "source_text": chapter.original_text,
+                "target_skeleton": run["target_skeleton"],
+                "preservation_policy": run["preservation_policy"],
+                "rewrite_plan": run["rewrite_plan"],
+            },
+            output_contract='{"rewritten_text":str}',
+        )
+        rewritten_text = generated.get("rewritten_text")
+        if not isinstance(rewritten_text, str) or not rewritten_text.strip():
+            raise ValueError("AI prose rewrite returned empty text.")
+        observed = self.skeletons.extract_from_text(
+            project_id=int(run["project_id"]),
+            text=rewritten_text,
+            workflow_ai=self.ai,
+            expected_skeleton=run["target_skeleton"],
+        )
         issues = compare_skeletons(
             run["target_skeleton"], observed, run["preservation_policy"]
         )
+        if issues and auto_repair:
+            repaired = self.ai.generate_json(
+                project_id=int(run["project_id"]),
+                stage="prose_rewrite_repair",
+                payload={
+                    "rewritten_text": rewritten_text,
+                    "target_skeleton": run["target_skeleton"],
+                    "issues": issues,
+                },
+                output_contract='{"rewritten_text":str}',
+            )
+            candidate = repaired.get("rewritten_text")
+            if isinstance(candidate, str) and candidate.strip():
+                rewritten_text = candidate
+                observed = self.skeletons.extract_from_text(
+                    project_id=int(run["project_id"]),
+                    text=rewritten_text,
+                    workflow_ai=self.ai,
+                    expected_skeleton=run["target_skeleton"],
+                )
+                issues = compare_skeletons(
+                    run["target_skeleton"], observed, run["preservation_policy"]
+                )
         status = "blocked" if issues else "completed"
         if not issues:
             self.projects.save_chapter_rewrite(int(run["chapter_id"]), rewritten_text)
@@ -95,7 +171,12 @@ class ProseRewriteOrchestrator:
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
-                (rewritten_text, json.dumps(issues, ensure_ascii=False), status, run_id),
+                (
+                    rewritten_text,
+                    json.dumps(issues, ensure_ascii=False),
+                    status,
+                    run_id,
+                ),
             )
         return self.get_run(run_id)
 
@@ -159,14 +240,14 @@ def compare_skeletons(
             continue
         for node_id in expected_by_id.keys() & actual_by_id.keys():
             if expected_by_id[node_id].get(node_key) != actual_by_id[node_id].get(node_key):
-                issues.append(
-                    {"type": f"{policy_key}_changed", "node_id": node_id}
-                )
+                issues.append({"type": f"{policy_key}_changed", "node_id": node_id})
     if policy.get("causal_links", True) and expected["causal_links"] != actual["causal_links"]:
         issues.append({"type": "causal_links_changed"})
     if policy.get("foreshadowing", True) and expected["foreshadowing"] != actual["foreshadowing"]:
         issues.append({"type": "foreshadowing_changed"})
     for key in ("required_start_state", "required_end_state"):
         if policy.get(key, True) and expected[key] != actual[key]:
-            issues.append({"type": f"{key}_changed", "expected": expected[key], "actual": actual[key]})
+            issues.append(
+                {"type": f"{key}_changed", "expected": expected[key], "actual": actual[key]}
+            )
     return issues

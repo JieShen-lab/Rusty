@@ -575,6 +575,192 @@ class ProjectService:
 
         return output
 
+    def export_legacy_analysis(self, project_id: int) -> dict:
+        """Return the retained analysis corpus, not a disguised novel export."""
+        project = self.get_project(project_id)
+        if project is None:
+            raise FileNotFoundError(f"Project not found: {project_id}")
+        if project.project_kind != "legacy_extract":
+            raise ValueError("Legacy analysis export is only available for legacy_extract projects.")
+        with session(self.database_path) as connection:
+            metadata = connection.execute(
+                "SELECT * FROM book_metadata WHERE project_id = ?", (project_id,)
+            ).fetchone()
+            chapters = connection.execute(
+                """
+                SELECT c.id, c.chapter_index, c.title,
+                       s.plot_summary, s.characters_json, s.key_events_json,
+                       a.analysis_json AS style_analysis_json,
+                       a.reviewed_json AS reviewed_style_json,
+                       p.expanded_plot
+                FROM chapters c
+                LEFT JOIN chapter_summaries s ON s.chapter_id = c.id
+                LEFT JOIN chapter_style_analyses a ON a.chapter_id = c.id
+                LEFT JOIN chapter_plot_expansions p ON p.chapter_id = c.id
+                WHERE c.project_id = ?
+                ORDER BY c.chapter_index
+                """,
+                (project_id,),
+            ).fetchall()
+            characters = connection.execute(
+                """
+                SELECT id, name, aliases_json, description, profile_json,
+                       relationship_notes, personality, speech_style,
+                       action_constraints, anti_ooc_rules
+                FROM character_cards
+                WHERE project_id = ? AND deleted_at IS NULL
+                ORDER BY id
+                """,
+                (project_id,),
+            ).fetchall()
+            style = connection.execute(
+                "SELECT * FROM project_style_syntheses WHERE project_id = ?",
+                (project_id,),
+            ).fetchone()
+            prompts = connection.execute(
+                """
+                SELECT prompt_key, prompt_text
+                FROM project_custom_prompts WHERE project_id = ? ORDER BY prompt_key
+                """,
+                (project_id,),
+            ).fetchall()
+            skeletons = connection.execute(
+                """
+                SELECT s.id, s.scope, s.source_kind, s.status, s.chapter_id,
+                       v.version, v.skeleton_json, v.nodes_json,
+                       v.source_references_json, v.confirmed_at
+                FROM story_skeletons s
+                JOIN story_skeleton_versions v ON v.skeleton_id = s.id
+                WHERE s.project_id = ?
+                ORDER BY s.id, v.version
+                """,
+                (project_id,),
+            ).fetchall()
+        return {
+            "schema": "rusty.legacy_analysis_export.v1",
+            "project": {
+                "id": project.id,
+                "name": project.name,
+                "project_kind": project.project_kind,
+                "status": project.status,
+                "created_at": project.created_at,
+                "updated_at": project.updated_at,
+            },
+            "metadata": dict(metadata) if metadata else {},
+            "chapter_analyses": [_decode_analysis_row(row) for row in chapters],
+            "character_analyses": [_decode_analysis_row(row) for row in characters],
+            "style_analysis": _decode_analysis_row(style) if style else {},
+            "generated_prompts": [dict(row) for row in prompts],
+            "structured_skeletons": [_decode_analysis_row(row) for row in skeletons],
+        }
+
+    def create_from_legacy(
+        self,
+        source_project_id: int,
+        *,
+        target_project_kind: str,
+        copy_source_text: bool = True,
+        copy_analysis_results: bool = True,
+        project_name: str | None = None,
+    ) -> int:
+        if target_project_kind not in {"rewrite", "branch"}:
+            raise ValueError("Target project kind must be rewrite or branch.")
+        if not copy_source_text:
+            raise ValueError("A derived writing project requires copy_source_text.")
+        source = self.get_project(source_project_id)
+        if source is None:
+            raise FileNotFoundError(f"Project not found: {source_project_id}")
+        if source.project_kind != "legacy_extract":
+            raise ValueError("Only legacy_extract projects can use this migration endpoint.")
+        with session(self.database_path) as connection:
+            row = connection.execute(
+                "SELECT * FROM projects WHERE id = ?", (source_project_id,)
+            ).fetchone()
+            cursor = connection.execute(
+                """
+                INSERT INTO projects(
+                    name, project_kind, status, current_stage, source_format,
+                    source_path, workspace_path, total_chapters, total_words
+                ) VALUES (?, ?, 'imported', 'split', ?, ?, ?, ?, ?)
+                """,
+                (
+                    project_name.strip() if project_name and project_name.strip()
+                    else f"{row['name']} - {'改写' if target_project_kind == 'rewrite' else '扩写'}",
+                    target_project_kind,
+                    row["source_format"],
+                    row["source_path"],
+                    row["workspace_path"],
+                    row["total_chapters"],
+                    row["total_words"],
+                ),
+            )
+            target_project_id = int(cursor.lastrowid)
+            _copy_rows(connection, "book_metadata", "project_id = ?", (source_project_id,), {"project_id": target_project_id})
+            _copy_rows(connection, "import_sources", "project_id = ?", (source_project_id,), {"project_id": target_project_id})
+            _copy_rows(connection, "project_settings", "project_id = ?", (source_project_id,), {"project_id": target_project_id, "processing_mode": "manual"})
+
+            volume_map: dict[int, int] = {}
+            for volume in connection.execute(
+                "SELECT * FROM story_volumes WHERE project_id = ? ORDER BY volume_index",
+                (source_project_id,),
+            ).fetchall():
+                volume_map[int(volume["id"])] = _copy_single_row(
+                    connection, "story_volumes", volume, {"project_id": target_project_id}
+                )
+            chapter_map: dict[int, int] = {}
+            for chapter in connection.execute(
+                "SELECT * FROM chapters WHERE project_id = ? ORDER BY chapter_index",
+                (source_project_id,),
+            ).fetchall():
+                overrides = {
+                    "project_id": target_project_id,
+                    "rewritten_text": None,
+                    "status": "imported",
+                }
+                if chapter["volume_id"] is not None:
+                    overrides["volume_id"] = volume_map[int(chapter["volume_id"])]
+                chapter_map[int(chapter["id"])] = _copy_single_row(
+                    connection, "chapters", chapter, overrides
+                )
+            for old_id, new_id in chapter_map.items():
+                _copy_rows(connection, "chapter_source_versions", "chapter_id = ?", (old_id,), {"project_id": target_project_id, "chapter_id": new_id})
+                _copy_rows(connection, "export_chapter_plan", "chapter_id = ?", (old_id,), {"project_id": target_project_id, "chapter_id": new_id})
+                if copy_analysis_results:
+                    for table in (
+                        "chapter_summaries",
+                        "chapter_style_analyses",
+                        "chapter_scene_analysis",
+                        "chapter_plot_expansions",
+                    ):
+                        _copy_rows(connection, table, "chapter_id = ?", (old_id,), {"chapter_id": new_id})
+            if copy_analysis_results:
+                for table in (
+                    "project_style_syntheses",
+                    "project_custom_prompts",
+                    "character_cards",
+                    "materials",
+                ):
+                    _copy_rows(connection, table, "project_id = ?", (source_project_id,), {"project_id": target_project_id})
+                for skeleton in connection.execute(
+                    "SELECT * FROM story_skeletons WHERE project_id = ? ORDER BY id",
+                    (source_project_id,),
+                ).fetchall():
+                    overrides = {"project_id": target_project_id}
+                    if skeleton["chapter_id"] is not None:
+                        overrides["chapter_id"] = chapter_map[int(skeleton["chapter_id"])]
+                    overrides["scene_id"] = None
+                    new_skeleton_id = _copy_single_row(
+                        connection, "story_skeletons", skeleton, overrides
+                    )
+                    _copy_rows(
+                        connection,
+                        "story_skeleton_versions",
+                        "skeleton_id = ?",
+                        (int(skeleton["id"]),),
+                        {"skeleton_id": new_skeleton_id},
+                    )
+        return target_project_id
+
     def export_epub(self, project_id: int, output_path: str | Path) -> Path:
         chapters = self.get_effective_export_chapters(project_id)
         if not chapters:
@@ -991,3 +1177,47 @@ def _export_source_status(chapter_status: str, rewrite_source: str | None, confi
     if rewrite_source == "ai":
         return "ai_rewrite"
     return "original"
+
+
+def _copy_single_row(connection, table: str, row, overrides: dict) -> int:
+    values = dict(row)
+    values.pop("id", None)
+    values.update(overrides)
+    columns = [
+        item["name"]
+        for item in connection.execute(f"PRAGMA table_info({table})").fetchall()
+        if item["name"] in values
+    ]
+    placeholders = ", ".join("?" for _ in columns)
+    cursor = connection.execute(
+        f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({placeholders})",
+        tuple(values[column] for column in columns),
+    )
+    return int(cursor.lastrowid)
+
+
+def _copy_rows(
+    connection,
+    table: str,
+    where: str,
+    params: tuple,
+    overrides: dict,
+) -> list[int]:
+    return [
+        _copy_single_row(connection, table, row, overrides)
+        for row in connection.execute(
+            f"SELECT * FROM {table} WHERE {where}", params
+        ).fetchall()
+    ]
+
+
+def _decode_analysis_row(row) -> dict:
+    result = dict(row)
+    for key, value in list(result.items()):
+        if key.endswith("_json") and isinstance(value, str):
+            try:
+                result[key.removesuffix("_json")] = json.loads(value)
+                del result[key]
+            except json.JSONDecodeError:
+                pass
+    return result

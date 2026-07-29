@@ -17,6 +17,8 @@ ANCHOR_TYPES = {
     "scene_end",
     "skeleton_node",
     "text_offset",
+    "branch_chapter",
+    "branch_scene",
 }
 BRANCH_MODES = {"open_continuation", "fork", "fork_and_rejoin"}
 
@@ -73,9 +75,24 @@ class BranchService:
                 ).fetchone()
                 if parent is None:
                     raise FileNotFoundError(f"Parent branch not found: {parent_branch_id}")
-            start_id = self._insert_anchor(connection, project_id, start_anchor)
+            self._validate_base_source_version(
+                connection,
+                parent_branch_id=parent_branch_id,
+                base_source_version_id=base_source_version_id,
+            )
+            start_id = self._insert_anchor(
+                connection,
+                project_id,
+                start_anchor,
+                parent_branch_id=parent_branch_id,
+            )
             return_id = (
-                self._insert_anchor(connection, project_id, return_anchor)
+                self._insert_anchor(
+                    connection,
+                    project_id,
+                    return_anchor,
+                    parent_branch_id=parent_branch_id,
+                )
                 if return_anchor is not None
                 else None
             )
@@ -129,7 +146,7 @@ class BranchService:
                 """,
                 (project_id,),
             ).fetchall()
-        return [dict(row) for row in rows]
+        return [self.get_branch(int(row["id"])) for row in rows]
 
     def delete_branch(self, branch_id: int) -> None:
         with session(self.database_path) as connection:
@@ -150,6 +167,204 @@ class BranchService:
             if cursor.rowcount == 0:
                 raise FileNotFoundError(f"Branch not found: {branch_id}")
 
+    def create_chapter(
+        self,
+        branch_id: int,
+        *,
+        title: str,
+        summary: str = "",
+        facts_before: dict[str, Any] | None = None,
+        facts_after: dict[str, Any] | None = None,
+        sequence_index: int | None = None,
+        source_kind: str = "generation",
+    ) -> dict[str, Any]:
+        self.get_branch(branch_id)
+        if source_kind not in {"generation", "manual", "repair", "migration", "restore"}:
+            raise ValueError("Unsupported branch chapter source kind.")
+        with session(self.database_path) as connection:
+            index = sequence_index or int(
+                connection.execute(
+                    "SELECT COALESCE(MAX(sequence_index), 0) + 1 FROM branch_chapters WHERE branch_id = ?",
+                    (branch_id,),
+                ).fetchone()[0]
+            )
+            cursor = connection.execute(
+                """
+                INSERT INTO branch_chapters(branch_id, sequence_index, title)
+                VALUES (?, ?, ?)
+                """,
+                (branch_id, index, title),
+            )
+            chapter_id = int(cursor.lastrowid)
+            version = connection.execute(
+                """
+                INSERT INTO branch_chapter_versions(
+                    branch_chapter_id, version, title, summary,
+                    facts_before_json, facts_after_json, source_kind
+                ) VALUES (?, 1, ?, ?, ?, ?, ?)
+                """,
+                (
+                    chapter_id,
+                    title,
+                    summary,
+                    json.dumps(facts_before or {}, ensure_ascii=False),
+                    json.dumps(facts_after or {}, ensure_ascii=False),
+                    source_kind,
+                ),
+            )
+        return self.get_chapter(chapter_id, version_id=int(version.lastrowid))
+
+    def save_chapter_version(
+        self,
+        branch_chapter_id: int,
+        *,
+        title: str,
+        summary: str,
+        facts_before: dict[str, Any],
+        facts_after: dict[str, Any],
+        source_kind: str = "manual",
+        parent_version_id: int | None = None,
+    ) -> dict[str, Any]:
+        if source_kind not in {"generation", "manual", "repair", "migration", "restore"}:
+            raise ValueError("Unsupported branch chapter source kind.")
+        with session(self.database_path) as connection:
+            chapter = connection.execute(
+                """
+                SELECT c.*, v.id AS current_version_id
+                FROM branch_chapters c
+                JOIN branch_chapter_versions v
+                  ON v.branch_chapter_id = c.id AND v.version = c.current_version
+                WHERE c.id = ? AND c.deleted_at IS NULL
+                """,
+                (branch_chapter_id,),
+            ).fetchone()
+            if chapter is None:
+                raise FileNotFoundError(f"Branch chapter not found: {branch_chapter_id}")
+            next_version = int(chapter["current_version"]) + 1
+            parent_id = parent_version_id or int(chapter["current_version_id"])
+            parent = connection.execute(
+                """
+                SELECT id FROM branch_chapter_versions
+                WHERE id = ? AND branch_chapter_id = ?
+                """,
+                (parent_id, branch_chapter_id),
+            ).fetchone()
+            if parent is None:
+                raise ValueError("Parent chapter version does not belong to this chapter.")
+            cursor = connection.execute(
+                """
+                INSERT INTO branch_chapter_versions(
+                    branch_chapter_id, version, title, summary,
+                    facts_before_json, facts_after_json, parent_version_id, source_kind
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    branch_chapter_id,
+                    next_version,
+                    title,
+                    summary,
+                    json.dumps(facts_before, ensure_ascii=False),
+                    json.dumps(facts_after, ensure_ascii=False),
+                    parent_id,
+                    source_kind,
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE branch_chapters
+                SET title = ?, current_version = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (title, next_version, branch_chapter_id),
+            )
+        return self.get_chapter(branch_chapter_id, version_id=int(cursor.lastrowid))
+
+    def restore_chapter_version(
+        self, branch_chapter_id: int, version_id: int
+    ) -> dict[str, Any]:
+        with session(self.database_path) as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM branch_chapter_versions
+                WHERE id = ? AND branch_chapter_id = ?
+                """,
+                (version_id, branch_chapter_id),
+            ).fetchone()
+        if row is None:
+            raise FileNotFoundError("Branch chapter version not found.")
+        return self.save_chapter_version(
+            branch_chapter_id,
+            title=str(row["title"]),
+            summary=str(row["summary"]),
+            facts_before=json.loads(row["facts_before_json"]),
+            facts_after=json.loads(row["facts_after_json"]),
+            source_kind="restore",
+            parent_version_id=version_id,
+        )
+
+    def get_chapter(
+        self, branch_chapter_id: int, *, version_id: int | None = None
+    ) -> dict[str, Any]:
+        with session(self.database_path) as connection:
+            chapter = connection.execute(
+                """
+                SELECT * FROM branch_chapters
+                WHERE id = ? AND deleted_at IS NULL
+                """,
+                (branch_chapter_id,),
+            ).fetchone()
+            if chapter is None:
+                raise FileNotFoundError(f"Branch chapter not found: {branch_chapter_id}")
+            if version_id is None:
+                version = connection.execute(
+                    """
+                    SELECT * FROM branch_chapter_versions
+                    WHERE branch_chapter_id = ? AND version = ?
+                    """,
+                    (branch_chapter_id, int(chapter["current_version"])),
+                ).fetchone()
+            else:
+                version = connection.execute(
+                    """
+                    SELECT * FROM branch_chapter_versions
+                    WHERE branch_chapter_id = ? AND id = ?
+                    """,
+                    (branch_chapter_id, version_id),
+                ).fetchone()
+            if version is None:
+                raise FileNotFoundError("Branch chapter version not found.")
+        return {
+            **dict(chapter),
+            "version_id": int(version["id"]),
+            "version": int(version["version"]),
+            "summary": str(version["summary"]),
+            "facts_before": json.loads(version["facts_before_json"]),
+            "facts_after": json.loads(version["facts_after_json"]),
+            "parent_version_id": version["parent_version_id"],
+            "source_kind": str(version["source_kind"]),
+        }
+
+    def list_chapters(self, branch_id: int) -> list[dict[str, Any]]:
+        self.get_branch(branch_id)
+        with session(self.database_path) as connection:
+            rows = connection.execute(
+                """
+                SELECT id
+                FROM branch_chapters
+                WHERE branch_id = ? AND deleted_at IS NULL
+                ORDER BY sequence_index, id
+                """,
+                (branch_id,),
+            ).fetchall()
+        chapters = []
+        for row in rows:
+            chapter = self.get_chapter(int(row["id"]))
+            chapter["scenes"] = self.list_scenes(
+                branch_id, branch_chapter_id=int(row["id"])
+            )
+            chapters.append(chapter)
+        return chapters
+
     def save_scene(
         self,
         branch_id: int,
@@ -158,21 +373,44 @@ class BranchService:
         generated_text: str,
         facts_after: dict[str, Any] | None = None,
         sequence_index: int | None = None,
+        branch_chapter_id: int | None = None,
+        scene_index: int | None = None,
     ) -> dict[str, Any]:
         self.get_branch(branch_id)
+        chapter_id = branch_chapter_id or self._ensure_default_chapter(branch_id)
         with session(self.database_path) as connection:
+            chapter = connection.execute(
+                """
+                SELECT id FROM branch_chapters
+                WHERE id = ? AND branch_id = ? AND deleted_at IS NULL
+                """,
+                (chapter_id, branch_id),
+            ).fetchone()
+            if chapter is None:
+                raise ValueError("Branch scene chapter does not belong to the branch.")
             index = sequence_index or int(
                 connection.execute(
                     "SELECT COALESCE(MAX(sequence_index), 0) + 1 FROM branch_scenes WHERE branch_id = ?",
                     (branch_id,),
                 ).fetchone()[0]
             )
+            chapter_scene_index = scene_index or int(
+                connection.execute(
+                    """
+                    SELECT COALESCE(MAX(scene_index), 0) + 1
+                    FROM branch_scenes
+                    WHERE branch_chapter_id = ?
+                    """,
+                    (chapter_id,),
+                ).fetchone()[0]
+            )
             cursor = connection.execute(
                 """
-                INSERT INTO branch_scenes(branch_id, sequence_index, title)
-                VALUES (?, ?, ?)
+                INSERT INTO branch_scenes(
+                    branch_id, branch_chapter_id, sequence_index, scene_index, title
+                ) VALUES (?, ?, ?, ?, ?)
                 """,
-                (branch_id, index, title),
+                (branch_id, chapter_id, index, chapter_scene_index, title),
             )
             scene_id = int(cursor.lastrowid)
             version = connection.execute(
@@ -186,26 +424,32 @@ class BranchService:
         return {
             "id": scene_id,
             "branch_id": branch_id,
+            "branch_chapter_id": chapter_id,
             "sequence_index": index,
+            "scene_index": chapter_scene_index,
             "title": title,
             "version_id": int(version.lastrowid),
             "generated_text": generated_text,
             "facts_after": facts_after or {},
         }
 
-    def list_scenes(self, branch_id: int) -> list[dict[str, Any]]:
+    def list_scenes(
+        self, branch_id: int, *, branch_chapter_id: int | None = None
+    ) -> list[dict[str, Any]]:
         with session(self.database_path) as connection:
             rows = connection.execute(
                 """
-                SELECT s.id, s.branch_id, s.sequence_index, s.title, s.current_version,
+                SELECT s.id, s.branch_id, s.branch_chapter_id, s.sequence_index,
+                       s.scene_index, s.title, s.current_version,
                        v.id AS version_id, v.generated_text, v.facts_after_json
                 FROM branch_scenes s
                 JOIN branch_scene_versions v
                   ON v.branch_scene_id = s.id AND v.version = s.current_version
                 WHERE s.branch_id = ? AND s.deleted_at IS NULL
-                ORDER BY s.sequence_index
+                  AND (? IS NULL OR s.branch_chapter_id = ?)
+                ORDER BY s.sequence_index, s.scene_index, s.id
                 """,
-                (branch_id,),
+                (branch_id, branch_chapter_id, branch_chapter_id),
             ).fetchall()
         return [
             {
@@ -214,6 +458,54 @@ class BranchService:
             }
             for row in rows
         ]
+
+    def compose_export(self, branch_id: int) -> dict[str, Any]:
+        branch = self.get_branch(branch_id)
+        start_anchor = branch["start_anchor"]
+        with session(self.database_path) as connection:
+            baseline = connection.execute(
+                """
+                SELECT id, chapter_index, title, original_text
+                FROM chapters
+                WHERE project_id = ?
+                ORDER BY chapter_index, id
+                """,
+                (branch["project_id"],),
+            ).fetchall()
+        chapter_id = start_anchor.get("chapter_id")
+        if chapter_id is not None:
+            accepted = []
+            for row in baseline:
+                accepted.append(row)
+                if int(row["id"]) == int(chapter_id):
+                    break
+            baseline = accepted
+        return {
+            "branch": branch,
+            "baseline_history": [dict(row) for row in baseline],
+            "branch_chapters": self.list_chapters(branch_id),
+        }
+
+    def _ensure_default_chapter(self, branch_id: int) -> int:
+        with session(self.database_path) as connection:
+            row = connection.execute(
+                """
+                SELECT id FROM branch_chapters
+                WHERE branch_id = ? AND deleted_at IS NULL
+                ORDER BY sequence_index, id
+                LIMIT 1
+                """,
+                (branch_id,),
+            ).fetchone()
+        if row is not None:
+            return int(row["id"])
+        return int(
+            self.create_chapter(
+                branch_id,
+                title="Generated chapter",
+                source_kind="generation",
+            )["id"]
+        )
 
     def create_seam(
         self,
@@ -226,6 +518,7 @@ class BranchService:
         source_range: dict[str, Any],
         source_hash: str,
         reason: str,
+        plot_run_id: int | None = None,
     ) -> dict[str, Any]:
         self.get_branch(branch_id)
         if seam_kind not in {"entry", "return"}:
@@ -237,8 +530,8 @@ class BranchService:
                 """
                 INSERT INTO branch_seams (
                     branch_id, seam_kind, operation, original_text, proposed_text,
-                    source_range_json, source_hash, reason
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    source_range_json, source_hash, reason, plot_run_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     branch_id,
@@ -249,12 +542,18 @@ class BranchService:
                     json.dumps(source_range, ensure_ascii=False),
                     source_hash,
                     reason,
+                    plot_run_id,
                 ),
             )
         return self.get_seam(int(cursor.lastrowid))
 
     def review_seam(
-        self, seam_id: int, *, decision: str, current_source_text: str
+        self,
+        seam_id: int,
+        *,
+        decision: str,
+        current_source_text: str,
+        proposed_text: str | None = None,
     ) -> dict[str, Any]:
         if decision not in {"confirmed", "rejected"}:
             raise ValueError("Seam decision must be confirmed or rejected.")
@@ -268,10 +567,23 @@ class BranchService:
             if decision == "confirmed" and actual != row["source_hash"]:
                 raise ValueError("Seam source hash mismatch; refusing silent application.")
             connection.execute(
-                "UPDATE branch_seams SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (decision, seam_id),
+                """
+                UPDATE branch_seams
+                SET status = ?, proposed_text = COALESCE(?, proposed_text),
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (decision, proposed_text, seam_id),
             )
         return self.get_seam(seam_id)
+
+    def list_seams(self, branch_id: int) -> list[dict[str, Any]]:
+        with session(self.database_path) as connection:
+            rows = connection.execute(
+                "SELECT id FROM branch_seams WHERE branch_id = ? ORDER BY id",
+                (branch_id,),
+            ).fetchall()
+        return [self.get_seam(int(row["id"])) for row in rows]
 
     def get_seam(self, seam_id: int) -> dict[str, Any]:
         with session(self.database_path) as connection:
@@ -288,8 +600,15 @@ class BranchService:
     def source_hash(text: str) -> str:
         return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
-    @staticmethod
-    def _insert_anchor(connection, project_id: int, anchor: dict[str, Any]) -> int:
+    @classmethod
+    def _insert_anchor(
+        cls,
+        connection,
+        project_id: int,
+        anchor: dict[str, Any],
+        *,
+        parent_branch_id: int | None = None,
+    ) -> int:
         anchor_type = str(anchor.get("anchor_type") or "")
         if anchor_type not in ANCHOR_TYPES:
             raise ValueError(f"Unsupported anchor type: {anchor_type}")
@@ -303,16 +622,26 @@ class BranchService:
             raise ValueError("Skeleton anchors require version and node id.")
         if anchor_type == "text_offset" and anchor.get("text_offset") is None:
             raise ValueError("Text anchors require text_offset.")
+        if anchor_type == "branch_chapter" and anchor.get("branch_chapter_id") is None:
+            raise ValueError("Branch chapter anchors require branch_chapter_id.")
+        if anchor_type == "branch_scene" and anchor.get("branch_scene_id") is None:
+            raise ValueError("Branch scene anchors require branch_scene_id.")
         source_hash = str(anchor.get("source_hash") or "")
         if not source_hash:
             raise ValueError("Anchors require a source hash.")
+        cls._validate_anchor_target(
+            connection,
+            project_id=project_id,
+            anchor=anchor,
+            parent_branch_id=parent_branch_id,
+        )
         cursor = connection.execute(
             """
             INSERT INTO story_anchors (
                 project_id, anchor_type, chapter_id, scene_id,
                 skeleton_version_id, node_id, text_offset, side,
-                source_version_id, source_hash
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                source_version_id, source_hash, branch_chapter_id, branch_scene_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 project_id,
@@ -325,9 +654,140 @@ class BranchService:
                 anchor.get("side") or "after",
                 anchor.get("source_version_id"),
                 source_hash,
+                anchor.get("branch_chapter_id"),
+                anchor.get("branch_scene_id"),
             ),
         )
         return int(cursor.lastrowid)
+
+    @staticmethod
+    def _validate_base_source_version(
+        connection,
+        *,
+        parent_branch_id: int | None,
+        base_source_version_id: int | None,
+    ) -> None:
+        if base_source_version_id is None:
+            return
+        if parent_branch_id is None:
+            raise ValueError("base_source_version_id requires a parent branch.")
+        row = connection.execute(
+            """
+            SELECT v.id
+            FROM branch_scene_versions v
+            JOIN branch_scenes s ON s.id = v.branch_scene_id
+            WHERE v.id = ? AND s.branch_id = ? AND s.deleted_at IS NULL
+            """,
+            (base_source_version_id, parent_branch_id),
+        ).fetchone()
+        if row is None:
+            raise FileNotFoundError(
+                "Base source version does not exist in the specified parent branch."
+            )
+
+    @staticmethod
+    def _validate_anchor_target(
+        connection,
+        *,
+        project_id: int,
+        anchor: dict[str, Any],
+        parent_branch_id: int | None,
+    ) -> None:
+        anchor_type = str(anchor["anchor_type"])
+        if anchor_type.startswith("chapter_"):
+            row = connection.execute(
+                "SELECT id FROM chapters WHERE id = ? AND project_id = ?",
+                (anchor["chapter_id"], project_id),
+            ).fetchone()
+            if row is None:
+                raise ValueError("Chapter anchor does not belong to the target project.")
+        elif anchor_type.startswith("scene_"):
+            row = connection.execute(
+                """
+                SELECT s.id
+                FROM scenes s
+                JOIN chapters c ON c.id = s.chapter_id
+                WHERE s.id = ? AND c.project_id = ?
+                """,
+                (anchor["scene_id"], project_id),
+            ).fetchone()
+            if row is None:
+                raise ValueError("Scene anchor does not belong to the target project.")
+        elif anchor_type == "skeleton_node":
+            row = connection.execute(
+                """
+                SELECT v.nodes_json, v.skeleton_json
+                FROM story_skeleton_versions v
+                JOIN story_skeletons s ON s.id = v.skeleton_id
+                WHERE v.id = ? AND s.project_id = ?
+                """,
+                (anchor["skeleton_version_id"], project_id),
+            ).fetchone()
+            if row is None:
+                raise ValueError("Skeleton version does not belong to the target project.")
+            structured = json.loads(row["skeleton_json"] or "{}")
+            nodes = structured.get("event_nodes") if isinstance(structured, dict) else None
+            if not nodes:
+                nodes = json.loads(row["nodes_json"] or "[]")
+            node_ids = {
+                str(node.get("id"))
+                for node in nodes
+                if isinstance(node, dict) and node.get("id") is not None
+            }
+            if str(anchor["node_id"]) not in node_ids:
+                raise ValueError("Skeleton anchor node_id does not exist in the selected version.")
+        elif anchor_type == "branch_chapter":
+            if parent_branch_id is None:
+                raise ValueError("Branch chapter anchors require a parent branch.")
+            row = connection.execute(
+                """
+                SELECT c.id
+                FROM branch_chapters c
+                JOIN story_branches b ON b.id = c.branch_id
+                WHERE c.id = ? AND c.branch_id = ? AND b.project_id = ?
+                  AND c.deleted_at IS NULL AND b.deleted_at IS NULL
+                """,
+                (anchor["branch_chapter_id"], parent_branch_id, project_id),
+            ).fetchone()
+            if row is None:
+                raise ValueError(
+                    "Branch chapter anchor does not belong to the specified parent branch."
+                )
+        elif anchor_type == "branch_scene":
+            if parent_branch_id is None:
+                raise ValueError("Branch scene anchors require a parent branch.")
+            row = connection.execute(
+                """
+                SELECT s.id
+                FROM branch_scenes s
+                JOIN story_branches b ON b.id = s.branch_id
+                WHERE s.id = ? AND s.branch_id = ? AND b.project_id = ?
+                  AND s.deleted_at IS NULL AND b.deleted_at IS NULL
+                """,
+                (anchor["branch_scene_id"], parent_branch_id, project_id),
+            ).fetchone()
+            if row is None:
+                raise ValueError(
+                    "Branch scene anchor does not belong to the specified parent branch."
+                )
+
+        source_version_id = anchor.get("source_version_id")
+        if source_version_id is not None:
+            if parent_branch_id is None:
+                raise ValueError("Branch source_version_id requires a parent branch.")
+            row = connection.execute(
+                """
+                SELECT v.id
+                FROM branch_scene_versions v
+                JOIN branch_scenes s ON s.id = v.branch_scene_id
+                WHERE v.id = ? AND s.branch_id = ? AND s.deleted_at IS NULL
+                """,
+                (source_version_id, parent_branch_id),
+            ).fetchone()
+            if row is None:
+                raise ValueError(
+                    "Anchor source_version_id does not belong to the specified parent branch."
+                )
 
     @staticmethod
     def _anchor(connection, anchor_id: int) -> dict[str, Any]:

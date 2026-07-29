@@ -1,113 +1,87 @@
 # Rusty 工程类型与小说工作流
 
-## 工程与操作分类
+## 分类与兼容
 
-新建工程只有：
+新建工程只接受 `rewrite`（改写工程）和 `branch`（扩写工程）。历史分析工程在 v24
+无损映射为 `legacy_extract`，只能查看、导出或派生新工程，不能继续运行旧提取主流程。
+`processing_mode` 仅保留为执行方式兼容字段，业务用途统一读取 `projects.project_kind`。
 
-- `rewrite`（改写工程）
-- `branch`（扩写工程）
+操作类型为 `plot_generation`、`prose_rewrite`、`canon_change`；剧情模式为
+`bounded_insert`、`open_continuation`、`fork`、`fork_and_rejoin`。四种剧情模式共享
+`PlotGenerationOrchestrator`，没有平行的生成实现。
 
-旧分析工程在 v24 迁移时映射为 `legacy_extract`。该类型只读，可查看和导出已有结果，
-但不能运行已退役的提取工程主流程。`processing_mode` 保留原值用于兼容，新的工程用途
-判断只读取 `projects.project_kind`。
+## 模块化细纲和公共分析
 
-业务操作统一为：
+`story_skeletons` 与 `story_skeleton_versions` 是唯一细纲版本体系。结构化细纲保存事件、
+因果、人物状态、时空、物品、知识、关系、伏笔、线索、起止状态、编辑点和来源引用；
+AI 输出在持久化前统一校验。桌面编辑器调用创建、读取、修订和确认版本 API，旧
+`plot_summary` 仍按旧分析结果读取，不伪造结构化节点。
 
-- `plot_generation`
-- `prose_rewrite`
-- `canon_change`
+章节、场景、细纲、风格、人物和事实账本能力由共享分析服务暴露，可由两类工程调用。
 
-剧情生成模式为：
+## 分支、锚点、章节和接缝
 
-- `bounded_insert`
-- `open_continuation`
-- `fork`
-- `fork_and_rejoin`
+分支存储由以下实体组成：
 
-旧场景 API 的 `skeleton_rewrite | expansion` 仍作为短期兼容协议存在，其中旧
-`expansion` 只表示原场景内插入，不代表扩写工程。新业务使用上述操作与生成模式。
+- `story_branches`、`story_anchors`
+- `branch_chapters`、`branch_chapter_versions`
+- `branch_scenes`、`branch_scene_versions`
+- `branch_seams`、`rewrite_seams`
 
-## 模块化细纲
+锚点支持原文章节/场景/细纲节点/文本偏移和分支章节/场景。创建时会验证项目归属、
+父分支归属、节点存在性和正文版本归属。v30 将旧 `branch_scenes` 自动归入默认章节，
+不丢失正文与事实数据。
 
-`story_skeletons` 和 `story_skeleton_versions` 仍是唯一细纲版本体系。v25 在版本记录中
-增加完整的结构化细纲和来源引用，同时保留 `nodes_json` 作为旧下游的兼容投影。
+接缝必须逐条确认、拒绝或编辑。应用前重新校验 `source_hash`；分支接缝只进入分支
+视图，`bounded_insert` 的进入和退出接缝进入改写版本，原始基线保持不可变。
 
-结构化细纲包括元数据、事件节点、因果链接、人物/地点/时间/物品/知识/关系变化、
-伏笔、开放与已解决线索、必需起止状态、编辑点和来源引用。写入前会校验必填字段、
-节点顺序、唯一 ID、置信度和因果引用。旧 `plot_summary` 只以
-`legacy_plot_summary` 返回，不会被伪装成结构化事件。
+## 工作流闭环
 
-公共分析职责由 `shared_analysis_service.py` 暴露，适用于 rewrite 和 branch：
+剧情生成依次完成上下文分析、AI 目标细纲、人工确认、AI 接缝、人工审查、场景规划、
+逐场景生成、事实提取、连续性检查和版本保存。扩写无需 `current_original_scene`；
+回接模式在规划前后都校验必要进入状态，不满足时保存为 `blocked`。
 
-- `DocumentAnalysisService`
-- `SceneAnalysisService`
-- `SkeletonExtractionService`
-- `StyleAnalysisService`
-- `CharacterAnalysisService`
-- `FactLedgerService`
+表达重写从源细纲和保真策略生成计划与正文，再从正文自动提取 observed skeleton。
+遗漏、新增、顺序、知识和起止状态漂移会阻止写入；允许一次结构化局部修复，复查通过
+后才保存章节版本。
 
-## 分支、锚点和接缝
-
-v26 增加：
-
-- `story_branches`
-- `story_anchors`
-- `branch_seams`
-- `branch_scenes`
-- `branch_scene_versions`
-
-分支可从原文或父分支建立，支持多级父子关系。锚点支持文档末尾、章节起止、场景起止、
-细纲节点和文本偏移。文本偏移用于精确定位，语义 ID 与 `source_hash` 用于完整性校验。
-
-接缝支持 entry/return 和 keep/insert-before/insert-after/replace-range。接缝必须显式
-确认，哈希不匹配时拒绝确认。分支内容独立版本化；删除分支不会删除章节或原场景，
-有子分支时拒绝删除父分支。
-
-## 三个编排器
-
-`PlotGenerationOrchestrator` 是四种剧情模式的共同核心。它统一保存目标细纲、起止锚点、
-上下文、接缝、回接状态问题和结果。branch 上下文不需要
-`current_original_scene`，所有必要语义块整块保存。回接状态不满足时状态为 blocked，
-并返回结构化字段差异。
-
-`ProseRewriteOrchestrator` 保存源细纲、保真策略、目标细纲、重写计划与结果。它检测
-事件新增/遗漏/顺序变化、动机、结果、知识、因果、伏笔和起止状态漂移。结构问题存在时
-不写改写版本。
-
-`CanonChangeOrchestrator` 从生效点向后扫描目标路线，按影响类型保存补丁。每个补丁有
-范围、哈希、原文、替换、类型、理由和审查状态。只有 accepted/edited 补丁会应用；
-rejected/skipped 保留原文；哈希失配会阻止写入。章节结果进入改写版本，分支结果进入
-新的分支场景版本。
+设定变更先用事实账本、人物状态、细纲、实体和属性做候选召回，再由 AI 返回结构化
+语义影响。所有接受补丁在任何写入前完成哈希与重叠检查，并在单一事务中应用；任一
+冲突会整体回滚。章节和分支场景的新版本继承未受影响事实并更新变更事实，随后执行
+一致性复查。
 
 ## 数据库迁移
 
-本次从 v23 依次升级到 v29：
+当前数据库版本为 v33：
 
-- v24：`projects.project_kind`
-- v25：结构化细纲版本字段
-- v26：分支、锚点、接缝与分支正文版本
-- v27：统一剧情生成运行
-- v28：表达重写运行
-- v29：设定变更运行与可审查补丁
+- v24：`project_kind`
+- v25：结构化细纲字段
+- v26–v29：分支、运行和补丁基础表
+- v30：分支章节、章节版本及旧分支场景迁移
+- v31：AI 剧情运行阶段、选择项、场景计划和事实账本
+- v32：正式改写接缝及剧情运行关联
+- v33：语义补丁置信度、证据和人工确认元数据
 
-迁移不删除旧表、旧项目、原文、摘要、场景、事实账本或生成版本。全新数据库按同一迁移
-链初始化；历史最小化诊断库若没有 v15 细纲表，v25 不会凭空创建孤立替代表。
+迁移不删除旧表、项目、原文、摘要、分析、场景、事实账本或历史版本；全新数据库和
+v29 历史数据库均走同一迁移链。
 
-## 桌面工作区
+## 桌面工作区与旧项目
 
-- 新建页只显示改写工程和扩写工程。
-- 改写工作区提供增加剧情、重写正文和修改设定。
-- 扩写工作区提供末尾续写、指定节点分支和分支回接，并显示分支树。
-- 默认细纲编辑器按模块与事件节点工作；JSON 仅保留给旧接口和调试。
-- 接缝和设定补丁均为显式选择，不会静默批量应用。
-- `legacy_extract` 显示只读兼容说明、导出和创建新工程入口。
+改写工作区提供三类分步操作；扩写工作区提供末尾续写、中途分支、回接和父子分支树。
+运行 ID 保存在本地工作区状态中，刷新后从后端读取实际运行记录，不使用固定正文、
+接缝或补丁样板。
 
-## 当前交付边界
+旧工程分析导出使用专用 JSON API，包含元数据、章节摘要、人物、风格、全书归纳、
+提示词和结构化细纲。派生工程复制原文并可选复制分析结果，新旧项目拥有独立 ID 和
+版本，不修改旧工程。
 
-数据库迁移、领域服务、三个编排器及其 HTTP API 已实现并由自动化测试覆盖。扩写工作区的
-分支读取、创建、切换和删除已连接持久化 API。
+## 验证
 
-改写工作区目前完成了三种操作的入口、参数表单、模块化细纲编辑、接缝审查和设定补丁选择
-界面，但尚未把 `plot_generation`、`prose_rewrite`、`canon_change` 的完整分步提交与运行状态
-接入桌面端。因此，后端能力可以通过 API 使用，桌面端端到端生成闭环仍是后续工作；当前文档
-不将整个总任务标记为完全完成。
+自动化覆盖后端单元/迁移测试、前端类型检查和构建、API Mock UI E2E，以及由真实
+FastAPI、临时 SQLite 和 FakeLLM 驱动的八条浏览器 E2E。CI 工作流运行全部四类检查。
+
+当前已知限制：
+
+- 生产 AI 的质量、成本和延迟取决于用户配置的模型；自动化测试只使用 FakeLLM。
+- 角色和素材在工作区当前以 ID 多选输入，后续可改进为搜索式资源选择器。
+- 旧场景 API 的 `expansion` 仍作为短期兼容词存在，新业务统一使用 `bounded_insert`。

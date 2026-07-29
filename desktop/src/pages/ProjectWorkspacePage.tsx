@@ -64,9 +64,7 @@ import type {
 import {
   BranchWorkspacePanel,
   LegacyExtractPanel,
-  ModularSkeletonEditor,
   RewriteOperationPanel,
-  SeamReview,
 } from '../components/WorkflowRefactorPanels';
 
 type Props = { onNavigate: (path: string, state?: unknown) => void; projectId: number };
@@ -308,10 +306,16 @@ export function ProjectWorkspacePage({ onNavigate, projectId }: Props) {
   const modelAuthError = Boolean(error && error.includes('模型服务鉴权失败'));
 
   if (project?.project?.project_kind === 'legacy_extract') {
-    return <LegacyExtractPanel projectName={project.project.name} onCreateNew={() => onNavigate('/new-project')} onExport={() => void exportBook('txt')} />;
+    return (
+      <LegacyExtractPanel
+        onCreated={(createdId) => onNavigate(`/workspace/${createdId}`)}
+        projectId={project.project.id}
+        projectName={project.project.name}
+      />
+    );
   }
   if (project?.project?.project_kind === 'branch') {
-    return <BranchWorkspacePanel defaultChapterId={chapters[0]?.id} projectId={projectId} projectName={project.project.name} />;
+    return <BranchWorkspacePanel chapters={chapters} projectId={projectId} projectName={project.project.name} />;
   }
 
   return (
@@ -330,8 +334,7 @@ export function ProjectWorkspacePage({ onNavigate, projectId }: Props) {
       <div className="workbench-grid" style={{ gridTemplateColumns: `${binderVisible ? `${binderWidth}px 8px` : ''} minmax(0,1fr) ${inspectorVisible ? `8px ${inspectorWidth}px` : ''}` }}>
         {binderVisible ? <><ChapterBinder chapters={chapters} currentId={selectedChapterId} detail={detail} purpose={purpose} onSelect={setSelectedChapterId} /><div aria-label="调整章节目录宽度" className="panel-resizer" onPointerDown={(event) => beginResize('binder', event)} role="separator" /></> : null}
         <main className="workspace-center">
-          <RewriteOperationPanel />
-          {stage === 2 ? <><ModularSkeletonEditor /><SeamReview /></> : null}
+          <RewriteOperationPanel chapter={selectedChapter} projectId={projectId} />
           <WorkspaceContent analysisDraft={analysisDraft} detail={detail} exportPlan={exportPlan} generatedPrompt={generatedPrompt} onSelection={showSelectionMenu} purpose={purpose} rewriteDraft={rewriteDraft} setAnalysisDraft={setAnalysisDraft} setExportPlan={setExportPlan} setRewriteDraft={setRewriteDraft} setTargetSkeleton={setTargetSkeleton} stage={stage} targetSkeleton={targetSkeleton} />
           {purpose === 'rewrite' && stage === 3 ? <RewriteTrace attempts={generationAttempts} preview={promptPreview} /> : null}
         </main>

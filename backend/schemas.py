@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ErrorResponse(BaseModel):
@@ -413,6 +413,275 @@ class CreateProjectRequest(BaseModel):
     analysis_prompt_template_id: int | None = None
 
 
+class LegacyProjectCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target_project_kind: Literal["rewrite", "branch"]
+    copy_source_text: bool = True
+    copy_analysis_results: bool = True
+    project_name: str | None = None
+
+
+class LegacyAnalysisExportResponse(BaseModel):
+    schema_name: Literal["rusty.legacy_analysis_export.v1"] = Field(alias="schema")
+    project: dict[str, Any]
+    metadata: dict[str, Any]
+    chapter_analyses: list[dict[str, Any]]
+    character_analyses: list[dict[str, Any]]
+    style_analysis: dict[str, Any]
+    generated_prompts: list[dict[str, Any]]
+    structured_skeletons: list[dict[str, Any]]
+
+
+class StrictWorkflowModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class SourceRange(StrictWorkflowModel):
+    start: int = Field(ge=0)
+    end: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_order(self) -> "SourceRange":
+        if self.end < self.start:
+            raise ValueError("source_range.end must be greater than or equal to start")
+        return self
+
+
+class StoryAnchorRequest(StrictWorkflowModel):
+    anchor_type: Literal[
+        "document_end",
+        "chapter_start",
+        "chapter_end",
+        "scene_start",
+        "scene_end",
+        "skeleton_node",
+        "text_offset",
+        "branch_chapter",
+        "branch_scene",
+    ]
+    chapter_id: int | None = Field(default=None, ge=1)
+    scene_id: int | None = Field(default=None, ge=1)
+    skeleton_version_id: int | None = Field(default=None, ge=1)
+    node_id: str | None = Field(default=None, min_length=1)
+    branch_chapter_id: int | None = Field(default=None, ge=1)
+    branch_scene_id: int | None = Field(default=None, ge=1)
+    text_offset: int | None = Field(default=None, ge=0)
+    side: Literal["before", "after", "at"] | None = None
+    source_version_id: int | None = Field(default=None, ge=1)
+    source_hash: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def validate_target(self) -> "StoryAnchorRequest":
+        requirements = {
+            "chapter_start": ("chapter_id",),
+            "chapter_end": ("chapter_id",),
+            "scene_start": ("scene_id",),
+            "scene_end": ("scene_id",),
+            "skeleton_node": ("skeleton_version_id", "node_id"),
+            "text_offset": ("text_offset", "side"),
+            "branch_chapter": ("branch_chapter_id",),
+            "branch_scene": ("branch_scene_id",),
+        }
+        missing = [
+            field_name
+            for field_name in requirements.get(self.anchor_type, ())
+            if getattr(self, field_name) is None
+        ]
+        if missing:
+            raise ValueError(f"{self.anchor_type} anchor requires: {', '.join(missing)}")
+        return self
+
+
+class BranchCreateRequest(StrictWorkflowModel):
+    name: str = Field(min_length=1)
+    branch_mode: Literal["open_continuation", "fork", "fork_and_rejoin"]
+    parent_branch_id: int | None = Field(default=None, ge=1)
+    start_anchor: StoryAnchorRequest
+    return_anchor: StoryAnchorRequest | None = None
+    base_source_version_id: int | None = Field(default=None, ge=1)
+    downstream_strategy: Literal["replace", "reference", "rejoin"] | None = None
+
+    @model_validator(mode="after")
+    def validate_return_anchor(self) -> "BranchCreateRequest":
+        if self.branch_mode == "fork_and_rejoin" and self.return_anchor is None:
+            raise ValueError("fork_and_rejoin requires return_anchor")
+        if self.branch_mode != "fork_and_rejoin" and self.return_anchor is not None:
+            raise ValueError(f"{self.branch_mode} does not accept return_anchor")
+        return self
+
+
+class StoryBranchResponse(BaseModel):
+    id: int
+    project_id: int
+    parent_branch_id: int | None
+    base_source_kind: str
+    base_source_version_id: int | None
+    name: str
+    branch_mode: str
+    downstream_strategy: str
+    status: str
+    start_anchor: dict[str, Any] | None = None
+    return_anchor: dict[str, Any] | None = None
+    created_at: str
+    updated_at: str
+
+
+class SeamProposal(StrictWorkflowModel):
+    id: int | None = Field(default=None, ge=1)
+    seam_kind: Literal["entry", "return"]
+    operation: Literal["keep", "insert_before", "insert_after", "replace_range"]
+    original_text: str = ""
+    proposed_text: str = ""
+    source_range: SourceRange
+    source_hash: str = Field(min_length=1)
+    reason: str = ""
+    status: Literal["draft", "confirmed", "rejected"] = "draft"
+
+
+class SeamReviewRequest(StrictWorkflowModel):
+    seams: list[SeamProposal] = Field(min_length=1)
+    current_source_text: str
+
+
+class PlotGenerationStartRequest(StrictWorkflowModel):
+    project_id: int = Field(ge=1)
+    generation_mode: Literal[
+        "bounded_insert", "open_continuation", "fork", "fork_and_rejoin"
+    ]
+    start_anchor: StoryAnchorRequest
+    return_anchor: StoryAnchorRequest | None = None
+    user_direction: str = Field(min_length=1)
+    selected_character_ids: list[int] = Field(default_factory=list)
+    selected_material_ids: list[int] = Field(default_factory=list)
+    style_profile_id: int | None = Field(default=None, ge=1)
+    parent_branch_id: int | None = Field(default=None, ge=1)
+    branch_name: str = Field(default="Generated branch", min_length=1)
+
+    @model_validator(mode="after")
+    def validate_return_anchor(self) -> "PlotGenerationStartRequest":
+        requires_return = self.generation_mode in {"bounded_insert", "fork_and_rejoin"}
+        if requires_return and self.return_anchor is None:
+            raise ValueError(f"{self.generation_mode} requires return_anchor")
+        if not requires_return and self.return_anchor is not None:
+            raise ValueError(f"{self.generation_mode} does not accept return_anchor")
+        return self
+
+
+class PlotGenerationSkeletonConfirmRequest(StrictWorkflowModel):
+    target_skeleton: dict[str, Any]
+
+
+class PlotGenerationSeamConfirmRequest(SeamReviewRequest):
+    pass
+
+
+class GeneratedSceneRequest(StrictWorkflowModel):
+    title: str = ""
+    text: str = Field(min_length=1)
+    facts_after: dict[str, Any] = Field(default_factory=dict)
+
+
+class PlotGenerationExecuteRequest(StrictWorkflowModel):
+    max_scenes: int | None = Field(default=None, ge=1)
+
+
+class PlotGenerationRunResponse(BaseModel):
+    id: int
+    project_id: int
+    branch_id: int | None
+    generation_mode: str
+    output_topology: str
+    status: str
+    stage: str
+    start_anchor: dict[str, Any]
+    return_anchor: dict[str, Any] | None
+    start_state: dict[str, Any]
+    required_return_state: dict[str, Any]
+    target_skeleton: dict[str, Any]
+    context: dict[str, Any]
+    seams: list[dict[str, Any]] | dict[str, Any]
+    issues: list[dict[str, Any]] | dict[str, Any]
+    result: dict[str, Any]
+    scene_plan: dict[str, Any]
+    fact_ledger: dict[str, Any]
+
+
+class ProseRewritePlanRequest(StrictWorkflowModel):
+    project_id: int = Field(ge=1)
+    chapter_id: int = Field(ge=1)
+    source_skeleton: dict[str, Any]
+    preservation_policy: dict[str, Any]
+    style_profile_id: int | None = Field(default=None, ge=1)
+    user_direction: str = ""
+
+
+class ProseRewriteExecuteRequest(StrictWorkflowModel):
+    auto_repair: bool = True
+
+
+class ProseRewriteRunResponse(BaseModel):
+    id: int
+    project_id: int
+    chapter_id: int
+    status: str
+    source_skeleton: dict[str, Any]
+    preservation_policy: dict[str, Any]
+    target_skeleton: dict[str, Any]
+    rewrite_plan: dict[str, Any]
+    rewritten_text: str | None
+    issues: list[dict[str, Any]]
+
+
+class CanonChangeScanRequest(StrictWorkflowModel):
+    project_id: int = Field(ge=1)
+    old_fact: dict[str, Any]
+    new_fact: dict[str, Any]
+    effective_order: int = Field(ge=0)
+    branch_id: int | None = Field(default=None, ge=1)
+
+
+class CanonPatchReviewRequest(StrictWorkflowModel):
+    decision: Literal["accepted", "rejected", "edited", "skipped"]
+    replacement_text: str | None = None
+
+    @model_validator(mode="after")
+    def validate_edited_text(self) -> "CanonPatchReviewRequest":
+        if self.decision == "edited" and not self.replacement_text:
+            raise ValueError("edited patches require replacement_text")
+        return self
+
+
+class CanonPatchResponse(BaseModel):
+    id: int
+    run_id: int
+    route_kind: str
+    target_id: int
+    source_range: dict[str, Any]
+    source_hash: str
+    original_text: str
+    replacement_text: str
+    impact_type: str
+    reason: str
+    confidence: float
+    evidence: list[Any]
+    requires_confirmation: bool
+    status: str
+
+
+class CanonChangeRunResponse(BaseModel):
+    id: int
+    project_id: int
+    branch_id: int | None
+    effective_order: int
+    status: str
+    old_fact: dict[str, Any]
+    new_fact: dict[str, Any]
+    fact_ledger: dict[str, Any]
+    consistency_issues: list[dict[str, Any]]
+    patches: list[CanonPatchResponse]
+
+
 class ExportResponse(BaseModel):
     ok: bool
     format: Literal["txt", "epub"]
@@ -492,12 +761,26 @@ class StorySkeletonWriteRequest(BaseModel):
     scene_id: int | None = None
     scope: Literal["scene", "chapter", "volume", "book"] = "scene"
     source_kind: str = "original_analysis"
-    nodes: list[dict[str, Any]] = Field(min_length=1)
+    nodes: list[dict[str, Any]] = Field(default_factory=list)
+    structured_skeleton: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def validate_content(self) -> "StorySkeletonWriteRequest":
+        if not self.nodes and self.structured_skeleton is None:
+            raise ValueError("nodes or structured_skeleton is required")
+        return self
 
 
 class StorySkeletonRevisionRequest(BaseModel):
-    nodes: list[dict[str, Any]] = Field(min_length=1)
+    nodes: list[dict[str, Any]] = Field(default_factory=list)
+    structured_skeleton: dict[str, Any] | None = None
     change_note: str = ""
+
+    @model_validator(mode="after")
+    def validate_content(self) -> "StorySkeletonRevisionRequest":
+        if not self.nodes and self.structured_skeleton is None:
+            raise ValueError("nodes or structured_skeleton is required")
+        return self
 
 
 class RewritePlanWriteRequest(BaseModel):

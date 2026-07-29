@@ -14,6 +14,7 @@ from rusty.services.project_service import default_database_path
 from rusty.services.prompt_service import PromptService
 from rusty.services.scene_service import SceneRecord, SceneService
 from rusty.services.style_service import StyleTemplateService
+from rusty.services.branch_service import BranchService
 
 
 DEFAULT_PRIORITIES = {
@@ -157,6 +158,7 @@ class ContextService:
         self.material_service = MaterialService(self.database_path)
         self.prompt_service = PromptService(self.database_path)
         self.style_service = StyleTemplateService(self.database_path)
+        self.branch_service = BranchService(self.database_path)
         self.budgeter = PromptBudgeter()
         with session(self.database_path) as connection:
             initialize_database(connection)
@@ -566,6 +568,166 @@ class ContextService:
                 ),
             )
         return context
+
+    def compile_plot_generation_context(
+        self,
+        *,
+        project_id: int,
+        start_anchor: dict[str, Any],
+        return_anchor: dict[str, Any] | None,
+        parent_branch_id: int | None,
+        user_direction: str,
+        selected_character_ids: Iterable[int] = (),
+        selected_material_ids: Iterable[int] = (),
+        style_profile_id: int | None = None,
+    ) -> dict[str, Any]:
+        start = self._resolve_generation_anchor(
+            project_id, start_anchor, parent_branch_id=parent_branch_id
+        )
+        returned = (
+            self._resolve_generation_anchor(
+                project_id, return_anchor, parent_branch_id=parent_branch_id
+            )
+            if return_anchor is not None
+            else None
+        )
+        characters = []
+        for card_id in selected_character_ids:
+            card = self.anchor_service.get_character_card(int(card_id))
+            if card is not None:
+                characters.append(card.__dict__)
+        materials = []
+        for material_id in selected_material_ids:
+            material = self.material_service.get_material(int(material_id))
+            if material is not None:
+                materials.append(material.__dict__)
+        style = (
+            self.style_service.get_template(style_profile_id).__dict__
+            if style_profile_id is not None
+            and self.style_service.get_template(style_profile_id) is not None
+            else {}
+        )
+        facts = start["fact_ledger"]
+        return {
+            "start_anchor_context": start,
+            "previous_text_tail": start["previous_text_tail"],
+            "start_state": start["state"],
+            "character_states": start["character_states"],
+            "fact_ledger": facts,
+            "open_threads": facts.get("open_threads", []),
+            "foreshadowing": facts.get("foreshadowing", []),
+            "global_skeleton": start.get("global_skeleton", {}),
+            "user_direction": user_direction,
+            "material_context": materials,
+            "character_context": characters,
+            "style_profile": style,
+            "previous_generated_scene": start.get("previous_generated_scene", ""),
+            "return_state_constraints": (
+                (
+                    returned["fact_ledger"].get(
+                        "required_start_state", returned["state"]
+                    )
+                )
+                if returned is not None
+                else {}
+            ),
+            "return_anchor_context": returned,
+        }
+
+    def _resolve_generation_anchor(
+        self,
+        project_id: int,
+        anchor: dict[str, Any],
+        *,
+        parent_branch_id: int | None,
+    ) -> dict[str, Any]:
+        anchor_type = str(anchor["anchor_type"])
+        if anchor_type in {"branch_chapter", "branch_scene"}:
+            if parent_branch_id is None:
+                raise ValueError("Branch content anchors require parent_branch_id.")
+            chapters = self.branch_service.list_chapters(parent_branch_id)
+            selected_chapter = next(
+                (
+                    chapter
+                    for chapter in chapters
+                    if int(chapter["id"]) == int(anchor.get("branch_chapter_id") or -1)
+                    or any(
+                        int(scene["id"]) == int(anchor.get("branch_scene_id") or -1)
+                        for scene in chapter["scenes"]
+                    )
+                ),
+                None,
+            )
+            if selected_chapter is None:
+                raise ValueError("Branch anchor could not be resolved.")
+            selected_scene = next(
+                (
+                    scene
+                    for scene in selected_chapter["scenes"]
+                    if int(scene["id"]) == int(anchor.get("branch_scene_id") or -1)
+                ),
+                selected_chapter["scenes"][-1] if selected_chapter["scenes"] else None,
+            )
+            text = selected_scene["generated_text"] if selected_scene else ""
+            facts = (
+                selected_scene["facts_after"]
+                if selected_scene
+                else selected_chapter["facts_after"]
+            )
+            return {
+                "source_kind": "branch",
+                "text": text,
+                "previous_text_tail": text[-1200:],
+                "state": facts,
+                "fact_ledger": facts,
+                "character_states": [],
+                "previous_generated_scene": text,
+            }
+
+        chapters = self.scene_service.project_service.list_chapters(project_id)
+        if not chapters:
+            raise ValueError("Project has no source chapters.")
+        chapter = chapters[-1]
+        scene = None
+        if anchor.get("chapter_id") is not None:
+            chapter = next(
+                (item for item in chapters if item.id == int(anchor["chapter_id"])),
+                None,
+            )
+            if chapter is None:
+                raise ValueError("Anchor chapter does not belong to project.")
+        if anchor.get("scene_id") is not None:
+            scene = self.scene_service.get_scene(int(anchor["scene_id"]))
+            if scene is None or scene.project_id != project_id:
+                raise ValueError("Anchor scene does not belong to project.")
+            chapter = self.scene_service.project_service.get_chapter(scene.chapter_id)
+        offset = len(chapter.original_text)
+        if anchor_type in {"chapter_start", "scene_start"}:
+            offset = scene.original_start_offset if scene is not None else 0
+        elif anchor_type in {"scene_end"} and scene is not None:
+            offset = scene.original_end_offset
+        elif anchor_type == "text_offset":
+            offset = int(anchor["text_offset"])
+        source_text = chapter.original_text
+        siblings = self.scene_service.list_scenes(chapter.id)
+        if scene is None and siblings:
+            eligible = [
+                item for item in siblings if item.original_end_offset <= offset
+            ]
+            scene = eligible[-1] if eligible else siblings[0]
+        facts = self.scene_service.get_fact_ledger(scene.id) if scene is not None else {}
+        states = self.scene_service.list_character_states(scene.id) if scene is not None else []
+        return {
+            "source_kind": "original",
+            "chapter_id": chapter.id,
+            "scene_id": scene.id if scene is not None else None,
+            "text": source_text,
+            "offset": offset,
+            "previous_text_tail": source_text[:offset][-1200:],
+            "state": facts.get("required_end_state", facts),
+            "fact_ledger": facts,
+            "character_states": states,
+        }
 
     def compile_scene_context(
         self,

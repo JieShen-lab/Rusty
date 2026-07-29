@@ -51,6 +51,24 @@ class SkeletonExtractionService:
             source_kind=source_kind,
         )
 
+    def extract_from_text(
+        self,
+        *,
+        project_id: int,
+        text: str,
+        workflow_ai,
+        expected_skeleton: dict[str, Any],
+    ) -> dict[str, Any]:
+        result = workflow_ai.generate_json(
+            project_id=project_id,
+            stage="extract_observed_skeleton",
+            payload={"text": text, "expected_skeleton": expected_skeleton},
+            output_contract="A complete StructuredSkeleton JSON object describing only the supplied text.",
+        )
+        return validate_structured_skeleton(
+            result.get("observed_skeleton", result)
+        )
+
 
 class StyleAnalysisService(AnalysisService):
     pass
