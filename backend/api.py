@@ -57,11 +57,24 @@ from .schemas import (
     AISplitPreviewRequest,
     CharacterAnalyzeRequest,
     CharacterAnalysisConfirmRequest,
+    CharacterCategoryOut,
     CharacterCoverWriteRequest,
     CharacterCardOut,
     CharacterCardCopyRequest,
+    CharacterCopyToProjectRequest,
+    CharacterExtractionApplyItemOut,
+    CharacterExtractionApplyOut,
+    CharacterExtractionApplyRequest,
+    CharacterExtractionCandidateOut,
+    CharacterExtractionPreviewOut,
+    CharacterExtractionPreviewRequest,
+    CharacterExtractionSettingsOut,
+    CharacterExtractionSettingsWriteRequest,
     CharacterCardsExtractOut,
     CharacterCardWriteRequest,
+    CharacterPublishRequest,
+    CharacterProjectSummaryOut,
+    CharacterSourceSummaryOut,
     ChapterDetailOut,
     ChapterErrorOut,
     ChapterOut,
@@ -91,7 +104,16 @@ from .schemas import (
     LibraryDocumentOut,
     LibraryDocumentRevisionOut,
     MaterialAnalyzeRequest,
+    MaterialAISettingsOut,
+    MaterialAISettingsWriteRequest,
     MaterialAnalysisApplyRequest,
+    MaterialCategoryCreateRequest,
+    MaterialCategoryOut,
+    MaterialExtractionApplyOut,
+    MaterialExtractionApplyRequest,
+    MaterialExtractionCandidateOut,
+    MaterialExtractionPreviewOut,
+    MaterialExtractionPreviewRequest,
     MaterialJsonImportRequest,
     MaterialCopyRequest,
     MaterialExtractOut,
@@ -114,6 +136,8 @@ from .schemas import (
     PreviewRequest,
     PreviewResponse,
     ProjectDetailOut,
+    ProjectMaterialFilterOut,
+    ProjectMaterialFilterWriteRequest,
     ProjectCharacterBindingRequest,
     ProjectCharacterBindingsOut,
     ProjectOutlineBindingOut,
@@ -1549,9 +1573,14 @@ def create_app(
         project_id: int | None = None,
         material_type: str | None = None,
         tag_id: int | None = None,
+        tag_group: str | None = None,
+        category_id: int | None = None,
         analysis_status: str | None = None,
+        pending_imports: bool = False,
         untagged: bool = False,
         query: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> list[MaterialOut]:
         return [
             _material_out(item)
@@ -1560,19 +1589,26 @@ def create_app(
                 project_id=project_id,
                 material_type=material_type,
                 tag_id=tag_id,
+                tag_group=tag_group,
+                category_id=category_id,
                 analysis_status=analysis_status,
+                pending_imports=pending_imports,
                 untagged=untagged,
                 query=query,
+                limit=limit,
+                offset=offset,
             )
         ]
 
     @app.get("/api/material-tags", response_model=list[ResourceTagOut])
-    def list_material_tags() -> list[ResourceTagOut]:
-        return [_resource_tag_out(tag) for tag in material_service.list_tags()]
+    def list_material_tags(tag_group: str | None = None) -> list[ResourceTagOut]:
+        return [_resource_tag_out(tag) for tag in material_service.list_tags(tag_group)]
 
     @app.post("/api/material-tags", response_model=ResourceTagOut, dependencies=[Depends(_require_token)])
     def create_material_tag(payload: ResourceTagCreateRequest) -> ResourceTagOut:
-        return _resource_tag_out(material_service.create_tag(payload.name))
+        return _resource_tag_out(
+            material_service.create_tag(payload.name, tag_group=payload.tag_group)
+        )
 
     @app.post("/api/material-tags/{tag_id}", response_model=ResourceTagOut, dependencies=[Depends(_require_token)])
     def rename_material_tag(tag_id: int, payload: ResourceTagRenameRequest) -> ResourceTagOut:
@@ -1590,6 +1626,144 @@ def create_app(
     )
     def assign_material_tag(material_id: int, tag_id: int, payload: ResourceTagAssignmentRequest) -> MaterialOut:
         return _material_out(material_service.set_material_tag(material_id, tag_id, payload.selected))
+
+    @app.get("/api/material-categories", response_model=list[MaterialCategoryOut])
+    def list_material_categories(material_type: str | None = None) -> list[MaterialCategoryOut]:
+        return [
+            MaterialCategoryOut(**item.__dict__)
+            for item in material_service.list_categories(material_type)
+        ]
+
+    @app.post(
+        "/api/material-categories",
+        response_model=MaterialCategoryOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def create_material_category(payload: MaterialCategoryCreateRequest) -> MaterialCategoryOut:
+        return MaterialCategoryOut(
+            **material_service.create_category(payload.material_type, payload.name).__dict__
+        )
+
+    @app.post(
+        "/api/material-categories/{category_id}",
+        response_model=MaterialCategoryOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def rename_material_category(
+        category_id: int,
+        payload: ResourceTagRenameRequest,
+    ) -> MaterialCategoryOut:
+        return MaterialCategoryOut(
+            **material_service.rename_category(category_id, payload.name).__dict__
+        )
+
+    @app.post(
+        "/api/material-categories/{category_id}/delete",
+        response_model=dict[str, bool],
+        dependencies=[Depends(_require_token)],
+    )
+    def delete_material_category(category_id: int) -> dict[str, bool]:
+        material_service.delete_category(category_id)
+        return {"ok": True}
+
+    @app.post(
+        "/api/materials/{material_id}/categories/{category_id}",
+        response_model=MaterialOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def assign_material_category(
+        material_id: int,
+        category_id: int,
+        payload: ResourceTagAssignmentRequest,
+    ) -> MaterialOut:
+        return _material_out(
+            material_service.set_material_category(material_id, category_id, payload.selected)
+        )
+
+    @app.get(
+        "/api/projects/{project_id}/material-filters",
+        response_model=list[ProjectMaterialFilterOut],
+    )
+    def get_project_material_filters(project_id: int) -> list[ProjectMaterialFilterOut]:
+        return [
+            ProjectMaterialFilterOut(
+                project_id=item.project_id,
+                material_type=item.material_type,
+                match_mode=item.match_mode,
+                tag_ids=list(item.tag_ids),
+                manual_material_ids=list(item.manual_material_ids),
+                include_scene_keywords=item.include_scene_keywords,
+                include_applicable_scene_tags=item.include_applicable_scene_tags,
+            )
+            for item in material_service.get_project_material_filters(project_id)
+        ]
+
+    @app.get("/api/projects/{project_id}/materials", response_model=list[MaterialOut])
+    def list_project_materials(
+        project_id: int,
+        material_type: str | None = None,
+    ) -> list[MaterialOut]:
+        return [
+            _material_out(item)
+            for item in material_service.list_materials_for_project(
+                project_id,
+                material_type=material_type,
+            )
+        ]
+
+    @app.post(
+        "/api/projects/{project_id}/material-filters/{material_type}",
+        response_model=ProjectMaterialFilterOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def set_project_material_filter(
+        project_id: int,
+        material_type: str,
+        payload: ProjectMaterialFilterWriteRequest,
+    ) -> ProjectMaterialFilterOut:
+        item = material_service.set_project_material_filter(
+            project_id,
+            material_type,
+            **payload.model_dump(),
+        )
+        return ProjectMaterialFilterOut(
+            project_id=item.project_id,
+            material_type=item.material_type,
+            match_mode=item.match_mode,
+            tag_ids=list(item.tag_ids),
+            manual_material_ids=list(item.manual_material_ids),
+            include_scene_keywords=item.include_scene_keywords,
+            include_applicable_scene_tags=item.include_applicable_scene_tags,
+        )
+
+    @app.get("/api/material-ai-settings", response_model=list[MaterialAISettingsOut])
+    def list_material_ai_settings() -> list[MaterialAISettingsOut]:
+        return [MaterialAISettingsOut(**item.__dict__) for item in material_service.list_ai_settings()]
+
+    @app.get("/api/material-ai-settings/{task_type}", response_model=MaterialAISettingsOut)
+    def get_material_ai_settings(task_type: str) -> MaterialAISettingsOut:
+        return MaterialAISettingsOut(**material_service.get_ai_settings(task_type).__dict__)
+
+    @app.post(
+        "/api/material-ai-settings/{task_type}",
+        response_model=MaterialAISettingsOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def update_material_ai_settings(
+        task_type: str,
+        payload: MaterialAISettingsWriteRequest,
+    ) -> MaterialAISettingsOut:
+        return MaterialAISettingsOut(
+            **material_service.update_ai_settings(task_type, **payload.model_dump()).__dict__
+        )
+
+    @app.post(
+        "/api/material-ai-settings/{task_type}/reset",
+        response_model=MaterialAISettingsOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def reset_material_ai_settings(task_type: str) -> MaterialAISettingsOut:
+        return MaterialAISettingsOut(**material_service.reset_ai_settings(task_type).__dict__)
 
     @app.post("/api/materials", response_model=MaterialOut, dependencies=[Depends(_require_token)])
     def create_material(payload: MaterialWriteRequest) -> MaterialOut:
@@ -1689,6 +1863,55 @@ def create_app(
             )
         )
 
+    @app.post(
+        "/api/material-extractions/preview",
+        response_model=MaterialExtractionPreviewOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def preview_material_extraction(
+        payload: MaterialExtractionPreviewRequest,
+    ) -> MaterialExtractionPreviewOut:
+        text, resolved_metadata = _resolve_anchor_source(
+            payload,
+            project_service=project_service,
+            document_library_service=document_library_service,
+        )
+        preview = anchor_extraction_service.preview_materials_from_text(
+            text,
+            task_type=payload.task_type,
+            name=payload.name,
+            model_id=payload.model_id,
+            source_metadata={**resolved_metadata, **payload.source_metadata},
+        )
+        return MaterialExtractionPreviewOut(
+            preview_token=preview.preview_token,
+            expires_at=preview.expires_at,
+            task_type=preview.task_type,
+            material_type=preview.material_type,
+            source_summary=preview.source_summary,
+            prompt_snapshot=preview.prompt_snapshot,
+            candidates=[
+                MaterialExtractionCandidateOut(**candidate.__dict__)
+                for candidate in preview.candidates
+            ],
+        )
+
+    @app.post(
+        "/api/material-extractions/apply",
+        response_model=MaterialExtractionApplyOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def apply_material_extraction(
+        payload: MaterialExtractionApplyRequest,
+    ) -> MaterialExtractionApplyOut:
+        result = anchor_extraction_service.apply_material_extraction(
+            **payload.model_dump()
+        )
+        return MaterialExtractionApplyOut(
+            created=result["created"],
+            errors=result["errors"],
+        )
+
     @app.post("/api/material-extractions", response_model=MaterialExtractOut, dependencies=[Depends(_require_token)])
     def extract_materials(payload: MaterialExtractRequest) -> MaterialExtractOut:
         text, source_metadata = _resolve_anchor_source(
@@ -1775,6 +1998,7 @@ def create_app(
         scope: str | None = None,
         project_id: int | None = None,
         tag_id: int | None = None,
+        category_id: int | None = None,
         analysis_status: str | None = None,
         untagged: bool = False,
     ) -> list[CharacterCardOut]:
@@ -1784,9 +2008,94 @@ def create_app(
                 scope,
                 project_id,
                 tag_id=tag_id,
+                category_id=category_id,
                 analysis_status=analysis_status,
                 untagged=untagged,
             )
+        ]
+
+    @app.get("/api/character-categories", response_model=list[CharacterCategoryOut])
+    def list_character_categories() -> list[CharacterCategoryOut]:
+        return [
+            CharacterCategoryOut(
+                id=category.id,
+                name=category.name,
+                normalized_name=category.normalized_name,
+                sort_order=category.sort_order,
+                resource_count=category.resource_count,
+            )
+            for category in anchor_service.list_character_categories()
+        ]
+
+    @app.post(
+        "/api/character-categories",
+        response_model=CharacterCategoryOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def create_character_category(payload: ResourceTagCreateRequest) -> CharacterCategoryOut:
+        category = anchor_service.create_character_category(payload.name)
+        return CharacterCategoryOut(
+            id=category.id,
+            name=category.name,
+            normalized_name=category.normalized_name,
+            sort_order=category.sort_order,
+            resource_count=category.resource_count,
+        )
+
+    @app.post(
+        "/api/character-categories/{category_id}",
+        response_model=CharacterCategoryOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def rename_character_category(
+        category_id: int,
+        payload: ResourceTagRenameRequest,
+    ) -> CharacterCategoryOut:
+        category = anchor_service.rename_character_category(category_id, payload.name)
+        return CharacterCategoryOut(
+            id=category.id,
+            name=category.name,
+            normalized_name=category.normalized_name,
+            sort_order=category.sort_order,
+            resource_count=category.resource_count,
+        )
+
+    @app.post(
+        "/api/character-categories/{category_id}/delete",
+        response_model=dict[str, bool],
+        dependencies=[Depends(_require_token)],
+    )
+    def delete_character_category(category_id: int) -> dict[str, bool]:
+        anchor_service.delete_character_category(category_id)
+        return {"ok": True}
+
+    @app.post(
+        "/api/characters/{card_id}/categories/{category_id}",
+        response_model=CharacterCardOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def assign_character_category(
+        card_id: int,
+        category_id: int,
+        payload: ResourceTagAssignmentRequest,
+    ) -> CharacterCardOut:
+        return _character_out(
+            anchor_service.set_character_category(card_id, category_id, payload.selected)
+        )
+
+    @app.get(
+        "/api/character-projects/summary",
+        response_model=list[CharacterProjectSummaryOut],
+    )
+    def list_character_project_summaries() -> list[CharacterProjectSummaryOut]:
+        return [
+            CharacterProjectSummaryOut(
+                project_id=project.project_id,
+                project_name=project.project_name,
+                character_count=project.character_count,
+                updated_at=project.updated_at,
+            )
+            for project in anchor_service.list_character_project_summaries()
         ]
 
     @app.get("/api/character-tags", response_model=list[ResourceTagOut])
@@ -1814,6 +2123,92 @@ def create_app(
     def assign_character_tag(card_id: int, tag_id: int, payload: ResourceTagAssignmentRequest) -> CharacterCardOut:
         return _character_out(anchor_service.set_character_tag(card_id, tag_id, payload.selected))
 
+    def _character_extraction_settings_out() -> CharacterExtractionSettingsOut:
+        settings = anchor_extraction_service.get_character_extraction_settings()
+        return CharacterExtractionSettingsOut(
+            **settings.__dict__,
+            prompt_preview=(
+                f"{settings.system_prompt}\n\n"
+                f"Detail level: {settings.detail_level}\n"
+                f"Maximum candidates: {settings.max_candidates}\n"
+                f"Additional requirements: {settings.custom_requirements or 'None'}"
+            ),
+        )
+
+    @app.get(
+        "/api/character-extraction/settings",
+        response_model=CharacterExtractionSettingsOut,
+    )
+    def get_character_extraction_settings() -> CharacterExtractionSettingsOut:
+        return _character_extraction_settings_out()
+
+    @app.post(
+        "/api/character-extraction/settings",
+        response_model=CharacterExtractionSettingsOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def update_character_extraction_settings(
+        payload: CharacterExtractionSettingsWriteRequest,
+    ) -> CharacterExtractionSettingsOut:
+        anchor_extraction_service.update_character_extraction_settings(**payload.model_dump())
+        return _character_extraction_settings_out()
+
+    @app.post(
+        "/api/character-extraction/settings/reset",
+        response_model=CharacterExtractionSettingsOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def reset_character_extraction_settings() -> CharacterExtractionSettingsOut:
+        anchor_extraction_service.reset_character_extraction_settings()
+        return _character_extraction_settings_out()
+
+    @app.post(
+        "/api/characters/extract/preview",
+        response_model=CharacterExtractionPreviewOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def preview_character_extraction(
+        payload: CharacterExtractionPreviewRequest,
+    ) -> CharacterExtractionPreviewOut:
+        preview = anchor_extraction_service.preview_characters_from_text(
+            payload.sample_text,
+            name=payload.name,
+            detail_level=payload.detail_level,
+            model_id=payload.model_id,
+            source_metadata=payload.source_metadata,
+        )
+        return CharacterExtractionPreviewOut(
+            preview_token=preview.preview_token,
+            expires_at=preview.expires_at,
+            source_summary=CharacterSourceSummaryOut(**preview.source_summary),
+            candidates=[
+                CharacterExtractionCandidateOut(**candidate.__dict__)
+                for candidate in preview.candidates
+            ],
+        )
+
+    @app.post(
+        "/api/characters/extract/apply",
+        response_model=CharacterExtractionApplyOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def apply_character_extraction(
+        payload: CharacterExtractionApplyRequest,
+    ) -> CharacterExtractionApplyOut:
+        result = anchor_extraction_service.apply_character_extraction(
+            preview_token=payload.preview_token,
+            candidates=[candidate.model_dump() for candidate in payload.candidates],
+            selected_candidate_ids=payload.selected_candidate_ids,
+            scope=payload.scope,
+            project_id=payload.project_id,
+            category_ids=payload.category_ids,
+        )
+        return CharacterExtractionApplyOut(
+            created=[CharacterExtractionApplyItemOut(**item) for item in result["created"]],
+            errors=[CharacterExtractionApplyItemOut(**item) for item in result["errors"]],
+        )
+
+    # Legacy compatibility endpoint. New clients must use preview/apply.
     @app.post("/api/characters/extract", response_model=CharacterCardsExtractOut, dependencies=[Depends(_require_token)])
     def extract_character_cards(payload: AnchorExtractRequest) -> CharacterCardsExtractOut:
         text, source_metadata = _resolve_anchor_source(
@@ -1873,6 +2268,69 @@ def create_app(
         card = anchor_service.get_character_card(copied_id)
         if card is None:
             raise _http_error(500, "character_card_copy_failed", "角色卡副本已创建但无法读取。")
+        return _character_out(card)
+
+    @app.post(
+        "/api/characters/{card_id}/copy-to-project",
+        response_model=CharacterCardOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def copy_public_character_to_project(
+        card_id: int,
+        payload: CharacterCopyToProjectRequest,
+    ) -> CharacterCardOut:
+        existing = anchor_service.find_active_project_copy(card_id, payload.target_project_id)
+        if existing is not None and not payload.force:
+            raise _http_error(
+                409,
+                "character_project_copy_exists",
+                f"该公共角色已存在于目标工程（existing_card_id={existing.id}）",
+            )
+        copied_id = anchor_service.copy_public_character_to_project(
+            card_id,
+            payload.target_project_id,
+        )
+        card = anchor_service.get_character_card(copied_id)
+        if card is None:
+            raise _http_error(
+                500,
+                "character_card_copy_failed",
+                "Character card copy was committed but could not be loaded.",
+            )
+        return _character_out(card)
+
+    @app.get(
+        "/api/characters/{card_id}/project-copy",
+        response_model=CharacterCardOut | None,
+        dependencies=[Depends(_require_token)],
+    )
+    def get_existing_character_project_copy(
+        card_id: int,
+        target_project_id: int,
+    ) -> CharacterCardOut | None:
+        card = anchor_service.find_active_project_copy(card_id, target_project_id)
+        return _character_out(card) if card is not None else None
+
+    @app.post(
+        "/api/characters/{card_id}/publish-to-public",
+        response_model=CharacterCardOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def publish_character_to_public(
+        card_id: int,
+        payload: CharacterPublishRequest,
+    ) -> CharacterCardOut:
+        published_id = anchor_service.publish_project_character_to_public(
+            card_id,
+            selected_fields=payload.selected_fields,
+        )
+        card = anchor_service.get_character_card(published_id)
+        if card is None:
+            raise _http_error(
+                500,
+                "character_publish_failed",
+                "Character card was published but could not be loaded.",
+            )
         return _character_out(card)
 
     @app.post("/api/characters/{card_id}", response_model=CharacterCardOut, dependencies=[Depends(_require_token)])
@@ -1949,47 +2407,6 @@ def create_app(
             ".webp": "image/webp",
         }.get(path.suffix.lower(), "application/octet-stream")
         return FileResponse(path, media_type=media_type)
-
-    def _selection_material_out(payload: SelectionResourceCreateRequest, material_type: str) -> MaterialOut:
-        selected_text = _normalize_selection_text(payload.selected_text)
-        target_public = payload.source_kind == "document" or payload.save_to_public
-        scope = "public" if target_public else "project"
-        project_id = None if target_public else payload.project_id
-        if scope == "project" and project_id is None:
-            raise _http_error(400, "project_required", "Project selections require a project_id.")
-        material_id = material_service.create_material(
-            material_type=material_type,
-            scope=scope,
-            project_id=project_id,
-            name=payload.name,
-            description="",
-            raw_text=selected_text,
-            content={},
-            analysis_status="unanalyzed",
-            source_metadata=_selection_source_metadata(payload),
-            import_metadata={"created_by": "selection_context_menu"},
-            tag_ids=payload.tag_ids,
-        )
-        material = material_service.get_material(material_id)
-        if material is None:
-            raise _http_error(500, "material_create_failed", "Material was created but could not be loaded.")
-        return _material_out(material)
-
-    @app.post(
-        "/api/selection/materials/scene-reference",
-        response_model=MaterialOut,
-        dependencies=[Depends(_require_token)],
-    )
-    def create_scene_material_from_selection(payload: SelectionResourceCreateRequest) -> MaterialOut:
-        return _selection_material_out(payload, "scene_reference")
-
-    @app.post(
-        "/api/selection/materials/plot-skeleton",
-        response_model=MaterialOut,
-        dependencies=[Depends(_require_token)],
-    )
-    def create_plot_skeleton_from_selection(payload: SelectionResourceCreateRequest) -> MaterialOut:
-        return _selection_material_out(payload, "plot_skeleton")
 
     @app.post(
         "/api/selection/characters",
@@ -2281,6 +2698,9 @@ def _outline_out(template: OutlineTemplate) -> OutlineTemplateOut:
 
 
 def _material_out(material: Material) -> MaterialOut:
+    source_summary = material.source_summary
+    if source_summary is None:
+        raise RuntimeError("Material source summary was not generated.")
     return MaterialOut(
         id=material.id,
         material_type=material.material_type,
@@ -2304,10 +2724,16 @@ def _material_out(material: Material) -> MaterialOut:
         created_at=material.created_at,
         updated_at=material.updated_at,
         tags=list(material.tags),
+        general_tags=list(material.general_tags),
+        applicable_scene_tags=list(material.applicable_scene_tags),
+        category_ids=list(material.category_ids),
+        categories=list(material.categories),
+        source_summary=source_summary.__dict__,
     )
 
 
 def _character_out(card: CharacterCard) -> CharacterCardOut:
+    source_summary = card.source_summary
     return CharacterCardOut(
         id=card.id,
         name=card.name,
@@ -2338,6 +2764,16 @@ def _character_out(card: CharacterCard) -> CharacterCardOut:
         cover_path=card.cover_path,
         cover_updated_at=card.cover_updated_at,
         tags=list(card.tags),
+        category_ids=list(card.category_ids),
+        categories=list(card.categories),
+        source_summary=CharacterSourceSummaryOut(
+            kind=source_summary.kind if source_summary is not None else "manual",
+            label=source_summary.label if source_summary is not None else "本地创建",
+            document_id=source_summary.document_id if source_summary is not None else None,
+            chapter_id=source_summary.chapter_id if source_summary is not None else None,
+            project_id=source_summary.project_id if source_summary is not None else card.project_id,
+            source_card_id=source_summary.source_card_id if source_summary is not None else card.source_character_card_id,
+        ),
         created_at=card.created_at,
         updated_at=card.updated_at,
     )
@@ -2394,7 +2830,9 @@ def _resolve_anchor_source(
         text = "\n\n".join(f"# {chapter.title}\n{chapter.text}" for chapter in book.chapters)
         return text, {
             "source_type": "file",
+            "file_name": book.source_path.name,
             "source_file_name": book.source_path.name,
+            "source_path": str(source_path),
             "source_format": book.source_format,
             "book_title": book.title,
         }
@@ -2406,12 +2844,16 @@ def _resolve_anchor_source(
         text = "\n\n".join(f"# {chapter.title}\n{chapter.original_text}" for chapter in chapters)
         return text, {
             "source_type": "project",
+            "project_id": project.id,
+            "project_name": project.name,
             "source_project_id": project.id,
             "source_project_name": project.name,
         }
     content = document_library_service.get_content(int(payload.source_document_id))
     return content.text, {
-        "source_type": "document_library",
+        "source_type": "document",
+        "document_id": content.document_id,
+        "document_title": content.title,
         "source_document_id": content.document_id,
         "source_document_title": content.title,
     }

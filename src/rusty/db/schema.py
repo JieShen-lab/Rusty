@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .connection import session
 
-CURRENT_SCHEMA_VERSION = 19
+CURRENT_SCHEMA_VERSION = 23
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -301,6 +301,8 @@ CREATE TABLE IF NOT EXISTS material_tags (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     normalized_name TEXT NOT NULL,
+    tag_group TEXT NOT NULL DEFAULT 'general'
+        CHECK (tag_group IN ('general', 'applicable_scene')),
     sort_order INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -341,6 +343,57 @@ CREATE TABLE IF NOT EXISTS character_tag_links (
     PRIMARY KEY (character_card_id, tag_id),
     FOREIGN KEY (character_card_id) REFERENCES character_cards(id) ON DELETE CASCADE,
     FOREIGN KEY (tag_id) REFERENCES character_tags(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS character_categories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    normalized_name TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    deleted_at TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_character_categories_normalized_active
+    ON character_categories(normalized_name)
+    WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_character_categories_sort_order
+    ON character_categories(sort_order);
+
+CREATE TABLE IF NOT EXISTS character_category_links (
+    character_card_id INTEGER NOT NULL,
+    category_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (character_card_id, category_id),
+    FOREIGN KEY (character_card_id) REFERENCES character_cards(id) ON DELETE CASCADE,
+    FOREIGN KEY (category_id) REFERENCES character_categories(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_character_category_links_category
+    ON character_category_links(category_id);
+CREATE INDEX IF NOT EXISTS idx_character_category_links_character
+    ON character_category_links(character_card_id);
+
+CREATE TABLE IF NOT EXISTS character_extraction_settings (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    model_id INTEGER,
+    detail_level TEXT NOT NULL DEFAULT 'standard'
+        CHECK (detail_level IN ('brief', 'standard', 'detailed')),
+    max_candidates INTEGER NOT NULL DEFAULT 8,
+    extract_all_characters INTEGER NOT NULL DEFAULT 1,
+    generate_tags INTEGER NOT NULL DEFAULT 1,
+    generate_appearance INTEGER NOT NULL DEFAULT 1,
+    generate_relationships INTEGER NOT NULL DEFAULT 1,
+    generate_personality INTEGER NOT NULL DEFAULT 1,
+    generate_speech_style INTEGER NOT NULL DEFAULT 1,
+    generate_action_constraints INTEGER NOT NULL DEFAULT 1,
+    generate_anti_ooc_rules INTEGER NOT NULL DEFAULT 1,
+    generate_abilities_background INTEGER NOT NULL DEFAULT 1,
+    custom_requirements TEXT NOT NULL DEFAULT '',
+    system_prompt TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (model_id) REFERENCES ai_models(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS project_documents (
@@ -2244,6 +2297,327 @@ def _migrate_to_v19(connection: sqlite3.Connection) -> None:
         )
 
 
+def _migrate_to_v20(connection: sqlite3.Connection) -> None:
+    """Add public character categories and repair legacy project bindings."""
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS character_categories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            normalized_name TEXT NOT NULL,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            deleted_at TEXT
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_character_categories_normalized_active
+            ON character_categories(normalized_name)
+            WHERE deleted_at IS NULL;
+        CREATE INDEX IF NOT EXISTS idx_character_categories_sort_order
+            ON character_categories(sort_order);
+
+        CREATE TABLE IF NOT EXISTS character_category_links (
+            character_card_id INTEGER NOT NULL,
+            category_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (character_card_id, category_id),
+            FOREIGN KEY (character_card_id)
+                REFERENCES character_cards(id)
+                ON DELETE CASCADE,
+            FOREIGN KEY (category_id)
+                REFERENCES character_categories(id)
+                ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_character_category_links_category
+            ON character_category_links(category_id);
+        CREATE INDEX IF NOT EXISTS idx_character_category_links_character
+            ON character_category_links(character_card_id);
+
+        INSERT OR IGNORE INTO project_character_bindings (
+            project_id,
+            character_card_id,
+            sort_order,
+            is_active
+        )
+        SELECT
+            project_id,
+            id,
+            0,
+            1
+        FROM character_cards
+        WHERE scope = 'project'
+          AND project_id IS NOT NULL
+          AND deleted_at IS NULL;
+        """
+    )
+
+
+def _migrate_to_v21(connection: sqlite3.Connection) -> None:
+    """Persist configurable character extraction behavior."""
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS character_extraction_settings (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            model_id INTEGER,
+            detail_level TEXT NOT NULL DEFAULT 'standard'
+                CHECK (detail_level IN ('brief', 'standard', 'detailed')),
+            max_candidates INTEGER NOT NULL DEFAULT 8,
+            extract_all_characters INTEGER NOT NULL DEFAULT 1,
+            generate_tags INTEGER NOT NULL DEFAULT 1,
+            generate_appearance INTEGER NOT NULL DEFAULT 1,
+            generate_relationships INTEGER NOT NULL DEFAULT 1,
+            generate_personality INTEGER NOT NULL DEFAULT 1,
+            generate_speech_style INTEGER NOT NULL DEFAULT 1,
+            generate_action_constraints INTEGER NOT NULL DEFAULT 1,
+            generate_anti_ooc_rules INTEGER NOT NULL DEFAULT 1,
+            generate_abilities_background INTEGER NOT NULL DEFAULT 1,
+            custom_requirements TEXT NOT NULL DEFAULT '',
+            system_prompt TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (model_id) REFERENCES ai_models(id) ON DELETE SET NULL
+        );
+        """
+    )
+
+
+def _migrate_to_v22(connection: sqlite3.Connection) -> None:
+    """Unify material assets and add categories, tag filters, and AI settings."""
+    _add_column_if_missing(
+        connection,
+        "material_tags",
+        "tag_group",
+        "tag_group TEXT NOT NULL DEFAULT 'general' CHECK (tag_group IN ('general', 'applicable_scene'))",
+    )
+    if _table_exists(connection, "material_categories"):
+        category_columns = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(material_categories)").fetchall()
+        }
+        if "normalized_name" not in category_columns:
+            _migrate_material_categories_to_tags(connection)
+            connection.execute("DROP TABLE IF EXISTS material_category_links")
+            connection.execute("DROP TABLE IF EXISTS material_categories")
+    connection.executescript(
+        """
+        DROP INDEX IF EXISTS idx_material_tags_normalized_active;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_material_tags_normalized_active
+            ON material_tags(normalized_name, tag_group)
+            WHERE deleted_at IS NULL;
+
+        CREATE TABLE IF NOT EXISTS material_categories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            material_type TEXT NOT NULL CHECK (material_type IN ('scene_reference', 'plot_skeleton')),
+            name TEXT NOT NULL,
+            normalized_name TEXT NOT NULL,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            deleted_at TEXT
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_material_categories_type_name_active
+            ON material_categories(material_type, normalized_name)
+            WHERE deleted_at IS NULL;
+        CREATE INDEX IF NOT EXISTS idx_material_categories_type_sort
+            ON material_categories(material_type, sort_order);
+
+        CREATE TABLE IF NOT EXISTS material_category_links (
+            material_id INTEGER NOT NULL,
+            category_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (material_id, category_id),
+            FOREIGN KEY (material_id) REFERENCES materials(id) ON DELETE CASCADE,
+            FOREIGN KEY (category_id) REFERENCES material_categories(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_material_category_links_category
+            ON material_category_links(category_id);
+        CREATE INDEX IF NOT EXISTS idx_material_category_links_material
+            ON material_category_links(material_id);
+
+        CREATE TABLE IF NOT EXISTS project_material_filters (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            material_type TEXT NOT NULL CHECK (material_type IN ('scene_reference', 'plot_skeleton')),
+            match_mode TEXT NOT NULL DEFAULT 'any' CHECK (match_mode IN ('any', 'all')),
+            manual_material_ids_json TEXT NOT NULL DEFAULT '[]',
+            include_scene_keywords INTEGER NOT NULL DEFAULT 1,
+            include_applicable_scene_tags INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (project_id, material_type),
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS project_material_filter_tags (
+            filter_id INTEGER NOT NULL,
+            tag_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (filter_id, tag_id),
+            FOREIGN KEY (filter_id) REFERENCES project_material_filters(id) ON DELETE CASCADE,
+            FOREIGN KEY (tag_id) REFERENCES material_tags(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_project_material_filter_tags_tag
+            ON project_material_filter_tags(tag_id);
+
+        CREATE TABLE IF NOT EXISTS material_ai_settings (
+            task_type TEXT PRIMARY KEY CHECK (task_type IN (
+                'narrative_to_plot_skeleton',
+                'plot_text_to_normalized_skeleton',
+                'source_text_to_scene_material'
+            )),
+            model_id INTEGER,
+            detail_level TEXT NOT NULL DEFAULT 'standard'
+                CHECK (detail_level IN ('brief', 'standard', 'detailed')),
+            max_candidates INTEGER NOT NULL DEFAULT 6,
+            generate_tags INTEGER NOT NULL DEFAULT 1,
+            custom_requirements TEXT NOT NULL DEFAULT '',
+            system_prompt TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (model_id) REFERENCES ai_models(id) ON DELETE SET NULL
+        );
+        """
+    )
+
+    defaults = {
+        "narrative_to_plot_skeleton": (
+            "从叙事文本提炼可复用剧情骨架。只使用来源中有证据的因果、冲突和转折；缺失项留空。"
+        ),
+        "plot_text_to_normalized_skeleton": (
+            "把已有剧情文本规范化为结构化剧情骨架。保持原有事件次序和事实，不添加新情节。"
+        ),
+        "source_text_to_scene_material": (
+            "从来源文本提炼场景写作素材，只总结场面、动作、环境、感官和写作提示，不生成剧情骨架。"
+        ),
+    }
+    for task_type, system_prompt in defaults.items():
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO material_ai_settings (task_type, system_prompt)
+            VALUES (?, ?)
+            """,
+            (task_type, system_prompt),
+        )
+
+    legacy_rows = connection.execute(
+        """
+        SELECT id, project_id, material_type, source_metadata_json
+        FROM materials
+        WHERE scope = 'project' AND project_id IS NOT NULL
+        """
+    ).fetchall()
+    for row in legacy_rows:
+        material_id = int(row["id"])
+        project_id = int(row["project_id"])
+        material_type = str(row["material_type"])
+        metadata = _safe_json_object(row["source_metadata_json"])
+        metadata.update(
+            {
+                "legacy_scope": "project",
+                "legacy_project_id": project_id,
+                "migrated_to_unified_library": True,
+            }
+        )
+        connection.execute(
+            """
+            UPDATE materials
+            SET scope = 'public', project_id = NULL, source_metadata_json = ?,
+                updated_at = updated_at
+            WHERE id = ?
+            """,
+            (json.dumps(metadata, ensure_ascii=False), material_id),
+        )
+        tag_rows = connection.execute(
+            "SELECT tag_id FROM material_tag_links WHERE material_id = ?",
+            (material_id,),
+        ).fetchall()
+        if not tag_rows:
+            continue
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO project_material_filters (project_id, material_type)
+            VALUES (?, ?)
+            """,
+            (project_id, material_type),
+        )
+        filter_id = int(
+            connection.execute(
+                """
+                SELECT id FROM project_material_filters
+                WHERE project_id = ? AND material_type = ?
+                """,
+                (project_id, material_type),
+            ).fetchone()["id"]
+        )
+        for tag_row in tag_rows:
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO project_material_filter_tags (filter_id, tag_id)
+                VALUES (?, ?)
+                """,
+                (filter_id, int(tag_row["tag_id"])),
+            )
+
+
+def _migrate_to_v23(connection: sqlite3.Connection) -> None:
+    """Expand the three material AI task settings without losing v22 preferences."""
+    columns = {
+        str(row[1])
+        for row in connection.execute("PRAGMA table_info(material_ai_settings)").fetchall()
+    }
+    additions = {
+        "user_prompt_template": "TEXT NOT NULL DEFAULT ''",
+        "analysis_dimensions_json": "TEXT NOT NULL DEFAULT '[]'",
+        "generate_general_tags": "INTEGER NOT NULL DEFAULT 1",
+        "generate_applicable_scene_tags": "INTEGER NOT NULL DEFAULT 1",
+    }
+    for column_name, declaration in additions.items():
+        if column_name not in columns:
+            connection.execute(
+                f"ALTER TABLE material_ai_settings ADD COLUMN {column_name} {declaration}"
+            )
+
+    defaults = {
+        "narrative_to_plot_skeleton": {
+            "user_prompt_template": "Identify the premise, stages, conflicts, turns, climax, resolution, and hooks.",
+            "analysis_dimensions": [
+                "premise", "stages", "conflicts", "turning_points", "climax", "resolution", "hooks",
+            ],
+        },
+        "plot_text_to_normalized_skeleton": {
+            "user_prompt_template": "Normalize the supplied plot while preserving every supported causal link.",
+            "analysis_dimensions": [
+                "premise", "stages", "conflicts", "turning_points", "climax", "resolution", "hooks",
+            ],
+        },
+        "source_text_to_scene_material": {
+            "user_prompt_template": "Extract scene beats, actions, environment, sensory cues, and writing guidance.",
+            "analysis_dimensions": [
+                "summary", "key_beats", "actions", "environment", "sensory",
+                "writing_guidance", "source_cues", "avoidances", "applicable_conditions",
+            ],
+        },
+    }
+    for task_type, values in defaults.items():
+        connection.execute(
+            """
+            UPDATE material_ai_settings
+            SET user_prompt_template = CASE
+                    WHEN user_prompt_template = '' THEN ?
+                    ELSE user_prompt_template
+                END,
+                analysis_dimensions_json = CASE
+                    WHEN analysis_dimensions_json = '[]' THEN ?
+                    ELSE analysis_dimensions_json
+                END,
+                generate_general_tags = generate_tags,
+                generate_applicable_scene_tags = generate_tags
+            WHERE task_type = ?
+            """,
+            (
+                values["user_prompt_template"],
+                json.dumps(values["analysis_dimensions"], ensure_ascii=False),
+                task_type,
+            ),
+        )
+
 def _safe_json_list(value: object) -> list[dict[str, object]]:
     try:
         parsed = json.loads(str(value or "[]"))
@@ -2613,6 +2987,10 @@ MIGRATIONS = {
     17: _migrate_to_v17,
     18: _migrate_to_v18,
     19: _migrate_to_v19,
+    20: _migrate_to_v20,
+    21: _migrate_to_v21,
+    22: _migrate_to_v22,
+    23: _migrate_to_v23,
 }
 
 

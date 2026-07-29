@@ -40,7 +40,7 @@ class FakeMaterialAIClient(AIClient):
 
 
 class MaterialServiceTests(unittest.TestCase):
-    def test_public_tags_and_project_copy_are_independent(self) -> None:
+    def test_legacy_project_copy_is_normalized_into_unified_library(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             database_path = Path(directory) / "rusty.db"
             service = MaterialService(database_path)
@@ -79,8 +79,12 @@ class MaterialServiceTests(unittest.TestCase):
             self.assertIsNotNone(project_copy)
             assert public is not None and project_copy is not None
             self.assertEqual(("冒险",), public.tags)
-            self.assertEqual("project", project_copy.scope)
-            self.assertEqual(project_id, project_copy.project_id)
+            self.assertEqual("public", project_copy.scope)
+            self.assertIsNone(project_copy.project_id)
+            self.assertEqual(
+                project_id,
+                json.loads(project_copy.source_metadata_json)["legacy_project_id"],
+            )
             self.assertEqual(public_id, project_copy.source_material_id)
             self.assertEqual(1, project_copy.source_version)
             self.assertEqual("遗迹探索", project_copy.name)

@@ -36,12 +36,9 @@ import {
   assignDocumentCategory,
   assignDocumentTag,
   cleanupLibraryDocument,
-  createCharacterFromSelection,
   createDocumentCategory,
   createDocumentTag,
   createLibraryDocumentChapter,
-  createPlotSkeletonFromSelection,
-  createSceneMaterialFromSelection,
   createDocumentProcessingTemplate,
   deleteLibraryDocument,
   exportLibraryDocument,
@@ -112,7 +109,7 @@ const fallbackSettings: DocumentProcessingSettings = {
   trim_whitespace: true,
 };
 
-export function DocumentLibraryPage() {
+export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string, state?: unknown) => void }) {
   const [documents, setDocuments] = useState<LibraryDocument[]>([]);
   const [tags, setTags] = useState<ResourceTag[]>([]);
   const [categories, setCategories] = useState<DocumentCategory[]>([]);
@@ -146,7 +143,6 @@ export function DocumentLibraryPage() {
   const [actionDialog, setActionDialog] = useState<DocumentAction | null>(null);
   const [cleanupOpen, setCleanupOpen] = useState(false);
   const [revisionsOpen, setRevisionsOpen] = useState(false);
-  const [selectionDraft, setSelectionDraft] = useState<{ kind: 'scene' | 'plot' | 'character'; text: string; startOffset: number; endOffset: number } | null>(null);
   const [editorDirty, setEditorDirty] = useState(false);
   const editorControllerRef = useRef<DocumentEditorController | null>(null);
 
@@ -464,30 +460,48 @@ export function DocumentLibraryPage() {
       setError('选区不能超过 50,000 字符。');
       return;
     }
-    setSelectionDraft({ kind, text: selected, startOffset, endOffset });
-  }
-
-  async function confirmSelection(name: string) {
-    if (!documentContent || !selectionDraft || !name.trim()) return;
-    const payload = {
-      source_kind: 'document' as const,
-      selected_text: selectionDraft.text,
-      name: name.trim(),
-      document_id: documentContent.document_id,
-      chapter_id: documentContent.chapter_id,
-      start_offset: selectionDraft.startOffset,
-      end_offset: selectionDraft.endOffset,
-      source_version: documentContent.revision_id,
-    };
-    try {
-      if (selectionDraft.kind === 'scene') await createSceneMaterialFromSelection(payload);
-      if (selectionDraft.kind === 'plot') await createPlotSkeletonFromSelection(payload);
-      if (selectionDraft.kind === 'character') await createCharacterFromSelection(payload);
-      setSelectionDraft(null);
-      setMessage('选区已保存到公共库，状态为未分析。');
-    } catch (err) {
-      setError(errorMessage(err));
+    if (kind === 'character') {
+      const chapter = chapters.find((item) => item.id === documentContent.chapter_id);
+      onNavigate('/characters', {
+        characterExtraction: {
+          selectedText: selected,
+          sourceMetadata: {
+            source_kind: 'document',
+            source_type: 'document',
+            document_id: documentContent.document_id,
+            revision_id: documentContent.revision_id,
+            chapter_id: documentContent.chapter_id,
+            start_offset: startOffset,
+            end_offset: endOffset,
+            document_title: selectedDocument?.title ?? '',
+            chapter_title: chapter?.title ?? '',
+          },
+        },
+      });
+      return;
     }
+    const chapter = chapters.find((item) => item.id === documentContent.chapter_id);
+    const volume = volumes.find((item) => item.id === chapter?.volume_id);
+    onNavigate('/materials', {
+      materialExtraction: {
+        materialType: kind === 'plot' ? 'plot_skeleton' : 'scene_reference',
+        taskType: kind === 'scene' ? 'source_text_to_scene_material' : undefined,
+        selectedText: selected,
+        sourceMetadata: {
+          source_kind: 'document_selection',
+          source_type: 'document',
+          document_id: documentContent.document_id,
+          revision_id: documentContent.revision_id,
+          volume_id: volume?.id ?? null,
+          chapter_id: documentContent.chapter_id,
+          start_offset: startOffset,
+          end_offset: endOffset,
+          document_title: selectedDocument?.title ?? '',
+          volume_title: volume?.title ?? '',
+          chapter_title: chapter?.title ?? '',
+        },
+      },
+    });
   }
 
   async function showDocumentContent(chapterId: number | null) {
@@ -800,7 +814,6 @@ export function DocumentLibraryPage() {
             onRegexPreview={(pattern) => previewRegexSplit(selectedDocument.id, pattern)}
           />
         ) : null}
-        {selectionDraft ? <SelectionNameDialog kind={selectionDraft.kind} initialName={selectionDraft.text.slice(0, 24)} onClose={() => setSelectionDraft(null)} onSave={(name) => void confirmSelection(name)} /> : null}
       </div>
     );
   }
@@ -1538,9 +1551,9 @@ const EditableTextPreview = forwardRef<DocumentEditorController, {
       />
       {menu ? (
         <div className="selection-resource-menu" ref={menuRef} style={{ left: menu.x, top: menu.y }}>
-          <button onClick={() => { onSelectionResource('scene', menu.text, menu.startOffset, menu.endOffset); setMenu(null); }} type="button">添加为场景素材</button>
-          <button onClick={() => { onSelectionResource('plot', menu.text, menu.startOffset, menu.endOffset); setMenu(null); }} type="button">添加为剧情骨架</button>
-          <button onClick={() => { onSelectionResource('character', menu.text, menu.startOffset, menu.endOffset); setMenu(null); }} type="button">添加到公共角色卡</button>
+          <button onClick={() => { onSelectionResource('plot', menu.text, menu.startOffset, menu.endOffset); setMenu(null); }} type="button">添加为剧情骨架来源</button>
+          <button onClick={() => { onSelectionResource('scene', menu.text, menu.startOffset, menu.endOffset); setMenu(null); }} type="button">添加为场景素材来源</button>
+          <button onClick={() => { onSelectionResource('character', menu.text, menu.startOffset, menu.endOffset); setMenu(null); }} type="button">提取角色卡</button>
         </div>
       ) : null}
       {markStart != null && markEnd != null ? (
@@ -1631,25 +1644,6 @@ function ReferencePanel({ scope, setScope }: { scope: ReferenceScope; setScope: 
       <header><h3>默认引用范围</h3><p>为工程、角色卡和剧情大纲预设选择范围。</p></header>
       <div>{options.map(([key, label, description]) => <button className={scope === key ? 'selected' : ''} key={key} onClick={() => setScope(key)} type="button"><BookOpenText size={18} /><span><strong>{label}</strong><small>{description}</small></span></button>)}</div>
     </section>
-  );
-}
-
-function SelectionNameDialog({ initialName, kind, onClose, onSave }: {
-  initialName: string;
-  kind: 'scene' | 'plot' | 'character';
-  onClose: () => void;
-  onSave: (name: string) => void;
-}) {
-  const [name, setName] = useState(initialName);
-  const label = kind === 'character' ? '角色名' : kind === 'scene' ? '场景素材名称' : '剧情骨架名称';
-  return (
-    <div className="document-processing-backdrop" role="presentation">
-      <form className="document-tag-dialog" role="dialog" aria-modal="true" onSubmit={(event) => { event.preventDefault(); onSave(name); }}>
-        <header><div><span>保存选区</span><h2>{label}</h2></div><button className="icon-button" onClick={onClose} type="button"><X size={17} /></button></header>
-        <label><span className="form-label">{label}</span><input autoFocus className="form-input" value={name} onChange={(event) => setName(event.target.value)} /></label>
-        <footer><SecondaryButton onClick={onClose}>取消</SecondaryButton><PrimaryButton disabled={!name.trim()} type="submit">保存到公共库</PrimaryButton></footer>
-      </form>
-    </div>
   );
 }
 

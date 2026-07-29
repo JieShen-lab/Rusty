@@ -51,8 +51,8 @@ export default function App() {
     return () => window.removeEventListener('popstate', onPop);
   }, []);
 
-  function navigate(path: string) {
-    window.history.pushState(null, '', path);
+  function navigate(path: string, state?: unknown) {
+    window.history.pushState(state ?? null, '', path);
     setRoute(parseRoute(path));
   }
 
@@ -63,7 +63,7 @@ export default function App() {
   if (route.key === 'prompts') page = <PromptManagePage />;
   if (route.key === 'outlines') page = <MaterialLibraryPage />;
   if (route.key === 'characters') page = <CharacterLibraryPage />;
-  if (route.key === 'documents') page = <DocumentLibraryPage />;
+  if (route.key === 'documents') page = <DocumentLibraryPage onNavigate={navigate} />;
 
   return (
     <AppShell active={route.key} onNavigate={navigate} onToggleTheme={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')} theme={theme}>

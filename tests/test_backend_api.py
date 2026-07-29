@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from rusty.services.ai_client import AIClient, AIResponse
+from rusty.db import session
 
 try:
     from fastapi.testclient import TestClient
@@ -667,11 +668,75 @@ class BackendApiTests(unittest.TestCase):
         self.assertEqual(["Robert"], updated_bob.json()["aliases"])
         self.assertEqual(45, updated_bob.json()["priority"])
         self.assertEqual(403, rejected_character_bind.status_code)
-        self.assertEqual(["Alice", "Bob"], [item["name"] for item in bound_characters.json()["character_cards"]])
-        self.assertEqual(["Alice"], [item["name"] for item in unbound_characters.json()["character_cards"]])
+        self.assertEqual(["Alice", "Alice", "Bob"], [item["name"] for item in bound_characters.json()["character_cards"]])
+        self.assertEqual(["Alice", "Alice"], [item["name"] for item in unbound_characters.json()["character_cards"]])
         self.assertIsNone(unbound_outline.json()["outline_template"])
         self.assertEqual(200, deleted_outline.status_code)
         self.assertEqual(200, deleted_alice.status_code)
+
+    def test_character_category_summary_and_atomic_copy_api(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            database_path = root / "rusty.db"
+            os.environ["RUSTY_DATABASE_PATH"] = str(database_path)
+            os.environ["RUSTY_API_TOKEN"] = "test-token"
+            api = importlib.import_module("backend.api")
+            app = api.create_app(database_path)
+            client = TestClient(app)
+            headers = {"X-Rusty-Token": "test-token"}
+            with session(database_path) as connection:
+                cursor = connection.execute(
+                    "INSERT INTO projects (name, updated_at) VALUES ('Character project', '2026-07-29 12:00:00')"
+                )
+                project_id = int(cursor.lastrowid)
+
+            category = client.post(
+                "/api/character-categories",
+                json={"name": "Lead"},
+                headers=headers,
+            )
+            tag = client.post(
+                "/api/character-tags",
+                json={"name": "Calm"},
+                headers=headers,
+            )
+            card = client.post(
+                "/api/characters",
+                json={"name": "Alice", "tag_ids": [tag.json()["id"]]},
+                headers=headers,
+            )
+            card_id = card.json()["id"]
+            assigned = client.post(
+                f"/api/characters/{card_id}/categories/{category.json()['id']}",
+                json={"selected": True},
+                headers=headers,
+            )
+            copied = client.post(
+                f"/api/characters/{card_id}/copy-to-project",
+                json={"target_project_id": project_id},
+                headers=headers,
+            )
+            project_cards = client.get(f"/api/projects/{project_id}/characters")
+            summaries = client.get("/api/character-projects/summary")
+            deleted_category = client.post(
+                f"/api/character-categories/{category.json()['id']}/delete",
+                headers=headers,
+            )
+            original_after_delete = client.get(f"/api/characters/{card_id}")
+
+        self.assertEqual(200, category.status_code)
+        self.assertEqual(["Lead"], assigned.json()["categories"])
+        self.assertEqual(["Calm"], assigned.json()["tags"])
+        self.assertEqual("project", copied.json()["scope"])
+        self.assertEqual(card_id, copied.json()["source_character_card_id"])
+        self.assertEqual([], copied.json()["categories"])
+        self.assertEqual(["Calm"], copied.json()["tags"])
+        self.assertEqual([copied.json()["id"]], [item["id"] for item in project_cards.json()["character_cards"]])
+        summary = next(item for item in summaries.json() if item["project_id"] == project_id)
+        self.assertEqual(1, summary["character_count"])
+        self.assertEqual(200, deleted_category.status_code)
+        self.assertEqual(card_id, original_after_delete.json()["id"])
+        self.assertEqual([], original_after_delete.json()["categories"])
 
     def test_anchor_extraction_api_from_text_and_file(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:

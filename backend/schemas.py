@@ -111,6 +111,7 @@ class ResourceTagOut(BaseModel):
     normalized_name: str = ""
     sort_order: int = 0
     resource_count: int = 0
+    tag_group: Literal["general", "applicable_scene"] = "general"
 
 
 class DocumentCategoryOut(BaseModel):
@@ -123,6 +124,7 @@ class DocumentCategoryOut(BaseModel):
 
 class ResourceTagCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=40)
+    tag_group: Literal["general", "applicable_scene"] = "general"
 
 
 class ResourceTagRenameRequest(BaseModel):
@@ -818,6 +820,37 @@ class AnchorExtractRequest(BaseModel):
     project_id: int | None = None
 
 
+class MaterialCategoryOut(BaseModel):
+    id: int
+    material_type: Literal["scene_reference", "plot_skeleton"]
+    name: str
+    normalized_name: str
+    sort_order: int = 0
+    resource_count: int = 0
+
+
+class MaterialCategoryCreateRequest(BaseModel):
+    material_type: Literal["scene_reference", "plot_skeleton"]
+    name: str = Field(min_length=1, max_length=80)
+
+
+class MaterialSourceSummaryOut(BaseModel):
+    kind: Literal[
+        "manual",
+        "document_selection",
+        "project_selection",
+        "file_import",
+        "pasted_text",
+        "ai_extraction",
+        "legacy_copy",
+        "legacy_project_material",
+    ]
+    label: str
+    document_id: int | None = None
+    chapter_id: int | None = None
+    project_id: int | None = None
+
+
 class MaterialOut(BaseModel):
     id: int
     material_type: Literal["scene_reference", "plot_skeleton"]
@@ -841,6 +874,11 @@ class MaterialOut(BaseModel):
     created_at: str
     updated_at: str
     tags: list[str] = Field(default_factory=list)
+    general_tags: list[str] = Field(default_factory=list)
+    applicable_scene_tags: list[str] = Field(default_factory=list)
+    category_ids: list[int] = Field(default_factory=list)
+    categories: list[str] = Field(default_factory=list)
+    source_summary: MaterialSourceSummaryOut
 
 
 class MaterialWriteRequest(BaseModel):
@@ -859,6 +897,7 @@ class MaterialWriteRequest(BaseModel):
     timeline_end_chapter: int | None = Field(default=None, ge=1)
     sort_order: int = 0
     tag_ids: list[int] = Field(default_factory=list)
+    category_ids: list[int] = Field(default_factory=list)
 
 
 class MaterialUpdateRequest(BaseModel):
@@ -874,6 +913,7 @@ class MaterialUpdateRequest(BaseModel):
     timeline_end_chapter: int | None = Field(default=None, ge=1)
     sort_order: int = 0
     tag_ids: list[int] | None = None
+    category_ids: list[int] | None = None
 
 
 class MaterialCopyRequest(BaseModel):
@@ -906,6 +946,133 @@ class MaterialExtractOut(BaseModel):
     materials: list[MaterialOut]
 
 
+class ProjectMaterialFilterOut(BaseModel):
+    project_id: int
+    material_type: Literal["scene_reference", "plot_skeleton"]
+    match_mode: Literal["any", "all"]
+    tag_ids: list[int] = Field(default_factory=list)
+    manual_material_ids: list[int] = Field(default_factory=list)
+    include_scene_keywords: bool = True
+    include_applicable_scene_tags: bool = True
+
+
+class ProjectMaterialFilterWriteRequest(BaseModel):
+    match_mode: Literal["any", "all"] = "any"
+    tag_ids: list[int] = Field(default_factory=list)
+    manual_material_ids: list[int] = Field(default_factory=list)
+    include_scene_keywords: bool = True
+    include_applicable_scene_tags: bool = True
+
+
+class MaterialAISettingsOut(BaseModel):
+    task_type: Literal[
+        "narrative_to_plot_skeleton",
+        "plot_text_to_normalized_skeleton",
+        "source_text_to_scene_material",
+    ]
+    model_id: int | None = None
+    detail_level: Literal["brief", "standard", "detailed"]
+    max_candidates: int
+    system_prompt: str
+    user_prompt_template: str
+    analysis_dimensions: list[str] = Field(default_factory=list)
+    generate_general_tags: bool
+    generate_applicable_scene_tags: bool
+    custom_requirements: str
+    updated_at: str
+
+
+class MaterialAISettingsWriteRequest(BaseModel):
+    model_id: int | None = None
+    detail_level: Literal["brief", "standard", "detailed"] = "standard"
+    max_candidates: int = Field(default=6, ge=1, le=20)
+    system_prompt: str = ""
+    user_prompt_template: str | None = None
+    analysis_dimensions: list[str] | None = None
+    generate_general_tags: bool | None = None
+    generate_applicable_scene_tags: bool | None = None
+    generate_tags: bool | None = None
+    custom_requirements: str = ""
+
+
+class MaterialExtractionPreviewRequest(BaseModel):
+    task_type: Literal[
+        "narrative_to_plot_skeleton",
+        "plot_text_to_normalized_skeleton",
+        "source_text_to_scene_material",
+    ]
+    name: str | None = None
+    sample_text: str | None = Field(default=None, max_length=50000)
+    source_path: str | None = None
+    source_project_id: int | None = None
+    source_document_id: int | None = None
+    model_id: int | None = None
+    source_metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class MaterialExtractionCandidateOut(BaseModel):
+    candidate_id: str
+    material_type: Literal["scene_reference", "plot_skeleton"]
+    selected: bool = True
+    name: str
+    description: str = ""
+    content: dict[str, Any] = Field(default_factory=dict)
+    suggested_general_tags: list[str] = Field(default_factory=list)
+    suggested_applicable_scene_tags: list[str] = Field(default_factory=list)
+    evidence: list[dict[str, Any]] = Field(default_factory=list)
+    evidence_summary: str = ""
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class MaterialExtractionPreviewOut(BaseModel):
+    preview_token: str
+    expires_at: str
+    task_type: Literal[
+        "narrative_to_plot_skeleton",
+        "plot_text_to_normalized_skeleton",
+        "source_text_to_scene_material",
+    ]
+    material_type: Literal["scene_reference", "plot_skeleton"]
+    source_summary: MaterialSourceSummaryOut
+    prompt_snapshot: dict[str, Any] = Field(default_factory=dict)
+    candidates: list[MaterialExtractionCandidateOut]
+
+
+class MaterialExtractionApplyRequest(BaseModel):
+    preview_token: str
+    candidates: list[dict[str, Any]] = Field(default_factory=list)
+    selected_candidate_ids: list[str] = Field(default_factory=list)
+
+
+class MaterialExtractionApplyItemOut(BaseModel):
+    candidate_id: str
+    material_id: int | None = None
+    error: str | None = None
+
+
+class MaterialExtractionApplyOut(BaseModel):
+    created: list[MaterialExtractionApplyItemOut] = Field(default_factory=list)
+    errors: list[MaterialExtractionApplyItemOut] = Field(default_factory=list)
+
+
+class CharacterSourceSummaryOut(BaseModel):
+    kind: Literal[
+        "manual",
+        "document_selection",
+        "project_selection",
+        "file_import",
+        "ai_extraction",
+        "public_copy",
+        "project_copy",
+    ]
+    label: str
+    document_id: int | None = None
+    chapter_id: int | None = None
+    project_id: int | None = None
+    source_card_id: int | None = None
+
+
 class CharacterCardOut(BaseModel):
     id: int
     name: str
@@ -936,8 +1103,26 @@ class CharacterCardOut(BaseModel):
     cover_path: str | None = None
     cover_updated_at: str | None = None
     tags: list[str] = Field(default_factory=list)
+    category_ids: list[int] = Field(default_factory=list)
+    categories: list[str] = Field(default_factory=list)
+    source_summary: CharacterSourceSummaryOut
     created_at: str = ""
     updated_at: str = ""
+
+
+class CharacterCategoryOut(BaseModel):
+    id: int
+    name: str
+    normalized_name: str
+    sort_order: int
+    resource_count: int
+
+
+class CharacterProjectSummaryOut(BaseModel):
+    project_id: int
+    project_name: str
+    character_count: int
+    updated_at: str
 
 
 class CharacterCardWriteRequest(BaseModel):
@@ -968,6 +1153,109 @@ class CharacterCardWriteRequest(BaseModel):
 class CharacterCardCopyRequest(BaseModel):
     target_scope: Literal["public", "project"]
     target_project_id: int | None = None
+
+
+class CharacterCopyToProjectRequest(BaseModel):
+    target_project_id: int
+    force: bool = False
+
+
+class CharacterPublishRequest(BaseModel):
+    selected_fields: list[str]
+
+
+class CharacterExtractionSettingsOut(BaseModel):
+    model_id: int | None = None
+    detail_level: Literal["brief", "standard", "detailed"] = "standard"
+    max_candidates: int = Field(default=8, ge=1, le=20)
+    extract_all_characters: bool = True
+    generate_tags: bool = True
+    generate_appearance: bool = True
+    generate_relationships: bool = True
+    generate_personality: bool = True
+    generate_speech_style: bool = True
+    generate_action_constraints: bool = True
+    generate_anti_ooc_rules: bool = True
+    generate_abilities_background: bool = True
+    custom_requirements: str = ""
+    system_prompt: str = ""
+    prompt_preview: str = ""
+
+
+class CharacterExtractionSettingsWriteRequest(BaseModel):
+    model_id: int | None = None
+    detail_level: Literal["brief", "standard", "detailed"] = "standard"
+    max_candidates: int = Field(default=8, ge=1, le=20)
+    extract_all_characters: bool = True
+    generate_tags: bool = True
+    generate_appearance: bool = True
+    generate_relationships: bool = True
+    generate_personality: bool = True
+    generate_speech_style: bool = True
+    generate_action_constraints: bool = True
+    generate_anti_ooc_rules: bool = True
+    generate_abilities_background: bool = True
+    custom_requirements: str = ""
+    system_prompt: str = ""
+
+
+class CharacterExtractionPreviewRequest(BaseModel):
+    sample_text: str = Field(min_length=1, max_length=50000)
+    name: str | None = None
+    detail_level: Literal["brief", "standard", "detailed"] | None = None
+    model_id: int | None = None
+    source_metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class CharacterExtractionCandidateOut(BaseModel):
+    candidate_id: str
+    selected: bool = True
+    name: str
+    aliases: list[str] = Field(default_factory=list)
+    description: str = ""
+    identity: str = ""
+    age: str = ""
+    setting_text: str = ""
+    relationship_notes: str = ""
+    personality: str = ""
+    speech_style: str = ""
+    action_constraints: str = ""
+    anti_ooc_rules: str = ""
+    profile: dict[str, Any] = Field(default_factory=dict)
+    custom_fields: list[dict[str, Any]] = Field(default_factory=list)
+    suggested_tags: list[str] = Field(default_factory=list)
+    evidence_summary: str = ""
+
+
+class CharacterExtractionPreviewOut(BaseModel):
+    preview_token: str
+    expires_at: str
+    source_summary: CharacterSourceSummaryOut
+    candidates: list[CharacterExtractionCandidateOut]
+
+
+class CharacterExtractionCandidateApply(CharacterExtractionCandidateOut):
+    confirmed_tags: list[str] = Field(default_factory=list)
+
+
+class CharacterExtractionApplyRequest(BaseModel):
+    preview_token: str
+    candidates: list[CharacterExtractionCandidateApply]
+    selected_candidate_ids: list[str]
+    scope: Literal["public", "project"] = "public"
+    project_id: int | None = None
+    category_ids: list[int] = Field(default_factory=list)
+
+
+class CharacterExtractionApplyItemOut(BaseModel):
+    candidate_id: str
+    card_id: int | None = None
+    error: str | None = None
+
+
+class CharacterExtractionApplyOut(BaseModel):
+    created: list[CharacterExtractionApplyItemOut]
+    errors: list[CharacterExtractionApplyItemOut]
 
 
 class CharacterAnalyzeRequest(BaseModel):

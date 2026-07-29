@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useEffect, useId, type MouseEvent, type ReactNode } from 'react';
 import { CircleDashed, X } from 'lucide-react';
 
 export function LibrarySidebarItem({
@@ -48,31 +48,55 @@ export function LibraryEmptyState({
 }
 
 export function LibraryDialog({
+  bodyClassName,
   children,
+  className,
+  closeOnBackdrop = true,
   footer,
   onClose,
   subtitle,
   title,
 }: {
+  bodyClassName?: string;
   children: ReactNode;
+  className?: string;
+  closeOnBackdrop?: boolean;
   footer: ReactNode;
   onClose: () => void;
   subtitle?: string;
   title: string;
 }) {
+  const titleId = useId();
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
+
+  const handleBackdrop = (event: MouseEvent<HTMLDivElement>) => {
+    if (closeOnBackdrop && event.currentTarget === event.target) {
+      onClose();
+    }
+  };
+
   return (
-    <div className="library-dialog-backdrop" role="presentation">
-      <section aria-modal="true" className="library-dialog" role="dialog">
+    <div className="library-dialog-backdrop" onMouseDown={handleBackdrop} role="presentation">
+      <section aria-labelledby={titleId} aria-modal="true" className={`library-dialog ${className ?? ''}`} role="dialog">
         <header>
           <div>
             {subtitle ? <span>{subtitle}</span> : null}
-            <h2>{title}</h2>
+            <h2 id={titleId}>{title}</h2>
           </div>
           <button aria-label="关闭" className="icon-button" onClick={onClose} type="button">
             <X size={16} />
           </button>
         </header>
-        <div className="library-dialog-body">{children}</div>
+        <div className={`library-dialog-body ${bodyClassName ?? ''}`}>{children}</div>
         <footer>{footer}</footer>
       </section>
     </div>

@@ -151,6 +151,7 @@ export type ResourceTag = {
   normalized_name: string;
   sort_order: number;
   resource_count: number;
+  tag_group?: 'general' | 'applicable_scene';
 };
 
 export type LibraryDocumentExportResult = {
@@ -439,28 +440,6 @@ export type ProjectStyleBinding = {
   style_template: StyleTemplate | null;
 };
 
-export type OutlineTemplate = {
-  id: number;
-  name: string;
-  description: string;
-  detail_level: StyleDetailLevel;
-  outline: Record<string, unknown>;
-  anchor_prompt: string;
-  source_metadata: Record<string, unknown>;
-  import_metadata: Record<string, unknown>;
-  version: number;
-};
-
-export type OutlineTemplateWrite = {
-  name: string;
-  description: string;
-  detail_level: StyleDetailLevel;
-  outline: Record<string, unknown>;
-  anchor_prompt: string;
-  source_metadata: Record<string, unknown>;
-  import_metadata: Record<string, unknown>;
-};
-
 export type CharacterCard = {
   id: number;
   name: string;
@@ -491,8 +470,54 @@ export type CharacterCard = {
   cover_path: string | null;
   cover_updated_at: string | null;
   tags: string[];
+  category_ids: number[];
+  categories: string[];
+  source_summary: CharacterSourceSummary;
   created_at: string;
   updated_at: string;
+};
+
+export type CharacterSourceSummary = {
+  kind:
+    | 'manual'
+    | 'document_selection'
+    | 'project_selection'
+    | 'file_import'
+    | 'ai_extraction'
+    | 'public_copy'
+    | 'project_copy';
+  label: string;
+  document_id?: number | null;
+  chapter_id?: number | null;
+  project_id?: number | null;
+  source_card_id?: number | null;
+};
+
+export type CharacterCategory = {
+  id: number;
+  name: string;
+  normalized_name: string;
+  sort_order: number;
+  resource_count: number;
+};
+
+export type CharacterProjectSummary = {
+  project_id: number;
+  project_name: string;
+  character_count: number;
+  updated_at: string;
+};
+
+export type CharacterLibrarySelection =
+  | { kind: 'project'; projectId: number }
+  | { kind: 'public-all' }
+  | { kind: 'public-category'; categoryId: number };
+
+export type CharacterQueryState = {
+  query: string;
+  activeTagId: number | null;
+  analysisStatus: 'all' | 'unanalyzed' | 'analyzed';
+  untaggedOnly: boolean;
 };
 
 export type CharacterCustomField = {
@@ -527,21 +552,90 @@ export type CharacterCardWrite = {
   tag_ids?: number[];
 };
 
-export type AnchorExtractWrite = {
-  name?: string | null;
+export type CharacterExtractionSettings = {
+  model_id: number | null;
   detail_level: StyleDetailLevel;
-  sample_text?: string | null;
-  source_path?: string | null;
-  source_project_id?: number | null;
-  source_document_id?: number | null;
-  model_id?: number | null;
-  scope?: 'public' | 'project';
-  project_id?: number | null;
+  max_candidates: number;
+  extract_all_characters: boolean;
+  generate_tags: boolean;
+  generate_appearance: boolean;
+  generate_relationships: boolean;
+  generate_personality: boolean;
+  generate_speech_style: boolean;
+  generate_action_constraints: boolean;
+  generate_anti_ooc_rules: boolean;
+  generate_abilities_background: boolean;
+  custom_requirements: string;
+  system_prompt: string;
+  prompt_preview: string;
+};
+
+export type CharacterExtractionCandidate = {
+  candidate_id: string;
+  selected: boolean;
+  name: string;
+  aliases: string[];
+  description: string;
+  identity: string;
+  age: string;
+  setting_text: string;
+  relationship_notes: string;
+  personality: string;
+  speech_style: string;
+  action_constraints: string;
+  anti_ooc_rules: string;
+  profile: Record<string, unknown>;
+  custom_fields: CharacterCustomField[];
+  suggested_tags: string[];
+  confirmed_tags?: string[];
+  evidence_summary: string;
+};
+
+export type CharacterExtractionPreview = {
+  preview_token: string;
+  expires_at: string;
+  source_summary: CharacterSourceSummary;
+  candidates: CharacterExtractionCandidate[];
+};
+
+export type CharacterExtractionApplyResult = {
+  created: Array<{ candidate_id: string; card_id: number | null; error: string | null }>;
+  errors: Array<{ candidate_id: string; card_id: number | null; error: string | null }>;
 };
 
 export type AnalysisStatus = 'unanalyzed' | 'analyzed';
 export type MaterialType = 'scene_reference' | 'plot_skeleton';
 export type MaterialScope = 'public' | 'project';
+export type MaterialTagGroup = 'general' | 'applicable_scene';
+export type MaterialAITask =
+  | 'narrative_to_plot_skeleton'
+  | 'plot_text_to_normalized_skeleton'
+  | 'source_text_to_scene_material';
+
+export type MaterialSourceSummary = {
+  kind:
+    | 'manual'
+    | 'document_selection'
+    | 'project_selection'
+    | 'file_import'
+    | 'pasted_text'
+    | 'ai_extraction'
+    | 'legacy_copy'
+    | 'legacy_project_material';
+  label: string;
+  document_id?: number | null;
+  chapter_id?: number | null;
+  project_id?: number | null;
+};
+
+export type MaterialCategory = {
+  id: number;
+  material_type: MaterialType;
+  name: string;
+  normalized_name: string;
+  sort_order: number;
+  resource_count: number;
+};
 
 export type Material = {
   id: number;
@@ -566,6 +660,11 @@ export type Material = {
   created_at: string;
   updated_at: string;
   tags: string[];
+  general_tags: string[];
+  applicable_scene_tags: string[];
+  category_ids: number[];
+  categories: string[];
+  source_summary: MaterialSourceSummary;
 };
 
 export type MaterialWrite = {
@@ -584,20 +683,66 @@ export type MaterialWrite = {
   timeline_end_chapter?: number | null;
   sort_order?: number;
   tag_ids?: number[];
+  category_ids?: number[];
 };
 
 export type MaterialUpdate = Omit<MaterialWrite, 'material_type' | 'scope' | 'project_id' | 'source_metadata' | 'import_metadata'>;
 
-export type MaterialAnalysisProposal = {
-  material_id: number;
-  model_id: number;
-  invocation_id: number;
-  proposal: Record<string, unknown>;
-  existing: Record<string, unknown>;
+export type ProjectMaterialFilter = {
+  project_id: number;
+  material_type: MaterialType;
+  match_mode: 'any' | 'all';
+  tag_ids: number[];
+  manual_material_ids: number[];
+  include_scene_keywords: boolean;
+  include_applicable_scene_tags: boolean;
 };
 
-export type MaterialExtractWrite = AnchorExtractWrite & {
+export type MaterialAISettings = {
+  task_type: MaterialAITask;
+  model_id: number | null;
+  detail_level: StyleDetailLevel;
+  max_candidates: number;
+  system_prompt: string;
+  user_prompt_template: string;
+  analysis_dimensions: string[];
+  generate_general_tags: boolean;
+  generate_applicable_scene_tags: boolean;
+  custom_requirements: string;
+  updated_at: string;
+};
+
+export type MaterialExtractionCandidate = {
+  candidate_id: string;
   material_type: MaterialType;
+  selected: boolean;
+  name: string;
+  description: string;
+  content: Record<string, unknown>;
+  suggested_general_tags: string[];
+  suggested_applicable_scene_tags: string[];
+  confirmed_general_tags?: string[];
+  confirmed_applicable_scene_tags?: string[];
+  category_ids?: number[];
+  evidence: Array<Record<string, unknown>>;
+  evidence_summary: string;
+  confidence: number;
+  warnings: string[];
+};
+
+export type MaterialExtractionPreview = {
+  preview_token: string;
+  expires_at: string;
+  task_type: MaterialAITask;
+  material_type: MaterialType;
+  source_summary: MaterialSourceSummary;
+  prompt_snapshot: Record<string, unknown>;
+  candidates: MaterialExtractionCandidate[];
+};
+
+export type MaterialExtractionApplyResult = {
+  created: Array<{ candidate_id: string; material_id: number | null; error: string | null }>;
+  errors: Array<{ candidate_id: string; material_id: number | null; error: string | null }>;
 };
 
 export type SelectionResourceCreate = {
@@ -612,31 +757,6 @@ export type SelectionResourceCreate = {
   source_version?: number | null;
   save_to_public?: boolean;
   tag_ids?: number[];
-};
-
-export type CharacterAnalysisProposal = {
-  invocation_id: number;
-  model_id: number;
-  proposal: {
-    name: string;
-    identity: string;
-    age: string;
-    setting_text: string;
-    custom_fields: CharacterCustomField[];
-  };
-  merged: {
-    name: string;
-    identity: string;
-    age: string;
-    setting_text: string;
-    custom_fields: CharacterCustomField[];
-  };
-  conflicts: Array<{ field: string; existing: string; proposed: string }>;
-};
-
-export type MaterialJsonImportResult = {
-  imported: Array<{ index: number; id: number; name: string; material_type: MaterialType }>;
-  errors: Array<{ index: number; name: string; error: string }>;
 };
 
 export type AISplitProposal = {
@@ -687,10 +807,6 @@ export type SplitPreview = {
   revision_id: number;
   chapter_count: number;
   chapters: SplitChapterCandidate[];
-};
-
-export type ProjectOutlineBinding = {
-  outline_template: OutlineTemplate | null;
 };
 
 export type ProjectCharacterBindings = {

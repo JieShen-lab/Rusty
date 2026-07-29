@@ -545,12 +545,11 @@ class PhaseTwoContractRegressionTests(unittest.TestCase):
                 plot_skeleton_material_ids=[plot_id],
                 scene_reference_ids=[plot_id],
             )
-        with self.assertRaisesRegex(ValueError, "not available to this project"):
-            orchestrator.execute(
-                run["id"],
-                plot_skeleton_material_ids=[plot_id],
-                scene_reference_ids=[other_reference_id],
-            )
+        migrated_reference = materials.get_material(other_reference_id)
+        self.assertIsNotNone(migrated_reference)
+        assert migrated_reference is not None
+        self.assertEqual("public", migrated_reference.scope)
+        self.assertIsNone(migrated_reference.project_id)
         orchestrator.execute(
             run["id"],
             plot_skeleton_material_ids=[plot_id],
