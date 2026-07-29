@@ -89,11 +89,14 @@ Rusty 以本地优先方式管理小说项目。当前主界面采用 Electron +
 
 ### 2.5 素材、角色卡与大纲
 
-- 素材使用统一实体区分公共作用域与工程作用域，不再使用独立公共/工程实体或工程时间线。
+- 素材是统一的全局资产，不再区分公共素材和工程素材，也不再为工程创建素材副本；`scope` / `project_id` 仅为 legacy 兼容字段。
 - 素材类型固定为场景素材 `scene_reference` 和剧情骨架 `plot_skeleton`，创建后不可转换。
-- 支持独立多标签、未分析状态筛选、名称/说明/原文/标签搜索。
-- 公共素材可复制到工程，工程素材可复制到公共库；副本保留来源版本并可独立编辑。
-- 支持基于文本或文件调用 AI 抽取指定类型素材；选区快捷保存的素材保留原文并标记为未分析。
+- 两类素材分别拥有独立的多对多分类；标签分为 `general` 与 `applicable_scene` 两组，分类和标签是独立命名空间。标签只在右侧详情和管理弹窗显示，但可在当前类型/分类范围内筛选。
+- 剧情骨架和场景素材均使用规范化 `schema_version: 1` 内容；编辑器按条目编辑、排序和删除，未知旧字段保存在 `legacy_extra`，正常 UI 不暴露原始 JSON。
+- 素材 AI 只提供三项任务：`narrative_to_plot_skeleton`、`plot_text_to_normalized_skeleton`、`source_text_to_scene_material`。禁止从剧情骨架派生场景素材。
+- AI 整理使用 preview/apply：preview 只返回可编辑候选、证据摘要及两组标签建议，不写素材/标签/分类；apply 只创建用户确认的候选，并逐项返回成功或错误。
+- 来源可只保存为 `analysis_status='unanalyzed'` 的待整理素材并显示在“最近导入”；修改原始来源会重新标记为未分析。
+- 工程通过每种素材独立的标签筛选（任一/全部）和手动固定素材 ID 使用统一资产。上下文检索优先级为：手动指定 → 工程标签筛选 → 时间线/适用场景 → 关键词 → 相似度；未分析素材不参与自动检索。
 - 支持大纲模板 CRUD、AI 抽取和项目绑定。
 - 角色卡以角色名、身份、年龄、设定为固定字段，其他信息使用有序自定义字段。
 - 角色卡支持公共/工程作用域、多标签、分析状态、独立副本和稳定默认封面。标签只在详情区显示和管理，并始终限定在当前工程或公共分类范围内筛选。
@@ -119,11 +122,12 @@ Rusty 以本地优先方式管理小说项目。当前主界面采用 Electron +
 ### 2.6 正文选区快捷保存
 
 - 文档库正文编辑区、工程原文和工程改写稿支持选中文字后打开右键菜单。
-- 菜单并列提供“添加为场景素材”“添加为剧情骨架”“提取角色卡”。
+- 菜单并列提供“添加为剧情骨架来源”“添加为场景素材来源”“提取角色卡”。
+- 两个素材入口通过一次性 history state 将选区正文和文档/工程、revision、卷、章节、offset 及标题来源带到素材页；用户可仅保存来源，或生成候选并确认后写库。
 - “提取角色卡”通过 history state 将选区正文与文档、revision、章节、偏移及标题来源传到角色页，读取一次后立即清除；长文本不进入 URL 或 localStorage，确认候选前不创建角色。
 - 只保存规范化后的纯文本，前后端均限制单次选区不超过 50,000 字符。
 - 来源信息单独保存为元数据，包括文档/工程、章节和字符 offset，不混入正文。
-- 快捷保存不会自动调用 AI，创建结果统一标记为未分析。
+- 素材选区不会直接创建记录；“仅保存来源”才创建未分析素材，AI 候选在 apply 前也不会写库。
 
 ### 2.7 可追踪 AI 改写流水线
 
@@ -222,9 +226,9 @@ SQLite + OS keyring + 本地文件
 - 导出计划和导出记录；
 - 文档库文档、分类、标签、处理模板、修订版本、卷、章节、草稿和存储设置。
 
-v14 将旧素材类型 `snippet` 映射为 `scene_reference`，将 `outline` 映射为 `plot_skeleton` 并保留旧类型元数据；旧素材分类和文档分类迁移为标签。角色卡旧固定字段迁移为身份、年龄、设定及有序自定义字段。v19 新增文档卷层级；v20 新增仅适用于公共角色的 `character_categories` / `character_category_links`，并幂等补齐历史工程角色的有效 `project_character_bindings`；v21 新增单例 `character_extraction_settings`，持久化角色 AI 提取模型、维度开关、候选上限与提示词设置。
+v14 将旧素材类型 `snippet` 映射为 `scene_reference`，将 `outline` 映射为 `plot_skeleton` 并保留旧类型元数据；旧素材分类和文档分类迁移为标签。角色卡旧固定字段迁移为身份、年龄、设定及有序自定义字段。v19 新增文档卷层级；v20 新增仅适用于公共角色的 `character_categories` / `character_category_links`，并幂等补齐历史工程角色的有效 `project_character_bindings`；v21 新增单例 `character_extraction_settings`；v22 新增素材分类、标签组、工程素材筛选和三任务 `material_ai_settings`。v22 会原地保留历史工程素材 ID，把 `scope` 统一为 `public`、清空 `project_id`，并在来源元数据记录 `legacy_scope` / `legacy_project_id` / `migrated_to_unified_library`；已有标签会转为对应工程的素材筛选，未打标签的旧素材不会生成伪标签。迁移和关系写入均可幂等重放。
 
-兼容性：旧的 `POST /api/characters/extract`、`POST /api/characters/{card_id}/analyze` 和 `POST /api/characters/{card_id}/analyze/confirm` 暂时保留为 legacy 接口；新角色页不再调用这些单阶段接口，统一使用 `/api/characters/extract/preview` 与 `/api/characters/extract/apply`。
+兼容性：旧的 `POST /api/characters/extract`、`POST /api/characters/{card_id}/analyze` 和 `POST /api/characters/{card_id}/analyze/confirm` 暂时保留为 legacy 接口；新角色页不再调用这些单阶段接口。素材的 `POST /api/material-extractions`、`POST /api/materials/{id}/copy`、`POST /api/materials/{id}/analyze` 与分析 apply 接口也暂时保留为 legacy，新的素材页只调用 `/api/material-extractions/preview` 与 `/api/material-extractions/apply`，不再调用复制或单素材分析接口。
 
 SQLite 连接默认启用外键、WAL、`synchronous=NORMAL` 和 5 秒忙等待。迁移由 `schema_migrations` 记录，初始化时按版本顺序执行。
 
