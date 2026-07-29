@@ -2405,47 +2405,6 @@ def create_app(
         }.get(path.suffix.lower(), "application/octet-stream")
         return FileResponse(path, media_type=media_type)
 
-    def _selection_material_out(payload: SelectionResourceCreateRequest, material_type: str) -> MaterialOut:
-        selected_text = _normalize_selection_text(payload.selected_text)
-        target_public = payload.source_kind == "document" or payload.save_to_public
-        scope = "public" if target_public else "project"
-        project_id = None if target_public else payload.project_id
-        if scope == "project" and project_id is None:
-            raise _http_error(400, "project_required", "Project selections require a project_id.")
-        material_id = material_service.create_material(
-            material_type=material_type,
-            scope=scope,
-            project_id=project_id,
-            name=payload.name,
-            description="",
-            raw_text=selected_text,
-            content={},
-            analysis_status="unanalyzed",
-            source_metadata=_selection_source_metadata(payload),
-            import_metadata={"created_by": "selection_context_menu"},
-            tag_ids=payload.tag_ids,
-        )
-        material = material_service.get_material(material_id)
-        if material is None:
-            raise _http_error(500, "material_create_failed", "Material was created but could not be loaded.")
-        return _material_out(material)
-
-    @app.post(
-        "/api/selection/materials/scene-reference",
-        response_model=MaterialOut,
-        dependencies=[Depends(_require_token)],
-    )
-    def create_scene_material_from_selection(payload: SelectionResourceCreateRequest) -> MaterialOut:
-        return _selection_material_out(payload, "scene_reference")
-
-    @app.post(
-        "/api/selection/materials/plot-skeleton",
-        response_model=MaterialOut,
-        dependencies=[Depends(_require_token)],
-    )
-    def create_plot_skeleton_from_selection(payload: SelectionResourceCreateRequest) -> MaterialOut:
-        return _selection_material_out(payload, "plot_skeleton")
-
     @app.post(
         "/api/selection/characters",
         response_model=CharacterCardOut,

@@ -1647,25 +1647,6 @@ function ReferencePanel({ scope, setScope }: { scope: ReferenceScope; setScope: 
   );
 }
 
-function SelectionNameDialog({ initialName, kind, onClose, onSave }: {
-  initialName: string;
-  kind: 'scene' | 'plot' | 'character';
-  onClose: () => void;
-  onSave: (name: string) => void;
-}) {
-  const [name, setName] = useState(initialName);
-  const label = kind === 'character' ? '角色名' : kind === 'scene' ? '场景素材名称' : '剧情骨架名称';
-  return (
-    <div className="document-processing-backdrop" role="presentation">
-      <form className="document-tag-dialog" role="dialog" aria-modal="true" onSubmit={(event) => { event.preventDefault(); onSave(name); }}>
-        <header><div><span>保存选区</span><h2>{label}</h2></div><button className="icon-button" onClick={onClose} type="button"><X size={17} /></button></header>
-        <label><span className="form-label">{label}</span><input autoFocus className="form-input" value={name} onChange={(event) => setName(event.target.value)} /></label>
-        <footer><SecondaryButton onClick={onClose}>取消</SecondaryButton><PrimaryButton disabled={!name.trim()} type="submit">保存到公共库</PrimaryButton></footer>
-      </form>
-    </div>
-  );
-}
-
 function DocumentActionDialog(props: {
   action: DocumentAction;
   busy: boolean;

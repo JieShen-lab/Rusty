@@ -440,28 +440,6 @@ export type ProjectStyleBinding = {
   style_template: StyleTemplate | null;
 };
 
-export type OutlineTemplate = {
-  id: number;
-  name: string;
-  description: string;
-  detail_level: StyleDetailLevel;
-  outline: Record<string, unknown>;
-  anchor_prompt: string;
-  source_metadata: Record<string, unknown>;
-  import_metadata: Record<string, unknown>;
-  version: number;
-};
-
-export type OutlineTemplateWrite = {
-  name: string;
-  description: string;
-  detail_level: StyleDetailLevel;
-  outline: Record<string, unknown>;
-  anchor_prompt: string;
-  source_metadata: Record<string, unknown>;
-  import_metadata: Record<string, unknown>;
-};
-
 export type CharacterCard = {
   id: number;
   name: string;
@@ -572,18 +550,6 @@ export type CharacterCardWrite = {
   raw_text?: string;
   analysis_status?: AnalysisStatus;
   tag_ids?: number[];
-};
-
-export type AnchorExtractWrite = {
-  name?: string | null;
-  detail_level: StyleDetailLevel;
-  sample_text?: string | null;
-  source_path?: string | null;
-  source_project_id?: number | null;
-  source_document_id?: number | null;
-  model_id?: number | null;
-  scope?: 'public' | 'project';
-  project_id?: number | null;
 };
 
 export type CharacterExtractionSettings = {
@@ -720,18 +686,6 @@ export type MaterialWrite = {
 
 export type MaterialUpdate = Omit<MaterialWrite, 'material_type' | 'scope' | 'project_id' | 'source_metadata' | 'import_metadata'>;
 
-export type MaterialAnalysisProposal = {
-  material_id: number;
-  model_id: number;
-  invocation_id: number;
-  proposal: Record<string, unknown>;
-  existing: Record<string, unknown>;
-};
-
-export type MaterialExtractWrite = AnchorExtractWrite & {
-  material_type: MaterialType;
-};
-
 export type ProjectMaterialFilter = {
   project_id: number;
   material_type: MaterialType;
@@ -794,31 +748,6 @@ export type SelectionResourceCreate = {
   tag_ids?: number[];
 };
 
-export type CharacterAnalysisProposal = {
-  invocation_id: number;
-  model_id: number;
-  proposal: {
-    name: string;
-    identity: string;
-    age: string;
-    setting_text: string;
-    custom_fields: CharacterCustomField[];
-  };
-  merged: {
-    name: string;
-    identity: string;
-    age: string;
-    setting_text: string;
-    custom_fields: CharacterCustomField[];
-  };
-  conflicts: Array<{ field: string; existing: string; proposed: string }>;
-};
-
-export type MaterialJsonImportResult = {
-  imported: Array<{ index: number; id: number; name: string; material_type: MaterialType }>;
-  errors: Array<{ index: number; name: string; error: string }>;
-};
-
 export type AISplitProposal = {
   proposal_id: number;
   document_id: number;
@@ -867,10 +796,6 @@ export type SplitPreview = {
   revision_id: number;
   chapter_count: number;
   chapters: SplitChapterCandidate[];
-};
-
-export type ProjectOutlineBinding = {
-  outline_template: OutlineTemplate | null;
 };
 
 export type ProjectCharacterBindings = {

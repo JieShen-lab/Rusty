@@ -117,7 +117,6 @@ Rusty 以本地优先方式管理小说项目。当前主界面采用 Electron +
 - `src/rusty/services/anchor_extraction_service.py`
 - `desktop/src/pages/MaterialLibraryPage.tsx`
 - `desktop/src/pages/CharacterLibraryPage.tsx`
-- `desktop/src/pages/AnchorManagePage.tsx`
 
 ### 2.6 正文选区快捷保存
 
@@ -228,7 +227,7 @@ SQLite + OS keyring + 本地文件
 
 v14 将旧素材类型 `snippet` 映射为 `scene_reference`，将 `outline` 映射为 `plot_skeleton` 并保留旧类型元数据；旧素材分类和文档分类迁移为标签。角色卡旧固定字段迁移为身份、年龄、设定及有序自定义字段。v19 新增文档卷层级；v20 新增仅适用于公共角色的 `character_categories` / `character_category_links`，并幂等补齐历史工程角色的有效 `project_character_bindings`；v21 新增单例 `character_extraction_settings`；v22 新增素材分类、标签组、工程素材筛选和三任务 `material_ai_settings`。v22 会原地保留历史工程素材 ID，把 `scope` 统一为 `public`、清空 `project_id`，并在来源元数据记录 `legacy_scope` / `legacy_project_id` / `migrated_to_unified_library`；已有标签会转为对应工程的素材筛选，未打标签的旧素材不会生成伪标签。迁移和关系写入均可幂等重放。
 
-兼容性：旧的 `POST /api/characters/extract`、`POST /api/characters/{card_id}/analyze` 和 `POST /api/characters/{card_id}/analyze/confirm` 暂时保留为 legacy 接口；新角色页不再调用这些单阶段接口。素材的 `POST /api/material-extractions`、`POST /api/materials/{id}/copy`、`POST /api/materials/{id}/analyze` 与分析 apply 接口也暂时保留为 legacy，新的素材页只调用 `/api/material-extractions/preview` 与 `/api/material-extractions/apply`，不再调用复制或单素材分析接口。
+兼容性：旧的 `POST /api/characters/extract`、`POST /api/characters/{card_id}/analyze` 和 `POST /api/characters/{card_id}/analyze/confirm` 暂时仅作为后端 legacy 接口保留；对应前端调用已清理，新角色页不再调用这些单阶段接口。素材的 `POST /api/material-extractions`、`POST /api/materials/{id}/copy`、`POST /api/materials/{id}/analyze` 与分析 apply 接口也仅作为后端 legacy 接口保留；对应前端调用与废弃的旧素材管理页已清理，新的素材页只调用 `/api/material-extractions/preview` 与 `/api/material-extractions/apply`。旧的选区直接创建素材接口已删除，文档和工程选区必须进入候选确认流程。
 
 SQLite 连接默认启用外键、WAL、`synchronous=NORMAL` 和 5 秒忙等待。迁移由 `schema_migrations` 记录，初始化时按版本顺序执行。
 

@@ -1,7 +1,6 @@
 import type {
   AnalysisPromptTemplate,
   AnalysisPromptTemplateWrite,
-  AnchorExtractWrite,
   Chapter,
   ChapterSplitOptions,
   ChapterDetail,
@@ -26,7 +25,6 @@ import type {
   MaterialExtractionApplyResult,
   MaterialExtractionCandidate,
   MaterialExtractionPreview,
-  MaterialExtractWrite,
   MaterialScope,
   MaterialTagGroup,
   MaterialType,
@@ -35,8 +33,6 @@ import type {
   ResourceTag,
   SelectionResourceCreate,
   SplitPreview,
-  OutlineTemplate,
-  OutlineTemplateWrite,
   ModelWrite,
   LibraryDocument,
   LibraryDocumentCleanupResult,
@@ -56,7 +52,6 @@ import type {
   ProjectCharacterBindings,
   ProjectDetail,
   ProjectMaterialFilter,
-  ProjectOutlineBinding,
   ProjectPurpose,
   ProjectSettingsWrite,
   ProjectStyleBinding,
@@ -640,10 +635,6 @@ export function bindProjectStyle(projectId: number, styleTemplateId: number | nu
   });
 }
 
-export function getOutlineTemplates() {
-  return request<OutlineTemplate[]>('/api/outlines');
-}
-
 export function getMaterials(filters: {
   scope?: MaterialScope;
   project_id?: number;
@@ -698,41 +689,8 @@ export function assignMaterialTag(materialId: number, tagId: number, selected: b
   });
 }
 
-export function analyzeMaterial(materialId: number, modelId?: number | null) {
-  return request<import('./types').MaterialAnalysisProposal>(`/api/materials/${materialId}/analyze`, {
-    method: 'POST',
-    body: JSON.stringify({ model_id: modelId ?? null }),
-  });
-}
-
 export function createMaterial(payload: MaterialWrite) {
   return request<Material>('/api/materials', { method: 'POST', body: JSON.stringify(payload) });
-}
-
-export function importMaterial(payload: MaterialWrite) {
-  return request<Material>('/api/materials/import', { method: 'POST', body: JSON.stringify(payload) });
-}
-
-export function applyMaterialAnalysis(materialId: number, proposal: import('./types').MaterialAnalysisProposal) {
-  return request<Material>(`/api/materials/${materialId}/analysis/apply`, {
-    method: 'POST',
-    body: JSON.stringify({
-      content: proposal.proposal,
-      model_id: proposal.model_id,
-      invocation_id: proposal.invocation_id,
-    }),
-  });
-}
-
-export function importMaterialJson(value: unknown, defaultScope: MaterialScope, defaultProjectId?: number | null) {
-  return request<import('./types').MaterialJsonImportResult>('/api/materials/import-json', {
-    method: 'POST',
-    body: JSON.stringify({
-      value,
-      default_scope: defaultScope,
-      default_project_id: defaultProjectId ?? null,
-    }),
-  });
 }
 
 export function updateMaterial(materialId: number, payload: MaterialUpdate) {
@@ -741,45 +699,6 @@ export function updateMaterial(materialId: number, payload: MaterialUpdate) {
 
 export function deleteMaterial(materialId: number) {
   return request<{ ok: boolean }>(`/api/materials/${materialId}/delete`, { method: 'POST' });
-}
-
-export function copyMaterial(
-  materialId: number,
-  targetScope: MaterialScope,
-  targetProjectId?: number | null,
-  tagIds: number[] = [],
-) {
-  return request<Material>(`/api/materials/${materialId}/copy`, {
-    method: 'POST',
-    body: JSON.stringify({
-      target_scope: targetScope,
-      target_project_id: targetProjectId ?? null,
-      tag_ids: tagIds,
-    }),
-  });
-}
-
-export function extractMaterials(payload: MaterialExtractWrite) {
-  return request<{ materials: Material[] }>('/api/material-extractions', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
-}
-
-export function createOutlineTemplate(payload: OutlineTemplateWrite) {
-  return request<OutlineTemplate>('/api/outlines', { method: 'POST', body: JSON.stringify(payload) });
-}
-
-export function updateOutlineTemplate(templateId: number, payload: OutlineTemplateWrite) {
-  return request<OutlineTemplate>(`/api/outlines/${templateId}`, { method: 'POST', body: JSON.stringify(payload) });
-}
-
-export function deleteOutlineTemplate(templateId: number) {
-  return request<{ ok: boolean }>(`/api/outlines/${templateId}/delete`, { method: 'POST' });
-}
-
-export function extractOutlineTemplate(payload: AnchorExtractWrite) {
-  return request<OutlineTemplate>('/api/outlines/extract', { method: 'POST', body: JSON.stringify(payload) });
 }
 
 export function getCharacterCards(
@@ -950,32 +869,6 @@ export function getCharacterProjectSummaries() {
   return request<CharacterProjectSummary[]>('/api/character-projects/summary');
 }
 
-export function analyzeCharacterCard(
-  cardId: number,
-  modelId?: number | null,
-) {
-  return request<import('./types').CharacterAnalysisProposal>(`/api/characters/${cardId}/analyze`, {
-    method: 'POST',
-    body: JSON.stringify({ model_id: modelId ?? null }),
-  });
-}
-
-export function confirmCharacterAnalysis(
-  cardId: number,
-  payload: {
-    identity: string;
-    age: string;
-    setting_text: string;
-    custom_fields: import('./types').CharacterCustomField[];
-    invocation_id: number;
-  },
-) {
-  return request<CharacterCard>(`/api/characters/${cardId}/analyze/confirm`, {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
-}
-
 export function saveCharacterCover(cardId: number, dataBase64: string) {
   return request<CharacterCard>(`/api/characters/${cardId}/cover`, {
     method: 'POST',
@@ -991,14 +884,6 @@ export function characterCoverUrl(cardId: number) {
   return `${apiBase()}/api/characters/${cardId}/cover`;
 }
 
-export function createSceneMaterialFromSelection(payload: SelectionResourceCreate) {
-  return request<Material>('/api/selection/materials/scene-reference', { method: 'POST', body: JSON.stringify(payload) });
-}
-
-export function createPlotSkeletonFromSelection(payload: SelectionResourceCreate) {
-  return request<Material>('/api/selection/materials/plot-skeleton', { method: 'POST', body: JSON.stringify(payload) });
-}
-
 export function createCharacterFromSelection(payload: SelectionResourceCreate) {
   return request<CharacterCard>('/api/selection/characters', { method: 'POST', body: JSON.stringify(payload) });
 }
@@ -1009,20 +894,6 @@ export function createCharacterCard(payload: CharacterCardWrite) {
 
 export function importCharacterCard(payload: CharacterCardWrite) {
   return request<CharacterCard>('/api/characters/import', { method: 'POST', body: JSON.stringify(payload) });
-}
-
-export function copyCharacterCard(
-  cardId: number,
-  targetScope: 'public' | 'project',
-  targetProjectId?: number | null,
-) {
-  return request<CharacterCard>(`/api/characters/${cardId}/copy`, {
-    method: 'POST',
-    body: JSON.stringify({
-      target_scope: targetScope,
-      target_project_id: targetProjectId ?? null,
-    }),
-  });
 }
 
 export function copyPublicCharacterToProject(cardId: number, targetProjectId: number, force = false) {
@@ -1095,30 +966,8 @@ export function deleteCharacterCard(cardId: number) {
   return request<{ ok: boolean }>(`/api/characters/${cardId}/delete`, { method: 'POST' });
 }
 
-export function extractCharacterCards(payload: AnchorExtractWrite) {
-  return request<ProjectCharacterBindings>('/api/characters/extract', { method: 'POST', body: JSON.stringify(payload) });
-}
-
-export function getProjectOutline(projectId: number) {
-  return request<ProjectOutlineBinding>(`/api/projects/${projectId}/outline`);
-}
-
-export function bindProjectOutline(projectId: number, outlineTemplateId: number | null) {
-  return request<ProjectOutlineBinding>(`/api/projects/${projectId}/outline`, {
-    method: 'POST',
-    body: JSON.stringify({ outline_template_id: outlineTemplateId }),
-  });
-}
-
 export function getProjectCharacters(projectId: number) {
   return request<ProjectCharacterBindings>(`/api/projects/${projectId}/characters`);
-}
-
-export function bindProjectCharacter(projectId: number, characterCardId: number, sortOrder = 0) {
-  return request<ProjectCharacterBindings>(`/api/projects/${projectId}/characters`, {
-    method: 'POST',
-    body: JSON.stringify({ character_card_id: characterCardId, sort_order: sortOrder }),
-  });
 }
 
 export function unbindProjectCharacter(projectId: number, characterCardId: number) {
