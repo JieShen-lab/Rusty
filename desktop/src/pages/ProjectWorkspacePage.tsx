@@ -53,7 +53,6 @@ import type {
   ExportPlanItem,
   GenerationAttempt,
   ProjectDetail,
-  ProjectPurpose,
   PromptTemplate,
   SceneRecord,
   SceneWorkflowRun,
@@ -62,9 +61,17 @@ import type {
   ProjectMaterialFilter,
   ResourceTag,
 } from '../api/types';
+import {
+  BranchWorkspacePanel,
+  LegacyExtractPanel,
+  ModularSkeletonEditor,
+  RewriteOperationPanel,
+  SeamReview,
+} from '../components/WorkflowRefactorPanels';
 
 type Props = { onNavigate: (path: string, state?: unknown) => void; projectId: number };
 type SelectionKind = 'scene' | 'plot' | 'character';
+type ProjectPurpose = 'rewrite' | 'legacy_extract';
 type SelectionCapture = { text: string; startOffset: number; endOffset: number; x: number; y: number };
 
 const rewriteStages = ['原文', '剧情与人物', '目标骨架', '改写对照', '导出检查'];
@@ -97,7 +104,7 @@ export function ProjectWorkspacePage({ onNavigate, projectId }: Props) {
   const [scenePanel, setScenePanel] = useState(false);
   const [scenes, setScenes] = useState<SceneRecord[]>([]);
 
-  const purpose: ProjectPurpose = project?.settings?.processing_mode === 'extract' ? 'extract' : 'rewrite';
+  const purpose: ProjectPurpose = project?.project?.project_kind === 'legacy_extract' ? 'legacy_extract' : 'rewrite';
   const stages = purpose === 'rewrite' ? rewriteStages : extractStages;
   const selectedIndex = chapters.findIndex((item) => item.id === selectedChapterId);
   const selectedChapter = detail?.chapter ?? null;
@@ -300,6 +307,13 @@ export function ProjectWorkspacePage({ onNavigate, projectId }: Props) {
   const backendConnectionError = Boolean(error && (error.includes('Rusty 后端') || error.includes('Failed to fetch')));
   const modelAuthError = Boolean(error && error.includes('模型服务鉴权失败'));
 
+  if (project?.project?.project_kind === 'legacy_extract') {
+    return <LegacyExtractPanel projectName={project.project.name} onCreateNew={() => onNavigate('/new-project')} onExport={() => void exportBook('txt')} />;
+  }
+  if (project?.project?.project_kind === 'branch') {
+    return <BranchWorkspacePanel defaultChapterId={chapters[0]?.id} projectId={projectId} projectName={project.project.name} />;
+  }
+
   return (
     <div className="project-workbench">
       <header className="workbench-toolbar">
@@ -316,6 +330,8 @@ export function ProjectWorkspacePage({ onNavigate, projectId }: Props) {
       <div className="workbench-grid" style={{ gridTemplateColumns: `${binderVisible ? `${binderWidth}px 8px` : ''} minmax(0,1fr) ${inspectorVisible ? `8px ${inspectorWidth}px` : ''}` }}>
         {binderVisible ? <><ChapterBinder chapters={chapters} currentId={selectedChapterId} detail={detail} purpose={purpose} onSelect={setSelectedChapterId} /><div aria-label="调整章节目录宽度" className="panel-resizer" onPointerDown={(event) => beginResize('binder', event)} role="separator" /></> : null}
         <main className="workspace-center">
+          <RewriteOperationPanel />
+          {stage === 2 ? <><ModularSkeletonEditor /><SeamReview /></> : null}
           <WorkspaceContent analysisDraft={analysisDraft} detail={detail} exportPlan={exportPlan} generatedPrompt={generatedPrompt} onSelection={showSelectionMenu} purpose={purpose} rewriteDraft={rewriteDraft} setAnalysisDraft={setAnalysisDraft} setExportPlan={setExportPlan} setRewriteDraft={setRewriteDraft} setTargetSkeleton={setTargetSkeleton} stage={stage} targetSkeleton={targetSkeleton} />
           {purpose === 'rewrite' && stage === 3 ? <RewriteTrace attempts={generationAttempts} preview={promptPreview} /> : null}
         </main>
@@ -788,8 +804,8 @@ function AnalysisReview({ onChange, onSelection, original, readOnly = false, tit
 function PromptPreview({ prompt }: { prompt: PromptTemplate | null }) { if (!prompt) return <div className="workspace-message"><h2>提示词预览</h2><p>请先完成全书归纳。</p></div>; const recognitionRules = prompt.scene_rules.map((rule) => `[${rule.display_name}]\n${rule.detection_prompt}`).join('\n\n'); return <div className="prompt-preview"><section><h3>基础规则</h3><pre>{prompt.global_rules || '暂无'}</pre></section><section><h3>识别规则</h3><pre>{recognitionRules || '暂无'}</pre></section><section><h3>改写规则</h3><pre>{prompt.rewrite_rules || '暂无'}{prompt.scene_rules.map((rule) => `\n\n[${rule.display_name}]\n${rule.rewrite_prompt}`).join('')}</pre></section></div>; }
 function ExportPlan({ items, onChange }: { items: ExportPlanItem[]; onChange: (items: ExportPlanItem[]) => void }) { return <div className="export-plan"><div className="section-heading"><div><strong>导出检查</strong><span>检查标题、顺序、包含状态和正文来源</span></div></div>{items.map((item, index) => <div className="export-row" key={item.chapter_id}><input aria-label={`包含第 ${index + 1} 章`} checked={item.include_in_export} onChange={(event) => onChange(items.map((current) => current.chapter_id === item.chapter_id ? { ...current, include_in_export: event.target.checked } : current))} type="checkbox" /><span>{index + 1}</span><input aria-label="导出标题" value={item.export_title} onChange={(event) => onChange(items.map((current) => current.chapter_id === item.chapter_id ? { ...current, export_title: event.target.value } : current))} /><small>{sourceLabel(item.source_status)}</small></div>)}</div>; }
 function Definition({ label, value }: { label: string; value: string }) { return <div className="definition"><span>{label}</span><strong>{value}</strong></div>; }
-function effectiveStatus(detail: ChapterDetail, purpose: ProjectPurpose) { if (purpose === 'extract') return detail.ai_outputs.style_analysis_status === 'confirmed' ? '已确认' : detail.ai_outputs.style_analysis ? '待审查' : '未分析'; if (detail.chapter.status === 'confirmed') return '已确认'; if (detail.chapter.rewritten_text) return '已改写'; if (detail.ai_outputs.plot_summary) return '已提取'; return '未处理'; }
-function statusFromChapter(status: string, purpose: ProjectPurpose) { if (purpose === 'extract') return '未分析'; if (status === 'confirmed') return '已确认'; if (status === 'rewritten') return '已改写'; if (status === 'kept_original') return '保留原文'; return '未处理'; }
+function effectiveStatus(detail: ChapterDetail, purpose: ProjectPurpose) { if (purpose === 'legacy_extract') return detail.ai_outputs.style_analysis_status === 'confirmed' ? '已确认' : detail.ai_outputs.style_analysis ? '待审查' : '未分析'; if (detail.chapter.status === 'confirmed') return '已确认'; if (detail.chapter.rewritten_text) return '已改写'; if (detail.ai_outputs.plot_summary) return '已提取'; return '未处理'; }
+function statusFromChapter(status: string, purpose: ProjectPurpose) { if (purpose === 'legacy_extract') return '未分析'; if (status === 'confirmed') return '已确认'; if (status === 'rewritten') return '已改写'; if (status === 'kept_original') return '保留原文'; return '未处理'; }
 function statusTone(status: string) { if (status === '已确认') return 'success'; if (status === '待审查' || status === '已提取') return 'warning'; if (status === '已改写') return 'info'; return 'muted'; }
 function sourceLabel(status: ExportPlanItem['source_status']) { if (status === 'manual_rewrite') return '手动改写'; if (status === 'ai_rewrite') return 'AI 改写'; if (status === 'kept_original') return '保留原文'; return '原文'; }
 function numberValue(value: unknown) { return typeof value === 'number' && Number.isFinite(value) ? value : null; }

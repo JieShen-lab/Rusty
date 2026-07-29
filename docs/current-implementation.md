@@ -304,3 +304,7 @@ npm run build
 - “引用范围”仍未持久化或接入下游消费，因此 Electron 工作台暂不显示该入口。
 - 当前仓库没有桌面安装包构建与签名脚本，开发运行以源码环境为主。
 
+> 2026-07-29：工程类型、分支、模块化细纲和三类写作工作流的数据库、领域服务与 API
+> 已完成重构；Electron 已接入分支持久化，但三类写作工作流的桌面端完整提交闭环仍待接入。
+> 最新模型与迁移说明见 [workflow-refactor.md](workflow-refactor.md)，审计基线见
+> [workflow-refactor-audit.md](workflow-refactor-audit.md)。

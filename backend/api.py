@@ -45,6 +45,10 @@ from rusty.services.resource_analysis_service import ResourceAnalysisService
 from rusty.services.scene_service import SceneService
 from rusty.services.scene_rewrite_orchestrator import SceneRewriteOrchestrator
 from rusty.services.scene_boundary_ai_service import SceneBoundaryAIService
+from rusty.services.branch_service import BranchService
+from rusty.services.canon_change_orchestrator import CanonChangeOrchestrator
+from rusty.services.plot_generation_orchestrator import PlotGenerationOrchestrator
+from rusty.services.prose_rewrite_orchestrator import ProseRewriteOrchestrator
 from rusty.services.style_extraction_service import StyleExtractionService
 from rusty.services.style_service import StyleTemplate, StyleTemplateService
 
@@ -247,6 +251,10 @@ def create_app(
     rewrite_workflow_service = RewriteWorkflowService(db_path)
     resource_analysis_service = ResourceAnalysisService(db_path)
     scene_rewrite_orchestrator = SceneRewriteOrchestrator(db_path)
+    branch_service = BranchService(db_path)
+    plot_generation_orchestrator = PlotGenerationOrchestrator(db_path)
+    prose_rewrite_orchestrator = ProseRewriteOrchestrator(db_path)
+    canon_change_orchestrator = CanonChangeOrchestrator(db_path)
     anchor_extraction_service = AnchorExtractionService(db_path, ai_client=anchor_ai_client or style_ai_client)
 
     app = FastAPI(
@@ -782,11 +790,8 @@ def create_app(
             raise _http_error(400, "preview_mismatch", "源文件已变化，请重新预览后再创建工程。")
         workspace = _optional_workspace_path(payload.workspace_path) or state.workspace_path or state.source_path.parent
         parsed = state.parsed_book
-        purpose = "extract" if payload.purpose == "summary" else payload.purpose
-        if purpose == "rewrite" and payload.prompt_template_id is None:
+        if payload.project_kind == "rewrite" and payload.prompt_template_id is None:
             raise _http_error(400, "rewrite_prompt_required", "创建改写工程前请选择改写提示词。")
-        if purpose == "extract" and payload.analysis_prompt_template_id is None:
-            raise _http_error(400, "analysis_prompt_required", "创建提取工程前请选择风格分析提示词。")
         txt_split_rule_id = 1
         if parsed.source_format == "txt" and state.split_options.get("mode") != "auto":
             options = state.split_options
@@ -805,7 +810,8 @@ def create_app(
             parsed,
             workspace,
             payload.project_name,
-            processing_mode=purpose,
+            project_kind=payload.project_kind,
+            processing_mode="manual",
             prompt_template_id=payload.prompt_template_id,
             analysis_prompt_template_id=payload.analysis_prompt_template_id,
             txt_split_rule_id=txt_split_rule_id,
@@ -819,6 +825,83 @@ def create_app(
         _require_project(project_service, project_id)
         project_service.delete_project(project_id)
         return {"ok": True}
+
+    @app.get("/api/projects/{project_id}/branches", response_model=list[dict[str, Any]])
+    def list_story_branches(project_id: int) -> list[dict[str, Any]]:
+        _require_project(project_service, project_id)
+        return branch_service.list_branches(project_id)
+
+    @app.post("/api/projects/{project_id}/branches", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def create_story_branch(project_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        project = _require_project(project_service, project_id)
+        if project.project_kind != "branch":
+            raise _http_error(409, "branch_project_required", "Branches require a branch project.")
+        values = dict(payload)
+        start_anchor = dict(values.get("start_anchor") or {})
+        return_anchor = dict(values["return_anchor"]) if values.get("return_anchor") else None
+        if not start_anchor.get("source_hash"):
+            source_text = "\n\n".join(
+                chapter.original_text for chapter in project_service.list_chapters(project_id)
+            )
+            source_hash = branch_service.source_hash(source_text)
+            start_anchor["source_hash"] = source_hash
+            if return_anchor is not None:
+                return_anchor.setdefault("source_hash", source_hash)
+        return branch_service.create_branch(
+            project_id=project_id,
+            name=str(values.get("name") or "Generated branch"),
+            branch_mode=str(values.get("branch_mode") or "fork"),
+            start_anchor=start_anchor,
+            return_anchor=return_anchor,
+            parent_branch_id=values.get("parent_branch_id"),
+            base_source_version_id=values.get("base_source_version_id"),
+            downstream_strategy=values.get("downstream_strategy"),
+        )
+
+    @app.post("/api/branches/{branch_id}/delete", dependencies=[Depends(_require_token)])
+    def delete_story_branch(branch_id: int) -> dict[str, bool]:
+        branch_service.delete_branch(branch_id)
+        return {"ok": True}
+
+    @app.post("/api/plot-generation/runs", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def start_plot_generation(payload: dict[str, Any]) -> dict[str, Any]:
+        return plot_generation_orchestrator.start(**payload)
+
+    @app.post("/api/plot-generation/runs/{run_id}/seams", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def confirm_plot_generation_seams(run_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        return plot_generation_orchestrator.confirm_seams(
+            run_id,
+            list(payload.get("seams") or []),
+            current_source_text=str(payload.get("current_source_text") or ""),
+        )
+
+    @app.post("/api/plot-generation/runs/{run_id}/execute", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def execute_plot_generation(run_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        return plot_generation_orchestrator.execute(
+            run_id,
+            generated_scenes=list(payload.get("generated_scenes") or []),
+            final_state=dict(payload.get("final_state") or {}),
+        )
+
+    @app.post("/api/prose-rewrite/runs", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def plan_prose_rewrite(payload: dict[str, Any]) -> dict[str, Any]:
+        return prose_rewrite_orchestrator.plan(**payload)
+
+    @app.post("/api/prose-rewrite/runs/{run_id}/execute", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def execute_prose_rewrite(run_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        return prose_rewrite_orchestrator.execute(run_id, **payload)
+
+    @app.post("/api/canon-change/runs", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def scan_canon_change(payload: dict[str, Any]) -> dict[str, Any]:
+        return canon_change_orchestrator.scan(**payload)
+
+    @app.post("/api/canon-change/patches/{patch_id}/review", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def review_canon_patch(patch_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        return canon_change_orchestrator.review_patch(patch_id, **payload)
+
+    @app.post("/api/canon-change/runs/{run_id}/apply", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def apply_canon_change(run_id: int) -> dict[str, Any]:
+        return canon_change_orchestrator.apply(run_id)
 
     @app.get("/api/projects/{project_id}/chapters", response_model=list[ChapterOut])
     def list_chapters(project_id: int) -> list[ChapterOut]:
@@ -908,13 +991,14 @@ def create_app(
 
     @app.post("/api/projects/{project_id}/pipeline/run", response_model=PipelineRunResponse, dependencies=[Depends(_require_token)])
     def run_project_pipeline(project_id: int) -> PipelineRunResponse:
-        _require_project(project_service, project_id)
-        settings = project_service.get_project_settings(project_id)
-        result = (
-            pipeline_service.run_summary_project(project_id)
-            if settings and settings.processing_mode == "summary"
-            else pipeline_service.run_project(project_id)
-        )
+        project = _require_project(project_service, project_id)
+        if project.project_kind == "legacy_extract":
+            raise _http_error(
+                409,
+                "legacy_extract_read_only",
+                "Legacy extract projects are read-only and cannot run the retired pipeline.",
+            )
+        result = pipeline_service.run_project(project_id)
         return PipelineRunResponse(
             ok=True,
             processed=result.processed,
@@ -925,8 +1009,14 @@ def create_app(
 
     @app.post("/api/projects/{project_id}/pipeline/summarize", response_model=PipelineRunResponse, dependencies=[Depends(_require_token)])
     def run_project_summary(project_id: int) -> PipelineRunResponse:
-        _require_project(project_service, project_id)
-        result = pipeline_service.run_summary_project(project_id)
+        project = _require_project(project_service, project_id)
+        if project.project_kind == "legacy_extract":
+            raise _http_error(
+                409,
+                "legacy_extract_read_only",
+                "Legacy extract projects are read-only and cannot run the retired pipeline.",
+            )
+        result = pipeline_service.run_document_analysis(project_id)
         return PipelineRunResponse(
             ok=True,
             processed=result.processed,
@@ -2592,6 +2682,7 @@ def _project_out(project: ProjectSummary) -> ProjectOut:
     return ProjectOut(
         id=project.id,
         name=project.name,
+        project_kind=project.project_kind,
         status=project.status,
         current_stage=project.current_stage,
         source_format=project.source_format,

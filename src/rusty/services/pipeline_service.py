@@ -217,7 +217,7 @@ class PipelineService:
             failed=len(failed_ids),
         )
 
-    def run_summary_project(
+    def run_document_analysis(
         self,
         project_id: int,
         model_id: int | None = None,
@@ -245,6 +245,21 @@ class PipelineService:
         self._set_project_stage(project_id, "review")
         self._set_project_status(project_id, "summarized" if failed == 0 else "partial")
         return PipelineResult(processed=len(results), skipped=0, failed=failed)
+
+    def run_summary_project(
+        self,
+        project_id: int,
+        model_id: int | None = None,
+        template_id: int | None = None,
+        should_pause: Callable[[], bool] | None = None,
+    ) -> PipelineResult:
+        """Compatibility alias for the retired extract-project entry point."""
+        return self.run_document_analysis(
+            project_id,
+            model_id=model_id,
+            template_id=template_id,
+            should_pause=should_pause,
+        )
 
     def retry_chapter_stage(
         self,

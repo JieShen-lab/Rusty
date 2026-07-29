@@ -74,7 +74,7 @@ class PipelineServiceTests(unittest.TestCase):
         self.assertEqual("refusal_detected", refusal.exception.code)
         self.assertEqual("她说：我无法协助。", accepted["rewritten_text"])
 
-    def test_summary_project_only_runs_summary_stage(self) -> None:
+    def test_shared_summary_run_does_not_change_project_kind_or_rewrite_progress(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)
             database_path = root / "rusty.db"
@@ -83,7 +83,6 @@ class PipelineServiceTests(unittest.TestCase):
 
             project_service = ProjectService(database_path)
             project_id = project_service.import_book(source_path, root)
-            project_service.update_project_settings(project_id, processing_mode="summary")
             ModelService(database_path).create_model(
                 display_name="Fake",
                 provider="openai_compatible",
@@ -112,8 +111,9 @@ class PipelineServiceTests(unittest.TestCase):
         self.assertTrue(all(output.needs_rewrite is None for output in outputs))
         self.assertTrue(all(chapter.rewritten_text is None for chapter in chapters))
         self.assertIsNotNone(project)
+        self.assertEqual("rewrite", project.project_kind)
         self.assertEqual("summarized", project.status)
-        self.assertEqual(2, project.completed_chapters)
+        self.assertEqual(0, project.completed_chapters)
 
     def test_project_pipeline_rejects_missing_prompt_before_processing(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:

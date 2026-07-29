@@ -52,7 +52,8 @@ import type {
   ProjectCharacterBindings,
   ProjectDetail,
   ProjectMaterialFilter,
-  ProjectPurpose,
+  ProjectKind,
+  StoryBranch,
   ProjectSettingsWrite,
   ProjectStyleBinding,
   PromptTemplate,
@@ -499,7 +500,7 @@ export function createProject(
   previewToken: string,
   projectName?: string,
   workspacePath?: string,
-  purpose: ProjectPurpose = 'rewrite',
+  projectKind: ProjectKind = 'rewrite',
   promptTemplateId?: number | null,
   analysisPromptTemplateId?: number | null,
   modelId?: number | null,
@@ -510,12 +511,33 @@ export function createProject(
       preview_token: previewToken,
       project_name: projectName || null,
       workspace_path: workspacePath || null,
-      purpose,
+      project_kind: projectKind,
       model_id: modelId ?? null,
       prompt_template_id: promptTemplateId ?? null,
       analysis_prompt_template_id: analysisPromptTemplateId ?? null,
     }),
   });
+}
+
+export function getStoryBranches(projectId: number) {
+  return request<StoryBranch[]>(`/api/projects/${projectId}/branches`);
+}
+
+export function createStoryBranch(projectId: number, payload: {
+  name: string;
+  branch_mode: 'open_continuation' | 'fork' | 'fork_and_rejoin';
+  parent_branch_id?: number | null;
+  start_anchor: Record<string, unknown>;
+  return_anchor?: Record<string, unknown> | null;
+}) {
+  return request<StoryBranch>(`/api/projects/${projectId}/branches`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteStoryBranch(branchId: number) {
+  return request<{ ok: boolean }>(`/api/branches/${branchId}/delete`, { method: 'POST' });
 }
 
 export function getModels() {

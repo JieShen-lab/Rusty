@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .connection import session
 
-CURRENT_SCHEMA_VERSION = 23
+CURRENT_SCHEMA_VERSION = 29
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -19,6 +19,8 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 CREATE TABLE IF NOT EXISTS projects (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
+    project_kind TEXT NOT NULL DEFAULT 'rewrite'
+        CHECK (project_kind IN ('rewrite', 'branch', 'legacy_extract')),
     status TEXT NOT NULL DEFAULT 'draft',
     current_stage TEXT NOT NULL DEFAULT 'import',
     source_format TEXT,
@@ -1559,6 +1561,8 @@ def _migrate_to_v15(connection: sqlite3.Connection) -> None:
             skeleton_id INTEGER NOT NULL,
             version INTEGER NOT NULL,
             nodes_json TEXT NOT NULL DEFAULT '[]',
+            skeleton_json TEXT NOT NULL DEFAULT '{}',
+            source_references_json TEXT NOT NULL DEFAULT '[]',
             change_note TEXT NOT NULL DEFAULT '',
             confirmed_at TEXT,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -2618,6 +2622,273 @@ def _migrate_to_v23(connection: sqlite3.Connection) -> None:
             ),
         )
 
+
+def _migrate_to_v24(connection: sqlite3.Connection) -> None:
+    """Separate durable project purpose from execution settings."""
+    _add_column_if_missing(
+        connection,
+        "projects",
+        "project_kind",
+        "project_kind TEXT NOT NULL DEFAULT 'rewrite' "
+        "CHECK (project_kind IN ('rewrite', 'branch', 'legacy_extract'))",
+    )
+    connection.execute(
+        """
+        UPDATE projects
+        SET project_kind = CASE
+            WHEN EXISTS (
+                SELECT 1
+                FROM project_settings settings
+                WHERE settings.project_id = projects.id
+                  AND settings.processing_mode IN ('extract', 'summary')
+            ) THEN 'legacy_extract'
+            ELSE 'rewrite'
+        END
+        """
+    )
+
+
+def _migrate_to_v25(connection: sqlite3.Connection) -> None:
+    """Add the structured skeleton payload without replacing legacy nodes."""
+    # Some historical/diagnostic databases legitimately contain only a subset
+    # of feature tables. v15 owns creation of this table; do not fabricate a
+    # disconnected replacement when that feature was never present.
+    if not _table_exists(connection, "story_skeleton_versions"):
+        return
+    _add_column_if_missing(
+        connection,
+        "story_skeleton_versions",
+        "skeleton_json",
+        "skeleton_json TEXT NOT NULL DEFAULT '{}'",
+    )
+    _add_column_if_missing(
+        connection,
+        "story_skeleton_versions",
+        "source_references_json",
+        "source_references_json TEXT NOT NULL DEFAULT '[]'",
+    )
+
+
+def _migrate_to_v26(connection: sqlite3.Connection) -> None:
+    """Create branch, semantic-anchor, seam, and branch-content storage."""
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS story_anchors (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            anchor_type TEXT NOT NULL CHECK (anchor_type IN (
+                'document_end', 'chapter_start', 'chapter_end',
+                'scene_start', 'scene_end', 'skeleton_node', 'text_offset'
+            )),
+            chapter_id INTEGER,
+            scene_id INTEGER,
+            skeleton_version_id INTEGER,
+            node_id TEXT,
+            text_offset INTEGER,
+            side TEXT NOT NULL DEFAULT 'after' CHECK (side IN ('before', 'after', 'at')),
+            source_version_id INTEGER,
+            source_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE RESTRICT,
+            FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE RESTRICT,
+            FOREIGN KEY (skeleton_version_id) REFERENCES story_skeleton_versions(id) ON DELETE RESTRICT
+        );
+
+        CREATE TABLE IF NOT EXISTS story_branches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            parent_branch_id INTEGER,
+            base_source_kind TEXT NOT NULL CHECK (base_source_kind IN ('original', 'branch')),
+            base_source_version_id INTEGER,
+            name TEXT NOT NULL,
+            branch_mode TEXT NOT NULL CHECK (branch_mode IN (
+                'open_continuation', 'fork', 'fork_and_rejoin'
+            )),
+            downstream_strategy TEXT NOT NULL DEFAULT 'replace'
+                CHECK (downstream_strategy IN ('replace', 'reference', 'rejoin')),
+            status TEXT NOT NULL DEFAULT 'draft'
+                CHECK (status IN ('draft', 'active', 'completed', 'archived')),
+            start_anchor_id INTEGER NOT NULL,
+            return_anchor_id INTEGER,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            deleted_at TEXT,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (parent_branch_id) REFERENCES story_branches(id) ON DELETE RESTRICT,
+            FOREIGN KEY (start_anchor_id) REFERENCES story_anchors(id) ON DELETE RESTRICT,
+            FOREIGN KEY (return_anchor_id) REFERENCES story_anchors(id) ON DELETE RESTRICT
+        );
+
+        CREATE TABLE IF NOT EXISTS branch_seams (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            branch_id INTEGER NOT NULL,
+            seam_kind TEXT NOT NULL CHECK (seam_kind IN ('entry', 'return')),
+            operation TEXT NOT NULL CHECK (operation IN (
+                'keep', 'insert_before', 'insert_after', 'replace_range'
+            )),
+            original_text TEXT NOT NULL DEFAULT '',
+            proposed_text TEXT NOT NULL DEFAULT '',
+            source_range_json TEXT NOT NULL DEFAULT '{}',
+            source_hash TEXT NOT NULL,
+            reason TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'draft'
+                CHECK (status IN ('draft', 'confirmed', 'rejected')),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (branch_id) REFERENCES story_branches(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS branch_scenes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            branch_id INTEGER NOT NULL,
+            sequence_index INTEGER NOT NULL,
+            title TEXT NOT NULL DEFAULT '',
+            current_version INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            deleted_at TEXT,
+            UNIQUE (branch_id, sequence_index),
+            FOREIGN KEY (branch_id) REFERENCES story_branches(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS branch_scene_versions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            branch_scene_id INTEGER NOT NULL,
+            version INTEGER NOT NULL,
+            generated_text TEXT NOT NULL,
+            facts_after_json TEXT NOT NULL DEFAULT '{}',
+            source_kind TEXT NOT NULL DEFAULT 'generation'
+                CHECK (source_kind IN ('generation', 'manual', 'repair')),
+            parent_version_id INTEGER,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (branch_scene_id, version),
+            FOREIGN KEY (branch_scene_id) REFERENCES branch_scenes(id) ON DELETE CASCADE,
+            FOREIGN KEY (parent_version_id) REFERENCES branch_scene_versions(id) ON DELETE SET NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_story_branches_project_parent
+            ON story_branches(project_id, parent_branch_id);
+        CREATE INDEX IF NOT EXISTS idx_branch_scenes_branch_order
+            ON branch_scenes(branch_id, sequence_index);
+        """
+    )
+
+
+def _migrate_to_v27(connection: sqlite3.Connection) -> None:
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS plot_generation_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            branch_id INTEGER,
+            operation_type TEXT NOT NULL DEFAULT 'plot_generation'
+                CHECK (operation_type = 'plot_generation'),
+            generation_mode TEXT NOT NULL CHECK (generation_mode IN (
+                'bounded_insert', 'open_continuation', 'fork', 'fork_and_rejoin'
+            )),
+            output_topology TEXT NOT NULL CHECK (output_topology IN ('in_place', 'branch')),
+            start_anchor_json TEXT NOT NULL,
+            return_anchor_json TEXT,
+            start_state_json TEXT NOT NULL DEFAULT '{}',
+            required_return_state_json TEXT NOT NULL DEFAULT '{}',
+            target_skeleton_json TEXT NOT NULL,
+            context_json TEXT NOT NULL DEFAULT '{}',
+            seams_json TEXT NOT NULL DEFAULT '[]',
+            issues_json TEXT NOT NULL DEFAULT '[]',
+            status TEXT NOT NULL DEFAULT 'awaiting_skeleton'
+                CHECK (status IN (
+                    'awaiting_skeleton', 'awaiting_seams', 'ready',
+                    'blocked', 'completed', 'failed'
+                )),
+            result_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (branch_id) REFERENCES story_branches(id) ON DELETE SET NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_plot_generation_project_status
+            ON plot_generation_runs(project_id, status);
+        """
+    )
+
+
+def _migrate_to_v28(connection: sqlite3.Connection) -> None:
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS prose_rewrite_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            chapter_id INTEGER NOT NULL,
+            operation_type TEXT NOT NULL DEFAULT 'prose_rewrite'
+                CHECK (operation_type = 'prose_rewrite'),
+            source_skeleton_json TEXT NOT NULL,
+            preservation_policy_json TEXT NOT NULL,
+            target_skeleton_json TEXT NOT NULL,
+            rewrite_plan_json TEXT NOT NULL DEFAULT '{}',
+            rewritten_text TEXT,
+            issues_json TEXT NOT NULL DEFAULT '[]',
+            status TEXT NOT NULL DEFAULT 'planned'
+                CHECK (status IN ('planned', 'blocked', 'completed')),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE
+        );
+        """
+    )
+
+
+def _migrate_to_v29(connection: sqlite3.Connection) -> None:
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS canon_change_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            branch_id INTEGER,
+            operation_type TEXT NOT NULL DEFAULT 'canon_change'
+                CHECK (operation_type = 'canon_change'),
+            old_fact_json TEXT NOT NULL,
+            new_fact_json TEXT NOT NULL,
+            effective_order INTEGER NOT NULL DEFAULT 0,
+            fact_ledger_json TEXT NOT NULL DEFAULT '{}',
+            consistency_issues_json TEXT NOT NULL DEFAULT '[]',
+            status TEXT NOT NULL DEFAULT 'scanned'
+                CHECK (status IN ('scanned', 'reviewing', 'applied', 'blocked')),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (branch_id) REFERENCES story_branches(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS canon_change_patches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER NOT NULL,
+            route_kind TEXT NOT NULL CHECK (route_kind IN ('chapter', 'branch_scene')),
+            target_id INTEGER NOT NULL,
+            source_range_json TEXT NOT NULL,
+            source_hash TEXT NOT NULL,
+            original_text TEXT NOT NULL,
+            replacement_text TEXT NOT NULL,
+            impact_type TEXT NOT NULL CHECK (impact_type IN (
+                'direct_fact', 'action_consequence', 'physical_symptom',
+                'dialogue_reference', 'other_character_reaction', 'treatment',
+                'possession_or_equipment', 'movement_constraint', 'knowledge_state',
+                'relationship_effect', 'recovery_progress', 'foreshadowing'
+            )),
+            reason TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'draft'
+                CHECK (status IN ('draft', 'accepted', 'rejected', 'edited', 'skipped', 'applied', 'blocked')),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (run_id) REFERENCES canon_change_runs(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_canon_patches_run_type
+            ON canon_change_patches(run_id, impact_type, target_id);
+        """
+    )
+
+
 def _safe_json_list(value: object) -> list[dict[str, object]]:
     try:
         parsed = json.loads(str(value or "[]"))
@@ -2991,6 +3262,12 @@ MIGRATIONS = {
     21: _migrate_to_v21,
     22: _migrate_to_v22,
     23: _migrate_to_v23,
+    24: _migrate_to_v24,
+    25: _migrate_to_v25,
+    26: _migrate_to_v26,
+    27: _migrate_to_v27,
+    28: _migrate_to_v28,
+    29: _migrate_to_v29,
 }
 
 

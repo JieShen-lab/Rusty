@@ -1,6 +1,7 @@
 export type Project = {
   id: number;
   name: string;
+  project_kind: 'rewrite' | 'branch' | 'legacy_extract';
   status: string;
   current_stage: string;
   source_format: string | null;
@@ -251,7 +252,17 @@ export type ProjectDetail = {
   exports: Array<Record<string, unknown>>;
 };
 
-export type ProjectPurpose = 'rewrite' | 'extract';
+export type ProjectKind = 'rewrite' | 'branch';
+
+export type StoryBranch = {
+  id: number;
+  project_id: number;
+  parent_branch_id: number | null;
+  name: string;
+  branch_mode: 'open_continuation' | 'fork' | 'fork_and_rejoin';
+  downstream_strategy: 'replace' | 'reference' | 'rejoin';
+  status: string;
+};
 
 export type ChapterSplitOptions = {
   mode: 'auto' | 'simple' | 'regex';

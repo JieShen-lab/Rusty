@@ -287,6 +287,7 @@ class LibraryDocumentExportResponse(BaseModel):
 class ProjectOut(BaseModel):
     id: int
     name: str
+    project_kind: Literal["rewrite", "branch", "legacy_extract"]
     status: str
     current_stage: str
     source_format: str | None
@@ -406,7 +407,7 @@ class CreateProjectRequest(BaseModel):
     preview_token: str = Field(min_length=1)
     project_name: str | None = None
     workspace_path: str | None = None
-    purpose: Literal["rewrite", "extract", "summary"] = "rewrite"
+    project_kind: Literal["rewrite", "branch"] = "rewrite"
     model_id: int | None = None
     prompt_template_id: int | None = None
     analysis_prompt_template_id: int | None = None

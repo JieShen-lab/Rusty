@@ -276,6 +276,36 @@ test.beforeEach(async ({ page }) => {
   await mockApi(page);
 });
 
+test('提示词管理只保留改写提示词', async ({ page }) => {
+  const analysisPromptRequests: string[] = [];
+  const consoleErrors: string[] = [];
+  const pageErrors: string[] = [];
+  page.on('request', (request) => {
+    if (new URL(request.url()).pathname === '/api/analysis-prompts') analysisPromptRequests.push(request.url());
+  });
+  page.on('console', (message) => {
+    if (message.type() === 'error') consoleErrors.push(message.text());
+  });
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+
+  await page.goto('/prompts');
+
+  await expect(page.getByRole('heading', { name: '提示词', exact: true })).toBeVisible();
+  await expect(page.getByRole('tablist', { name: '提示词类型' })).toHaveCount(0);
+  await expect(page.getByRole('tab', { name: '分析', exact: true })).toHaveCount(0);
+  await expect(page.getByPlaceholder('改写提示词名称')).toBeVisible();
+  await expect(page.getByRole('tab', { name: '基础规则', exact: true })).toBeVisible();
+  await expect(page.getByRole('tab', { name: '识别规则', exact: true })).toBeVisible();
+  await expect(page.getByRole('tab', { name: '改写规则', exact: true })).toBeVisible();
+  await page.getByRole('tab', { name: '识别规则', exact: true }).click();
+  await expect(page.getByRole('button', { name: '添加类别', exact: true })).toBeVisible();
+  await page.getByRole('tab', { name: '改写规则', exact: true }).click();
+  await expect(page.getByText('通用改写规则', { exact: true })).toBeVisible();
+  expect(analysisPromptRequests).toHaveLength(0);
+  expect(consoleErrors).toHaveLength(0);
+  expect(pageErrors).toHaveLength(0);
+});
+
 test('素材库只显示两种类型且无时间线主视图', async ({ page }) => {
   await page.goto('/materials');
   await expect(page.getByText('场景素材', { exact: true }).first()).toBeVisible();
@@ -364,13 +394,13 @@ test('剧情骨架详细字段可编辑保存并重新打开', async ({ page }) 
   await page.goto('/materials');
   const plotSection = page.locator('.material-sidebar-section').filter({ hasText: '剧情骨架' });
   await plotSection.getByRole('button', { name: /全部内容/ }).click();
-  await page.locator('.material-compact-card').filter({ hasText: '误会解除' }).dblclick();
+  await page.locator('.material-resource-row').filter({ hasText: '误会解除' }).dblclick();
   let editor = page.getByRole('dialog', { name: '编辑素材' });
   await editor.getByLabel('阶段 1 标题').fill('误会升级');
   await editor.getByLabel('阶段 1 原因').fill('错误线索\n隐瞒事实');
   await editor.getByLabel('阶段 1 禁止改动').fill('不能提前和解');
   await editor.getByRole('button', { name: '保存' }).click();
-  await page.locator('.material-compact-card').filter({ hasText: '误会解除' }).dblclick();
+  await page.locator('.material-resource-row').filter({ hasText: '误会解除' }).dblclick();
   editor = page.getByRole('dialog', { name: '编辑素材' });
   await expect(editor.getByLabel('阶段 1 标题')).toHaveValue('误会升级');
   await expect(editor.getByLabel('阶段 1 原因')).toHaveValue('错误线索\n隐瞒事实');
@@ -381,13 +411,13 @@ test('场景素材详细字段可编辑保存并重新打开', async ({ page }) 
   await page.goto('/materials');
   const sceneSection = page.locator('.material-sidebar-section').filter({ hasText: '场景素材' });
   await sceneSection.getByRole('button', { name: /全部内容/ }).click();
-  await page.locator('.material-compact-card').filter({ hasText: '雨夜追逐' }).dblclick();
+  await page.locator('.material-resource-row').filter({ hasText: '雨夜追逐' }).dblclick();
   let editor = page.getByRole('dialog', { name: '编辑素材' });
   await editor.getByLabel('关键节拍 1 标题').fill('跨过屋脊');
   await editor.getByLabel('关键节拍 1', { exact: true }).fill('人物在湿滑屋脊保持平衡');
   await editor.getByLabel('关键节拍 1 证据').fill('原文提及湿滑屋顶');
   await editor.getByRole('button', { name: '保存' }).click();
-  await page.locator('.material-compact-card').filter({ hasText: '雨夜追逐' }).dblclick();
+  await page.locator('.material-resource-row').filter({ hasText: '雨夜追逐' }).dblclick();
   editor = page.getByRole('dialog', { name: '编辑素材' });
   await expect(editor.getByLabel('关键节拍 1 标题')).toHaveValue('跨过屋脊');
   await expect(editor.getByLabel('关键节拍 1', { exact: true })).toHaveValue('人物在湿滑屋脊保持平衡');
@@ -403,6 +433,49 @@ test('素材库侧栏无重复标题且 1440 深色主题无横向溢出', async
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
   expect(overflow).toBe(false);
   await expect(page.getByRole('button', { name: '新建剧情骨架', exact: true })).toBeVisible();
+});
+
+test('角色和素材使用只显示名称的单列滚动条目', async ({ page }) => {
+  const consoleErrors: string[] = [];
+  const pageErrors: string[] = [];
+  page.on('console', (message) => {
+    if (message.type() === 'error') consoleErrors.push(message.text());
+  });
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+
+  await page.goto('/materials');
+  const materialRows = page.locator('.material-resource-row');
+  await expect(materialRows).toHaveCount(1);
+  const materialLayout = await page.locator('[aria-label="素材条目"]').evaluate((list) => ({
+    columns: getComputedStyle(list).gridTemplateColumns.split(' ').length,
+    rowRadii: Array.from(list.children).map((row) => getComputedStyle(row).borderRadius),
+    rowChildren: Array.from(list.children).map((row) => Array.from(row.children).map((child) => child.tagName)),
+    overflow: getComputedStyle(list.parentElement as HTMLElement).overflowY,
+  }));
+  expect(materialLayout.columns).toBe(1);
+  expect(materialLayout.rowRadii).toEqual(['0px']);
+  expect(materialLayout.rowChildren).toEqual([['STRONG']]);
+  expect(materialLayout.overflow).toBe('auto');
+  const materialName = await materialRows.first().locator('strong').innerText();
+  await materialRows.first().click();
+  await expect(materialRows.first()).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('.material-detail-panel').getByRole('heading', { name: materialName })).toBeVisible();
+
+  await page.goto('/characters');
+  const characterRows = page.locator('.character-resource-row');
+  await expect(characterRows).toHaveCount(1);
+  const characterLayout = await page.locator('[aria-label="角色条目"]').evaluate((list) => ({
+    columns: getComputedStyle(list).gridTemplateColumns.split(' ').length,
+    radius: getComputedStyle(list.firstElementChild as HTMLElement).borderRadius,
+    rowChildren: Array.from((list.firstElementChild as HTMLElement).children).map((child) => child.tagName),
+    overflow: getComputedStyle(list.parentElement as HTMLElement).overflowY,
+  }));
+  expect(characterLayout).toEqual({ columns: 1, radius: '0px', rowChildren: ['STRONG'], overflow: 'auto' });
+  await characterRows.first().click();
+  await expect(characterRows.first()).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('.character-detail-panel').getByRole('heading', { name: '林舟' })).toBeVisible();
+  expect(consoleErrors).toHaveLength(0);
+  expect(pageErrors).toHaveLength(0);
 });
 
 test('角色库按工程和公共分类导航，标签只在右侧筛选且摘要保持紧凑', async ({ page }) => {
@@ -468,11 +541,11 @@ test('统一新建入口先预览多个 AI 候选且手动编辑器使用紧凑�
   await expect(createDialog.getByRole('tab', { name: '从文本提取' })).toBeVisible();
   await createDialog.getByRole('tab', { name: '从文本提取' }).click();
   await createDialog.getByLabel('来源文本').fill('林舟接过阿音递来的钥匙。');
-  const cardCountBefore = await page.locator('.character-compact-card').count();
+  const cardCountBefore = await page.locator('.character-resource-row').count();
   await createDialog.getByRole('button', { name: '生成候选角色' }).click();
   await expect(createDialog.getByLabel('角色名称').nth(0)).toHaveValue('林舟');
   await expect(createDialog.getByLabel('角色名称').nth(1)).toHaveValue('阿音');
-  expect(await page.locator('.character-compact-card').count()).toBe(cardCountBefore);
+  expect(await page.locator('.character-resource-row').count()).toBe(cardCountBefore);
   const suggestedTag = createDialog.locator('.character-candidate').first().getByRole('button', { name: '主角' });
   await expect(suggestedTag).toHaveAttribute('aria-pressed', 'false');
   await suggestedTag.click();
@@ -499,11 +572,11 @@ test('统一新建入口先预览多个 AI 候选且手动编辑器使用紧凑�
 
 test('公共与工程角色编辑器只显示各自上下文操作', async ({ page }) => {
   await page.goto('/characters');
-  await page.locator('.character-compact-card').first().dblclick();
+  await page.locator('.character-resource-row').first().dblclick();
   await expect(page.getByRole('dialog', { name: '编辑角色' }).getByRole('button', { name: '添加到工程…' })).toBeVisible();
   await page.getByRole('dialog', { name: '编辑角色' }).getByRole('button', { name: '取消' }).click();
   await page.locator('.character-range-panel').getByRole('button', { name: /示例工程/ }).click();
-  await page.locator('.character-compact-card').first().dblclick();
+  await page.locator('.character-resource-row').first().dblclick();
   const projectEditor = page.getByRole('dialog', { name: '编辑角色' });
   await expect(projectEditor.getByRole('button', { name: '保存为公共角色…' })).toBeVisible();
   await expect(projectEditor.getByText('我的分类', { exact: true })).toHaveCount(0);

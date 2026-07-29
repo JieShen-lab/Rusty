@@ -50,12 +50,15 @@ class ProjectService:
         book: ParsedBook,
         workspace_path: str | Path,
         project_name: str | None = None,
-        processing_mode: str = "rewrite",
+        project_kind: str = "rewrite",
+        processing_mode: str = "manual",
         prompt_template_id: int | None = None,
         analysis_prompt_template_id: int | None = None,
         txt_split_rule_id: int | None = 1,
         model_id: int | None = None,
     ) -> int:
+        if project_kind not in {"rewrite", "branch"}:
+            raise ValueError(f"Unsupported project kind for creation: {project_kind}")
         source_bytes = book.source_path.read_bytes()
         content_hash = hashlib.sha256(source_bytes).hexdigest()
         metadata_json = json.dumps(book.metadata or {}, ensure_ascii=False)
@@ -66,6 +69,7 @@ class ProjectService:
                 """
                 INSERT INTO projects (
                     name,
+                    project_kind,
                     status,
                     current_stage,
                     source_format,
@@ -73,10 +77,11 @@ class ProjectService:
                     workspace_path,
                     total_chapters,
                     total_words
-                ) VALUES (?, 'imported', 'split', ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, 'imported', 'split', ?, ?, ?, ?, ?)
                 """,
                 (
                     name,
+                    project_kind,
                     book.source_format,
                     str(book.source_path),
                     str(workspace_path),
@@ -307,6 +312,7 @@ class ProjectService:
                 SELECT
                     p.id,
                     p.name,
+                    p.project_kind,
                     p.status,
                     p.current_stage,
                     p.source_format,
@@ -335,6 +341,7 @@ class ProjectService:
                 SELECT
                     p.id,
                     p.name,
+                    p.project_kind,
                     p.status,
                     p.current_stage,
                     p.source_format,
@@ -486,11 +493,11 @@ class ProjectService:
 
     def refresh_project_progress(self, project_id: int) -> None:
         with session(self.database_path) as connection:
-            settings = connection.execute(
-                "SELECT processing_mode FROM project_settings WHERE project_id = ?",
+            project = connection.execute(
+                "SELECT project_kind FROM projects WHERE id = ?",
                 (project_id,),
             ).fetchone()
-            summary_project = settings is not None and settings["processing_mode"] == "summary"
+            summary_project = project is not None and project["project_kind"] == "legacy_extract"
             completed_expression = (
                 """
                 SUM(
@@ -868,6 +875,7 @@ class ProjectService:
         return ProjectSummary(
             id=row["id"],
             name=row["name"],
+            project_kind=row["project_kind"],
             status=row["status"],
             current_stage=row["current_stage"],
             source_format=row["source_format"],

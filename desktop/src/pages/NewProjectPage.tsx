@@ -30,7 +30,7 @@ import type {
   ChapterSplitOptions,
   ModelConfig,
   PreviewResponse,
-  ProjectPurpose,
+  ProjectKind,
   PromptTemplate,
 } from '../api/types';
 
@@ -49,7 +49,7 @@ const FLOW_STEPS: Array<{ key: Exclude<WizardStep, 'purpose'>; label: string; hi
 
 export function NewProjectPage({ onNavigate }: Props) {
   const [step, setStep] = useState<WizardStep>('purpose');
-  const [purpose, setPurpose] = useState<ProjectPurpose | null>(null);
+  const [purpose, setPurpose] = useState<ProjectKind | null>(null);
   const [sourcePath, setSourcePath] = useState('');
   const [workspacePath, setWorkspacePath] = useState('');
   const [projectName, setProjectName] = useState('');
@@ -91,12 +91,12 @@ export function NewProjectPage({ onNavigate }: Props) {
   const selectedModel = models.find((item) => item.id === modelId) ?? null;
   const visiblePrompts = useMemo(() => {
     const normalized = query.trim().toLowerCase();
-    const source = purpose === 'extract' ? analysisPrompts : rewritePrompts;
+    const source = purpose === 'branch' ? analysisPrompts : rewritePrompts;
     return normalized
       ? source.filter((item) => `${item.name} ${item.description}`.toLowerCase().includes(normalized))
       : source;
   }, [analysisPrompts, purpose, query, rewritePrompts]);
-  const selectedPrompt = purpose === 'extract'
+  const selectedPrompt = purpose === 'branch'
     ? analysisPrompts.find((item) => item.id === analysisPromptId)
     : rewritePrompts.find((item) => item.id === rewritePromptId);
 
@@ -188,7 +188,7 @@ export function NewProjectPage({ onNavigate }: Props) {
         workspacePath,
         purpose,
         purpose === 'rewrite' ? rewritePromptId : null,
-        purpose === 'extract' ? analysisPromptId : null,
+        purpose === 'branch' ? analysisPromptId : null,
         modelId,
       );
       onNavigate(`/workspace/${project.id}`);
@@ -257,9 +257,9 @@ export function NewProjectPage({ onNavigate }: Props) {
       <header className="setup-header wizard-header">
         <div>
           <h1>新建工程</h1>
-          <p>{purpose ? `${purpose === 'rewrite' ? '改写' : '提取'}工程 · 按步骤完成导入与配置` : '先选择本次工程要完成的工作'}</p>
+          <p>{purpose ? `${purpose === 'rewrite' ? '改写' : '扩写'}工程 · 按步骤完成导入与配置` : '先选择本次工程要完成的工作'}</p>
         </div>
-        {purpose ? <span className="wizard-purpose-badge">{purpose === 'rewrite' ? '改写工程' : '提取工程'}</span> : null}
+        {purpose ? <span className="wizard-purpose-badge">{purpose === 'rewrite' ? '改写工程' : '扩写工程'}</span> : null}
       </header>
 
       {error ? <div className="inline-alert error" role="alert">{error}</div> : null}
@@ -268,7 +268,7 @@ export function NewProjectPage({ onNavigate }: Props) {
         <aside className="wizard-sidebar" aria-label="创建工程步骤">
           <div className="wizard-sidebar-title">
             <FilePenLine size={20} />
-            <strong>{purpose ? `${purpose === 'rewrite' ? '改写' : '提取'}工程` : '选择工程类型'}</strong>
+            <strong>{purpose ? `${purpose === 'rewrite' ? '改写' : '扩写'}工程` : '选择工程类型'}</strong>
           </div>
           <ol>
             {FLOW_STEPS.map((item, index) => {
@@ -297,11 +297,11 @@ export function NewProjectPage({ onNavigate }: Props) {
                   title="改写工程"
                 />
                 <PurposeOption
-                  active={purpose === 'extract'}
-                  description="逐章分析范文，归纳并导出可复用提示词。"
+                  active={purpose === 'branch'}
+                  description="从原文末尾或任意节点派生新路线，原始文本始终保持不变。"
                   icon={<BookOpenText size={26} />}
-                  onClick={() => setPurpose('extract')}
-                  title="提取工程"
+                  onClick={() => setPurpose('branch')}
+                  title="扩写工程"
                 />
               </div>
             </WizardSection>
@@ -408,13 +408,13 @@ export function NewProjectPage({ onNavigate }: Props) {
           ) : null}
 
           {step === 'prompt' ? (
-            <WizardSection title={purpose === 'extract' ? '选择分析提示词' : '选择改写提示词'} description="选择本工程后续处理使用的提示词模板。">
+            <WizardSection title={purpose === 'branch' ? '选择分析提示词' : '选择改写提示词'} description="选择本工程后续处理使用的提示词模板。">
               <div className="search-field"><Search size={16} /><input aria-label="搜索提示词" placeholder="搜索名称或说明" value={query} onChange={(event) => setQuery(event.target.value)} /></div>
               <div className="prompt-choice-list wizard-prompt-list">
                 {visiblePrompts.map((item) => {
-                  const selected = purpose === 'extract' ? item.id === analysisPromptId : item.id === rewritePromptId;
+                  const selected = purpose === 'branch' ? item.id === analysisPromptId : item.id === rewritePromptId;
                   return (
-                    <button className={`prompt-choice ${selected ? 'selected' : ''}`} key={item.id} onClick={() => purpose === 'extract' ? setAnalysisPromptId(item.id) : setRewritePromptId(item.id)} type="button">
+                    <button className={`prompt-choice ${selected ? 'selected' : ''}`} key={item.id} onClick={() => purpose === 'branch' ? setAnalysisPromptId(item.id) : setRewritePromptId(item.id)} type="button">
                       <span className="radio-mark" /><span><strong>{item.name}</strong><small>{item.description || '暂无说明'}</small></span>{item.is_default ? <em>默认</em> : null}
                     </button>
                   );
@@ -427,7 +427,7 @@ export function NewProjectPage({ onNavigate }: Props) {
           {step === 'confirm' && preview ? (
             <WizardSection title="确认配置" description="检查无误后创建工程。">
               <div className="confirm-grid">
-                <ConfirmItem label="工程类型" value={purpose === 'rewrite' ? '改写工程' : '提取工程'} />
+                <ConfirmItem label="工程类型" value={purpose === 'rewrite' ? '改写工程' : '扩写工程'} />
                 <ConfirmItem label="工程名称" value={projectName} />
                 <ConfirmItem label="书名" value={preview.title} />
                 <ConfirmItem label="规模" value={`${preview.total_chapters} 章 · ${preview.total_words.toLocaleString()} 字`} />

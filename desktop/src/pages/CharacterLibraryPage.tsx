@@ -463,23 +463,18 @@ export function CharacterLibraryPage() {
           </div>
 
           {loading ? <LibraryEmptyState title="正在读取角色…" /> : filteredCards.length ? (
-            <div className="document-shelf-scroll">
-              <div className="document-character-grid character-compact-grid">
+            <div className="document-shelf-scroll resource-list-scroll">
+              <div aria-label="角色条目" className="resource-row-list">
                 {filteredCards.map((card) => (
                   <button
                     aria-pressed={selectedId === card.id}
-                    className={`library-character-card character-compact-card ${selectedId === card.id ? 'selected' : ''}`}
+                    className={`resource-list-row character-resource-row ${selectedId === card.id ? 'selected' : ''}`}
                     key={card.id}
                     onClick={() => setSelectedId(card.id)}
                     onDoubleClick={() => setEditing(card)}
                     type="button"
                   >
-                    <CharacterCover card={card} />
-                    <div className="library-character-card-body">
-                      <strong>{card.name}</strong>
-                      <span className={`character-analysis-badge ${card.analysis_status}`}>{card.analysis_status === 'analyzed' ? '已分析' : '未分析'}</span>
-                      <p title={card.source_summary.label}>来源：{card.source_summary.label}</p>
-                    </div>
+                    <strong className="resource-row-name">{card.name}</strong>
                   </button>
                 ))}
               </div>

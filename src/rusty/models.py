@@ -51,6 +51,7 @@ class ParsedBook:
 class ProjectSummary:
     id: int
     name: str
+    project_kind: str
     status: str
     current_stage: str
     source_format: str | None
