@@ -9,7 +9,7 @@ jobs:
   backend:
     runs-on: ubuntu-latest
     env:
-      PYTHON_KEYRING_BACKEND: keyring.backends.null.Keyring
+      PYTHON_KEYRING_BACKEND: keyrings.alt.file.PlaintextKeyring
       QT_QPA_PLATFORM: offscreen
     steps:
       - uses: actions/checkout@v4
