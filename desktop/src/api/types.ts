@@ -491,8 +491,54 @@ export type CharacterCard = {
   cover_path: string | null;
   cover_updated_at: string | null;
   tags: string[];
+  category_ids: number[];
+  categories: string[];
+  source_summary: CharacterSourceSummary;
   created_at: string;
   updated_at: string;
+};
+
+export type CharacterSourceSummary = {
+  kind:
+    | 'manual'
+    | 'document_selection'
+    | 'project_selection'
+    | 'file_import'
+    | 'ai_extraction'
+    | 'public_copy'
+    | 'project_copy';
+  label: string;
+  document_id?: number | null;
+  chapter_id?: number | null;
+  project_id?: number | null;
+  source_card_id?: number | null;
+};
+
+export type CharacterCategory = {
+  id: number;
+  name: string;
+  normalized_name: string;
+  sort_order: number;
+  resource_count: number;
+};
+
+export type CharacterProjectSummary = {
+  project_id: number;
+  project_name: string;
+  character_count: number;
+  updated_at: string;
+};
+
+export type CharacterLibrarySelection =
+  | { kind: 'project'; projectId: number }
+  | { kind: 'public-all' }
+  | { kind: 'public-category'; categoryId: number };
+
+export type CharacterQueryState = {
+  query: string;
+  activeTagId: number | null;
+  analysisStatus: 'all' | 'unanalyzed' | 'analyzed';
+  untaggedOnly: boolean;
 };
 
 export type CharacterCustomField = {

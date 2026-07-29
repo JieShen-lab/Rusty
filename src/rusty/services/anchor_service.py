@@ -14,6 +14,39 @@ from rusty.services.style_service import DETAIL_LEVELS
 
 MAIN_CHARACTER_PRIORITY = 80
 
+CHARACTER_RELATION_COLUMNS = """
+    COALESCE((
+        SELECT GROUP_CONCAT(name, char(31))
+        FROM (
+            SELECT DISTINCT t.name AS name
+            FROM character_tag_links link
+            JOIN character_tags t ON t.id = link.tag_id
+            WHERE link.character_card_id = c.id AND t.deleted_at IS NULL
+            ORDER BY t.sort_order, t.name
+        )
+    ), '') AS tag_names,
+    COALESCE((
+        SELECT GROUP_CONCAT(id, char(31))
+        FROM (
+            SELECT DISTINCT category.id AS id
+            FROM character_category_links link
+            JOIN character_categories category ON category.id = link.category_id
+            WHERE link.character_card_id = c.id AND category.deleted_at IS NULL
+            ORDER BY category.sort_order, category.name
+        )
+    ), '') AS category_ids_text,
+    COALESCE((
+        SELECT GROUP_CONCAT(name, char(31))
+        FROM (
+            SELECT DISTINCT category.name AS name
+            FROM character_category_links link
+            JOIN character_categories category ON category.id = link.category_id
+            WHERE link.character_card_id = c.id AND category.deleted_at IS NULL
+            ORDER BY category.sort_order, category.name
+        )
+    ), '') AS category_names
+"""
+
 
 @dataclass(frozen=True)
 class OutlineTemplate:
@@ -59,6 +92,9 @@ class CharacterCard:
     cover_path: str | None = None
     cover_updated_at: str | None = None
     tags: tuple[str, ...] = ()
+    category_ids: tuple[int, ...] = ()
+    categories: tuple[str, ...] = ()
+    source_summary: CharacterSourceSummary | None = None
     created_at: str = ""
     updated_at: str = ""
 
@@ -88,6 +124,33 @@ class CharacterCard:
     def custom_fields(self) -> list[dict[str, Any]]:
         value = _loads_json(self.custom_fields_json, [])
         return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
+@dataclass(frozen=True)
+class CharacterCategory:
+    id: int
+    name: str
+    normalized_name: str
+    sort_order: int
+    resource_count: int
+
+
+@dataclass(frozen=True)
+class CharacterSourceSummary:
+    kind: str
+    label: str
+    document_id: int | None = None
+    chapter_id: int | None = None
+    project_id: int | None = None
+    source_card_id: int | None = None
+
+
+@dataclass(frozen=True)
+class CharacterProjectSummary:
+    project_id: int
+    project_name: str
+    character_count: int
+    updated_at: str
 
 
 class AnchorService:
@@ -296,7 +359,11 @@ class AnchorService:
         custom_fields_json = json.dumps(_normalize_custom_fields(custom_fields), ensure_ascii=False)
         with session(self.database_path) as connection:
             if project_id is not None:
-                self._ensure_project_exists(project_id)
+                if connection.execute(
+                    "SELECT 1 FROM projects WHERE id = ? AND deleted_at IS NULL",
+                    (project_id,),
+                ).fetchone() is None:
+                    raise ValueError(f"Project not found: {project_id}")
             cursor = connection.execute(
                 """
                 INSERT INTO character_cards (
@@ -335,6 +402,15 @@ class AnchorService:
             )
             card_id = int(cursor.lastrowid)
             self._replace_character_tags(connection, card_id, tag_ids or [])
+            if scope == "project":
+                connection.execute(
+                    """
+                    INSERT INTO project_character_bindings (
+                        project_id, character_card_id, sort_order, is_active
+                    ) VALUES (?, ?, 0, 1)
+                    """,
+                    (project_id, card_id),
+                )
             return card_id
 
     def update_character_card(
@@ -368,7 +444,11 @@ class AnchorService:
         custom_fields_json = json.dumps(_normalize_custom_fields(custom_fields), ensure_ascii=False)
         with session(self.database_path) as connection:
             if project_id is not None:
-                self._ensure_project_exists(project_id)
+                if connection.execute(
+                    "SELECT 1 FROM projects WHERE id = ? AND deleted_at IS NULL",
+                    (project_id,),
+                ).fetchone() is None:
+                    raise ValueError(f"Project not found: {project_id}")
             cursor = connection.execute(
                 """
                 UPDATE character_cards
@@ -425,6 +505,38 @@ class AnchorService:
             )
             if tag_ids is not None:
                 self._replace_character_tags(connection, card_id, tag_ids)
+            if scope == "project":
+                connection.execute(
+                    """
+                    INSERT INTO project_character_bindings (
+                        project_id, character_card_id, sort_order, is_active
+                    ) VALUES (?, ?, 0, 1)
+                    ON CONFLICT(project_id, character_card_id)
+                    DO UPDATE SET is_active = 1, updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (project_id, card_id),
+                )
+                connection.execute(
+                    """
+                    UPDATE project_character_bindings
+                    SET is_active = 0, updated_at = CURRENT_TIMESTAMP
+                    WHERE character_card_id = ? AND project_id <> ?
+                    """,
+                    (card_id, project_id),
+                )
+                connection.execute(
+                    "DELETE FROM character_category_links WHERE character_card_id = ?",
+                    (card_id,),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE project_character_bindings
+                    SET is_active = 0, updated_at = CURRENT_TIMESTAMP
+                    WHERE character_card_id = ?
+                    """,
+                    (card_id,),
+                )
         if cursor.rowcount == 0:
             raise ValueError(f"Character card not found: {card_id}")
 
@@ -490,10 +602,129 @@ class AnchorService:
             copied = self.get_character_card(copied_id)
             copied_cover = copied.cover_path if copied is not None else None
             with session(self.database_path) as connection:
+                connection.execute(
+                    "DELETE FROM project_character_bindings WHERE character_card_id = ?",
+                    (copied_id,),
+                )
                 connection.execute("DELETE FROM character_cards WHERE id = ?", (copied_id,))
             self._remove_managed_cover(copied_cover)
             raise
         return copied_id
+
+    def copy_public_character_to_project(
+        self,
+        source_card_id: int,
+        target_project_id: int,
+    ) -> int:
+        source = self.get_character_card(source_card_id)
+        if source is None:
+            raise ValueError(f"Character card not found: {source_card_id}")
+        if source.scope != "public":
+            raise ValueError("Only public character cards can be copied to a project.")
+
+        cover_data: bytes | None = None
+        if source.cover_path:
+            source_cover = self.character_cover_file(source.id)
+            if source_cover is None:
+                raise ValueError("Source character cover is missing or outside the managed directory.")
+            cover_data = source_cover.read_bytes()
+
+        created_cover: Path | None = None
+        try:
+            with session(self.database_path) as connection:
+                if connection.execute(
+                    "SELECT 1 FROM projects WHERE id = ? AND deleted_at IS NULL",
+                    (target_project_id,),
+                ).fetchone() is None:
+                    raise ValueError(f"Project not found: {target_project_id}")
+                cursor = connection.execute(
+                    """
+                    INSERT INTO character_cards (
+                        name, aliases_json, description, priority, is_main, relationship_notes,
+                        personality, speech_style, action_constraints, anti_ooc_rules,
+                        profile_json, source_metadata_json, import_metadata_json,
+                        scope, project_id, source_character_card_id, source_version,
+                        identity, age, setting_text, custom_fields_json, raw_text, analysis_status
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'project', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        source.name,
+                        source.aliases_json,
+                        source.description,
+                        source.priority,
+                        1 if source.is_main else 0,
+                        source.relationship_notes,
+                        source.personality,
+                        source.speech_style,
+                        source.action_constraints,
+                        source.anti_ooc_rules,
+                        source.profile_json,
+                        json.dumps(
+                            {
+                                **source.source_metadata,
+                                "copied_from_scope": "public",
+                                "source_character_card_id": source.id,
+                            },
+                            ensure_ascii=False,
+                        ),
+                        json.dumps(
+                            {**source.import_metadata, "created_by": "character_public_copy"},
+                            ensure_ascii=False,
+                        ),
+                        target_project_id,
+                        source.id,
+                        source.version,
+                        source.identity,
+                        source.age,
+                        source.setting_text,
+                        source.custom_fields_json,
+                        source.raw_text,
+                        source.analysis_status,
+                    ),
+                )
+                copied_id = int(cursor.lastrowid)
+                connection.execute(
+                    """
+                    INSERT INTO character_tag_links (character_card_id, tag_id)
+                    SELECT ?, tag_id
+                    FROM character_tag_links
+                    WHERE character_card_id = ?
+                    """,
+                    (copied_id, source.id),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO project_character_bindings (
+                        project_id, character_card_id, sort_order, is_active
+                    ) VALUES (?, ?, 0, 1)
+                    """,
+                    (target_project_id, copied_id),
+                )
+                if cover_data is not None:
+                    extension, width, height = _inspect_cover(cover_data)
+                    if len(cover_data) > 5 * 1024 * 1024:
+                        raise ValueError("Character cover must be 5 MB or smaller.")
+                    if width is not None and height is not None and (width > 4096 or height > 4096):
+                        raise ValueError("Character cover dimensions must not exceed 4096×4096.")
+                    cover_dir = self.database_path.parent / "assets" / "character-covers"
+                    cover_dir.mkdir(parents=True, exist_ok=True)
+                    digest = hashlib.sha256(cover_data).hexdigest()
+                    created_cover = cover_dir / f"{copied_id}-{digest[:20]}.{extension}"
+                    created_cover.write_bytes(cover_data)
+                    relative = created_cover.relative_to(self.database_path.parent).as_posix()
+                    connection.execute(
+                        """
+                        UPDATE character_cards
+                        SET cover_path = ?, cover_updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                        """,
+                        (relative, copied_id),
+                    )
+            return copied_id
+        except Exception:
+            if created_cover is not None and created_cover.is_file():
+                created_cover.unlink()
+            raise
 
     def delete_character_card(self, card_id: int) -> None:
         card = self.get_character_card(card_id)
@@ -526,16 +757,29 @@ class AnchorService:
         scope: str | None = None,
         project_id: int | None = None,
         tag_id: int | None = None,
+        category_id: int | None = None,
         analysis_status: str | None = None,
         untagged: bool = False,
     ) -> list[CharacterCard]:
         clauses = ["c.deleted_at IS NULL"]
         parameters: list[object] = []
+        from_clause = "character_cards c"
+        sort_order = "0"
+        order_by = "c.updated_at DESC, c.id DESC"
         if scope is not None:
             _validate_character_scope(scope, project_id if scope == "project" else None)
             clauses.append("c.scope = ?")
             parameters.append(scope)
-        if project_id is not None:
+        if scope == "project" and project_id is not None:
+            from_clause = (
+                "project_character_bindings binding "
+                "JOIN character_cards c ON c.id = binding.character_card_id"
+            )
+            clauses.extend(["binding.project_id = ?", "binding.is_active = 1"])
+            parameters.append(project_id)
+            sort_order = "binding.sort_order"
+            order_by = "binding.sort_order, c.updated_at DESC, c.id DESC"
+        elif project_id is not None:
             clauses.append("c.project_id = ?")
             parameters.append(project_id)
         if analysis_status is not None:
@@ -547,39 +791,58 @@ class AnchorService:
                 "WHERE filter_link.character_card_id = c.id AND filter_link.tag_id = ?)"
             )
             parameters.append(tag_id)
+        if category_id is not None:
+            clauses.extend(
+                [
+                    "c.scope = 'public'",
+                    (
+                        "EXISTS (SELECT 1 FROM character_category_links category_filter "
+                        "WHERE category_filter.character_card_id = c.id "
+                        "AND category_filter.category_id = ?)"
+                    ),
+                ]
+            )
+            parameters.append(category_id)
         if untagged:
             clauses.append("NOT EXISTS (SELECT 1 FROM character_tag_links tl WHERE tl.character_card_id = c.id)")
         with session(self.database_path) as connection:
             rows = connection.execute(
                 f"""
-                SELECT c.*, 0 AS sort_order,
-                       COALESCE(GROUP_CONCAT(t.name, char(31)), '') AS tag_names
-                FROM character_cards c
-                LEFT JOIN character_tag_links link ON link.character_card_id = c.id
-                LEFT JOIN character_tags t ON t.id = link.tag_id AND t.deleted_at IS NULL
+                SELECT c.*, {sort_order} AS sort_order,
+                       {CHARACTER_RELATION_COLUMNS}
+                FROM {from_clause}
                 WHERE {' AND '.join(clauses)}
-                GROUP BY c.id
-                ORDER BY c.updated_at DESC, c.id DESC
+                ORDER BY {order_by}
                 """,
                 parameters,
             ).fetchall()
-        return [self._character_from_row(row) for row in rows]
+            return [
+                self._character_from_row(
+                    row,
+                    source_summary=self._character_source_summary(connection, row),
+                )
+                for row in rows
+            ]
 
     def get_character_card(self, card_id: int) -> CharacterCard | None:
         with session(self.database_path) as connection:
             row = connection.execute(
-                """
+                f"""
                 SELECT c.*, 0 AS sort_order,
-                       COALESCE(GROUP_CONCAT(t.name, char(31)), '') AS tag_names
+                       {CHARACTER_RELATION_COLUMNS}
                 FROM character_cards c
-                LEFT JOIN character_tag_links link ON link.character_card_id = c.id
-                LEFT JOIN character_tags t ON t.id = link.tag_id AND t.deleted_at IS NULL
                 WHERE c.id = ? AND c.deleted_at IS NULL
-                GROUP BY c.id
                 """,
                 (card_id,),
             ).fetchone()
-        return self._character_from_row(row) if row is not None else None
+            return (
+                self._character_from_row(
+                    row,
+                    source_summary=self._character_source_summary(connection, row),
+                )
+                if row is not None
+                else None
+            )
 
     def bind_project_character(self, project_id: int, card_id: int, sort_order: int = 0) -> None:
         if self.get_character_card(card_id) is None:
@@ -613,22 +876,25 @@ class AnchorService:
     def list_project_character_cards(self, project_id: int) -> list[CharacterCard]:
         with session(self.database_path) as connection:
             rows = connection.execute(
-                """
+                f"""
                 SELECT c.*, b.sort_order,
-                       COALESCE(GROUP_CONCAT(t.name, char(31)), '') AS tag_names
+                       {CHARACTER_RELATION_COLUMNS}
                 FROM project_character_bindings b
                 JOIN character_cards c ON c.id = b.character_card_id
-                LEFT JOIN character_tag_links link ON link.character_card_id = c.id
-                LEFT JOIN character_tags t ON t.id = link.tag_id AND t.deleted_at IS NULL
                 WHERE b.project_id = ?
                   AND b.is_active = 1
                   AND c.deleted_at IS NULL
-                GROUP BY c.id, b.sort_order
                 ORDER BY b.sort_order, c.priority DESC, c.id
                 """,
                 (project_id,),
             ).fetchall()
-        return [self._character_from_row(row) for row in rows]
+            return [
+                self._character_from_row(
+                    row,
+                    source_summary=self._character_source_summary(connection, row),
+                )
+                for row in rows
+            ]
 
     def list_relevant_project_character_cards(self, project_id: int, chapter_text: str) -> list[CharacterCard]:
         return [
@@ -725,6 +991,172 @@ class AnchorService:
         if card is None:
             raise ValueError(f"Character card not found: {card_id}")
         return card
+
+    def list_character_categories(self) -> list[CharacterCategory]:
+        with session(self.database_path) as connection:
+            rows = connection.execute(
+                """
+                SELECT category.id, category.name, category.normalized_name,
+                       category.sort_order,
+                       COUNT(DISTINCT CASE
+                           WHEN card.scope = 'public' AND card.deleted_at IS NULL
+                           THEN link.character_card_id
+                       END) AS resource_count
+                FROM character_categories category
+                LEFT JOIN character_category_links link
+                    ON link.category_id = category.id
+                LEFT JOIN character_cards card
+                    ON card.id = link.character_card_id
+                WHERE category.deleted_at IS NULL
+                GROUP BY category.id
+                ORDER BY category.sort_order, category.name
+                """
+            ).fetchall()
+        return [
+            CharacterCategory(
+                id=int(row["id"]),
+                name=str(row["name"]),
+                normalized_name=str(row["normalized_name"]),
+                sort_order=int(row["sort_order"]),
+                resource_count=int(row["resource_count"]),
+            )
+            for row in rows
+        ]
+
+    def create_character_category(self, name: str) -> CharacterCategory:
+        category_name = _required_category_name(name)
+        normalized_name = _normalize_tag_name(category_name)
+        with session(self.database_path) as connection:
+            connection.execute(
+                """
+                INSERT INTO character_categories (name, normalized_name, sort_order)
+                VALUES (
+                    ?,
+                    ?,
+                    COALESCE((SELECT MAX(sort_order) + 1 FROM character_categories), 0)
+                )
+                ON CONFLICT(normalized_name) WHERE deleted_at IS NULL
+                DO UPDATE SET updated_at = CURRENT_TIMESTAMP
+                """,
+                (category_name, normalized_name),
+            )
+        return next(
+            category
+            for category in self.list_character_categories()
+            if category.normalized_name == normalized_name
+        )
+
+    def rename_character_category(self, category_id: int, name: str) -> CharacterCategory:
+        category_name = _required_category_name(name)
+        with session(self.database_path) as connection:
+            cursor = connection.execute(
+                """
+                UPDATE character_categories
+                SET name = ?, normalized_name = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND deleted_at IS NULL
+                """,
+                (category_name, _normalize_tag_name(category_name), category_id),
+            )
+            if cursor.rowcount == 0:
+                raise ValueError(f"Character category not found: {category_id}")
+        return next(
+            category
+            for category in self.list_character_categories()
+            if category.id == category_id
+        )
+
+    def delete_character_category(self, category_id: int) -> None:
+        with session(self.database_path) as connection:
+            if connection.execute(
+                "SELECT 1 FROM character_categories WHERE id = ? AND deleted_at IS NULL",
+                (category_id,),
+            ).fetchone() is None:
+                raise ValueError(f"Character category not found: {category_id}")
+            connection.execute(
+                "DELETE FROM character_category_links WHERE category_id = ?",
+                (category_id,),
+            )
+            connection.execute(
+                """
+                UPDATE character_categories
+                SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (category_id,),
+            )
+
+    def set_character_category(
+        self,
+        card_id: int,
+        category_id: int,
+        selected: bool,
+    ) -> CharacterCard:
+        with session(self.database_path) as connection:
+            if connection.execute(
+                "SELECT 1 FROM character_categories WHERE id = ? AND deleted_at IS NULL",
+                (category_id,),
+            ).fetchone() is None:
+                raise ValueError(f"Character category not found: {category_id}")
+            card = connection.execute(
+                "SELECT scope FROM character_cards WHERE id = ? AND deleted_at IS NULL",
+                (card_id,),
+            ).fetchone()
+            if card is None:
+                raise ValueError(f"Character card not found: {card_id}")
+            if str(card["scope"]) != "public":
+                raise ValueError("Only public character cards can belong to character categories.")
+            if selected:
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO character_category_links (
+                        character_card_id, category_id
+                    ) VALUES (?, ?)
+                    """,
+                    (card_id, category_id),
+                )
+            else:
+                connection.execute(
+                    """
+                    DELETE FROM character_category_links
+                    WHERE character_card_id = ? AND category_id = ?
+                    """,
+                    (card_id, category_id),
+                )
+        updated = self.get_character_card(card_id)
+        if updated is None:
+            raise ValueError(f"Character card not found: {card_id}")
+        return updated
+
+    def list_character_project_summaries(self) -> list[CharacterProjectSummary]:
+        with session(self.database_path) as connection:
+            rows = connection.execute(
+                """
+                SELECT p.id AS project_id,
+                       p.name AS project_name,
+                       COUNT(DISTINCT CASE
+                           WHEN binding.is_active = 1 AND card.deleted_at IS NULL
+                           THEN binding.character_card_id
+                       END) AS character_count,
+                       p.updated_at
+                FROM projects p
+                LEFT JOIN project_character_bindings binding
+                    ON binding.project_id = p.id
+                LEFT JOIN character_cards card
+                    ON card.id = binding.character_card_id
+                WHERE p.deleted_at IS NULL
+                GROUP BY p.id
+                ORDER BY p.updated_at DESC, p.id DESC
+                """
+            ).fetchall()
+        return [
+            CharacterProjectSummary(
+                project_id=int(row["project_id"]),
+                project_name=str(row["project_name"]),
+                character_count=int(row["character_count"]),
+                updated_at=str(row["updated_at"]),
+            )
+            for row in rows
+        ]
 
     def analyze_character_card(
         self,
@@ -884,7 +1316,100 @@ class AnchorService:
         )
 
     @staticmethod
-    def _character_from_row(row) -> CharacterCard:
+    def _character_source_summary(connection, row) -> CharacterSourceSummary:
+        source_metadata = _loads_json(str(row["source_metadata_json"] or "{}"), {})
+        import_metadata = _loads_json(str(row["import_metadata_json"] or "{}"), {})
+        source_metadata = source_metadata if isinstance(source_metadata, dict) else {}
+        import_metadata = import_metadata if isinstance(import_metadata, dict) else {}
+        created_by = str(import_metadata.get("created_by") or "")
+        source_card_id = row["source_character_card_id"]
+
+        if source_card_id is not None:
+            source = connection.execute(
+                "SELECT name, scope FROM character_cards WHERE id = ?",
+                (source_card_id,),
+            ).fetchone()
+            source_name = str(source["name"]) if source is not None else f"#{source_card_id}"
+            source_scope = str(source["scope"]) if source is not None else ""
+            if str(row["scope"]) == "project" and source_scope == "public":
+                return CharacterSourceSummary(
+                    kind="public_copy",
+                    label=f"公共角色“{source_name}”",
+                    project_id=row["project_id"],
+                    source_card_id=int(source_card_id),
+                )
+            return CharacterSourceSummary(
+                kind="project_copy",
+                label=f"工程角色“{source_name}”",
+                project_id=row["project_id"],
+                source_card_id=int(source_card_id),
+            )
+
+        source_kind = str(source_metadata.get("source_kind") or "")
+        document_id = _optional_int(source_metadata.get("document_id"))
+        chapter_id = _optional_int(source_metadata.get("chapter_id"))
+        project_id = _optional_int(source_metadata.get("project_id"))
+        if source_kind == "document" and document_id is not None:
+            document = connection.execute(
+                "SELECT title FROM library_documents WHERE id = ?",
+                (document_id,),
+            ).fetchone()
+            chapter = (
+                connection.execute(
+                    "SELECT title FROM library_document_chapters WHERE id = ?",
+                    (chapter_id,),
+                ).fetchone()
+                if chapter_id is not None
+                else None
+            )
+            title = str(document["title"]) if document is not None else f"文档 #{document_id}"
+            label = f"《{title}》"
+            if chapter is not None and str(chapter["title"]).strip():
+                label += f" · {str(chapter['title']).strip()}"
+            return CharacterSourceSummary(
+                kind="document_selection",
+                label=label,
+                document_id=document_id,
+                chapter_id=chapter_id,
+            )
+        if source_kind == "project" and project_id is not None:
+            project = connection.execute(
+                "SELECT name FROM projects WHERE id = ?",
+                (project_id,),
+            ).fetchone()
+            project_name = str(project["name"]) if project is not None else f"#{project_id}"
+            return CharacterSourceSummary(
+                kind="project_selection",
+                label=f"工程“{project_name}”",
+                chapter_id=chapter_id,
+                project_id=project_id,
+            )
+        if created_by.startswith("ai_"):
+            return CharacterSourceSummary(
+                kind="ai_extraction",
+                label="AI 文本提取",
+                document_id=document_id,
+                chapter_id=chapter_id,
+                project_id=project_id,
+            )
+        source_file_name = str(source_metadata.get("source_file_name") or "").strip()
+        if source_file_name:
+            return CharacterSourceSummary(
+                kind="file_import",
+                label=f"文件 {source_file_name}",
+                project_id=project_id,
+            )
+        if not source_metadata and not import_metadata:
+            return CharacterSourceSummary(kind="manual", label="手动创建")
+        return CharacterSourceSummary(kind="manual", label="本地创建")
+
+    @staticmethod
+    def _character_from_row(
+        row,
+        *,
+        source_summary: CharacterSourceSummary | None = None,
+    ) -> CharacterCard:
+        keys = set(row.keys())
         return CharacterCard(
             id=row["id"],
             name=row["name"],
@@ -915,6 +1440,25 @@ class AnchorService:
             cover_path=row["cover_path"],
             cover_updated_at=row["cover_updated_at"],
             tags=tuple(item for item in str(row["tag_names"] or "").split(chr(31)) if item),
+            category_ids=(
+                tuple(
+                    int(item)
+                    for item in str(row["category_ids_text"] or "").split(chr(31))
+                    if item
+                )
+                if "category_ids_text" in keys
+                else ()
+            ),
+            categories=(
+                tuple(
+                    item
+                    for item in str(row["category_names"] or "").split(chr(31))
+                    if item
+                )
+                if "category_names" in keys
+                else ()
+            ),
+            source_summary=source_summary,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
@@ -982,8 +1526,26 @@ def _required_tag_name(value: str) -> str:
     return normalized
 
 
+def _required_category_name(value: str) -> str:
+    normalized = " ".join(value.strip().split())
+    if not normalized:
+        raise ValueError("Character category name is required.")
+    if len(normalized) > 40:
+        raise ValueError("Character category name must be 40 characters or fewer.")
+    return normalized
+
+
 def _normalize_tag_name(value: str) -> str:
     return " ".join(value.strip().split()).casefold()
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _normalize_custom_fields(fields: list[dict[str, Any]] | None) -> list[dict[str, Any]]:

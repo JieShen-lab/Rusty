@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .connection import session
 
-CURRENT_SCHEMA_VERSION = 19
+CURRENT_SCHEMA_VERSION = 20
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -342,6 +342,36 @@ CREATE TABLE IF NOT EXISTS character_tag_links (
     FOREIGN KEY (character_card_id) REFERENCES character_cards(id) ON DELETE CASCADE,
     FOREIGN KEY (tag_id) REFERENCES character_tags(id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS character_categories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    normalized_name TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    deleted_at TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_character_categories_normalized_active
+    ON character_categories(normalized_name)
+    WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_character_categories_sort_order
+    ON character_categories(sort_order);
+
+CREATE TABLE IF NOT EXISTS character_category_links (
+    character_card_id INTEGER NOT NULL,
+    category_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (character_card_id, category_id),
+    FOREIGN KEY (character_card_id) REFERENCES character_cards(id) ON DELETE CASCADE,
+    FOREIGN KEY (category_id) REFERENCES character_categories(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_character_category_links_category
+    ON character_category_links(category_id);
+CREATE INDEX IF NOT EXISTS idx_character_category_links_character
+    ON character_category_links(character_card_id);
 
 CREATE TABLE IF NOT EXISTS project_documents (
     project_id INTEGER PRIMARY KEY,
@@ -2244,6 +2274,59 @@ def _migrate_to_v19(connection: sqlite3.Connection) -> None:
         )
 
 
+def _migrate_to_v20(connection: sqlite3.Connection) -> None:
+    """Add public character categories and repair legacy project bindings."""
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS character_categories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            normalized_name TEXT NOT NULL,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            deleted_at TEXT
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_character_categories_normalized_active
+            ON character_categories(normalized_name)
+            WHERE deleted_at IS NULL;
+        CREATE INDEX IF NOT EXISTS idx_character_categories_sort_order
+            ON character_categories(sort_order);
+
+        CREATE TABLE IF NOT EXISTS character_category_links (
+            character_card_id INTEGER NOT NULL,
+            category_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (character_card_id, category_id),
+            FOREIGN KEY (character_card_id)
+                REFERENCES character_cards(id)
+                ON DELETE CASCADE,
+            FOREIGN KEY (category_id)
+                REFERENCES character_categories(id)
+                ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_character_category_links_category
+            ON character_category_links(category_id);
+        CREATE INDEX IF NOT EXISTS idx_character_category_links_character
+            ON character_category_links(character_card_id);
+
+        INSERT OR IGNORE INTO project_character_bindings (
+            project_id,
+            character_card_id,
+            sort_order,
+            is_active
+        )
+        SELECT
+            project_id,
+            id,
+            0,
+            1
+        FROM character_cards
+        WHERE scope = 'project'
+          AND project_id IS NOT NULL
+          AND deleted_at IS NULL;
+        """
+    )
 def _safe_json_list(value: object) -> list[dict[str, object]]:
     try:
         parsed = json.loads(str(value or "[]"))
@@ -2613,6 +2696,7 @@ MIGRATIONS = {
     17: _migrate_to_v17,
     18: _migrate_to_v18,
     19: _migrate_to_v19,
+    20: _migrate_to_v20,
 }
 
 

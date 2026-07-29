@@ -906,6 +906,23 @@ class MaterialExtractOut(BaseModel):
     materials: list[MaterialOut]
 
 
+class CharacterSourceSummaryOut(BaseModel):
+    kind: Literal[
+        "manual",
+        "document_selection",
+        "project_selection",
+        "file_import",
+        "ai_extraction",
+        "public_copy",
+        "project_copy",
+    ]
+    label: str
+    document_id: int | None = None
+    chapter_id: int | None = None
+    project_id: int | None = None
+    source_card_id: int | None = None
+
+
 class CharacterCardOut(BaseModel):
     id: int
     name: str
@@ -936,8 +953,26 @@ class CharacterCardOut(BaseModel):
     cover_path: str | None = None
     cover_updated_at: str | None = None
     tags: list[str] = Field(default_factory=list)
+    category_ids: list[int] = Field(default_factory=list)
+    categories: list[str] = Field(default_factory=list)
+    source_summary: CharacterSourceSummaryOut
     created_at: str = ""
     updated_at: str = ""
+
+
+class CharacterCategoryOut(BaseModel):
+    id: int
+    name: str
+    normalized_name: str
+    sort_order: int
+    resource_count: int
+
+
+class CharacterProjectSummaryOut(BaseModel):
+    project_id: int
+    project_name: str
+    character_count: int
+    updated_at: str
 
 
 class CharacterCardWriteRequest(BaseModel):
@@ -968,6 +1003,10 @@ class CharacterCardWriteRequest(BaseModel):
 class CharacterCardCopyRequest(BaseModel):
     target_scope: Literal["public", "project"]
     target_project_id: int | None = None
+
+
+class CharacterCopyToProjectRequest(BaseModel):
+    target_project_id: int
 
 
 class CharacterAnalyzeRequest(BaseModel):

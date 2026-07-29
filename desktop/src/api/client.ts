@@ -8,6 +8,8 @@ import type {
   CompiledPromptPreview,
   CharacterCard,
   CharacterCardWrite,
+  CharacterCategory,
+  CharacterProjectSummary,
   ExportPlanItem,
   ExportPlanUpdate,
   GenerationAttempt,
@@ -758,10 +760,15 @@ export function extractOutlineTemplate(payload: AnchorExtractWrite) {
   return request<OutlineTemplate>('/api/outlines/extract', { method: 'POST', body: JSON.stringify(payload) });
 }
 
-export function getCharacterCards(scope?: 'public' | 'project', projectId?: number | null) {
+export function getCharacterCards(
+  scope?: 'public' | 'project',
+  projectId?: number | null,
+  categoryId?: number | null,
+) {
   const params = new URLSearchParams();
   if (scope) params.set('scope', scope);
   if (projectId !== undefined && projectId !== null) params.set('project_id', String(projectId));
+  if (categoryId !== undefined && categoryId !== null) params.set('category_id', String(categoryId));
   const query = params.size ? `?${params.toString()}` : '';
   return request<CharacterCard[]>(`/api/characters${query}`);
 }
@@ -787,6 +794,41 @@ export function assignCharacterTag(cardId: number, tagId: number, selected: bool
     method: 'POST',
     body: JSON.stringify({ selected }),
   });
+}
+
+export function getCharacterCategories() {
+  return request<CharacterCategory[]>('/api/character-categories');
+}
+
+export function createCharacterCategory(name: string) {
+  return request<CharacterCategory>('/api/character-categories', {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  });
+}
+
+export function renameCharacterCategory(categoryId: number, name: string) {
+  return request<CharacterCategory>(`/api/character-categories/${categoryId}`, {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  });
+}
+
+export function deleteCharacterCategory(categoryId: number) {
+  return request<{ ok: boolean }>(`/api/character-categories/${categoryId}/delete`, {
+    method: 'POST',
+  });
+}
+
+export function assignCharacterCategory(cardId: number, categoryId: number, selected: boolean) {
+  return request<CharacterCard>(`/api/characters/${cardId}/categories/${categoryId}`, {
+    method: 'POST',
+    body: JSON.stringify({ selected }),
+  });
+}
+
+export function getCharacterProjectSummaries() {
+  return request<CharacterProjectSummary[]>('/api/character-projects/summary');
 }
 
 export function analyzeCharacterCard(
@@ -861,6 +903,13 @@ export function copyCharacterCard(
       target_scope: targetScope,
       target_project_id: targetProjectId ?? null,
     }),
+  });
+}
+
+export function copyPublicCharacterToProject(cardId: number, targetProjectId: number) {
+  return request<CharacterCard>(`/api/characters/${cardId}/copy-to-project`, {
+    method: 'POST',
+    body: JSON.stringify({ target_project_id: targetProjectId }),
   });
 }
 

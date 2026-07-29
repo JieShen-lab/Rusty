@@ -1,7 +1,30 @@
 import { expect, test, type Page } from '@playwright/test';
 
-const projects = [{ id: 1, name: '示例工程', author: '', status: 'ready', source_format: 'txt', total_chapters: 1, total_words: 100, processed_chapters: 0, progress_percent: 0, created_at: '', updated_at: '' }];
+const projects = [
+  { id: 1, name: '示例工程', author: '', status: 'ready', source_format: 'txt', total_chapters: 1, total_words: 100, processed_chapters: 0, progress_percent: 0, created_at: '', updated_at: '2026-07-29 12:00:00' },
+  { id: 2, name: '北境工程', author: '', status: 'ready', source_format: 'txt', total_chapters: 1, total_words: 100, processed_chapters: 0, progress_percent: 0, created_at: '', updated_at: '2026-07-28 12:00:00' },
+  { id: 3, name: '旧城工程', author: '', status: 'ready', source_format: 'txt', total_chapters: 1, total_words: 100, processed_chapters: 0, progress_percent: 0, created_at: '', updated_at: '2026-07-27 12:00:00' },
+  { id: 4, name: '海港工程', author: '', status: 'ready', source_format: 'txt', total_chapters: 1, total_words: 100, processed_chapters: 0, progress_percent: 0, created_at: '', updated_at: '2026-07-26 12:00:00' },
+];
 const tags = [{ id: 1, name: '主角', normalized_name: '主角', sort_order: 0, resource_count: 1 }];
+const characterCategories = [
+  { id: 31, name: '主要角色', normalized_name: '主要角色', sort_order: 0, resource_count: 1 },
+  { id: 32, name: '历史人物', normalized_name: '历史人物', sort_order: 1, resource_count: 1 },
+];
+const publicCharacter = {
+  id: 1, name: '林舟', aliases: [], description: '沉着的调查者', priority: 50, is_main: true, relationship_notes: '', personality: '', speech_style: '', action_constraints: '', anti_ooc_rules: '', profile: {}, source_metadata: {}, import_metadata: {}, scope: 'public' as const, project_id: null, source_character_card_id: null, source_version: null, version: 1, sort_order: 0, identity: '调查者', age: '', setting_text: '林舟习惯先观察再行动。他对旧城历史十分熟悉，并且不轻易表露情绪。', custom_fields: [], raw_text: '林舟推门而入。', analysis_status: 'unanalyzed' as const, cover_path: null, cover_updated_at: null, tags: ['主角'], category_ids: [31, 32], categories: ['主要角色', '历史人物'], source_summary: { kind: 'document_selection' as const, label: '《示例长篇》 · 第一章', document_id: 1, chapter_id: 1 }, created_at: '', updated_at: '',
+};
+const projectCharacter = {
+  ...publicCharacter,
+  id: 2,
+  name: '工程林舟',
+  scope: 'project' as const,
+  project_id: 1,
+  source_character_card_id: 1,
+  category_ids: [],
+  categories: [],
+  source_summary: { kind: 'public_copy' as const, label: '公共角色“林舟”', project_id: 1, source_card_id: 1 },
+};
 const materials = [
   { id: 1, material_type: 'scene_reference', scope: 'public', project_id: null, project_name: null, name: '雨夜追逐', description: '雨夜动作参考', detail_level: 'standard', raw_text: '', content: {}, analysis_status: 'unanalyzed', source_metadata: {}, import_metadata: {}, source_material_id: null, source_version: null, timeline_start_chapter: null, timeline_end_chapter: null, sort_order: 0, version: 1, created_at: '', updated_at: '', tags: [] },
   { id: 2, material_type: 'plot_skeleton', scope: 'public', project_id: null, project_name: null, name: '误会解除', description: '事件骨架', detail_level: 'standard', raw_text: '', content: {}, analysis_status: 'analyzed', source_metadata: {}, import_metadata: {}, source_material_id: null, source_version: null, timeline_start_chapter: null, timeline_end_chapter: null, sort_order: 0, version: 1, created_at: '', updated_at: '', tags: [] },
@@ -36,9 +59,11 @@ async function mockApi(page: Page) {
     let body: unknown = [];
     if (path === '/api/projects') body = projects;
     else if (path === '/api/character-tags' || path === '/api/material-tags') body = tags;
-    else if (path === '/api/characters') body = [{
-      id: 1, name: '林舟', aliases: [], description: '', priority: 50, is_main: true, relationship_notes: '', personality: '', speech_style: '', action_constraints: '', anti_ooc_rules: '', profile: {}, source_metadata: {}, import_metadata: {}, scope: 'public', project_id: null, source_character_card_id: null, source_version: null, version: 1, sort_order: 0, identity: '', age: '', setting_text: '', custom_fields: [], raw_text: '林舟推门而入。', analysis_status: 'unanalyzed', cover_path: null, cover_updated_at: null, tags: ['主角'], created_at: '', updated_at: '',
-    }];
+    else if (path === '/api/character-categories') body = characterCategories;
+    else if (path === '/api/character-projects/summary') body = projects.map((project, index) => ({ project_id: project.id, project_name: project.name, character_count: index === 0 ? 1 : 0, updated_at: project.updated_at }));
+    else if (path === '/api/projects/1/characters') body = { character_cards: [projectCharacter] };
+    else if (/^\/api\/projects\/\d+\/characters$/.test(path)) body = { character_cards: [] };
+    else if (path === '/api/characters') body = url.searchParams.has('category_id') ? [publicCharacter] : [publicCharacter];
     else if (path === '/api/materials') body = materials;
     else if (/^\/api\/materials\/1\/analyze$/.test(path)) body = { material_id: 1, model_id: 1, invocation_id: 9, existing: {}, proposal: { summary: '模型分析摘要' } };
     else if (/^\/api\/materials\/1\/analysis\/apply$/.test(path)) body = { ...materials[0], analysis_status: 'analyzed', content: { summary: '模型分析摘要' } };
@@ -204,14 +229,53 @@ test('素材 JSON 导入预览与真实 AI 分析 mock 流程', async ({ page })
   await expect(page.getByText(/结构化分析建议已确认并保存/)).toBeVisible();
 });
 
-test('角色空字段提醒、自定义字段排序和封面入口', async ({ page }) => {
+test('角色库按工程和公共分类导航，标签只在右侧筛选且摘要保持紧凑', async ({ page }) => {
   await page.goto('/characters');
-  await page.getByRole('button', { name: '编辑' }).click();
-  await expect(page.getByText('自定义封面')).toBeVisible();
-  await page.getByRole('button', { name: '新增字段' }).click();
-  await page.getByPlaceholder('字段名').fill('习惯');
-  await page.getByRole('button', { name: '保存', exact: true }).click();
-  await expect(page.getByRole('dialog', { name: '空字段保存提醒' })).toBeVisible();
+  const sidebar = page.locator('.character-range-panel');
+  const detail = page.locator('.character-detail-panel');
+  await expect(sidebar.getByText('工程角色', { exact: true })).toBeVisible();
+  await expect(sidebar.getByText('公共角色', { exact: true })).toBeVisible();
+  await expect(sidebar.getByText('我的分类', { exact: true })).toBeVisible();
+  await expect(sidebar.getByText('我的标签', { exact: true })).toHaveCount(0);
+  await expect(sidebar.getByText('系统筛选', { exact: true })).toHaveCount(0);
+  await expect(sidebar.getByText('收藏', { exact: true })).toHaveCount(0);
+  await expect(sidebar.locator('select')).toHaveCount(0);
+  await expect(sidebar.getByRole('button', { name: /示例工程/ })).toBeVisible();
+  await expect(sidebar.getByRole('button', { name: /北境工程/ })).toBeVisible();
+  await expect(sidebar.getByRole('button', { name: /旧城工程/ })).toBeVisible();
+  await expect(sidebar.getByRole('button', { name: /海港工程/ })).toHaveCount(0);
+  await expect(sidebar.getByRole('button', { name: /展开更多工程/ })).toBeVisible();
+
+  await expect(detail.getByRole('button', { name: '主要角色', exact: true })).toBeVisible();
+  await expect(detail.getByRole('button', { name: '历史人物', exact: true })).toBeVisible();
+  await expect(detail.getByRole('button', { name: '主角', exact: true })).toBeVisible();
+  await detail.getByRole('button', { name: '主角', exact: true }).click();
+  await expect(page.getByText('标签：主角')).toBeVisible();
+  await expect(detail.getByRole('button', { name: '主角', exact: true })).toBeVisible();
+  await expect(page.getByText('林舟习惯先观察再行动。他对旧城历史十分熟悉，并且不轻易表露情绪。')).toBeVisible();
+  await expect(page.getByText('来源版本', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('更新时间', { exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /AI 分析/ })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /复制到工程/ })).toHaveCount(0);
+  await expect(page.locator('.character-detail-footer').getByRole('button')).toHaveCount(2);
+
+  await sidebar.getByRole('button', { name: /示例工程/ }).click();
+  await expect(page.getByRole('heading', { name: '工程林舟' })).toBeVisible();
+  await expect(detail.getByText('所属分类', { exact: true })).toHaveCount(0);
+  await sidebar.getByRole('button', { name: /全部角色/ }).click();
+  await expect(page.getByText('林舟', { exact: true }).first()).toBeVisible();
+
+  await page.getByRole('button', { name: '切换到深色模式' }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  for (const viewport of [
+    { width: 1280, height: 720 },
+    { width: 1440, height: 900 },
+    { width: 1920, height: 1080 },
+  ]) {
+    await page.setViewportSize(viewport);
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
+    expect(overflow).toBe(false);
+  }
 });
 
 test('文档库在常用桌面窗口无横向溢出', async ({ page }) => {

@@ -57,11 +57,15 @@ from .schemas import (
     AISplitPreviewRequest,
     CharacterAnalyzeRequest,
     CharacterAnalysisConfirmRequest,
+    CharacterCategoryOut,
     CharacterCoverWriteRequest,
     CharacterCardOut,
     CharacterCardCopyRequest,
+    CharacterCopyToProjectRequest,
     CharacterCardsExtractOut,
     CharacterCardWriteRequest,
+    CharacterProjectSummaryOut,
+    CharacterSourceSummaryOut,
     ChapterDetailOut,
     ChapterErrorOut,
     ChapterOut,
@@ -1775,6 +1779,7 @@ def create_app(
         scope: str | None = None,
         project_id: int | None = None,
         tag_id: int | None = None,
+        category_id: int | None = None,
         analysis_status: str | None = None,
         untagged: bool = False,
     ) -> list[CharacterCardOut]:
@@ -1784,9 +1789,94 @@ def create_app(
                 scope,
                 project_id,
                 tag_id=tag_id,
+                category_id=category_id,
                 analysis_status=analysis_status,
                 untagged=untagged,
             )
+        ]
+
+    @app.get("/api/character-categories", response_model=list[CharacterCategoryOut])
+    def list_character_categories() -> list[CharacterCategoryOut]:
+        return [
+            CharacterCategoryOut(
+                id=category.id,
+                name=category.name,
+                normalized_name=category.normalized_name,
+                sort_order=category.sort_order,
+                resource_count=category.resource_count,
+            )
+            for category in anchor_service.list_character_categories()
+        ]
+
+    @app.post(
+        "/api/character-categories",
+        response_model=CharacterCategoryOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def create_character_category(payload: ResourceTagCreateRequest) -> CharacterCategoryOut:
+        category = anchor_service.create_character_category(payload.name)
+        return CharacterCategoryOut(
+            id=category.id,
+            name=category.name,
+            normalized_name=category.normalized_name,
+            sort_order=category.sort_order,
+            resource_count=category.resource_count,
+        )
+
+    @app.post(
+        "/api/character-categories/{category_id}",
+        response_model=CharacterCategoryOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def rename_character_category(
+        category_id: int,
+        payload: ResourceTagRenameRequest,
+    ) -> CharacterCategoryOut:
+        category = anchor_service.rename_character_category(category_id, payload.name)
+        return CharacterCategoryOut(
+            id=category.id,
+            name=category.name,
+            normalized_name=category.normalized_name,
+            sort_order=category.sort_order,
+            resource_count=category.resource_count,
+        )
+
+    @app.post(
+        "/api/character-categories/{category_id}/delete",
+        response_model=dict[str, bool],
+        dependencies=[Depends(_require_token)],
+    )
+    def delete_character_category(category_id: int) -> dict[str, bool]:
+        anchor_service.delete_character_category(category_id)
+        return {"ok": True}
+
+    @app.post(
+        "/api/characters/{card_id}/categories/{category_id}",
+        response_model=CharacterCardOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def assign_character_category(
+        card_id: int,
+        category_id: int,
+        payload: ResourceTagAssignmentRequest,
+    ) -> CharacterCardOut:
+        return _character_out(
+            anchor_service.set_character_category(card_id, category_id, payload.selected)
+        )
+
+    @app.get(
+        "/api/character-projects/summary",
+        response_model=list[CharacterProjectSummaryOut],
+    )
+    def list_character_project_summaries() -> list[CharacterProjectSummaryOut]:
+        return [
+            CharacterProjectSummaryOut(
+                project_id=project.project_id,
+                project_name=project.project_name,
+                character_count=project.character_count,
+                updated_at=project.updated_at,
+            )
+            for project in anchor_service.list_character_project_summaries()
         ]
 
     @app.get("/api/character-tags", response_model=list[ResourceTagOut])
@@ -1873,6 +1963,28 @@ def create_app(
         card = anchor_service.get_character_card(copied_id)
         if card is None:
             raise _http_error(500, "character_card_copy_failed", "角色卡副本已创建但无法读取。")
+        return _character_out(card)
+
+    @app.post(
+        "/api/characters/{card_id}/copy-to-project",
+        response_model=CharacterCardOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def copy_public_character_to_project(
+        card_id: int,
+        payload: CharacterCopyToProjectRequest,
+    ) -> CharacterCardOut:
+        copied_id = anchor_service.copy_public_character_to_project(
+            card_id,
+            payload.target_project_id,
+        )
+        card = anchor_service.get_character_card(copied_id)
+        if card is None:
+            raise _http_error(
+                500,
+                "character_card_copy_failed",
+                "Character card copy was committed but could not be loaded.",
+            )
         return _character_out(card)
 
     @app.post("/api/characters/{card_id}", response_model=CharacterCardOut, dependencies=[Depends(_require_token)])
@@ -2308,6 +2420,7 @@ def _material_out(material: Material) -> MaterialOut:
 
 
 def _character_out(card: CharacterCard) -> CharacterCardOut:
+    source_summary = card.source_summary
     return CharacterCardOut(
         id=card.id,
         name=card.name,
@@ -2338,6 +2451,16 @@ def _character_out(card: CharacterCard) -> CharacterCardOut:
         cover_path=card.cover_path,
         cover_updated_at=card.cover_updated_at,
         tags=list(card.tags),
+        category_ids=list(card.category_ids),
+        categories=list(card.categories),
+        source_summary=CharacterSourceSummaryOut(
+            kind=source_summary.kind if source_summary is not None else "manual",
+            label=source_summary.label if source_summary is not None else "本地创建",
+            document_id=source_summary.document_id if source_summary is not None else None,
+            chapter_id=source_summary.chapter_id if source_summary is not None else None,
+            project_id=source_summary.project_id if source_summary is not None else card.project_id,
+            source_card_id=source_summary.source_card_id if source_summary is not None else card.source_character_card_id,
+        ),
         created_at=card.created_at,
         updated_at=card.updated_at,
     )

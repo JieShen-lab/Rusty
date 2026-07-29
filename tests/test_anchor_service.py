@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -197,6 +198,82 @@ class AnchorServiceTests(unittest.TestCase):
         self.assertEqual("Alice", project_copy.name)
         self.assertEqual("Original", project_copy.description)
         self.assertEqual({"identity": "captain"}, project_copy.profile)
+
+    def test_character_categories_atomic_project_copy_and_project_summary(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            database_path = Path(directory) / "rusty.db"
+            service = AnchorService(database_path)
+            project_id = _create_project(database_path)
+            lead = service.create_character_category("Lead")
+            historical = service.create_character_category("Historical")
+            tag = service.create_character_tag("Calm")
+            public_id = service.create_character_card(name="Alice", tag_ids=[tag["id"]])
+            service.set_character_category(public_id, lead.id, True)
+            service.set_character_category(public_id, historical.id, True)
+
+            public = service.get_character_card(public_id)
+            project_copy_id = service.copy_public_character_to_project(public_id, project_id)
+            project_copy = service.get_character_card(project_copy_id)
+            bound = service.list_project_character_cards(project_id)
+            filtered = service.list_character_cards(scope="public", category_id=lead.id)
+
+            self.assertIsNotNone(public)
+            self.assertEqual((lead.id, historical.id), public.category_ids)
+            self.assertEqual(("Calm",), public.tags)
+            self.assertEqual([public_id], [card.id for card in filtered])
+            self.assertIsNotNone(project_copy)
+            self.assertEqual("project", project_copy.scope)
+            self.assertEqual(public_id, project_copy.source_character_card_id)
+            self.assertEqual(1, project_copy.source_version)
+            self.assertEqual(("Calm",), project_copy.tags)
+            self.assertEqual((), project_copy.category_ids)
+            self.assertIn(project_copy_id, [card.id for card in bound])
+
+            with self.assertRaisesRegex(ValueError, "Only public"):
+                service.set_character_category(project_copy_id, lead.id, True)
+
+            service.delete_character_category(lead.id)
+            self.assertIsNotNone(service.get_character_card(public_id))
+            self.assertEqual((historical.id,), service.get_character_card(public_id).category_ids)
+
+            summaries = service.list_character_project_summaries()
+            summary = next(item for item in summaries if item.project_id == project_id)
+            self.assertEqual(1, summary.character_count)
+            service.unbind_project_character(project_id, project_copy_id)
+            summary = next(
+                item
+                for item in service.list_character_project_summaries()
+                if item.project_id == project_id
+            )
+            self.assertEqual(0, summary.character_count)
+
+    def test_public_character_copy_failure_leaves_no_half_created_card(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            database_path = Path(directory) / "rusty.db"
+            service = AnchorService(database_path)
+            project_id = _create_project(database_path)
+            public_id = service.create_character_card(name="Alice")
+            service.save_character_cover(
+                public_id,
+                b"\x89PNG\r\n\x1a\n" + (b"\x00" * 8) + (1).to_bytes(4, "big") + (1).to_bytes(4, "big"),
+            )
+            with session(database_path) as connection:
+                before = int(connection.execute("SELECT COUNT(*) FROM character_cards").fetchone()[0])
+
+            with patch.object(Path, "write_bytes", side_effect=OSError("simulated cover failure")):
+                with self.assertRaisesRegex(OSError, "simulated cover failure"):
+                    service.copy_public_character_to_project(public_id, project_id)
+
+            with session(database_path) as connection:
+                after = int(connection.execute("SELECT COUNT(*) FROM character_cards").fetchone()[0])
+                bindings = int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM project_character_bindings WHERE project_id = ?",
+                        (project_id,),
+                    ).fetchone()[0]
+                )
+            self.assertEqual(before, after)
+            self.assertEqual(0, bindings)
 
     def test_ai_outline_extraction_from_text_creates_structured_template(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:

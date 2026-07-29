@@ -16,6 +16,7 @@ from rusty.db.schema import (
     _migrate_to_v17,
     _migrate_to_v18,
     _migrate_to_v19,
+    _migrate_to_v20,
 )
 
 
@@ -95,6 +96,8 @@ class SchemaTests(unittest.TestCase):
         self.assertIn("material_tag_links", table_names)
         self.assertIn("character_tags", table_names)
         self.assertIn("character_tag_links", table_names)
+        self.assertIn("character_categories", table_names)
+        self.assertIn("character_category_links", table_names)
         self.assertIn("document_tags", table_names)
         self.assertIn("document_tag_links", table_names)
         self.assertNotIn("material_categories", table_names)
@@ -123,6 +126,40 @@ class SchemaTests(unittest.TestCase):
 
         self.assertEqual(CURRENT_SCHEMA_VERSION, version)
         self.assertEqual(1, split_rule_count)
+
+    def test_v19_to_v20_character_category_migration_repairs_project_bindings_idempotently(self) -> None:
+        connection = sqlite3.connect(":memory:")
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        initialize_database(connection)
+        connection.execute("DELETE FROM schema_migrations WHERE version = 20")
+        connection.execute("DROP TABLE character_category_links")
+        connection.execute("DROP TABLE character_categories")
+        connection.execute("INSERT INTO projects (id, name) VALUES (900, 'Legacy project')")
+        connection.execute(
+            """
+            INSERT INTO character_cards (id, name, scope, project_id)
+            VALUES (901, 'Legacy character', 'project', 900)
+            """
+        )
+
+        _migrate_to_v20(connection)
+        _migrate_to_v20(connection)
+
+        tables = {
+            row[0]
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+        binding = connection.execute(
+            """
+            SELECT project_id, character_card_id, is_active
+            FROM project_character_bindings
+            WHERE project_id = 900 AND character_card_id = 901
+            """
+        ).fetchone()
+        self.assertIn("character_categories", tables)
+        self.assertIn("character_category_links", tables)
+        self.assertEqual((900, 901, 1), tuple(binding))
 
     def test_initialize_database_upgrades_v18_chapters_before_creating_volume_index(self) -> None:
         connection = sqlite3.connect(":memory:")
