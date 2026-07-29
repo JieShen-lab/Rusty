@@ -39,8 +39,6 @@ import {
   createDocumentCategory,
   createDocumentTag,
   createLibraryDocumentChapter,
-  createPlotSkeletonFromSelection,
-  createSceneMaterialFromSelection,
   createDocumentProcessingTemplate,
   deleteLibraryDocument,
   exportLibraryDocument,
@@ -145,7 +143,6 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
   const [actionDialog, setActionDialog] = useState<DocumentAction | null>(null);
   const [cleanupOpen, setCleanupOpen] = useState(false);
   const [revisionsOpen, setRevisionsOpen] = useState(false);
-  const [selectionDraft, setSelectionDraft] = useState<{ kind: 'scene' | 'plot' | 'character'; text: string; startOffset: number; endOffset: number } | null>(null);
   const [editorDirty, setEditorDirty] = useState(false);
   const editorControllerRef = useRef<DocumentEditorController | null>(null);
 
@@ -483,29 +480,28 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
       });
       return;
     }
-    setSelectionDraft({ kind, text: selected, startOffset, endOffset });
-  }
-
-  async function confirmSelection(name: string) {
-    if (!documentContent || !selectionDraft || !name.trim()) return;
-    const payload = {
-      source_kind: 'document' as const,
-      selected_text: selectionDraft.text,
-      name: name.trim(),
-      document_id: documentContent.document_id,
-      chapter_id: documentContent.chapter_id,
-      start_offset: selectionDraft.startOffset,
-      end_offset: selectionDraft.endOffset,
-      source_version: documentContent.revision_id,
-    };
-    try {
-      if (selectionDraft.kind === 'scene') await createSceneMaterialFromSelection(payload);
-      if (selectionDraft.kind === 'plot') await createPlotSkeletonFromSelection(payload);
-      setSelectionDraft(null);
-      setMessage('选区已保存到公共库，状态为未分析。');
-    } catch (err) {
-      setError(errorMessage(err));
-    }
+    const chapter = chapters.find((item) => item.id === documentContent.chapter_id);
+    const volume = volumes.find((item) => item.id === chapter?.volume_id);
+    onNavigate('/materials', {
+      materialExtraction: {
+        materialType: kind === 'plot' ? 'plot_skeleton' : 'scene_reference',
+        taskType: kind === 'scene' ? 'source_text_to_scene_material' : undefined,
+        selectedText: selected,
+        sourceMetadata: {
+          source_kind: 'document_selection',
+          source_type: 'document',
+          document_id: documentContent.document_id,
+          revision_id: documentContent.revision_id,
+          volume_id: volume?.id ?? null,
+          chapter_id: documentContent.chapter_id,
+          start_offset: startOffset,
+          end_offset: endOffset,
+          document_title: selectedDocument?.title ?? '',
+          volume_title: volume?.title ?? '',
+          chapter_title: chapter?.title ?? '',
+        },
+      },
+    });
   }
 
   async function showDocumentContent(chapterId: number | null) {
@@ -818,7 +814,6 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
             onRegexPreview={(pattern) => previewRegexSplit(selectedDocument.id, pattern)}
           />
         ) : null}
-        {selectionDraft ? <SelectionNameDialog kind={selectionDraft.kind} initialName={selectionDraft.text.slice(0, 24)} onClose={() => setSelectionDraft(null)} onSave={(name) => void confirmSelection(name)} /> : null}
       </div>
     );
   }
@@ -1556,8 +1551,8 @@ const EditableTextPreview = forwardRef<DocumentEditorController, {
       />
       {menu ? (
         <div className="selection-resource-menu" ref={menuRef} style={{ left: menu.x, top: menu.y }}>
-          <button onClick={() => { onSelectionResource('scene', menu.text, menu.startOffset, menu.endOffset); setMenu(null); }} type="button">添加为场景素材</button>
-          <button onClick={() => { onSelectionResource('plot', menu.text, menu.startOffset, menu.endOffset); setMenu(null); }} type="button">添加为剧情骨架</button>
+          <button onClick={() => { onSelectionResource('plot', menu.text, menu.startOffset, menu.endOffset); setMenu(null); }} type="button">添加为剧情骨架来源</button>
+          <button onClick={() => { onSelectionResource('scene', menu.text, menu.startOffset, menu.endOffset); setMenu(null); }} type="button">添加为场景素材来源</button>
           <button onClick={() => { onSelectionResource('character', menu.text, menu.startOffset, menu.endOffset); setMenu(null); }} type="button">提取角色卡</button>
         </div>
       ) : null}

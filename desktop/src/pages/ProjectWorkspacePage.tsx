@@ -1,12 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode } from 'react';
-import { ArrowDownToLine, ArrowLeft, ArrowUpToLine, ChevronRight, Download, Eye, EyeOff, Save, Sparkles, X } from 'lucide-react';
+import { ArrowDownToLine, ArrowLeft, ArrowUpToLine, ChevronRight, Download, Eye, EyeOff, Save, Settings2, Sparkles, X } from 'lucide-react';
 import {
   analyzeChapterStyle,
   confirmChapterRewrite,
   createCharacterFromSelection,
-  createPlotSkeletonFromSelection,
-  createSceneMaterialFromSelection,
   detectScene,
   expandChapterPlot,
   exportEpub,
@@ -39,7 +37,11 @@ import {
   getSceneRewriteHistory,
   reviseStorySkeleton,
   adjustChapterScenes,
+  getProjectMaterials,
+  getMaterialTags,
   getMaterials,
+  getProjectMaterialFilters,
+  setProjectMaterialFilter,
   getCharacterCards,
   restoreSceneRewriteVersion,
 } from '../api/client';
@@ -57,9 +59,11 @@ import type {
   SceneWorkflowRun,
   CharacterCard,
   Material,
+  ProjectMaterialFilter,
+  ResourceTag,
 } from '../api/types';
 
-type Props = { onNavigate: (path: string) => void; projectId: number };
+type Props = { onNavigate: (path: string, state?: unknown) => void; projectId: number };
 type SelectionKind = 'scene' | 'plot' | 'character';
 type SelectionCapture = { text: string; startOffset: number; endOffset: number; x: number; y: number };
 
@@ -216,6 +220,26 @@ export function ProjectWorkspacePage({ onNavigate, projectId }: Props) {
 
   async function saveSelection(kind: SelectionKind) {
     if (!selectionMenu || !selectedChapter) return;
+    if (kind !== 'character') {
+      onNavigate('/materials', {
+        materialExtraction: {
+          materialType: kind === 'plot' ? 'plot_skeleton' : 'scene_reference',
+          taskType: kind === 'scene' ? 'source_text_to_scene_material' : undefined,
+          selectedText: selectionMenu.text,
+          sourceMetadata: {
+            source_kind: 'project_selection',
+            source_type: 'project',
+            project_id: projectId,
+            chapter_id: selectedChapter.id,
+            start_offset: selectionMenu.startOffset,
+            end_offset: selectionMenu.endOffset,
+            project_name: project?.project.name ?? '',
+            chapter_title: selectedChapter.title,
+          },
+        },
+      });
+      return;
+    }
     setSelectionKind(kind);
   }
 
@@ -232,8 +256,6 @@ export function ProjectWorkspacePage({ onNavigate, projectId }: Props) {
     };
     setError(null);
     try {
-      if (selectionKind === 'scene') await createSceneMaterialFromSelection(payload);
-      if (selectionKind === 'plot') await createPlotSkeletonFromSelection(payload);
       if (selectionKind === 'character') await createCharacterFromSelection(payload);
       setSelectionMenu(null);
       setSelectionKind(null);
@@ -301,8 +323,8 @@ export function ProjectWorkspacePage({ onNavigate, projectId }: Props) {
       </div>
       {selectionMenu ? (
         <div className="selection-resource-menu" style={{ left: selectionMenu.x, top: selectionMenu.y }}>
-          <button onClick={() => void saveSelection('scene')} type="button">添加为场景素材</button>
-          <button onClick={() => void saveSelection('plot')} type="button">添加为剧情骨架</button>
+          <button onClick={() => void saveSelection('plot')} type="button">添加为剧情骨架来源</button>
+          <button onClick={() => void saveSelection('scene')} type="button">添加为场景素材来源</button>
           <button onClick={() => void saveSelection('character')} type="button">添加到公共角色卡</button>
         </div>
       ) : null}
@@ -336,6 +358,7 @@ function SceneRewritePanel(props: {
   const [characters, setCharacters] = useState<CharacterCard[]>([]);
   const [plotMaterials, setPlotMaterials] = useState<Material[]>([]);
   const [sceneMaterials, setSceneMaterials] = useState<Material[]>([]);
+  const [materialFilterOpen, setMaterialFilterOpen] = useState(false);
   const [resourceQuery, setResourceQuery] = useState('');
   const [insertion, setInsertion] = useState('__start__');
   const [run, setRun] = useState<SceneWorkflowRun | null>(null);
@@ -360,16 +383,22 @@ function SceneRewritePanel(props: {
     void Promise.all([
       getCharacterCards('public'),
       getCharacterCards('project', projectId),
-      getMaterials({ scope: 'public', material_type: 'plot_skeleton' }),
-      getMaterials({ scope: 'project', project_id: projectId, material_type: 'plot_skeleton' }),
-      getMaterials({ scope: 'public', material_type: 'scene_reference' }),
-      getMaterials({ scope: 'project', project_id: projectId, material_type: 'scene_reference' }),
-    ]).then(([publicCharacters, projectCharacters, publicPlots, projectPlots, publicScenes, projectScenes]) => {
+      getProjectMaterials(projectId, 'plot_skeleton'),
+      getProjectMaterials(projectId, 'scene_reference'),
+    ]).then(([publicCharacters, projectCharacters, projectPlots, projectScenes]) => {
       setCharacters(dedupeResources([...projectCharacters, ...publicCharacters]));
-      setPlotMaterials(dedupeResources([...projectPlots, ...publicPlots]).filter((item) => item.material_type === 'plot_skeleton'));
-      setSceneMaterials(dedupeResources([...projectScenes, ...publicScenes]).filter((item) => item.material_type === 'scene_reference'));
+      setPlotMaterials(projectPlots.filter((item) => item.material_type === 'plot_skeleton'));
+      setSceneMaterials(projectScenes.filter((item) => item.material_type === 'scene_reference'));
     }).catch((reason) => props.setError(messageOf(reason)));
   }, [props.scenes]);
+  async function reloadProjectMaterials(projectId: number) {
+    const [projectPlots, projectScenes] = await Promise.all([
+      getProjectMaterials(projectId, 'plot_skeleton'),
+      getProjectMaterials(projectId, 'scene_reference'),
+    ]);
+    setPlotMaterials(projectPlots);
+    setSceneMaterials(projectScenes);
+  }
   useEffect(() => {
     if (!selected?.id) {
       setHistory([]);
@@ -466,6 +495,7 @@ function SceneRewritePanel(props: {
             <section className="scene-workflow-form">
               <label><span>模式</span><select value={mode} onChange={(event) => setMode(event.target.value as typeof mode)}><option value="skeleton_rewrite">骨架重写</option><option value="expansion">扩写</option></select></label>
               <label className="wide"><span>搜索可用资源</span><input value={resourceQuery} onChange={(event) => setResourceQuery(event.target.value)} placeholder="按名称、身份或标签搜索" /></label>
+              <button className="button secondary" onClick={() => setMaterialFilterOpen(true)} type="button"><Settings2 size={15} />配置工程素材筛选</button>
               <ResourcePicker
                 label="角色"
                 items={characters.filter((item) => resourceMatches(item.name, item.identity, item.tags, resourceQuery))}
@@ -502,6 +532,112 @@ function SceneRewritePanel(props: {
             })}</section> : null}
           </main>
         </div>
+      </section>
+      {materialFilterOpen && selected ? (
+        <ProjectMaterialFilterDialog
+          projectId={selected.project_id}
+          onClose={() => setMaterialFilterOpen(false)}
+          onError={props.setError}
+          onSaved={async () => {
+            await reloadProjectMaterials(selected.project_id);
+            setMaterialFilterOpen(false);
+            props.setMessage('工程素材筛选已更新。');
+          }}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function ProjectMaterialFilterDialog({
+  onClose,
+  onError,
+  onSaved,
+  projectId,
+}: {
+  onClose: () => void;
+  onError: (value: string | null) => void;
+  onSaved: () => Promise<void>;
+  projectId: number;
+}) {
+  const [filters, setFilters] = useState<ProjectMaterialFilter[]>([]);
+  const [tags, setTags] = useState<ResourceTag[]>([]);
+  const [materials, setMaterials] = useState<Material[]>([]);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    void Promise.all([
+      getProjectMaterialFilters(projectId),
+      getMaterialTags(),
+      getMaterials({ analysis_status: 'analyzed' }),
+    ]).then(([filterItems, tagItems, materialItems]) => {
+      setFilters(filterItems);
+      setTags(tagItems);
+      setMaterials(materialItems);
+    }).catch((reason) => onError(messageOf(reason)));
+  }, [onError, projectId]);
+  const patch = (type: Material['material_type'], value: Partial<ProjectMaterialFilter>) => {
+    setFilters((items) => items.map((item) => item.material_type === type ? { ...item, ...value } : item));
+  };
+  async function save() {
+    setSaving(true);
+    onError(null);
+    try {
+      await Promise.all(filters.map((filterValue) => setProjectMaterialFilter(
+        projectId,
+        filterValue.material_type,
+        {
+          match_mode: filterValue.match_mode,
+          tag_ids: filterValue.tag_ids,
+          manual_material_ids: filterValue.manual_material_ids,
+          include_scene_keywords: filterValue.include_scene_keywords,
+          include_applicable_scene_tags: filterValue.include_applicable_scene_tags,
+        },
+      )));
+      await onSaved();
+    } catch (reason) {
+      onError(messageOf(reason));
+    } finally {
+      setSaving(false);
+    }
+  }
+  return (
+    <div className="document-processing-backdrop material-project-filter-backdrop">
+      <section className="document-processing-dialog material-project-filter-dialog" role="dialog" aria-modal="true">
+        <header><div><span>工程素材</span><h2>按标签配置素材范围</h2></div><button className="icon-button" onClick={onClose} type="button"><X size={16} /></button></header>
+        <div className="document-processing-body">
+          {filters.map((filterValue) => (
+            <section className="material-project-filter-section" key={filterValue.material_type}>
+              <header>
+                <h3>{filterValue.material_type === 'plot_skeleton' ? '剧情骨架' : '场景素材'}</h3>
+                <select value={filterValue.match_mode} onChange={(event) => patch(filterValue.material_type, { match_mode: event.target.value as 'any' | 'all' })}>
+                  <option value="any">匹配任一标签</option>
+                  <option value="all">匹配全部标签</option>
+                </select>
+              </header>
+              {(['general', 'applicable_scene'] as const).map((group) => (
+                <fieldset key={group}>
+                  <legend>{group === 'general' ? '通用标签' : '适用场景标签'}</legend>
+                  {tags.filter((tagItem) => (tagItem.tag_group ?? 'general') === group).map((tagItem) => (
+                    <label key={tagItem.id}><input checked={filterValue.tag_ids.includes(tagItem.id)} onChange={(event) => patch(filterValue.material_type, {
+                      tag_ids: event.target.checked ? [...filterValue.tag_ids, tagItem.id] : filterValue.tag_ids.filter((id) => id !== tagItem.id),
+                    })} type="checkbox" />{tagItem.name}</label>
+                  ))}
+                </fieldset>
+              ))}
+              <fieldset>
+                <legend>手动固定素材</legend>
+                {materials.filter((item) => item.material_type === filterValue.material_type).map((material) => (
+                  <label key={material.id}><input checked={filterValue.manual_material_ids.includes(material.id)} onChange={(event) => patch(filterValue.material_type, {
+                    manual_material_ids: event.target.checked ? [...filterValue.manual_material_ids, material.id] : filterValue.manual_material_ids.filter((id) => id !== material.id),
+                  })} type="checkbox" />{material.name}</label>
+                ))}
+              </fieldset>
+              <label><input checked={filterValue.include_scene_keywords} onChange={(event) => patch(filterValue.material_type, { include_scene_keywords: event.target.checked })} type="checkbox" />允许当前场景关键词补充检索</label>
+              <label><input checked={filterValue.include_applicable_scene_tags} onChange={(event) => patch(filterValue.material_type, { include_applicable_scene_tags: event.target.checked })} type="checkbox" />允许适用场景标签补充检索</label>
+            </section>
+          ))}
+        </div>
+        <footer><button className="button secondary" onClick={onClose} type="button">取消</button><button className="button primary" disabled={saving || !filters.length} onClick={() => void save()} type="button">保存筛选</button></footer>
       </section>
     </div>
   );

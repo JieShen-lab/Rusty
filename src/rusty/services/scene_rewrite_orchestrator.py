@@ -152,18 +152,20 @@ class SceneRewriteOrchestrator:
                 raise FileNotFoundError(f"Material not found: {mapping['material_id']}")
             if material.material_type != "plot_skeleton":
                 raise ValueError("Only plot_skeleton materials can create expansion events.")
-            if material.scope == "project" and material.project_id != scene.project_id:
-                raise ValueError(f"Plot skeleton is not available to this project: {material.id}")
             if not mapping.get("event_nodes"):
                 content = _object(material.content_json)
-                mapping["event_nodes"] = content.get("event_nodes", [])
+                legacy_extra = content.get("legacy_extra")
+                legacy_event_nodes = (
+                    legacy_extra.get("event_nodes", [])
+                    if isinstance(legacy_extra, dict)
+                    else []
+                )
+                mapping["event_nodes"] = content.get("event_nodes", legacy_event_nodes)
         reference_ids = list(scene_reference_ids or [])
         for material_id in reference_ids:
             material = self.material_service.get_material(material_id)
             if material is None or material.material_type != "scene_reference":
                 raise ValueError("Scene writing references must use scene_reference materials.")
-            if material.scope == "project" and material.project_id != scene.project_id:
-                raise ValueError(f"Scene reference is not available to this project: {material.id}")
         skeleton_nodes = self._skeleton_nodes(skeleton_version_id)
         node_ids = {str(node.get("id")) for node in skeleton_nodes}
         allowed_insertions = {"__start__", "__end__", *node_ids}
@@ -404,8 +406,6 @@ class SceneRewriteOrchestrator:
                 raise ValueError(
                     f"Material {material_id} must be {expected_type}, not {material.material_type}."
                 )
-            if material.scope == "project" and material.project_id != project_id:
-                raise ValueError(f"Material is not available to this project: {material_id}")
 
     def get_run(self, run_id: int) -> dict[str, Any]:
         with session(self.database_path) as connection:
@@ -500,8 +500,6 @@ class SceneRewriteOrchestrator:
             material = self.material_service.get_material(material_id)
             if material is None:
                 raise FileNotFoundError(f"Material not found: {material_id}")
-            if material.scope == "project" and material.project_id != scene.project_id:
-                raise ValueError(f"Material is not available to this project: {material_id}")
         retrieval = self.context_service.retrieve(
             scene_id,
             manual_material_ids=material_ids,

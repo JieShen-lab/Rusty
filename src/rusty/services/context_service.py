@@ -210,6 +210,9 @@ class ContextService:
         limit: int = 24,
     ) -> list[dict[str, Any]]:
         scene = self._require_scene(scene_id)
+        chapter = self.scene_service.project_service.get_chapter(scene.chapter_id)
+        if chapter is None:
+            raise FileNotFoundError(f"Chapter not found: {scene.chapter_id}")
         manual_materials = {
             item.id: item
             for item in (
@@ -218,14 +221,27 @@ class ContextService:
             )
             if item is not None
         }
-        all_materials = self.material_service.list_materials(
-            scope="project",
-            project_id=scene.project_id,
-        ) + self.material_service.list_materials(scope="public")
+        project_materials = self.material_service.list_materials_for_project(
+            scene.project_id,
+            include_unanalyzed_manual=False,
+        )
+        project_filters = {
+            item.material_type: item
+            for item in self.material_service.get_project_material_filters(scene.project_id)
+        }
+        project_material_ids = {item.id for item in project_materials}
+        all_materials = self.material_service.list_materials(analysis_status="analyzed")
         bound_characters = self.anchor_service.list_project_character_cards(scene.project_id)
         character_by_id = {card.id: card for card in bound_characters}
         search_terms = _unique_terms(
-            [*keywords, *character_names, location, time_hint, *_proper_nouns(scene.original_text)]
+            [
+                *keywords,
+                *character_names,
+                location,
+                time_hint,
+                scene.scene_type,
+                *_proper_nouns(scene.original_text),
+            ]
         )
         query = {
             "scene_id": scene_id,
@@ -240,6 +256,11 @@ class ContextService:
         }
         results: list[dict[str, Any]] = []
         for material_id, material in manual_materials.items():
+            manual_reason = (
+                "用户手动指定素材；该素材尚未分析，仅按明确选择纳入。"
+                if material.analysis_status == "unanalyzed"
+                else "用户手动指定素材，优先于自动检索。"
+            )
             results.append(
                 _result(
                     "manual",
@@ -247,7 +268,7 @@ class ContextService:
                     material_id,
                     _material_location(material),
                     material.description or material.raw_text or json.dumps(json.loads(material.content_json), ensure_ascii=False),
-                    "用户手动指定素材，优先于自动检索。",
+                    manual_reason,
                     1.0,
                 )
             )
@@ -284,8 +305,25 @@ class ContextService:
                     )
                 )
 
+        for material in project_materials:
+            if material.id in manual_materials:
+                continue
+            results.append(
+                _result(
+                    "project_tag_filter",
+                    "material",
+                    material.id,
+                    _material_location(material),
+                    material.description or material.raw_text or material.content_json,
+                    "命中当前工程配置的素材标签筛选。",
+                    0.92,
+                )
+            )
+
         for material in all_materials:
             if material.id in manual_materials:
+                continue
+            if material.id in project_material_ids:
                 continue
             content = " ".join(
                 [
@@ -296,16 +334,32 @@ class ContextService:
                     " ".join(material.tags),
                 ]
             )
-            structural = (
-                material.project_id == scene.project_id
-                and _timeline_matches(
-                    material.timeline_start_chapter,
-                    material.timeline_end_chapter,
-                    chapter.chapter_index,
-                )
+            structural = _timeline_matches(
+                material.timeline_start_chapter,
+                material.timeline_end_chapter,
+                chapter.index,
             )
-            matched_terms = [term for term in search_terms if term and term.casefold() in content.casefold()]
-            if structural:
+            applicable_matches = [
+                tag
+                for tag in material.applicable_scene_tags
+                if project_filters[material.material_type].include_applicable_scene_tags
+                if any(
+                    term
+                    and (
+                        term.casefold() in tag.casefold()
+                        or tag.casefold() in term.casefold()
+                    )
+                    for term in search_terms
+                )
+            ]
+            matched_terms = [
+                term
+                for term in search_terms
+                if project_filters[material.material_type].include_scene_keywords
+                and term
+                and term.casefold() in content.casefold()
+            ]
+            if structural or applicable_matches:
                 results.append(
                     _result(
                         "structure",
@@ -344,6 +398,14 @@ class ContextService:
                         )
                     )
 
+        material_types = {
+            item.id: item.material_type
+            for item in [*manual_materials.values(), *project_materials, *all_materials]
+        }
+        for result in results:
+            if result["source_type"] == "material":
+                result["material_type"] = material_types.get(int(result["source_id"]))
+
         ledger = self.scene_service.get_fact_ledger(scene_id)
         relationship_text = json.dumps(
             {
@@ -368,7 +430,14 @@ class ContextService:
                 )
             )
 
-        order = {"manual": 0, "structure": 1, "keyword": 2, "relationship": 3, "vector": 4}
+        order = {
+            "manual": 0,
+            "project_tag_filter": 1,
+            "structure": 2,
+            "keyword": 3,
+            "relationship": 4,
+            "vector": 5,
+        }
         results.sort(key=lambda item: (order[item["retrieval_type"]], -item["confidence"], item["source_id"]))
         results = results[:limit]
         with session(self.database_path) as connection:
@@ -714,11 +783,10 @@ def _result(
 
 
 def _material_location(material) -> str:
-    scope = f"project:{material.project_id}" if material.project_id is not None else "public"
     timeline = (
         f":chapters:{material.timeline_start_chapter or '*'}-{material.timeline_end_chapter or '*'}"
     )
-    return f"{scope}:material:{material.id}@v{material.version}{timeline}"
+    return f"material:{material.id}@v{material.version}{timeline}"
 
 
 def _character_content(card) -> str:
