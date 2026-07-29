@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import {
+  ArrowDown,
+  ArrowUp,
   BriefcaseBusiness,
   Check,
   ChevronDown,
@@ -9,6 +11,7 @@ import {
   Pencil,
   Plus,
   Search,
+  Settings,
   Tag,
   Trash2,
   UserRound,
@@ -22,6 +25,7 @@ import {
   createCharacterCard,
   createCharacterCategory,
   createCharacterTag,
+  copyPublicCharacterToProject,
   deleteCharacterCard,
   deleteCharacterCategory,
   deleteCharacterTag,
@@ -29,8 +33,10 @@ import {
   getCharacterCategories,
   getCharacterProjectSummaries,
   getCharacterTags,
+  getExistingCharacterProjectCopy,
   getProjectCharacters,
   removeCharacterCover,
+  publishProjectCharacterToPublic,
   renameCharacterCategory,
   renameCharacterTag,
   saveCharacterCover,
@@ -45,6 +51,11 @@ import type {
   CharacterQueryState,
   ResourceTag,
 } from '../api/types';
+import {
+  CharacterCreateDialog,
+  CharacterExtractionSettingsDialog,
+  type CharacterExtractionLaunch,
+} from '../components/CharacterCreationDialogs';
 import { DangerButton } from '../components/DangerButton';
 import { LibraryDialog, LibraryEmptyState, LibrarySidebarItem } from '../components/LibraryPrimitives';
 import { PrimaryButton } from '../components/PrimaryButton';
@@ -69,6 +80,9 @@ export function CharacterLibraryPage() {
   const [publicCount, setPublicCount] = useState(0);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [editing, setEditing] = useState<CharacterCard | null>(null);
+  const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [extractionLaunch, setExtractionLaunch] = useState<CharacterExtractionLaunch | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [filterOpen, setFilterOpen] = useState(false);
   const [projectDialogOpen, setProjectDialogOpen] = useState(false);
   const [projectQuery, setProjectQuery] = useState('');
@@ -147,6 +161,14 @@ export function CharacterLibraryPage() {
   }, []);
 
   useEffect(() => {
+    const launch = window.history.state?.characterExtraction as CharacterExtractionLaunch | undefined;
+    if (!launch?.selectedText) return;
+    setExtractionLaunch(launch);
+    setCreateDialogOpen(true);
+    window.history.replaceState(null, '', window.location.pathname);
+  }, []);
+
+  useEffect(() => {
     void loadCards();
   }, [selection]);
 
@@ -182,14 +204,14 @@ export function CharacterLibraryPage() {
       const payload = {
         name: draft.name.trim(),
         aliases: splitValues(draft.aliases),
-        description: card.description,
+        description: draft.description,
         priority: card.priority,
         is_main: card.is_main,
-        relationship_notes: card.relationship_notes,
-        personality: card.personality,
-        speech_style: card.speech_style,
-        action_constraints: card.action_constraints,
-        anti_ooc_rules: card.anti_ooc_rules,
+        relationship_notes: draft.relationship_notes,
+        personality: draft.personality,
+        speech_style: draft.speech_style,
+        action_constraints: draft.action_constraints,
+        anti_ooc_rules: draft.anti_ooc_rules,
         profile: card.profile,
         source_metadata: card.source_metadata,
         import_metadata: card.import_metadata,
@@ -206,12 +228,32 @@ export function CharacterLibraryPage() {
       const saved = card.id
         ? await updateCharacterCard(card.id, payload)
         : await createCharacterCard(payload);
-      if (!card.id && selection.kind === 'public-category') {
-        await assignCharacterCategory(saved.id, selection.categoryId, true);
+      if (saved.scope === 'public') {
+        const desiredCategoryIds = new Set(draft.category_ids);
+        if (!card.id && selection.kind === 'public-category') desiredCategoryIds.add(selection.categoryId);
+        for (const category of categories) {
+          const wasSelected = card.category_ids.includes(category.id);
+          const selectedNow = desiredCategoryIds.has(category.id);
+          if (wasSelected !== selectedNow) await assignCharacterCategory(saved.id, category.id, selectedNow);
+        }
+      }
+      let coverUploadFailed = false;
+      try {
+        if (draft.coverFile) {
+          await saveCharacterCover(saved.id, arrayBufferToBase64(await draft.coverFile.arrayBuffer()));
+        } else if (draft.removeCover && card.cover_path) {
+          await removeCharacterCover(saved.id);
+        }
+      } catch {
+        coverUploadFailed = true;
       }
       setEditing(null);
       await refresh(saved.id);
-      setMessage(card.id ? '角色已保存。' : '角色已创建。');
+      if (coverUploadFailed) {
+        setError('角色已保存，但封面上传失败。请重新打开角色并重试封面上传。');
+      } else {
+        setMessage(card.id ? '角色已保存。' : '角色已创建。');
+      }
     });
   }
 
@@ -299,7 +341,12 @@ export function CharacterLibraryPage() {
     <div className="document-library-page character-library-page">
       <TopBar
         title="角色卡库"
-        actions={<PrimaryButton disabled={busy} onClick={createBlank}><Plus size={16} />新建角色</PrimaryButton>}
+        actions={(
+          <>
+            <PrimaryButton disabled={busy} onClick={() => { setExtractionLaunch(null); setCreateDialogOpen(true); }}><Plus size={16} />新建角色</PrimaryButton>
+            <SecondaryButton aria-label="角色提取设置" disabled={busy} onClick={() => setSettingsOpen(true)}><Settings size={16} /></SecondaryButton>
+          </>
+        )}
       />
       {error ? <div className="inline-alert error document-library-alert" role="alert">{error}</div> : null}
       {message ? <div className="inline-alert success document-library-alert" role="status">{message}</div> : null}
@@ -503,12 +550,47 @@ export function CharacterLibraryPage() {
         <CharacterEditor
           busy={busy}
           card={editing}
+          categories={categories}
+          projects={projects}
           tags={tags}
           onClose={() => setEditing(null)}
           onCoverChanged={(id) => void refresh(id)}
+          onProjectCopied={(copied) => {
+            setEditing(null);
+            setSelection({ kind: 'project', projectId: copied.project_id! });
+            window.setTimeout(() => void refresh(copied.id), 0);
+            setMessage(`已添加到工程 ${projects.find((project) => project.project_id === copied.project_id)?.project_name ?? ''}`);
+          }}
           onSave={saveCharacter}
         />
       ) : null}
+      {createDialogOpen ? (
+        <CharacterCreateDialog
+          categories={categories}
+          initialLaunch={extractionLaunch}
+          initialProjectId={selection.kind === 'project' ? selection.projectId : null}
+          projects={projects}
+          tags={tags}
+          onClose={() => { setCreateDialogOpen(false); setExtractionLaunch(null); }}
+          onCreated={(cardIds, scope, projectId) => {
+            setCreateDialogOpen(false);
+            setExtractionLaunch(null);
+            if (scope === 'project' && projectId !== null) {
+              setSelection({ kind: 'project', projectId });
+            } else {
+              setSelection({ kind: 'public-all' });
+            }
+            window.setTimeout(() => void refresh(cardIds[0] ?? null), 0);
+            setMessage(`已创建 ${cardIds.length} 个角色。`);
+          }}
+          onManual={() => {
+            setCreateDialogOpen(false);
+            setExtractionLaunch(null);
+            createBlank();
+          }}
+        />
+      ) : null}
+      {settingsOpen ? <CharacterExtractionSettingsDialog onClose={() => setSettingsOpen(false)} /> : null}
       {projectDialogOpen ? (
         <ProjectPicker
           projects={projects}
@@ -693,83 +775,264 @@ function NameDialog({ busy, initialName, onClose, onSave, title }: {
 type CharacterDraft = {
   name: string;
   aliases: string;
+  description: string;
   identity: string;
   age: string;
   setting_text: string;
+  relationship_notes: string;
+  personality: string;
+  speech_style: string;
+  action_constraints: string;
+  anti_ooc_rules: string;
   raw_text: string;
   analysis_status: 'unanalyzed' | 'analyzed';
   custom_fields: CharacterCustomField[];
   tag_ids: number[];
+  category_ids: number[];
+  coverFile: File | null;
+  removeCover: boolean;
 };
 
-function CharacterEditor({ busy, card, onClose, onCoverChanged, onSave, tags }: {
+function CharacterEditor({ busy, card, categories, onClose, onCoverChanged, onProjectCopied, onSave, projects, tags }: {
   busy: boolean;
   card: CharacterCard;
+  categories: CharacterCategory[];
   onClose: () => void;
   onCoverChanged: (id: number) => void;
+  onProjectCopied: (card: CharacterCard) => void;
   onSave: (card: CharacterCard, draft: CharacterDraft) => void;
+  projects: CharacterProjectSummary[];
   tags: ResourceTag[];
 }) {
   const [draft, setDraft] = useState<CharacterDraft>({
     name: card.name,
     aliases: card.aliases.join('、'),
+    description: card.description,
     identity: card.identity,
     age: card.age,
     setting_text: card.setting_text,
+    relationship_notes: card.relationship_notes,
+    personality: card.personality,
+    speech_style: card.speech_style,
+    action_constraints: card.action_constraints,
+    anti_ooc_rules: card.anti_ooc_rules,
     raw_text: card.raw_text,
     analysis_status: card.analysis_status,
     custom_fields: card.custom_fields,
     tag_ids: tags.filter((tagItem) => card.tags.includes(tagItem.name)).map((tagItem) => tagItem.id),
+    category_ids: card.category_ids,
+    coverFile: null,
+    removeCover: false,
   });
+  const [warningOpen, setWarningOpen] = useState(false);
+  const [projectPickerOpen, setProjectPickerOpen] = useState(false);
+  const [publishOpen, setPublishOpen] = useState(false);
+  const [newTagName, setNewTagName] = useState('');
+  const [localTags, setLocalTags] = useState(tags);
+  const [previewUrl, setPreviewUrl] = useState('');
+  const initialSnapshot = useMemo(() => JSON.stringify({ ...draft, coverFile: null }), []);
+  const dirty = JSON.stringify({ ...draft, coverFile: draft.coverFile?.name ?? null }) !== initialSnapshot;
 
-  async function uploadCover(file?: File) {
-    if (!file || !card.id) return;
-    const data = await file.arrayBuffer();
-    const base64 = arrayBufferToBase64(data);
-    await saveCharacterCover(card.id, base64);
-    onCoverChanged(card.id);
+  useEffect(() => {
+    if (!draft.coverFile) {
+      setPreviewUrl('');
+      return;
+    }
+    const url = URL.createObjectURL(draft.coverFile);
+    setPreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [draft.coverFile]);
+
+  function requestClose() {
+    if (!dirty || window.confirm('有未保存的内容，确认关闭角色编辑器吗？')) onClose();
+  }
+
+  function requestSave() {
+    const labels = draft.custom_fields.map((field) => field.label.trim().toLocaleLowerCase());
+    if (labels.some((label) => !label)) return void window.alert('自定义字段名不能为空。');
+    if (new Set(labels).size !== labels.length) return void window.alert('自定义字段名不能重复。');
+    if (!draft.identity.trim() || !draft.age.trim() || !draft.setting_text.trim()) {
+      setWarningOpen(true);
+      return;
+    }
+    onSave(card, draft);
+  }
+
+  function moveField(index: number, offset: number) {
+    const next = [...draft.custom_fields];
+    const target = index + offset;
+    if (target < 0 || target >= next.length) return;
+    [next[index], next[target]] = [next[target], next[index]];
+    setDraft({ ...draft, custom_fields: next });
+  }
+
+  async function addTag() {
+    if (!newTagName.trim()) return;
+    const created = await createCharacterTag(newTagName.trim());
+    setLocalTags((current) => current.some((item) => item.id === created.id) ? current : [...current, created]);
+    setDraft((current) => ({ ...current, tag_ids: [...new Set([...current.tag_ids, created.id])] }));
+    setNewTagName('');
+  }
+
+  return (
+    <>
+      <LibraryDialog
+        className="character-editor-dialog"
+        closeOnBackdrop={false}
+        footer={<div className="character-editor-actions"><div>{card.id && card.scope === 'public' ? <SecondaryButton disabled={busy} onClick={() => setProjectPickerOpen(true)}>添加到工程…</SecondaryButton> : null}{card.id && card.scope === 'project' ? <SecondaryButton disabled={busy} onClick={() => setPublishOpen(true)}>保存为公共角色…</SecondaryButton> : null}</div><div><SecondaryButton disabled={busy} onClick={requestClose}>取消</SecondaryButton><PrimaryButton disabled={busy || !draft.name.trim()} onClick={requestSave}>保存</PrimaryButton></div></div>}
+        onClose={requestClose}
+        subtitle={card.scope === 'project' ? '工程角色' : '公共角色'}
+        title={card.id ? '编辑角色' : '新建角色'}
+      >
+        <section className="character-editor-section">
+          <h3>基本信息</h3>
+          <div className="character-basic-grid">
+            <Field className="character-name-field" label="角色名称"><input autoFocus onChange={(event) => setDraft({ ...draft, name: event.target.value })} value={draft.name} /></Field>
+            <Field className="character-identity-field" label="身份"><input onChange={(event) => setDraft({ ...draft, identity: event.target.value })} value={draft.identity} /></Field>
+            <Field className="character-age-field" label="年龄"><input onChange={(event) => setDraft({ ...draft, age: event.target.value })} value={draft.age} /></Field>
+            <Field className="character-alias-field" label="别名"><input onChange={(event) => setDraft({ ...draft, aliases: event.target.value })} placeholder="使用顿号或逗号分隔" value={draft.aliases} /></Field>
+            <Field className="character-description-field" label="简介"><input onChange={(event) => setDraft({ ...draft, description: event.target.value })} value={draft.description} /></Field>
+            <Field className="character-setting-field" label="设定"><textarea onChange={(event) => setDraft({ ...draft, setting_text: event.target.value })} value={draft.setting_text} /></Field>
+          </div>
+        </section>
+        <section className="character-editor-section">
+          <h3>资源信息</h3>
+          <div className="character-resource-grid">
+            <div className="character-cover-panel">
+              <strong>当前封面</strong>
+              <div className="character-cover-preview" style={{ '--character-cover': coverColor(draft.name) } as CSSProperties}>{previewUrl ? <img alt="新封面预览" src={previewUrl} /> : card.cover_path && !draft.removeCover ? <img alt="当前封面" src={`${characterCoverUrl(card.id)}?v=${encodeURIComponent(card.cover_updated_at ?? '')}`} /> : <span>{draft.name.slice(0, 1) || <UserRound size={28} />}</span>}</div>
+              <div className="character-cover-buttons"><label className="secondary-button">选择图片<input accept="image/png,image/jpeg,image/webp" hidden onChange={(event) => {
+                const file = event.target.files?.[0] ?? null;
+                if (file && file.size > 5 * 1024 * 1024) return void window.alert('封面不能超过 5 MB。');
+                setDraft({ ...draft, coverFile: file, removeCover: false });
+              }} type="file" /></label><SecondaryButton disabled={!card.cover_path && !draft.coverFile} onClick={() => setDraft({ ...draft, coverFile: null, removeCover: true })}>移除</SecondaryButton></div>
+              <small title={draft.coverFile?.name}>{draft.coverFile ? truncateFileName(draft.coverFile.name) : 'PNG/JPEG/WebP，最大 5 MB'}</small>
+            </div>
+            <div className="character-tag-panel">
+              <strong>标签</strong>
+              {localTags.length ? <div className="character-editor-pills">{localTags.map((tagItem) => <label key={tagItem.id}><input checked={draft.tag_ids.includes(tagItem.id)} onChange={(event) => setDraft({ ...draft, tag_ids: event.target.checked ? [...draft.tag_ids, tagItem.id] : draft.tag_ids.filter((id) => id !== tagItem.id) })} type="checkbox" /><span>{tagItem.name}</span></label>)}</div> : <p>尚未创建角色标签</p>}
+              <div className="character-inline-create"><input onChange={(event) => setNewTagName(event.target.value)} placeholder="创建新标签" value={newTagName} /><SecondaryButton disabled={!newTagName.trim()} onClick={() => void addTag()}><Plus size={14} />创建</SecondaryButton></div>
+              {card.scope === 'public' ? <div className="character-category-editor"><strong>我的分类</strong>{categories.length ? <div className="character-editor-pills">{categories.map((category) => <label key={category.id}><input checked={draft.category_ids.includes(category.id)} onChange={(event) => setDraft({ ...draft, category_ids: event.target.checked ? [...draft.category_ids, category.id] : draft.category_ids.filter((id) => id !== category.id) })} type="checkbox" /><span>{category.name}</span></label>)}</div> : <p>尚未创建公共角色分类</p>}</div> : null}
+            </div>
+          </div>
+        </section>
+        <section className="character-editor-section">
+          <div className="character-section-heading"><h3>自定义稳定信息</h3><SecondaryButton onClick={() => setDraft({ ...draft, custom_fields: [...draft.custom_fields, { id: crypto.randomUUID(), label: '', value: '', sort_order: draft.custom_fields.length }] })}><Plus size={14} />添加字段</SecondaryButton></div>
+          <div className="character-custom-field-list">{draft.custom_fields.map((field, index) => <div className="character-custom-field-row" draggable key={field.id}><input aria-label="字段名" onChange={(event) => setDraft({ ...draft, custom_fields: draft.custom_fields.map((item, itemIndex) => itemIndex === index ? { ...item, label: event.target.value } : item) })} placeholder="字段名" value={field.label} /><textarea aria-label="字段内容" onChange={(event) => setDraft({ ...draft, custom_fields: draft.custom_fields.map((item, itemIndex) => itemIndex === index ? { ...item, value: event.target.value } : item) })} placeholder="字段内容" rows={2} value={field.value} /><button aria-label="上移" disabled={index === 0} onClick={() => moveField(index, -1)} type="button"><ArrowUp size={15} /></button><button aria-label="下移" disabled={index === draft.custom_fields.length - 1} onClick={() => moveField(index, 1)} type="button"><ArrowDown size={15} /></button><button aria-label="删除字段" className="danger" onClick={() => setDraft({ ...draft, custom_fields: draft.custom_fields.filter((_, itemIndex) => itemIndex !== index) })} type="button"><Trash2 size={15} /></button></div>)}</div>
+        </section>
+      </LibraryDialog>
+      {warningOpen ? <LibraryDialog footer={<><SecondaryButton onClick={() => setWarningOpen(false)}>返回补充</SecondaryButton><PrimaryButton onClick={() => { setWarningOpen(false); onSave(card, draft); }}>仍然保存</PrimaryButton></>} onClose={() => setWarningOpen(false)} title="部分基础信息为空"><p>以下项目尚未填写，但仍可保存：{[!draft.identity && '身份', !draft.age && '年龄', !draft.setting_text && '设定'].filter(Boolean).join('、')}。</p></LibraryDialog> : null}
+      {projectPickerOpen ? <CopyToProjectDialog card={card} projects={projects} onClose={() => setProjectPickerOpen(false)} onCopied={onProjectCopied} /> : null}
+      {publishOpen ? <PublishCharacterDialog card={card} onClose={() => setPublishOpen(false)} /> : null}
+    </>
+  );
+}
+
+function CopyToProjectDialog({
+  card,
+  onClose,
+  onCopied,
+  projects,
+}: {
+  card: CharacterCard;
+  onClose: () => void;
+  onCopied: (card: CharacterCard) => void;
+  projects: CharacterProjectSummary[];
+}) {
+  const [projectId, setProjectId] = useState<number | null>(null);
+  const [existing, setExisting] = useState<CharacterCard | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  async function copy(force = false) {
+    if (projectId === null) return;
+    setBusy(true);
+    setError('');
+    try {
+      if (!force) {
+        const found = await getExistingCharacterProjectCopy(card.id, projectId);
+        if (found) {
+          setExisting(found);
+          return;
+        }
+      }
+      onCopied(await copyPublicCharacterToProject(card.id, projectId, force));
+    } catch (reason) {
+      setError(errorMessage(reason));
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
     <LibraryDialog
-      footer={<><SecondaryButton disabled={busy} onClick={onClose}>取消</SecondaryButton><PrimaryButton disabled={busy || !draft.name.trim()} onClick={() => onSave(card, draft)}>保存</PrimaryButton></>}
+      footer={<><SecondaryButton onClick={onClose}>取消</SecondaryButton><PrimaryButton disabled={busy || projectId === null} onClick={() => void copy()}>添加到工程</PrimaryButton></>}
       onClose={onClose}
-      subtitle={card.scope === 'project' ? '工程角色' : '公共角色'}
-      title={card.id ? '编辑角色' : '新建角色'}
+      title="添加公共角色到工程"
     >
-      <div className="library-form-grid">
-        <Field label="角色名"><input autoFocus onChange={(event) => setDraft({ ...draft, name: event.target.value })} value={draft.name} /></Field>
-        <Field label="别名"><input onChange={(event) => setDraft({ ...draft, aliases: event.target.value })} placeholder="使用顿号或逗号分隔" value={draft.aliases} /></Field>
-        <Field label="身份摘要"><input onChange={(event) => setDraft({ ...draft, identity: event.target.value })} value={draft.identity} /></Field>
-        <Field label="年龄"><input onChange={(event) => setDraft({ ...draft, age: event.target.value })} value={draft.age} /></Field>
-        <Field className="wide" label="设定"><textarea onChange={(event) => setDraft({ ...draft, setting_text: event.target.value })} value={draft.setting_text} /></Field>
-        <fieldset className="wide library-tag-picker">
-          <legend>标签</legend>
-          {tags.map((tagItem) => (
-            <label key={tagItem.id}>
-              <input
-                checked={draft.tag_ids.includes(tagItem.id)}
-                onChange={(event) => setDraft({
-                  ...draft,
-                  tag_ids: event.target.checked
-                    ? [...draft.tag_ids, tagItem.id]
-                    : draft.tag_ids.filter((id) => id !== tagItem.id),
-                })}
-                type="checkbox"
-              />{tagItem.name}
-            </label>
-          ))}
-        </fieldset>
-        <div className="wide character-cover-editor">
-          <span>封面</span>
-          {card.id ? (
-            <>
-              <input accept="image/png,image/jpeg,image/webp" onChange={(event) => void uploadCover(event.target.files?.[0])} type="file" />
-              <SecondaryButton disabled={busy || !card.cover_path} onClick={async () => { await removeCharacterCover(card.id); onCoverChanged(card.id); }}>移除封面</SecondaryButton>
-            </>
-          ) : <small>保存角色后可上传封面。</small>}
-        </div>
-      </div>
+      {error ? <div className="inline-alert error">{error}</div> : null}
+      <label className="dialog-stacked-field"><span>目标工程</span><select onChange={(event) => { setProjectId(event.target.value ? Number(event.target.value) : null); setExisting(null); }} value={projectId ?? ''}><option value="">请选择工程</option>{projects.map((project) => <option key={project.project_id} value={project.project_id}>{project.project_name}（{project.character_count}）</option>)}</select></label>
+      {existing ? <div className="character-duplicate-warning"><strong>该公共角色已添加过</strong><p>目标工程已有来源相同的有效副本“{existing.name}”。</p><div><SecondaryButton onClick={() => onCopied(existing)}>打开已有工程角色</SecondaryButton><PrimaryButton onClick={() => void copy(true)}>仍然创建新副本</PrimaryButton></div></div> : null}
+    </LibraryDialog>
+  );
+}
+
+const PUBLISH_FIELDS: Array<[string, string]> = [
+  ['name', '名称'],
+  ['aliases', '别名'],
+  ['description', '简介'],
+  ['identity', '身份'],
+  ['age', '年龄'],
+  ['setting_text', '设定'],
+  ['relationship_notes', '人物关系'],
+  ['personality', '性格'],
+  ['speech_style', '语言风格'],
+  ['action_constraints', '动作约束'],
+  ['anti_ooc_rules', '反 OOC 规则'],
+  ['profile', 'profile'],
+  ['custom_fields', '自定义稳定信息'],
+  ['tags', '标签'],
+  ['cover', '封面'],
+];
+
+function PublishCharacterDialog({ card, onClose }: { card: CharacterCard; onClose: () => void }) {
+  const baseline = (card.source_metadata.public_baseline as { stable_fields?: Record<string, unknown> } | undefined)?.stable_fields;
+  const current = stableCardValues(card);
+  const defaultFields = baseline
+    ? PUBLISH_FIELDS.filter(([key]) => JSON.stringify(current[key]) !== JSON.stringify(baseline[key])).map(([key]) => key)
+    : PUBLISH_FIELDS.map(([key]) => key);
+  const [selectedFields, setSelectedFields] = useState(defaultFields);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+
+  async function publish() {
+    setBusy(true);
+    try {
+      const published = await publishProjectCharacterToPublic(card.id, selectedFields);
+      setMessage(`已创建独立公共角色“${published.name}”。`);
+    } catch (reason) {
+      setMessage(errorMessage(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <LibraryDialog
+      className="character-publish-dialog"
+      footer={<><SecondaryButton onClick={onClose}>关闭</SecondaryButton><PrimaryButton disabled={busy || !selectedFields.includes('name')} onClick={() => void publish()}>保存为公共角色</PrimaryButton></>}
+      onClose={onClose}
+      subtitle="仅导出勾选的稳定字段"
+      title="保存为公共角色"
+    >
+      {message ? <div className="inline-alert">{message}</div> : null}
+      <p>将创建新的公共角色，不覆盖来源角色，也不会复制工程绑定、事实账本或场景人物状态。</p>
+      <div className="character-publish-fields">{PUBLISH_FIELDS.map(([key, label]) => {
+        const hasBaseline = Boolean(baseline);
+        const changed = hasBaseline && JSON.stringify(current[key]) !== JSON.stringify(baseline?.[key]);
+        const added = changed && (baseline?.[key] === '' || baseline?.[key] === null || baseline?.[key] === undefined);
+        return <label key={key}><input checked={selectedFields.includes(key)} onChange={(event) => setSelectedFields(event.target.checked ? [...selectedFields, key] : selectedFields.filter((field) => field !== key))} type="checkbox" /><span>{label}</span><small>{!hasBaseline ? '工程角色字段' : added ? '工程中新增加' : changed ? '相对公共基线已修改' : '未变化'}</small></label>;
+      })}</div>
     </LibraryDialog>
   );
 }
@@ -829,6 +1092,30 @@ function normalizeFields(fields: CharacterCustomField[]) {
 
 function splitValues(value: string) {
   return value.split(/[、,，]/).map((item) => item.trim()).filter(Boolean);
+}
+
+function stableCardValues(card: CharacterCard): Record<string, unknown> {
+  return {
+    name: card.name,
+    aliases: card.aliases,
+    description: card.description,
+    identity: card.identity,
+    age: card.age,
+    setting_text: card.setting_text,
+    relationship_notes: card.relationship_notes,
+    personality: card.personality,
+    speech_style: card.speech_style,
+    action_constraints: card.action_constraints,
+    anti_ooc_rules: card.anti_ooc_rules,
+    profile: card.profile,
+    custom_fields: card.custom_fields,
+    tags: card.tags,
+    cover: card.cover_path,
+  };
+}
+
+function truncateFileName(name: string) {
+  return name.length <= 32 ? name : `${name.slice(0, 20)}…${name.slice(-9)}`;
 }
 
 function coverColor(name: string) {

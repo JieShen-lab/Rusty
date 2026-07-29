@@ -36,7 +36,6 @@ import {
   assignDocumentCategory,
   assignDocumentTag,
   cleanupLibraryDocument,
-  createCharacterFromSelection,
   createDocumentCategory,
   createDocumentTag,
   createLibraryDocumentChapter,
@@ -112,7 +111,7 @@ const fallbackSettings: DocumentProcessingSettings = {
   trim_whitespace: true,
 };
 
-export function DocumentLibraryPage() {
+export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string, state?: unknown) => void }) {
   const [documents, setDocuments] = useState<LibraryDocument[]>([]);
   const [tags, setTags] = useState<ResourceTag[]>([]);
   const [categories, setCategories] = useState<DocumentCategory[]>([]);
@@ -464,6 +463,26 @@ export function DocumentLibraryPage() {
       setError('选区不能超过 50,000 字符。');
       return;
     }
+    if (kind === 'character') {
+      const chapter = chapters.find((item) => item.id === documentContent.chapter_id);
+      onNavigate('/characters', {
+        characterExtraction: {
+          selectedText: selected,
+          sourceMetadata: {
+            source_kind: 'document',
+            source_type: 'document',
+            document_id: documentContent.document_id,
+            revision_id: documentContent.revision_id,
+            chapter_id: documentContent.chapter_id,
+            start_offset: startOffset,
+            end_offset: endOffset,
+            document_title: selectedDocument?.title ?? '',
+            chapter_title: chapter?.title ?? '',
+          },
+        },
+      });
+      return;
+    }
     setSelectionDraft({ kind, text: selected, startOffset, endOffset });
   }
 
@@ -482,7 +501,6 @@ export function DocumentLibraryPage() {
     try {
       if (selectionDraft.kind === 'scene') await createSceneMaterialFromSelection(payload);
       if (selectionDraft.kind === 'plot') await createPlotSkeletonFromSelection(payload);
-      if (selectionDraft.kind === 'character') await createCharacterFromSelection(payload);
       setSelectionDraft(null);
       setMessage('选区已保存到公共库，状态为未分析。');
     } catch (err) {
@@ -1540,7 +1558,7 @@ const EditableTextPreview = forwardRef<DocumentEditorController, {
         <div className="selection-resource-menu" ref={menuRef} style={{ left: menu.x, top: menu.y }}>
           <button onClick={() => { onSelectionResource('scene', menu.text, menu.startOffset, menu.endOffset); setMenu(null); }} type="button">添加为场景素材</button>
           <button onClick={() => { onSelectionResource('plot', menu.text, menu.startOffset, menu.endOffset); setMenu(null); }} type="button">添加为剧情骨架</button>
-          <button onClick={() => { onSelectionResource('character', menu.text, menu.startOffset, menu.endOffset); setMenu(null); }} type="button">添加到公共角色卡</button>
+          <button onClick={() => { onSelectionResource('character', menu.text, menu.startOffset, menu.endOffset); setMenu(null); }} type="button">提取角色卡</button>
         </div>
       ) : null}
       {markStart != null && markEnd != null ? (

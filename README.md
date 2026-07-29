@@ -10,7 +10,9 @@ Rusty 是本地优先的小说资料管理、文档整理与 AI 辅助改写桌�
 - 管理公共/工程素材、公共/工程角色卡和独立文档库。
 - 使用独立标签组织素材与角色卡；公共角色另有独立的多对多分类，文档分类与角色分类互不共用。
 - 编辑文档正文，保存 revision，合并文档、新增章节、正则分章和文字整理。
-- 从文档正文、工程原文和改写稿选区快捷保存场景素材、剧情骨架或公共角色卡。
+- 从文档正文选区进入角色 AI 提取候选流程；候选与标签建议经用户确认后才写入角色库。
+- “新建角色”提供互不依赖的手动创建和 AI 文本提取模式；AI 提取采用 preview/apply 两阶段接口。
+- 公共角色添加到工程时创建带公共基线快照的独立副本并自动绑定；工程角色可只导出勾选的稳定字段为新的公共角色，项目动态状态仍留在事实账本和场景人物状态中。
 - 配置 OpenAI 兼容模型，执行可追踪的章节分析、情节扩展和改写流程。
 
 ## Development
@@ -74,7 +76,7 @@ python -m rusty.db.schema rusty.db
 - `src/rusty/services/prompt_service.py`: prompt template CRUD and project-level prompt overrides
 - `src/rusty/services/pipeline_service.py`: AI summary, scene detection, rewrite, retry, pause, and merge workflow
 - `src/rusty/db/connection.py`: SQLite connection defaults
-- `src/rusty/db/schema.py`: v20 schema, migrations, indexes, and seed data
+- `src/rusty/db/schema.py`: v21 schema, migrations, indexes, and seed data
 - `tests/`: database, service, API, pipeline, importer/exporter, and UI tests
 
 旧版 PySide6 入口仍可通过 `.\.venv\Scripts\rusty` 启动，但新增功能以 Electron 桌面端为准。

@@ -1007,6 +1007,104 @@ class CharacterCardCopyRequest(BaseModel):
 
 class CharacterCopyToProjectRequest(BaseModel):
     target_project_id: int
+    force: bool = False
+
+
+class CharacterPublishRequest(BaseModel):
+    selected_fields: list[str]
+
+
+class CharacterExtractionSettingsOut(BaseModel):
+    model_id: int | None = None
+    detail_level: Literal["brief", "standard", "detailed"] = "standard"
+    max_candidates: int = Field(default=8, ge=1, le=20)
+    extract_all_characters: bool = True
+    generate_tags: bool = True
+    generate_appearance: bool = True
+    generate_relationships: bool = True
+    generate_personality: bool = True
+    generate_speech_style: bool = True
+    generate_action_constraints: bool = True
+    generate_anti_ooc_rules: bool = True
+    generate_abilities_background: bool = True
+    custom_requirements: str = ""
+    system_prompt: str = ""
+    prompt_preview: str = ""
+
+
+class CharacterExtractionSettingsWriteRequest(BaseModel):
+    model_id: int | None = None
+    detail_level: Literal["brief", "standard", "detailed"] = "standard"
+    max_candidates: int = Field(default=8, ge=1, le=20)
+    extract_all_characters: bool = True
+    generate_tags: bool = True
+    generate_appearance: bool = True
+    generate_relationships: bool = True
+    generate_personality: bool = True
+    generate_speech_style: bool = True
+    generate_action_constraints: bool = True
+    generate_anti_ooc_rules: bool = True
+    generate_abilities_background: bool = True
+    custom_requirements: str = ""
+    system_prompt: str = ""
+
+
+class CharacterExtractionPreviewRequest(BaseModel):
+    sample_text: str = Field(min_length=1, max_length=50000)
+    name: str | None = None
+    detail_level: Literal["brief", "standard", "detailed"] | None = None
+    model_id: int | None = None
+    source_metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class CharacterExtractionCandidateOut(BaseModel):
+    candidate_id: str
+    selected: bool = True
+    name: str
+    aliases: list[str] = Field(default_factory=list)
+    description: str = ""
+    identity: str = ""
+    age: str = ""
+    setting_text: str = ""
+    relationship_notes: str = ""
+    personality: str = ""
+    speech_style: str = ""
+    action_constraints: str = ""
+    anti_ooc_rules: str = ""
+    profile: dict[str, Any] = Field(default_factory=dict)
+    custom_fields: list[dict[str, Any]] = Field(default_factory=list)
+    suggested_tags: list[str] = Field(default_factory=list)
+    evidence_summary: str = ""
+
+
+class CharacterExtractionPreviewOut(BaseModel):
+    preview_token: str
+    source_summary: CharacterSourceSummaryOut
+    candidates: list[CharacterExtractionCandidateOut]
+
+
+class CharacterExtractionCandidateApply(CharacterExtractionCandidateOut):
+    confirmed_tags: list[str] = Field(default_factory=list)
+
+
+class CharacterExtractionApplyRequest(BaseModel):
+    preview_token: str
+    candidates: list[CharacterExtractionCandidateApply]
+    selected_candidate_ids: list[str]
+    scope: Literal["public", "project"] = "public"
+    project_id: int | None = None
+    category_ids: list[int] = Field(default_factory=list)
+
+
+class CharacterExtractionApplyItemOut(BaseModel):
+    candidate_id: str
+    card_id: int | None = None
+    error: str | None = None
+
+
+class CharacterExtractionApplyOut(BaseModel):
+    created: list[CharacterExtractionApplyItemOut]
+    errors: list[CharacterExtractionApplyItemOut]
 
 
 class CharacterAnalyzeRequest(BaseModel):

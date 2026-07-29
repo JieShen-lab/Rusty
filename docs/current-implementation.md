@@ -100,6 +100,11 @@ Rusty 以本地优先方式管理小说项目。当前主界面采用 Electron +
 - 公共角色支持独立的多对多分类；一个公共角色可属于多个分类，工程角色不能关联公共分类，角色分类与角色标签是独立命名空间。
 - 工程角色的权威集合是 `project_character_bindings.is_active = 1`；角色库和改写上下文均从有效绑定读取，不再把 `character_cards.project_id` 当作唯一关系。
 - 公共角色复制到工程会原子创建独立副本，复制稳定字段、标签和封面，保留来源卡 ID/版本并自动建立有效工程绑定；公共分类不会复制。
+- 公共角色复制到工程时还会在工程副本的 `source_metadata.public_baseline` 保存复制当时的完整稳定字段快照，用于后续字段级差异判断；重复添加会先提示打开已有有效副本或明确创建新副本。
+- 工程角色可“保存为公共角色”，该操作始终创建新的公共角色，仅导出用户勾选的稳定字段，不复制工程绑定、事实账本、场景人物状态或其他项目运行时状态，也不会自动加入公共分类。
+- “新建角色”统一提供“手动创建”和“从文本提取”两个模式。手动创建不调用 AI、默认 `analysis_status='unanalyzed'`；AI 提取使用 preview/apply 两阶段流程，确认创建后默认标记为已分析。
+- AI preview 只返回可编辑候选和 0～8 个短标签建议，不写角色、标签或分类；apply 只创建用户确认的候选和标签，并对逐项失败返回明确的 partial success。
+- 角色提取设置持久化在数据库中，可配置模型、细化程度、候选上限、生成维度、附加要求和高级系统提示词，并支持恢复安全默认值与查看不含 API key 的 Prompt 预览。
 - 支持角色卡 CRUD、复制、JSON 导入、AI 抽取和项目绑定；改写时只注入与当前章节相关的人物。
 
 主要实现：
@@ -114,7 +119,8 @@ Rusty 以本地优先方式管理小说项目。当前主界面采用 Electron +
 ### 2.6 正文选区快捷保存
 
 - 文档库正文编辑区、工程原文和工程改写稿支持选中文字后打开右键菜单。
-- 菜单并列提供“添加为场景素材”“添加为剧情骨架”“添加到公共角色卡”。
+- 菜单并列提供“添加为场景素材”“添加为剧情骨架”“提取角色卡”。
+- “提取角色卡”通过 history state 将选区正文与文档、revision、章节、偏移及标题来源传到角色页，读取一次后立即清除；长文本不进入 URL 或 localStorage，确认候选前不创建角色。
 - 只保存规范化后的纯文本，前后端均限制单次选区不超过 50,000 字符。
 - 来源信息单独保存为元数据，包括文档/工程、章节和字符 offset，不混入正文。
 - 快捷保存不会自动调用 AI，创建结果统一标记为未分析。
@@ -216,7 +222,9 @@ SQLite + OS keyring + 本地文件
 - 导出计划和导出记录；
 - 文档库文档、分类、标签、处理模板、修订版本、卷、章节、草稿和存储设置。
 
-v14 将旧素材类型 `snippet` 映射为 `scene_reference`，将 `outline` 映射为 `plot_skeleton` 并保留旧类型元数据；旧素材分类和文档分类迁移为标签。角色卡旧固定字段迁移为身份、年龄、设定及有序自定义字段。v19 新增文档卷层级；v20 新增仅适用于公共角色的 `character_categories` / `character_category_links`，并幂等补齐历史工程角色的有效 `project_character_bindings`。
+v14 将旧素材类型 `snippet` 映射为 `scene_reference`，将 `outline` 映射为 `plot_skeleton` 并保留旧类型元数据；旧素材分类和文档分类迁移为标签。角色卡旧固定字段迁移为身份、年龄、设定及有序自定义字段。v19 新增文档卷层级；v20 新增仅适用于公共角色的 `character_categories` / `character_category_links`，并幂等补齐历史工程角色的有效 `project_character_bindings`；v21 新增单例 `character_extraction_settings`，持久化角色 AI 提取模型、维度开关、候选上限与提示词设置。
+
+兼容性：旧的 `POST /api/characters/extract`、`POST /api/characters/{card_id}/analyze` 和 `POST /api/characters/{card_id}/analyze/confirm` 暂时保留为 legacy 接口；新角色页不再调用这些单阶段接口，统一使用 `/api/characters/extract/preview` 与 `/api/characters/extract/apply`。
 
 SQLite 连接默认启用外键、WAL、`synchronous=NORMAL` 和 5 秒忙等待。迁移由 `schema_migrations` 记录，初始化时按版本顺序执行。
 
@@ -288,7 +296,7 @@ npm run build
 - AI 能力依赖用户配置可用的 OpenAI 兼容模型和 API 密钥。
 - 生成内容仍需要人工审阅；确认与导出流程保留了人工控制点。
 - PySide6 旧界面与 Electron 同时存在，新增功能主要集中在 Electron。
-- 角色卡目前提供稳定默认封面，但自定义封面文件上传尚未接入。
+- 角色编辑器支持 PNG/JPEG/WebP 自定义封面（最大 5 MB）和创建前本地预览；若角色创建成功后封面上传失败，角色记录会保留并提示重新上传。
 - “引用范围”仍未持久化或接入下游消费，因此 Electron 工作台暂不显示该入口。
 - 当前仓库没有桌面安装包构建与签名脚本，开发运行以源码环境为主。
 

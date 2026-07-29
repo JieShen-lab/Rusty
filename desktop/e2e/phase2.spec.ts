@@ -61,6 +61,10 @@ async function mockApi(page: Page) {
     else if (path === '/api/character-tags' || path === '/api/material-tags') body = tags;
     else if (path === '/api/character-categories') body = characterCategories;
     else if (path === '/api/character-projects/summary') body = projects.map((project, index) => ({ project_id: project.id, project_name: project.name, character_count: index === 0 ? 1 : 0, updated_at: project.updated_at }));
+    else if (path === '/api/models') body = [{ id: 1, display_name: '测试模型', provider: 'openai_compatible', base_url: '', model_name: 'test', is_default: true, created_at: '', updated_at: '' }];
+    else if (path === '/api/character-extraction/settings') body = { model_id: 1, detail_level: 'standard', max_candidates: 8, extract_all_characters: true, generate_tags: true, generate_appearance: true, generate_relationships: true, generate_personality: true, generate_speech_style: true, generate_action_constraints: true, generate_anti_ooc_rules: true, generate_abilities_background: true, custom_requirements: '', system_prompt: '不得补全无证据事实', prompt_preview: '不得补全无证据事实' };
+    else if (path === '/api/characters/extract/preview') body = { preview_token: 'preview-test', source_summary: { kind: 'ai_extraction', label: 'AI 文本提取' }, candidates: [{ candidate_id: 'alice', selected: true, name: '林舟', aliases: [], description: '调查者', identity: '调查者', age: '', setting_text: '', relationship_notes: '寻找阿音', personality: '冷静', speech_style: '', action_constraints: '', anti_ooc_rules: '', profile: {}, custom_fields: [], suggested_tags: ['主角', '冷静'], evidence_summary: '林舟主动调查钥匙。' }, { candidate_id: 'ayin', selected: true, name: '阿音', aliases: [], description: '线索提供者', identity: '', age: '', setting_text: '', relationship_notes: '', personality: '', speech_style: '', action_constraints: '', anti_ooc_rules: '', profile: {}, custom_fields: [], suggested_tags: [], evidence_summary: '阿音递出钥匙。' }] };
+    else if (path === '/api/characters/extract/apply') body = { created: [{ candidate_id: 'alice', card_id: 8, error: null }, { candidate_id: 'ayin', card_id: 9, error: null }], errors: [] };
     else if (path === '/api/projects/1/characters') body = { character_cards: [projectCharacter] };
     else if (/^\/api\/projects\/\d+\/characters$/.test(path)) body = { character_cards: [] };
     else if (path === '/api/characters') body = url.searchParams.has('category_id') ? [publicCharacter] : [publicCharacter];
@@ -278,6 +282,61 @@ test('角色库按工程和公共分类导航，标签只在右侧筛选且摘�
   }
 });
 
+test('统一新建入口先预览多个 AI 候选且手动编辑器使用紧凑资源布局', async ({ page }) => {
+  await page.goto('/characters');
+  await expect(page.getByRole('button', { name: /AI 分析/ })).toHaveCount(0);
+  await page.getByRole('button', { name: '角色提取设置' }).click();
+  const settingsDialog = page.getByRole('dialog', { name: '角色提取设置' });
+  await expect(settingsDialog.getByLabel('默认模型')).toHaveValue('1');
+  await expect(settingsDialog.getByText('查看 Prompt 预览')).toBeVisible();
+  await settingsDialog.getByRole('button', { name: '取消' }).click();
+  await page.getByRole('button', { name: /新建角色/ }).first().click();
+  const createDialog = page.getByRole('dialog', { name: '新建角色' });
+  await expect(createDialog.getByRole('tab', { name: '手动创建' })).toBeVisible();
+  await expect(createDialog.getByRole('tab', { name: '从文本提取' })).toBeVisible();
+  await createDialog.getByRole('tab', { name: '从文本提取' }).click();
+  await createDialog.getByLabel('来源文本').fill('林舟接过阿音递来的钥匙。');
+  const cardCountBefore = await page.locator('.character-compact-card').count();
+  await createDialog.getByRole('button', { name: '生成候选角色' }).click();
+  await expect(createDialog.getByLabel('角色名称').nth(0)).toHaveValue('林舟');
+  await expect(createDialog.getByLabel('角色名称').nth(1)).toHaveValue('阿音');
+  expect(await page.locator('.character-compact-card').count()).toBe(cardCountBefore);
+  const suggestedTag = createDialog.locator('.character-candidate').first().getByRole('button', { name: '主角' });
+  await expect(suggestedTag).toHaveAttribute('aria-pressed', 'false');
+  await suggestedTag.click();
+  await expect(suggestedTag).toHaveAttribute('aria-pressed', 'true');
+  await createDialog.getByRole('button', { name: /确认创建/ }).click();
+  await expect(createDialog).toHaveCount(0);
+
+  await page.getByRole('button', { name: /新建角色/ }).first().click();
+  await page.getByRole('dialog', { name: '新建角色' }).getByRole('button', { name: /进入手动编辑/ }).click();
+  const editor = page.getByRole('dialog', { name: '新建角色' });
+  await expect(editor.getByLabel('角色名称')).toBeVisible();
+  await expect(editor.getByLabel('身份')).toBeVisible();
+  await expect(editor.getByLabel('年龄')).toBeVisible();
+  await expect(editor.getByLabel('设定')).toBeVisible();
+  await expect(editor.locator('input[type="file"]')).toBeHidden();
+  await expect(editor.getByText('PNG/JPEG/WebP，最大 5 MB')).toBeVisible();
+  await editor.getByRole('button', { name: /添加字段/ }).click();
+  await expect(editor.getByLabel('字段内容')).toHaveAttribute('rows', '2');
+  await expect(editor.getByRole('button', { name: '上移' })).toBeDisabled();
+  await expect(editor.getByRole('button', { name: '下移' })).toBeDisabled();
+  await expect(editor.getByRole('button', { name: '添加到工程…' })).toHaveCount(0);
+  await expect(editor.getByRole('button', { name: '保存为公共角色…' })).toHaveCount(0);
+});
+
+test('公共与工程角色编辑器只显示各自上下文操作', async ({ page }) => {
+  await page.goto('/characters');
+  await page.locator('.character-compact-card').first().dblclick();
+  await expect(page.getByRole('dialog', { name: '编辑角色' }).getByRole('button', { name: '添加到工程…' })).toBeVisible();
+  await page.getByRole('dialog', { name: '编辑角色' }).getByRole('button', { name: '取消' }).click();
+  await page.locator('.character-range-panel').getByRole('button', { name: /示例工程/ }).click();
+  await page.locator('.character-compact-card').first().dblclick();
+  const projectEditor = page.getByRole('dialog', { name: '编辑角色' });
+  await expect(projectEditor.getByRole('button', { name: '保存为公共角色…' })).toBeVisible();
+  await expect(projectEditor.getByText('我的分类', { exact: true })).toHaveCount(0);
+});
+
 test('文档库在常用桌面窗口无横向溢出', async ({ page }) => {
   await page.goto('/documents');
   await expect(page.getByText('文档库', { exact: true }).first()).toBeVisible();
@@ -343,7 +402,7 @@ test('文档正文右键菜单、编辑命令与统一分章入口', async ({ pa
   });
   await expect(page.getByRole('button', { name: '添加为场景素材' })).toBeVisible();
   await expect(page.getByRole('button', { name: '添加为剧情骨架' })).toBeVisible();
-  await expect(page.getByRole('button', { name: '添加到公共角色卡' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '提取角色卡' })).toBeVisible();
   await editor.click({ position: { x: 20, y: 20 } });
   await expect(page.getByRole('button', { name: '添加为场景素材' })).toHaveCount(0);
   await editor.evaluate((node: HTMLTextAreaElement) => {
@@ -363,6 +422,23 @@ test('文档正文右键菜单、编辑命令与统一分章入口', async ({ pa
   await expect(page.getByRole('button', { name: 'AI 识别' })).toBeVisible();
   await expect(page.getByRole('button', { name: '正则识别' })).toBeVisible();
   await expect(page.getByRole('button', { name: '手动标记' })).toBeVisible();
+});
+
+test('文档选区通过 history state 进入角色候选流程而不直接创建', async ({ page }) => {
+  await page.goto('/documents');
+  await page.getByRole('button', { name: '示例长篇，作者' }).dblclick();
+  const editor = page.locator('textarea.manuscript-editor');
+  await editor.evaluate((node: HTMLTextAreaElement) => {
+    node.focus();
+    node.setSelectionRange(0, 4);
+    node.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 500, clientY: 300 }));
+  });
+  await page.getByRole('button', { name: '提取角色卡' }).click();
+  await expect(page).toHaveURL(/\/characters$/);
+  const dialog = page.getByRole('dialog', { name: '新建角色' });
+  await expect(dialog.getByRole('tab', { name: '从文本提取' })).toHaveAttribute('aria-selected', 'true');
+  await expect(dialog.getByLabel('来源文本')).toHaveValue('林舟推门');
+  await expect(dialog.getByRole('button', { name: '生成候选角色' })).toBeVisible();
 });
 
 test('正文自动保存草稿、手动保存单一版本并打开文字整理弹窗', async ({ page }) => {

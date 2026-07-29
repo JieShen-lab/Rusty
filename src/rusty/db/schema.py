@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .connection import session
 
-CURRENT_SCHEMA_VERSION = 20
+CURRENT_SCHEMA_VERSION = 21
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -372,6 +372,27 @@ CREATE INDEX IF NOT EXISTS idx_character_category_links_category
     ON character_category_links(category_id);
 CREATE INDEX IF NOT EXISTS idx_character_category_links_character
     ON character_category_links(character_card_id);
+
+CREATE TABLE IF NOT EXISTS character_extraction_settings (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    model_id INTEGER,
+    detail_level TEXT NOT NULL DEFAULT 'standard'
+        CHECK (detail_level IN ('brief', 'standard', 'detailed')),
+    max_candidates INTEGER NOT NULL DEFAULT 8,
+    extract_all_characters INTEGER NOT NULL DEFAULT 1,
+    generate_tags INTEGER NOT NULL DEFAULT 1,
+    generate_appearance INTEGER NOT NULL DEFAULT 1,
+    generate_relationships INTEGER NOT NULL DEFAULT 1,
+    generate_personality INTEGER NOT NULL DEFAULT 1,
+    generate_speech_style INTEGER NOT NULL DEFAULT 1,
+    generate_action_constraints INTEGER NOT NULL DEFAULT 1,
+    generate_anti_ooc_rules INTEGER NOT NULL DEFAULT 1,
+    generate_abilities_background INTEGER NOT NULL DEFAULT 1,
+    custom_requirements TEXT NOT NULL DEFAULT '',
+    system_prompt TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (model_id) REFERENCES ai_models(id) ON DELETE SET NULL
+);
 
 CREATE TABLE IF NOT EXISTS project_documents (
     project_id INTEGER PRIMARY KEY,
@@ -2327,6 +2348,34 @@ def _migrate_to_v20(connection: sqlite3.Connection) -> None:
           AND deleted_at IS NULL;
         """
     )
+
+
+def _migrate_to_v21(connection: sqlite3.Connection) -> None:
+    """Persist configurable character extraction behavior."""
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS character_extraction_settings (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            model_id INTEGER,
+            detail_level TEXT NOT NULL DEFAULT 'standard'
+                CHECK (detail_level IN ('brief', 'standard', 'detailed')),
+            max_candidates INTEGER NOT NULL DEFAULT 8,
+            extract_all_characters INTEGER NOT NULL DEFAULT 1,
+            generate_tags INTEGER NOT NULL DEFAULT 1,
+            generate_appearance INTEGER NOT NULL DEFAULT 1,
+            generate_relationships INTEGER NOT NULL DEFAULT 1,
+            generate_personality INTEGER NOT NULL DEFAULT 1,
+            generate_speech_style INTEGER NOT NULL DEFAULT 1,
+            generate_action_constraints INTEGER NOT NULL DEFAULT 1,
+            generate_anti_ooc_rules INTEGER NOT NULL DEFAULT 1,
+            generate_abilities_background INTEGER NOT NULL DEFAULT 1,
+            custom_requirements TEXT NOT NULL DEFAULT '',
+            system_prompt TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (model_id) REFERENCES ai_models(id) ON DELETE SET NULL
+        );
+        """
+    )
 def _safe_json_list(value: object) -> list[dict[str, object]]:
     try:
         parsed = json.loads(str(value or "[]"))
@@ -2697,6 +2746,7 @@ MIGRATIONS = {
     18: _migrate_to_v18,
     19: _migrate_to_v19,
     20: _migrate_to_v20,
+    21: _migrate_to_v21,
 }
 
 

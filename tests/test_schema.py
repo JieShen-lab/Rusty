@@ -17,6 +17,7 @@ from rusty.db.schema import (
     _migrate_to_v18,
     _migrate_to_v19,
     _migrate_to_v20,
+    _migrate_to_v21,
 )
 
 
@@ -98,6 +99,7 @@ class SchemaTests(unittest.TestCase):
         self.assertIn("character_tag_links", table_names)
         self.assertIn("character_categories", table_names)
         self.assertIn("character_category_links", table_names)
+        self.assertIn("character_extraction_settings", table_names)
         self.assertIn("document_tags", table_names)
         self.assertIn("document_tag_links", table_names)
         self.assertNotIn("material_categories", table_names)
@@ -126,6 +128,30 @@ class SchemaTests(unittest.TestCase):
 
         self.assertEqual(CURRENT_SCHEMA_VERSION, version)
         self.assertEqual(1, split_rule_count)
+
+    def test_v20_to_v21_character_extraction_settings_migration_is_idempotent(self) -> None:
+        connection = sqlite3.connect(":memory:")
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        initialize_database(connection)
+        connection.execute("DROP TABLE character_extraction_settings")
+
+        _migrate_to_v21(connection)
+        _migrate_to_v21(connection)
+        connection.execute(
+            """
+            INSERT INTO character_extraction_settings (
+                id, detail_level, max_candidates, generate_tags
+            ) VALUES (1, 'detailed', 4, 0)
+            """
+        )
+        row = connection.execute(
+            "SELECT detail_level, max_candidates, generate_tags FROM character_extraction_settings"
+        ).fetchone()
+
+        self.assertEqual("detailed", row["detail_level"])
+        self.assertEqual(4, row["max_candidates"])
+        self.assertEqual(0, row["generate_tags"])
 
     def test_v19_to_v20_character_category_migration_repairs_project_bindings_idempotently(self) -> None:
         connection = sqlite3.connect(":memory:")

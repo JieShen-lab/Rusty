@@ -585,6 +585,56 @@ export type AnchorExtractWrite = {
   project_id?: number | null;
 };
 
+export type CharacterExtractionSettings = {
+  model_id: number | null;
+  detail_level: StyleDetailLevel;
+  max_candidates: number;
+  extract_all_characters: boolean;
+  generate_tags: boolean;
+  generate_appearance: boolean;
+  generate_relationships: boolean;
+  generate_personality: boolean;
+  generate_speech_style: boolean;
+  generate_action_constraints: boolean;
+  generate_anti_ooc_rules: boolean;
+  generate_abilities_background: boolean;
+  custom_requirements: string;
+  system_prompt: string;
+  prompt_preview: string;
+};
+
+export type CharacterExtractionCandidate = {
+  candidate_id: string;
+  selected: boolean;
+  name: string;
+  aliases: string[];
+  description: string;
+  identity: string;
+  age: string;
+  setting_text: string;
+  relationship_notes: string;
+  personality: string;
+  speech_style: string;
+  action_constraints: string;
+  anti_ooc_rules: string;
+  profile: Record<string, unknown>;
+  custom_fields: CharacterCustomField[];
+  suggested_tags: string[];
+  confirmed_tags?: string[];
+  evidence_summary: string;
+};
+
+export type CharacterExtractionPreview = {
+  preview_token: string;
+  source_summary: CharacterSourceSummary;
+  candidates: CharacterExtractionCandidate[];
+};
+
+export type CharacterExtractionApplyResult = {
+  created: Array<{ candidate_id: string; card_id: number | null; error: string | null }>;
+  errors: Array<{ candidate_id: string; card_id: number | null; error: string | null }>;
+};
+
 export type AnalysisStatus = 'unanalyzed' | 'analyzed';
 export type MaterialType = 'scene_reference' | 'plot_skeleton';
 export type MaterialScope = 'public' | 'project';

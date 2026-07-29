@@ -62,8 +62,17 @@ from .schemas import (
     CharacterCardOut,
     CharacterCardCopyRequest,
     CharacterCopyToProjectRequest,
+    CharacterExtractionApplyItemOut,
+    CharacterExtractionApplyOut,
+    CharacterExtractionApplyRequest,
+    CharacterExtractionCandidateOut,
+    CharacterExtractionPreviewOut,
+    CharacterExtractionPreviewRequest,
+    CharacterExtractionSettingsOut,
+    CharacterExtractionSettingsWriteRequest,
     CharacterCardsExtractOut,
     CharacterCardWriteRequest,
+    CharacterPublishRequest,
     CharacterProjectSummaryOut,
     CharacterSourceSummaryOut,
     ChapterDetailOut,
@@ -1904,6 +1913,91 @@ def create_app(
     def assign_character_tag(card_id: int, tag_id: int, payload: ResourceTagAssignmentRequest) -> CharacterCardOut:
         return _character_out(anchor_service.set_character_tag(card_id, tag_id, payload.selected))
 
+    def _character_extraction_settings_out() -> CharacterExtractionSettingsOut:
+        settings = anchor_extraction_service.get_character_extraction_settings()
+        return CharacterExtractionSettingsOut(
+            **settings.__dict__,
+            prompt_preview=(
+                f"{settings.system_prompt}\n\n"
+                f"Detail level: {settings.detail_level}\n"
+                f"Maximum candidates: {settings.max_candidates}\n"
+                f"Additional requirements: {settings.custom_requirements or 'None'}"
+            ),
+        )
+
+    @app.get(
+        "/api/character-extraction/settings",
+        response_model=CharacterExtractionSettingsOut,
+    )
+    def get_character_extraction_settings() -> CharacterExtractionSettingsOut:
+        return _character_extraction_settings_out()
+
+    @app.post(
+        "/api/character-extraction/settings",
+        response_model=CharacterExtractionSettingsOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def update_character_extraction_settings(
+        payload: CharacterExtractionSettingsWriteRequest,
+    ) -> CharacterExtractionSettingsOut:
+        anchor_extraction_service.update_character_extraction_settings(**payload.model_dump())
+        return _character_extraction_settings_out()
+
+    @app.post(
+        "/api/character-extraction/settings/reset",
+        response_model=CharacterExtractionSettingsOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def reset_character_extraction_settings() -> CharacterExtractionSettingsOut:
+        anchor_extraction_service.reset_character_extraction_settings()
+        return _character_extraction_settings_out()
+
+    @app.post(
+        "/api/characters/extract/preview",
+        response_model=CharacterExtractionPreviewOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def preview_character_extraction(
+        payload: CharacterExtractionPreviewRequest,
+    ) -> CharacterExtractionPreviewOut:
+        preview = anchor_extraction_service.preview_characters_from_text(
+            payload.sample_text,
+            name=payload.name,
+            detail_level=payload.detail_level,
+            model_id=payload.model_id,
+            source_metadata=payload.source_metadata,
+        )
+        return CharacterExtractionPreviewOut(
+            preview_token=preview.preview_token,
+            source_summary=CharacterSourceSummaryOut(**preview.source_summary),
+            candidates=[
+                CharacterExtractionCandidateOut(**candidate.__dict__)
+                for candidate in preview.candidates
+            ],
+        )
+
+    @app.post(
+        "/api/characters/extract/apply",
+        response_model=CharacterExtractionApplyOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def apply_character_extraction(
+        payload: CharacterExtractionApplyRequest,
+    ) -> CharacterExtractionApplyOut:
+        result = anchor_extraction_service.apply_character_extraction(
+            preview_token=payload.preview_token,
+            candidates=[candidate.model_dump() for candidate in payload.candidates],
+            selected_candidate_ids=payload.selected_candidate_ids,
+            scope=payload.scope,
+            project_id=payload.project_id,
+            category_ids=payload.category_ids,
+        )
+        return CharacterExtractionApplyOut(
+            created=[CharacterExtractionApplyItemOut(**item) for item in result["created"]],
+            errors=[CharacterExtractionApplyItemOut(**item) for item in result["errors"]],
+        )
+
+    # Legacy compatibility endpoint. New clients must use preview/apply.
     @app.post("/api/characters/extract", response_model=CharacterCardsExtractOut, dependencies=[Depends(_require_token)])
     def extract_character_cards(payload: AnchorExtractRequest) -> CharacterCardsExtractOut:
         text, source_metadata = _resolve_anchor_source(
@@ -1974,6 +2068,13 @@ def create_app(
         card_id: int,
         payload: CharacterCopyToProjectRequest,
     ) -> CharacterCardOut:
+        existing = anchor_service.find_active_project_copy(card_id, payload.target_project_id)
+        if existing is not None and not payload.force:
+            raise _http_error(
+                409,
+                "character_project_copy_exists",
+                f"该公共角色已存在于目标工程（existing_card_id={existing.id}）",
+            )
         copied_id = anchor_service.copy_public_character_to_project(
             card_id,
             payload.target_project_id,
@@ -1984,6 +2085,40 @@ def create_app(
                 500,
                 "character_card_copy_failed",
                 "Character card copy was committed but could not be loaded.",
+            )
+        return _character_out(card)
+
+    @app.get(
+        "/api/characters/{card_id}/project-copy",
+        response_model=CharacterCardOut | None,
+        dependencies=[Depends(_require_token)],
+    )
+    def get_existing_character_project_copy(
+        card_id: int,
+        target_project_id: int,
+    ) -> CharacterCardOut | None:
+        card = anchor_service.find_active_project_copy(card_id, target_project_id)
+        return _character_out(card) if card is not None else None
+
+    @app.post(
+        "/api/characters/{card_id}/publish-to-public",
+        response_model=CharacterCardOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def publish_character_to_public(
+        card_id: int,
+        payload: CharacterPublishRequest,
+    ) -> CharacterCardOut:
+        published_id = anchor_service.publish_project_character_to_public(
+            card_id,
+            selected_fields=payload.selected_fields,
+        )
+        card = anchor_service.get_character_card(published_id)
+        if card is None:
+            raise _http_error(
+                500,
+                "character_publish_failed",
+                "Character card was published but could not be loaded.",
             )
         return _character_out(card)
 

@@ -664,6 +664,11 @@ class AnchorService:
                                 **source.source_metadata,
                                 "copied_from_scope": "public",
                                 "source_character_card_id": source.id,
+                                "public_baseline": {
+                                    "source_card_id": source.id,
+                                    "source_version": source.version,
+                                    "stable_fields": _stable_character_fields(source),
+                                },
                             },
                             ensure_ascii=False,
                         ),
@@ -725,6 +730,118 @@ class AnchorService:
             if created_cover is not None and created_cover.is_file():
                 created_cover.unlink()
             raise
+
+    def find_active_project_copy(
+        self,
+        source_card_id: int,
+        target_project_id: int,
+    ) -> CharacterCard | None:
+        with session(self.database_path) as connection:
+            row = connection.execute(
+                f"""
+                SELECT c.*, binding.sort_order,
+                       {CHARACTER_RELATION_COLUMNS}
+                FROM project_character_bindings binding
+                JOIN character_cards c ON c.id = binding.character_card_id
+                WHERE binding.project_id = ?
+                  AND binding.is_active = 1
+                  AND c.deleted_at IS NULL
+                  AND c.scope = 'project'
+                  AND c.source_character_card_id = ?
+                ORDER BY c.updated_at DESC, c.id DESC
+                LIMIT 1
+                """,
+                (target_project_id, source_card_id),
+            ).fetchone()
+            return (
+                self._character_from_row(
+                    row,
+                    source_summary=self._character_source_summary(connection, row),
+                )
+                if row is not None
+                else None
+            )
+
+    def publish_project_character_to_public(
+        self,
+        source_card_id: int,
+        selected_fields: list[str],
+    ) -> int:
+        source = self.get_character_card(source_card_id)
+        if source is None:
+            raise ValueError(f"Character card not found: {source_card_id}")
+        if source.scope != "project" or source.project_id is None:
+            raise ValueError("Only project characters can be saved as public characters.")
+        selected = set(selected_fields)
+        if "name" not in selected:
+            raise ValueError("Publishing a project character requires the name field.")
+        stable = _stable_character_fields(source)
+        tag_ids: list[int] = []
+        if "tags" in selected:
+            with session(self.database_path) as connection:
+                tag_ids = [
+                    int(row["tag_id"])
+                    for row in connection.execute(
+                        "SELECT tag_id FROM character_tag_links WHERE character_card_id = ?",
+                        (source.id,),
+                    ).fetchall()
+                ]
+        published_id = self.create_character_card(
+            name=str(stable["name"]),
+            aliases=list(stable["aliases"]) if "aliases" in selected else [],
+            description=str(stable["description"]) if "description" in selected else "",
+            relationship_notes=(
+                str(stable["relationship_notes"])
+                if "relationship_notes" in selected
+                else ""
+            ),
+            personality=str(stable["personality"]) if "personality" in selected else "",
+            speech_style=str(stable["speech_style"]) if "speech_style" in selected else "",
+            action_constraints=(
+                str(stable["action_constraints"])
+                if "action_constraints" in selected
+                else ""
+            ),
+            anti_ooc_rules=(
+                str(stable["anti_ooc_rules"])
+                if "anti_ooc_rules" in selected
+                else ""
+            ),
+            profile=dict(stable["profile"]) if "profile" in selected else {},
+            source_metadata={
+                "source_kind": "project_copy",
+                "source_project_character_id": source.id,
+                "source_project_id": source.project_id,
+            },
+            import_metadata={"created_by": "project_character_publish"},
+            scope="public",
+            project_id=None,
+            identity=str(stable["identity"]) if "identity" in selected else "",
+            age=str(stable["age"]) if "age" in selected else "",
+            setting_text=str(stable["setting_text"]) if "setting_text" in selected else "",
+            custom_fields=(
+                list(stable["custom_fields"])
+                if "custom_fields" in selected
+                else []
+            ),
+            raw_text="",
+            analysis_status=source.analysis_status,
+            tag_ids=tag_ids,
+        )
+        if "cover" in selected and source.cover_path:
+            cover = self.character_cover_file(source.id)
+            if cover is None:
+                raise ValueError("Source character cover is missing or outside the managed directory.")
+            try:
+                self.save_character_cover(published_id, cover.read_bytes())
+            except Exception:
+                with session(self.database_path) as connection:
+                    connection.execute(
+                        "DELETE FROM character_cards WHERE id = ?",
+                        (published_id,),
+                    )
+                raise
+        return published_id
 
     def delete_character_card(self, card_id: int) -> None:
         card = self.get_character_card(card_id)
@@ -1349,6 +1466,29 @@ class AnchorService:
         document_id = _optional_int(source_metadata.get("document_id"))
         chapter_id = _optional_int(source_metadata.get("chapter_id"))
         project_id = _optional_int(source_metadata.get("project_id"))
+        if source_kind == "project_copy":
+            source_project_character_id = _optional_int(
+                source_metadata.get("source_project_character_id")
+            )
+            source_name = (
+                connection.execute(
+                    "SELECT name FROM character_cards WHERE id = ?",
+                    (source_project_character_id,),
+                ).fetchone()
+                if source_project_character_id is not None
+                else None
+            )
+            label_name = (
+                str(source_name["name"])
+                if source_name is not None
+                else f"#{source_project_character_id}"
+            )
+            return CharacterSourceSummary(
+                kind="project_copy",
+                label=f"工程角色“{label_name}”",
+                project_id=_optional_int(source_metadata.get("source_project_id")),
+                source_card_id=source_project_character_id,
+            )
         if source_kind == "document" and document_id is not None:
             document = connection.execute(
                 "SELECT title FROM library_documents WHERE id = ?",
@@ -1470,6 +1610,26 @@ def _card_is_relevant(card: CharacterCard, chapter_text: str) -> bool:
     lowered_text = chapter_text.lower()
     names = [card.name, *card.aliases]
     return any(name and name.lower() in lowered_text for name in names)
+
+
+def _stable_character_fields(card: CharacterCard) -> dict[str, Any]:
+    return {
+        "name": card.name,
+        "aliases": card.aliases,
+        "description": card.description,
+        "identity": card.identity,
+        "age": card.age,
+        "setting_text": card.setting_text,
+        "relationship_notes": card.relationship_notes,
+        "personality": card.personality,
+        "speech_style": card.speech_style,
+        "action_constraints": card.action_constraints,
+        "anti_ooc_rules": card.anti_ooc_rules,
+        "profile": card.profile,
+        "custom_fields": card.custom_fields,
+        "tags": list(card.tags),
+        "cover": card.cover_path,
+    }
 
 
 def _required_name(value: str, message: str) -> str:

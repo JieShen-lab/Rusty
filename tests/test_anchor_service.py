@@ -41,6 +41,8 @@ class FakeAnchorAIClient(AIClient):
                                 "action_constraints": "Acts quickly.",
                                 "anti_ooc_rules": "Do not make her passive.",
                                 "profile": {"role": "lead"},
+                                "suggested_tags": ["主角", "冷静"],
+                                "evidence_summary": "Alice protects Bob.",
                             },
                             {
                                 "name": "Bob",
@@ -228,6 +230,11 @@ class AnchorServiceTests(unittest.TestCase):
             self.assertEqual(("Calm",), project_copy.tags)
             self.assertEqual((), project_copy.category_ids)
             self.assertIn(project_copy_id, [card.id for card in bound])
+            baseline = project_copy.source_metadata["public_baseline"]
+            self.assertEqual(public_id, baseline["source_card_id"])
+            self.assertEqual(1, baseline["source_version"])
+            self.assertEqual("Alice", baseline["stable_fields"]["name"])
+            self.assertEqual(["Calm"], baseline["stable_fields"]["tags"])
 
             with self.assertRaisesRegex(ValueError, "Only public"):
                 service.set_character_category(project_copy_id, lead.id, True)
@@ -246,6 +253,44 @@ class AnchorServiceTests(unittest.TestCase):
                 if item.project_id == project_id
             )
             self.assertEqual(0, summary.character_count)
+
+    def test_project_character_publish_creates_independent_public_stable_subset(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            database_path = Path(directory) / "rusty.db"
+            service = AnchorService(database_path)
+            project_id = _create_project(database_path)
+            tag = service.create_character_tag("Calm")
+            project_id_card = service.create_character_card(
+                name="Project Alice",
+                description="Project-only description",
+                identity="Captain",
+                personality="Decisive",
+                profile={"ability": "navigation"},
+                scope="project",
+                project_id=project_id,
+                tag_ids=[tag["id"]],
+            )
+
+            published_id = service.publish_project_character_to_public(
+                project_id_card,
+                selected_fields=["name", "identity", "profile", "tags"],
+            )
+            source = service.get_character_card(project_id_card)
+            published = service.get_character_card(published_id)
+            bound_ids = [card.id for card in service.list_project_character_cards(project_id)]
+
+        self.assertIsNotNone(source)
+        self.assertIsNotNone(published)
+        self.assertNotEqual(source.id, published.id)
+        self.assertEqual("public", published.scope)
+        self.assertIsNone(published.project_id)
+        self.assertEqual("Captain", published.identity)
+        self.assertEqual("", published.description)
+        self.assertEqual("", published.personality)
+        self.assertEqual({"ability": "navigation"}, published.profile)
+        self.assertEqual(("Calm",), published.tags)
+        self.assertNotIn(published_id, bound_ids)
+        self.assertEqual("project_character_publish", published.import_metadata["created_by"])
 
     def test_public_character_copy_failure_leaves_no_half_created_card(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
@@ -330,16 +375,115 @@ class AnchorServiceTests(unittest.TestCase):
             alice_metadata = json.loads(cards[0].import_metadata_json) if cards[0] else {}
             alice_source = json.loads(cards[0].source_metadata_json) if cards[0] else {}
 
-        self.assertEqual(2, len(card_ids))
-        self.assertEqual(["Alice", "Bob"], [card.name for card in cards if card])
+        self.assertEqual(1, len(card_ids))
+        self.assertEqual(["Alice"], [card.name for card in cards if card])
         self.assertEqual(["A"], cards[0].aliases)
-        self.assertTrue(cards[0].is_main)
-        self.assertEqual(90, cards[0].priority)
         self.assertEqual("Protects Bob.", cards[0].relationship_notes)
         self.assertEqual("ai_character_extraction", alice_metadata["created_by"])
         self.assertEqual("paste", alice_source["source_type"])
         self.assertIn("Required character dimensions", fake_client.calls[0][2][-1]["content"])
         self.assertIn("Only extract the target character named “Alice”", fake_client.calls[0][2][-1]["content"])
+
+    def test_character_extraction_preview_does_not_write_and_apply_is_selective(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            database_path = Path(directory) / "rusty.db"
+            ModelService(database_path).create_model(
+                display_name="Fake",
+                provider="openai_compatible",
+                base_url="https://api.example.test/v1",
+                model_name="fake-model",
+                is_default=True,
+            )
+            service = AnchorService(database_path)
+            extraction = AnchorExtractionService(database_path, ai_client=FakeAnchorAIClient())
+
+            preview = extraction.preview_characters_from_text("Alice protects Bob.")
+            self.assertEqual([], service.list_character_cards())
+            self.assertEqual([], service.list_character_tags())
+            alice = preview.candidates[0]
+            result = extraction.apply_character_extraction(
+                preview_token=preview.preview_token,
+                candidates=[
+                    {**candidate.__dict__, "confirmed_tags": [" 主角 "] if candidate.name == "Alice" else []}
+                    for candidate in preview.candidates
+                ],
+                selected_candidate_ids=[alice.candidate_id],
+                scope="public",
+                project_id=None,
+                category_ids=[],
+            )
+            cards = service.list_character_cards(scope="public")
+
+        self.assertEqual([], result["errors"])
+        self.assertEqual(["Alice"], [card.name for card in cards])
+        self.assertEqual(("主角",), cards[0].tags)
+
+    def test_project_extraction_binds_and_settings_persist_and_reset(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            database_path = Path(directory) / "rusty.db"
+            ModelService(database_path).create_model(
+                display_name="Fake",
+                provider="openai_compatible",
+                base_url="https://api.example.test/v1",
+                model_name="fake-model",
+                is_default=True,
+            )
+            project_id = _create_project(database_path)
+            extraction = AnchorExtractionService(database_path, ai_client=FakeAnchorAIClient())
+            saved = extraction.update_character_extraction_settings(
+                detail_level="detailed",
+                max_candidates=3,
+                generate_tags=False,
+            )
+            preview = extraction.preview_characters_from_text("Alice protects Bob.", name="Alice")
+            result = extraction.apply_character_extraction(
+                preview_token=preview.preview_token,
+                candidates=[{**preview.candidates[0].__dict__, "confirmed_tags": []}],
+                selected_candidate_ids=[preview.candidates[0].candidate_id],
+                scope="project",
+                project_id=project_id,
+            )
+            cards = AnchorService(database_path).list_project_character_cards(project_id)
+            reset = extraction.reset_character_extraction_settings()
+
+        self.assertEqual("detailed", saved.detail_level)
+        self.assertEqual(3, saved.max_candidates)
+        self.assertEqual(1, len(result["created"]))
+        self.assertEqual(["Alice"], [card.name for card in cards])
+        self.assertEqual("standard", reset.detail_level)
+
+    def test_preview_token_tampering_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            database_path = Path(directory) / "rusty.db"
+            ModelService(database_path).create_model(
+                display_name="Fake",
+                provider="openai_compatible",
+                base_url="https://api.example.test/v1",
+                model_name="fake-model",
+                is_default=True,
+            )
+            extraction = AnchorExtractionService(database_path, ai_client=FakeAnchorAIClient())
+            preview = extraction.preview_characters_from_text("Alice protects Bob.")
+            with self.assertRaisesRegex(ValueError, "tampered"):
+                extraction.apply_character_extraction(
+                    preview_token=preview.preview_token,
+                    candidates=[],
+                    selected_candidate_ids=["forged"],
+                    scope="public",
+                    project_id=None,
+                )
+            with patch(
+                "rusty.services.anchor_extraction_service.time.monotonic",
+                return_value=10**12,
+            ):
+                with self.assertRaisesRegex(ValueError, "expired"):
+                    extraction.apply_character_extraction(
+                        preview_token=preview.preview_token,
+                        candidates=[],
+                        selected_candidate_ids=[],
+                        scope="public",
+                        project_id=None,
+                    )
 
     def test_ai_anchor_extraction_from_file_uses_import_parser_sample(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
