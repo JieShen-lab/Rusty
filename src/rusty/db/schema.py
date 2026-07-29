@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .connection import session
 
-CURRENT_SCHEMA_VERSION = 16
+CURRENT_SCHEMA_VERSION = 17
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -616,6 +616,25 @@ CREATE TABLE IF NOT EXISTS document_tag_links (
     FOREIGN KEY (tag_id) REFERENCES document_tags(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS document_categories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    normalized_name TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    deleted_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS document_category_links (
+    document_id INTEGER NOT NULL,
+    category_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (document_id, category_id),
+    FOREIGN KEY (document_id) REFERENCES library_documents(id) ON DELETE CASCADE,
+    FOREIGN KEY (category_id) REFERENCES document_categories(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS document_processing_templates (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
@@ -1111,12 +1130,21 @@ def _migrate_to_v10(connection: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_library_documents_created_at
             ON library_documents(created_at DESC);
-        CREATE INDEX IF NOT EXISTS idx_library_documents_content_hash
-            ON library_documents(content_hash);
-        CREATE INDEX IF NOT EXISTS idx_document_categories_parent_order
-            ON document_categories(parent_id, sort_order, name);
-        """
-    )
+            CREATE INDEX IF NOT EXISTS idx_library_documents_content_hash
+                ON library_documents(content_hash);
+            """
+        )
+    category_columns = {
+        str(row[1])
+        for row in connection.execute("PRAGMA table_info(document_categories)").fetchall()
+    }
+    if "parent_id" in category_columns:
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_document_categories_parent_order
+            ON document_categories(parent_id, sort_order, name)
+            """
+        )
 
 
 def _migrate_to_v11(connection: sqlite3.Connection) -> None:
@@ -1810,6 +1838,7 @@ def _migrate_to_v16(connection: sqlite3.Connection) -> None:
             ON scene_workflow_runs(scene_id, created_at DESC);
         """
     )
+
     rows = connection.execute(
         """
         SELECT id, description, personality, speech_style, action_constraints,
@@ -1870,6 +1899,148 @@ def _migrate_to_v16(connection: sqlite3.Connection) -> None:
                 "UPDATE character_cards SET custom_fields_json = ? WHERE id = ?",
                 (json.dumps([*existing, *additions], ensure_ascii=False), row["id"]),
             )
+
+
+def _migrate_to_v17(connection: sqlite3.Connection) -> None:
+    """Restore independent document categories and remove the legacy project tag."""
+    if _table_exists(connection, "document_categories"):
+        _add_column_if_missing(
+            connection,
+            "document_categories",
+            "normalized_name",
+            "normalized_name TEXT NOT NULL DEFAULT ''",
+        )
+        _add_column_if_missing(
+            connection,
+            "document_categories",
+            "sort_order",
+            "sort_order INTEGER NOT NULL DEFAULT 0",
+        )
+        _add_column_if_missing(
+            connection,
+            "document_categories",
+            "updated_at",
+            "updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP",
+        )
+        _add_column_if_missing(connection, "document_categories", "deleted_at", "deleted_at TEXT")
+        for row in connection.execute(
+            "SELECT id, name FROM document_categories WHERE deleted_at IS NULL ORDER BY id"
+        ).fetchall():
+            category_id = int(row[0])
+            normalized_name = _normalized_tag_name(str(row[1]))
+            existing = connection.execute(
+                """
+                SELECT id FROM document_categories
+                WHERE id <> ? AND normalized_name = ? AND deleted_at IS NULL
+                ORDER BY id LIMIT 1
+                """,
+                (category_id, normalized_name),
+            ).fetchone()
+            if existing is None:
+                connection.execute(
+                    "UPDATE document_categories SET normalized_name = ? WHERE id = ?",
+                    (normalized_name, category_id),
+                )
+                continue
+            existing_id = int(existing[0])
+            if _table_exists(connection, "document_category_links"):
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO document_category_links (document_id, category_id, created_at)
+                    SELECT document_id, ?, created_at
+                    FROM document_category_links
+                    WHERE category_id = ?
+                    """,
+                    (existing_id, category_id),
+                )
+                connection.execute(
+                    "DELETE FROM document_category_links WHERE category_id = ?",
+                    (category_id,),
+                )
+            connection.execute(
+                """
+                UPDATE document_categories
+                SET deleted_at = CURRENT_TIMESTAMP, normalized_name = ?
+                WHERE id = ?
+                """,
+                (normalized_name, category_id),
+            )
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS document_categories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            normalized_name TEXT NOT NULL,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            deleted_at TEXT
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_document_categories_normalized_active
+            ON document_categories(normalized_name)
+            WHERE deleted_at IS NULL;
+        CREATE TABLE IF NOT EXISTS document_category_links (
+            document_id INTEGER NOT NULL,
+            category_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (document_id, category_id),
+            FOREIGN KEY (document_id) REFERENCES library_documents(id) ON DELETE CASCADE,
+            FOREIGN KEY (category_id) REFERENCES document_categories(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_document_categories_order
+            ON document_categories(sort_order, name);
+        CREATE INDEX IF NOT EXISTS idx_document_category_links_category
+            ON document_category_links(category_id, document_id);
+        """
+    )
+    legacy_project_name = _normalized_tag_name("工程")
+    if not _table_exists(connection, "document_tags"):
+        return
+    connection.execute(
+        """
+        INSERT INTO document_categories (name, normalized_name, sort_order)
+        SELECT name, normalized_name, sort_order
+        FROM document_tags
+        WHERE deleted_at IS NULL AND normalized_name <> ?
+        ON CONFLICT(normalized_name) WHERE deleted_at IS NULL
+        DO UPDATE SET name = excluded.name, sort_order = excluded.sort_order,
+                      updated_at = CURRENT_TIMESTAMP
+        """,
+        (legacy_project_name,),
+    )
+    if _table_exists(connection, "document_tag_links"):
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO document_category_links (document_id, category_id, created_at)
+            SELECT links.document_id, categories.id, links.created_at
+            FROM document_tag_links links
+            JOIN document_tags tags ON tags.id = links.tag_id
+            JOIN document_categories categories
+              ON categories.normalized_name = tags.normalized_name
+             AND categories.deleted_at IS NULL
+            WHERE tags.deleted_at IS NULL AND tags.normalized_name <> ?
+            """,
+            (legacy_project_name,),
+        )
+        connection.execute(
+            """
+            DELETE FROM document_tag_links
+            WHERE tag_id IN (
+                SELECT id FROM document_tags
+                WHERE deleted_at IS NULL AND normalized_name = ?
+            )
+            """,
+            (legacy_project_name,),
+        )
+    connection.execute(
+        """
+        UPDATE document_tags
+        SET deleted_at = COALESCE(deleted_at, CURRENT_TIMESTAMP),
+            updated_at = CURRENT_TIMESTAMP
+        WHERE deleted_at IS NULL AND normalized_name = ?
+        """,
+        (legacy_project_name,),
+    )
 
 
 def _safe_json_list(value: object) -> list[dict[str, object]]:
@@ -2238,6 +2409,7 @@ MIGRATIONS = {
     14: _migrate_to_v14,
     15: _migrate_to_v15,
     16: _migrate_to_v16,
+    17: _migrate_to_v17,
 }
 
 

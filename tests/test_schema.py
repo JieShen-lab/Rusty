@@ -9,7 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from rusty.db import CURRENT_SCHEMA_VERSION, connect, initialize_database
-from rusty.db.schema import _migrate_to_v14, _migrate_to_v15
+from rusty.db.schema import _migrate_to_v14, _migrate_to_v15, _migrate_to_v17
 
 
 class SchemaTests(unittest.TestCase):
@@ -92,8 +92,8 @@ class SchemaTests(unittest.TestCase):
         self.assertIn("document_tag_links", table_names)
         self.assertNotIn("material_categories", table_names)
         self.assertNotIn("material_category_links", table_names)
-        self.assertNotIn("document_categories", table_names)
-        self.assertNotIn("document_category_links", table_names)
+        self.assertIn("document_categories", table_names)
+        self.assertIn("document_category_links", table_names)
         self.assertIn("project_outline_bindings", table_names)
         self.assertIn("project_character_bindings", table_names)
         self.assertIn("chapter_stage_status", table_names)
@@ -114,6 +114,73 @@ class SchemaTests(unittest.TestCase):
 
         self.assertEqual(CURRENT_SCHEMA_VERSION, version)
         self.assertEqual(1, split_rule_count)
+
+    def test_v16_document_tags_migrate_to_v17_categories_idempotently(self) -> None:
+        connection = sqlite3.connect(":memory:")
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.executescript(
+            """
+            CREATE TABLE library_documents (
+                id INTEGER PRIMARY KEY,
+                title TEXT NOT NULL,
+                deleted_at TEXT
+            );
+            CREATE TABLE document_tags (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                normalized_name TEXT NOT NULL,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                deleted_at TEXT
+            );
+            CREATE TABLE document_tag_links (
+                document_id INTEGER NOT NULL,
+                tag_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (document_id, tag_id)
+            );
+            INSERT INTO library_documents(id, title) VALUES (1, 'legacy');
+            INSERT INTO document_tags(id, name, normalized_name, sort_order)
+            VALUES (10, '参考', '参考', 3), (11, '工程', '工程', 0);
+            INSERT INTO document_tag_links(document_id, tag_id) VALUES (1, 10), (1, 11);
+            """
+        )
+
+        _migrate_to_v17(connection)
+        _migrate_to_v17(connection)
+
+        category = connection.execute(
+            "SELECT id, name, sort_order FROM document_categories WHERE deleted_at IS NULL"
+        ).fetchone()
+        self.assertEqual(("参考", 3), (category["name"], category["sort_order"]))
+        self.assertEqual(
+            1,
+            connection.execute(
+                "SELECT COUNT(*) FROM document_category_links WHERE document_id = 1 AND category_id = ?",
+                (category["id"],),
+            ).fetchone()[0],
+        )
+        self.assertEqual(
+            1,
+            connection.execute(
+                "SELECT COUNT(*) FROM document_tags WHERE id = 10 AND deleted_at IS NULL"
+            ).fetchone()[0],
+        )
+        self.assertEqual(
+            0,
+            connection.execute(
+                "SELECT COUNT(*) FROM document_tags WHERE id = 11 AND deleted_at IS NULL"
+            ).fetchone()[0],
+        )
+        self.assertEqual(
+            0,
+            connection.execute(
+                "SELECT COUNT(*) FROM document_tag_links WHERE tag_id = 11"
+            ).fetchone()[0],
+        )
+        self.assertEqual(1, connection.execute("SELECT COUNT(*) FROM document_categories").fetchone()[0])
 
     def test_initialize_database_upgrades_v1_rewrite_table(self) -> None:
         connection = sqlite3.connect(":memory:")

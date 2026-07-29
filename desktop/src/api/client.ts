@@ -233,6 +233,37 @@ export function assignDocumentTag(documentId: number, tagId: number, selected: b
   });
 }
 
+export function getDocumentCategories() {
+  return request<import('./types').DocumentCategory[]>('/api/document-categories');
+}
+
+export function createDocumentCategory(name: string) {
+  return request<import('./types').DocumentCategory>('/api/document-categories', {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  });
+}
+
+export function renameDocumentCategory(categoryId: number, name: string) {
+  return request<import('./types').DocumentCategory>(`/api/document-categories/${categoryId}`, {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  });
+}
+
+export function deleteDocumentCategory(categoryId: number) {
+  return request<{ ok: boolean }>(`/api/document-categories/${categoryId}/delete`, {
+    method: 'POST',
+  });
+}
+
+export function assignDocumentCategory(documentId: number, categoryId: number, selected: boolean) {
+  return request<LibraryDocument>(`/api/documents/${documentId}/categories/${categoryId}`, {
+    method: 'POST',
+    body: JSON.stringify({ selected }),
+  });
+}
+
 export function getDocumentProcessingTemplates() {
   return request<DocumentProcessingTemplate[]>('/api/document-processing-templates');
 }

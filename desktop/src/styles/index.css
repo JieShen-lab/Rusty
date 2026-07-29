@@ -135,11 +135,14 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .document-shelf-panel { display: grid; grid-template-rows: auto minmax(0, 1fr); border-right: 1px solid var(--line); background: var(--canvas); }
 .document-shelf-tools { display: flex; min-width: 0; align-items: center; gap: 7px; }
 .document-search { width: min(260px, 25vw); min-height: 36px; background: var(--paper); }
+.document-active-filters { display: flex; min-width: 0; flex-wrap: wrap; gap: 5px; }
+.document-active-filters button { display: inline-flex; min-height: 28px; cursor: pointer; align-items: center; gap: 4px; border: 1px solid var(--selected-border); border-radius: 999px; background: var(--accent-soft); color: var(--accent); padding: 0 8px; font-size: 9px; }
 .document-shelf-scroll { min-height: 0; overflow: auto; padding: 18px 18px 28px; }
 .document-shelf-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); align-items: start; gap: 18px 14px; }
 .document-book { display: grid; min-width: 0; cursor: pointer; justify-items: center; border: 1px solid transparent; border-radius: 10px; background: transparent; padding: 9px 6px; text-align: left; }
 .document-book:hover { border-color: var(--line); background: var(--paper); }
 .document-book.selected { border-color: var(--selected-border); background: var(--accent-soft); }
+.document-project-marker { margin-top: 7px; border: 1px solid var(--info-border); border-radius: 999px; background: var(--info-soft); color: var(--info); padding: 3px 7px; font-size: 9px; }
 .default-book-cover { position: relative; display: flex; width: 124px; aspect-ratio: 2 / 3; overflow: hidden; flex-direction: column; justify-content: space-between; border: 1px solid rgb(42 49 61 / 20%); border-radius: 4px 8px 8px 4px; background: var(--cover-bg); color: var(--cover-ink); padding: 17px 12px 12px 18px; box-shadow: 0 8px 14px rgb(31 42 58 / 14%), inset 8px 0 13px rgb(20 25 34 / 8%); text-align: left; }
 .default-book-cover.compact { width: 72px; flex: 0 0 72px; border-radius: 3px 6px 6px 3px; padding: 10px 7px 7px 11px; box-shadow: 0 5px 10px rgb(31 42 58 / 12%), inset 5px 0 9px rgb(20 25 34 / 8%); }
 .default-book-spine { position: absolute; inset: 0 auto 0 0; width: 7px; background: var(--cover-spine); box-shadow: inset -1px 0 rgb(255 255 255 / 18%); }
@@ -160,7 +163,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .document-shelf-empty strong { color: var(--ink); }
 .document-shelf-empty span { font-size: 11px; }
 .document-shelf-empty-action { margin-top: 10px; }
-.document-detail-panel { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; background: var(--paper); }
+.document-detail-panel { display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto; background: var(--paper); }
 .document-detail-scroll { min-height: 0; overflow: auto; }
 .document-detail-scroll > section { border-bottom: 1px solid var(--line); padding: 14px; }
 .document-detail-identity { display: flex; align-items: center; gap: 13px; }
@@ -183,7 +186,13 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .document-tag-checks button.selected { border-color: var(--selected-border); background: var(--accent-soft); color: var(--accent); }
 .document-tag-checks button:disabled { cursor: wait; opacity: .6; }
 .document-inline-action { display: inline-flex; cursor: pointer; align-items: center; gap: 5px; border: 0; border-radius: 6px; background: var(--accent-soft); color: var(--accent); padding: 7px 9px; font-size: 10px; font-weight: 700; }
-.document-library-location > div:last-child { overflow-wrap: anywhere; color: var(--ink); font-size: 11px; font-weight: 600; line-height: 1.6; }
+.document-inline-plus { display: inline-grid; width: 26px; height: 26px; cursor: pointer; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--accent); }
+.document-inline-plus:hover { background: var(--accent-soft); }
+.document-resource-empty { margin: 0; color: var(--muted); font-size: 10px; }
+.document-library-location { border-top: 1px solid var(--line); padding: 10px 12px; }
+.document-library-location > span { display: block; margin-bottom: 5px; color: var(--muted); font-size: 9px; font-weight: 700; }
+.document-library-location > div { overflow-wrap: anywhere; color: var(--ink); font-size: 10px; font-weight: 600; line-height: 1.5; }
+.document-library-location > small { display: block; overflow: hidden; margin-top: 5px; color: var(--muted); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
 .document-detail-panel > footer { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; border-top: 1px solid var(--line); padding: 9px 11px; }
 .document-detail-panel > footer .button { min-width: 0; min-height: 36px; padding-inline: 8px; font-size: 10px; }
 .document-editable-title, .document-editable-author { display: block; max-width: 100%; cursor: text; overflow: hidden; border: 0; background: transparent; padding: 0; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
@@ -265,6 +274,11 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .document-tag-dialog h2 { margin: 4px 0 0; font-size: 17px; }
 .document-tag-dialog > label { display: grid; gap: 7px; padding: 22px 18px; }
 .document-tag-dialog > footer { display: flex; justify-content: flex-end; gap: 8px; border-top: 1px solid var(--line); padding: 12px 18px; }
+.document-resource-options { display: grid; max-height: 260px; gap: 4px; overflow: auto; padding: 14px 18px; }
+.document-resource-options label { display: flex; min-height: 34px; align-items: center; gap: 9px; border-radius: 7px; padding: 0 8px; }
+.document-resource-options label:hover { background: var(--paper-muted); }
+.document-resource-options p { margin: 8px 0; color: var(--muted); font-size: 11px; }
+.document-resource-create { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; border-top: 1px solid var(--line); padding: 12px 18px; }
 
 /* Full document workspace */
 .project-workbench.document-workbench { height: calc(100% + 48px); margin: -24px; grid-template-rows: 84px auto minmax(0, 1fr); }
@@ -284,13 +298,13 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .document-workspace-stats div { display: grid; gap: 5px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper-muted); padding: 14px 12px; }
 .document-workspace-stats strong { font-size: 20px; }
 .document-workspace-stats span { color: var(--muted); font-size: 10px; }
-.document-workspace-actions { display: grid; min-height: 0; grid-template-rows: auto minmax(0, 1fr) auto; border-top: 1px solid var(--line); padding: 0 12px 12px; }
+.document-workspace-actions { display: flex; min-height: 0; flex-direction: column; border-top: 1px solid var(--line); padding: 0 12px 12px; }
 .document-workspace-actions > header { display: flex; min-height: 46px; align-items: center; justify-content: space-between; }
 .document-workspace-actions > header span { font-size: 13px; font-weight: 700; }
 .document-workspace-actions > header small { color: var(--muted); font-size: 10px; }
-.document-workspace-actions > .inspector-action-area { min-height: 0; align-content: start; overflow-y: auto; border-top: 0; padding: 0; }
+.document-workspace-actions > .inspector-action-area { display: grid; min-height: 0; align-content: start; gap: 8px; overflow-y: auto; border: 0; padding: 0; }
 .document-workspace-actions > .inspector-action-area .button.selected { border-color: var(--selected-border); background: var(--accent-soft); color: var(--accent); }
-.document-workspace-actions > .button { margin-top: 8px; }
+.document-workspace-actions > .button { margin-top: auto; }
 
 /* Project library */
 .project-library-page { display: flex; width: min(100%, 1400px); min-height: 100%; margin-inline: auto; flex-direction: column; }
@@ -1063,8 +1077,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .character-cover { height: 120px; margin: -12px -12px 10px; color: #fff; display: grid; place-items: center; }
 .custom-field-row { display: grid; grid-template-columns: 150px 1fr auto; gap: 8px; }
 .editable-manuscript { position: relative; }
-.manuscript-editor { width: 100%; min-height: 58vh; border: 0; resize: none; padding: 18px; font: inherit; line-height: 1.9; background: #fff; }
-.selection-resource-menu { position: fixed; z-index: 100; display: grid; min-width: 190px; padding: 6px; background: #fff; border: 1px solid rgba(20, 24, 31, 0.16); border-radius: 8px; box-shadow: 0 10px 30px rgba(20, 24, 31, 0.18); }
+.manuscript-editor { width: 100%; min-height: 58vh; border: 0; resize: none; padding: 18px; font: inherit; line-height: 1.9; background: var(--paper); color: var(--ink); }
+.selection-resource-menu { position: fixed; z-index: 100; display: grid; min-width: 190px; padding: 6px; background: var(--paper); border: 1px solid var(--line-strong); border-radius: 8px; box-shadow: 0 10px 30px rgba(20, 24, 31, 0.18); }
 .selection-resource-menu button { text-align: left; padding: 8px 10px; border-radius: 6px; }
 
 /* Character and material libraries adapt to the document-library visual contract. */

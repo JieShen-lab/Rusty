@@ -96,6 +96,7 @@ from .schemas import (
     DocumentLibraryMigrateRequest,
     DocumentLibrarySettingsOut,
     DocumentCreateChapterRequest,
+    DocumentCategoryOut,
     DocumentMergeRequest,
     ModelTestResponse,
     ModelOut,
@@ -330,6 +331,61 @@ def create_app(
     )
     def assign_document_tag(document_id: int, tag_id: int, payload: ResourceTagAssignmentRequest) -> LibraryDocumentOut:
         return _library_document_out(document_library_service.set_document_tag(document_id, tag_id, payload.selected))
+
+    @app.get("/api/document-categories", response_model=list[DocumentCategoryOut])
+    def list_document_categories() -> list[DocumentCategoryOut]:
+        return [
+            DocumentCategoryOut(**category.__dict__)
+            for category in document_library_service.list_categories()
+        ]
+
+    @app.post(
+        "/api/document-categories",
+        response_model=DocumentCategoryOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def create_document_category(payload: ResourceTagCreateRequest) -> DocumentCategoryOut:
+        return DocumentCategoryOut(**document_library_service.create_category(payload.name).__dict__)
+
+    @app.post(
+        "/api/document-categories/{category_id}",
+        response_model=DocumentCategoryOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def rename_document_category(
+        category_id: int,
+        payload: ResourceTagRenameRequest,
+    ) -> DocumentCategoryOut:
+        return DocumentCategoryOut(
+            **document_library_service.rename_category(category_id, payload.name).__dict__
+        )
+
+    @app.post(
+        "/api/document-categories/{category_id}/delete",
+        response_model=dict[str, bool],
+        dependencies=[Depends(_require_token)],
+    )
+    def delete_document_category(category_id: int) -> dict[str, bool]:
+        document_library_service.delete_category(category_id)
+        return {"ok": True}
+
+    @app.post(
+        "/api/documents/{document_id}/categories/{category_id}",
+        response_model=LibraryDocumentOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def assign_document_category(
+        document_id: int,
+        category_id: int,
+        payload: ResourceTagAssignmentRequest,
+    ) -> LibraryDocumentOut:
+        return _library_document_out(
+            document_library_service.set_document_category(
+                document_id,
+                category_id,
+                payload.selected,
+            )
+        )
 
     @app.get("/api/document-processing-templates", response_model=list[DocumentProcessingTemplateOut])
     def list_document_processing_templates() -> list[DocumentProcessingTemplateOut]:
