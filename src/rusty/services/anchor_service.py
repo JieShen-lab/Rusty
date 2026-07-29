@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from rusty.db import initialize_database, session
+from rusty.services.extraction_apply_error import CandidateApplyError
 from rusty.services.project_service import default_database_path
 from rusty.services.style_service import DETAIL_LEVELS
 
@@ -432,21 +433,29 @@ class AnchorService:
             raise ValueError("Project characters cannot belong to public character categories.")
         prepared: list[dict[str, Any]] = []
         for candidate in candidates:
-            prepared.append(
-                {
-                    **candidate,
-                    "name": _required_name(
-                        str(candidate.get("name") or ""),
-                        "Character card name is required.",
-                    ),
-                    "aliases": _clean_aliases(candidate.get("aliases")),
-                    "custom_fields": _normalize_custom_fields(candidate.get("custom_fields")),
-                    "confirmed_tags": [
-                        _required_tag_name(str(value))
-                        for value in candidate.get("confirmed_tags", [])
-                    ],
-                }
-            )
+            candidate_id = str(candidate.get("candidate_id") or "")
+            try:
+                prepared.append(
+                    {
+                        **candidate,
+                        "candidate_id": candidate_id,
+                        "name": _required_name(
+                            str(candidate.get("name") or ""),
+                            "Character card name is required.",
+                        ),
+                        "aliases": _clean_aliases(candidate.get("aliases")),
+                        "custom_fields": _normalize_custom_fields(candidate.get("custom_fields")),
+                        "confirmed_tags": [
+                            _required_tag_name(str(value))
+                            for value in candidate.get("confirmed_tags", [])
+                        ],
+                    }
+                )
+            except Exception as exc:
+                raise CandidateApplyError(
+                    candidate_id,
+                    f"Character candidate {candidate_id} failed: {exc}",
+                ) from exc
         created_ids: list[int] = []
         with session(self.database_path) as connection:
             if project_id is not None and connection.execute(
@@ -463,81 +472,87 @@ class AnchorService:
             if not set(category_ids).issubset(valid_categories):
                 raise ValueError("One or more character categories do not exist.")
             for candidate in prepared:
-                tag_ids: list[int] = []
-                for tag_name in candidate["confirmed_tags"]:
-                    normalized_name = _normalize_tag_name(tag_name)
-                    connection.execute(
-                        """
-                        INSERT INTO character_tags (name, normalized_name)
-                        VALUES (?, ?)
-                        ON CONFLICT(normalized_name) WHERE deleted_at IS NULL
-                        DO UPDATE SET updated_at = CURRENT_TIMESTAMP
-                        """,
-                        (tag_name, normalized_name),
-                    )
-                    tag_ids.append(
-                        int(
-                            connection.execute(
-                                """
-                                SELECT id FROM character_tags
-                                WHERE normalized_name = ? AND deleted_at IS NULL
-                                """,
-                                (normalized_name,),
-                            ).fetchone()["id"]
-                        )
-                    )
-                cursor = connection.execute(
-                    """
-                    INSERT INTO character_cards (
-                        name, aliases_json, description, priority, is_main, relationship_notes,
-                        personality, speech_style, action_constraints, anti_ooc_rules,
-                        profile_json, source_metadata_json, import_metadata_json,
-                        scope, project_id, source_character_card_id, source_version,
-                        identity, age, setting_text, custom_fields_json, raw_text, analysis_status
-                    ) VALUES (?, ?, ?, 50, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, 'analyzed')
-                    """,
-                    (
-                        candidate["name"],
-                        json.dumps(candidate["aliases"], ensure_ascii=False),
-                        str(candidate.get("description") or ""),
-                        str(candidate.get("relationship_notes") or ""),
-                        str(candidate.get("personality") or ""),
-                        str(candidate.get("speech_style") or ""),
-                        str(candidate.get("action_constraints") or ""),
-                        str(candidate.get("anti_ooc_rules") or ""),
-                        json.dumps(candidate.get("profile") or {}, ensure_ascii=False),
-                        json.dumps(source_metadata, ensure_ascii=False),
-                        json.dumps(import_metadata, ensure_ascii=False),
-                        scope,
-                        project_id,
-                        str(candidate.get("identity") or "").strip(),
-                        str(candidate.get("age") or "").strip(),
-                        str(candidate.get("setting_text") or ""),
-                        json.dumps(candidate["custom_fields"], ensure_ascii=False),
-                        raw_text,
-                    ),
-                )
-                card_id = int(cursor.lastrowid)
-                created_ids.append(card_id)
-                self._replace_character_tags(connection, card_id, tag_ids)
-                if scope == "project":
-                    connection.execute(
-                        """
-                        INSERT INTO project_character_bindings (
-                            project_id, character_card_id, sort_order, is_active
-                        ) VALUES (?, ?, 0, 1)
-                        """,
-                        (project_id, card_id),
-                    )
-                else:
-                    for category_id in category_ids:
+                try:
+                    tag_ids: list[int] = []
+                    for tag_name in candidate["confirmed_tags"]:
+                        normalized_name = _normalize_tag_name(tag_name)
                         connection.execute(
                             """
-                            INSERT INTO character_category_links (character_card_id, category_id)
+                            INSERT INTO character_tags (name, normalized_name)
                             VALUES (?, ?)
+                            ON CONFLICT(normalized_name) WHERE deleted_at IS NULL
+                            DO UPDATE SET updated_at = CURRENT_TIMESTAMP
                             """,
-                            (card_id, category_id),
+                            (tag_name, normalized_name),
                         )
+                        tag_ids.append(
+                            int(
+                                connection.execute(
+                                    """
+                                    SELECT id FROM character_tags
+                                    WHERE normalized_name = ? AND deleted_at IS NULL
+                                    """,
+                                    (normalized_name,),
+                                ).fetchone()["id"]
+                            )
+                        )
+                    cursor = connection.execute(
+                        """
+                        INSERT INTO character_cards (
+                            name, aliases_json, description, priority, is_main, relationship_notes,
+                            personality, speech_style, action_constraints, anti_ooc_rules,
+                            profile_json, source_metadata_json, import_metadata_json,
+                            scope, project_id, source_character_card_id, source_version,
+                            identity, age, setting_text, custom_fields_json, raw_text, analysis_status
+                        ) VALUES (?, ?, ?, 50, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, 'analyzed')
+                        """,
+                        (
+                            candidate["name"],
+                            json.dumps(candidate["aliases"], ensure_ascii=False),
+                            str(candidate.get("description") or ""),
+                            str(candidate.get("relationship_notes") or ""),
+                            str(candidate.get("personality") or ""),
+                            str(candidate.get("speech_style") or ""),
+                            str(candidate.get("action_constraints") or ""),
+                            str(candidate.get("anti_ooc_rules") or ""),
+                            json.dumps(candidate.get("profile") or {}, ensure_ascii=False),
+                            json.dumps(source_metadata, ensure_ascii=False),
+                            json.dumps(import_metadata, ensure_ascii=False),
+                            scope,
+                            project_id,
+                            str(candidate.get("identity") or "").strip(),
+                            str(candidate.get("age") or "").strip(),
+                            str(candidate.get("setting_text") or ""),
+                            json.dumps(candidate["custom_fields"], ensure_ascii=False),
+                            raw_text,
+                        ),
+                    )
+                    card_id = int(cursor.lastrowid)
+                    created_ids.append(card_id)
+                    self._replace_character_tags(connection, card_id, tag_ids)
+                    if scope == "project":
+                        connection.execute(
+                            """
+                            INSERT INTO project_character_bindings (
+                                project_id, character_card_id, sort_order, is_active
+                            ) VALUES (?, ?, 0, 1)
+                            """,
+                            (project_id, card_id),
+                        )
+                    else:
+                        for category_id in category_ids:
+                            connection.execute(
+                                """
+                                INSERT INTO character_category_links (character_card_id, category_id)
+                                VALUES (?, ?)
+                                """,
+                                (card_id, category_id),
+                            )
+                except Exception as exc:
+                    raise CandidateApplyError(
+                        candidate["candidate_id"],
+                        f"Character candidate {candidate['candidate_id']} failed: {exc}",
+                    ) from exc
         return created_ids
 
     def update_character_card(

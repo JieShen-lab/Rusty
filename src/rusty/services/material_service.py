@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from rusty.db import initialize_database, session
+from rusty.services.extraction_apply_error import CandidateApplyError
 from rusty.services.project_service import default_database_path
 from rusty.services.style_service import DETAIL_LEVELS
 
@@ -455,18 +456,30 @@ class MaterialService:
             raise ValueError("At least one material candidate is required.")
         prepared: list[dict[str, Any]] = []
         for candidate in candidates:
-            prepared.append(
-                {
-                    **candidate,
-                    "name": _required_name(str(candidate.get("name") or "")),
-                    "content": normalize_material_content(material_type, candidate.get("content")),
-                    "general_tags": _normalized_tag_names(candidate.get("general_tags") or []),
-                    "applicable_scene_tags": _normalized_tag_names(
-                        candidate.get("applicable_scene_tags") or []
-                    ),
-                    "category_ids": [int(value) for value in candidate.get("category_ids", [])],
-                }
-            )
+            candidate_id = str(candidate.get("candidate_id") or "")
+            try:
+                prepared.append(
+                    {
+                        **candidate,
+                        "candidate_id": candidate_id,
+                        "name": _required_name(str(candidate.get("name") or "")),
+                        "content": normalize_material_content(
+                            material_type, candidate.get("content")
+                        ),
+                        "general_tags": _normalized_tag_names(candidate.get("general_tags") or []),
+                        "applicable_scene_tags": _normalized_tag_names(
+                            candidate.get("applicable_scene_tags") or []
+                        ),
+                        "category_ids": [
+                            int(value) for value in candidate.get("category_ids", [])
+                        ],
+                    }
+                )
+            except Exception as exc:
+                raise CandidateApplyError(
+                    candidate_id,
+                    f"Material candidate {candidate_id} failed: {exc}",
+                ) from exc
         created_ids: list[int] = []
         with session(self.database_path) as connection:
             valid_categories = {
@@ -478,63 +491,75 @@ class MaterialService:
             }
             for candidate in prepared:
                 if not set(candidate["category_ids"]).issubset(valid_categories):
-                    raise ValueError("One or more material categories do not exist or have the wrong type.")
+                    raise CandidateApplyError(
+                        candidate["candidate_id"],
+                        (
+                            f"Material candidate {candidate['candidate_id']} failed: "
+                            "one or more categories do not exist or have the wrong type."
+                        ),
+                    )
             for candidate in prepared:
-                cursor = connection.execute(
-                    """
-                    INSERT INTO materials (
-                        material_type, scope, project_id, name, description, detail_level,
-                        raw_text, content_json, analysis_status, source_metadata_json,
-                        import_metadata_json, sort_order
-                    ) VALUES (?, 'public', NULL, ?, ?, ?, ?, ?, 'analyzed', ?, ?, ?)
-                    """,
-                    (
-                        material_type,
-                        candidate["name"],
-                        str(candidate.get("description") or ""),
-                        detail_level,
-                        raw_text,
-                        json.dumps(candidate["content"], ensure_ascii=False),
-                        json.dumps(source_metadata, ensure_ascii=False),
-                        json.dumps(import_metadata, ensure_ascii=False),
-                        int(candidate.get("sort_order") or 0),
-                    ),
-                )
-                material_id = int(cursor.lastrowid)
-                created_ids.append(material_id)
-                for group, names in (
-                    ("general", candidate["general_tags"]),
-                    ("applicable_scene", candidate["applicable_scene_tags"]),
-                ):
-                    for tag_name in names:
-                        connection.execute(
-                            """
-                            INSERT INTO material_tags (name, normalized_name, tag_group)
-                            VALUES (?, ?, ?)
-                            ON CONFLICT(normalized_name, tag_group) WHERE deleted_at IS NULL
-                            DO UPDATE SET updated_at = CURRENT_TIMESTAMP
-                            """,
-                            (tag_name, _normalize_tag_name(tag_name), group),
-                        )
-                        tag_id = int(
+                try:
+                    cursor = connection.execute(
+                        """
+                        INSERT INTO materials (
+                            material_type, scope, project_id, name, description, detail_level,
+                            raw_text, content_json, analysis_status, source_metadata_json,
+                            import_metadata_json, sort_order
+                        ) VALUES (?, 'public', NULL, ?, ?, ?, ?, ?, 'analyzed', ?, ?, ?)
+                        """,
+                        (
+                            material_type,
+                            candidate["name"],
+                            str(candidate.get("description") or ""),
+                            detail_level,
+                            raw_text,
+                            json.dumps(candidate["content"], ensure_ascii=False),
+                            json.dumps(source_metadata, ensure_ascii=False),
+                            json.dumps(import_metadata, ensure_ascii=False),
+                            int(candidate.get("sort_order") or 0),
+                        ),
+                    )
+                    material_id = int(cursor.lastrowid)
+                    created_ids.append(material_id)
+                    for group, names in (
+                        ("general", candidate["general_tags"]),
+                        ("applicable_scene", candidate["applicable_scene_tags"]),
+                    ):
+                        for tag_name in names:
                             connection.execute(
                                 """
-                                SELECT id FROM material_tags
-                                WHERE normalized_name = ? AND tag_group = ? AND deleted_at IS NULL
+                                INSERT INTO material_tags (name, normalized_name, tag_group)
+                                VALUES (?, ?, ?)
+                                ON CONFLICT(normalized_name, tag_group) WHERE deleted_at IS NULL
+                                DO UPDATE SET updated_at = CURRENT_TIMESTAMP
                                 """,
-                                (_normalize_tag_name(tag_name), group),
-                            ).fetchone()["id"]
-                        )
-                        connection.execute(
-                            "INSERT OR IGNORE INTO material_tag_links (material_id, tag_id) VALUES (?, ?)",
-                            (material_id, tag_id),
-                        )
-                self._replace_categories(
-                    connection,
-                    material_id,
-                    candidate["category_ids"],
-                    material_type,
-                )
+                                (tag_name, _normalize_tag_name(tag_name), group),
+                            )
+                            tag_id = int(
+                                connection.execute(
+                                    """
+                                    SELECT id FROM material_tags
+                                    WHERE normalized_name = ? AND tag_group = ? AND deleted_at IS NULL
+                                    """,
+                                    (_normalize_tag_name(tag_name), group),
+                                ).fetchone()["id"]
+                            )
+                            connection.execute(
+                                "INSERT OR IGNORE INTO material_tag_links (material_id, tag_id) VALUES (?, ?)",
+                                (material_id, tag_id),
+                            )
+                    self._replace_categories(
+                        connection,
+                        material_id,
+                        candidate["category_ids"],
+                        material_type,
+                    )
+                except Exception as exc:
+                    raise CandidateApplyError(
+                        candidate["candidate_id"],
+                        f"Material candidate {candidate['candidate_id']} failed: {exc}",
+                    ) from exc
         return created_ids
 
     def update_material(

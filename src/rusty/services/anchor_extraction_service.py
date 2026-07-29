@@ -3,14 +3,16 @@ from __future__ import annotations
 import json
 import secrets
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 from rusty.db import session
 from rusty.services.ai_client import AIClient, OpenAICompatibleClient
 from rusty.services.anchor_service import AnchorService
+from rusty.services.extraction_apply_error import CandidateApplyError
 from rusty.services.material_service import (
     MATERIAL_AI_TASK_TYPES,
     MATERIAL_TYPES,
@@ -129,9 +131,11 @@ class _StoredCharacterPreview:
     source_summary: dict[str, Any]
     import_metadata: dict[str, Any]
     raw_text: str
+    lock: Any = field(default_factory=Lock, repr=False)
 
 
 _CHARACTER_PREVIEWS: dict[tuple[str, str], _StoredCharacterPreview] = {}
+_CHARACTER_PREVIEWS_LOCK = Lock()
 
 
 @dataclass(frozen=True)
@@ -174,9 +178,11 @@ class _StoredMaterialPreview:
     import_metadata: dict[str, Any]
     raw_text: str
     prompt_snapshot: dict[str, Any]
+    lock: Any = field(default_factory=Lock, repr=False)
 
 
 _MATERIAL_PREVIEWS: dict[tuple[str, str], _StoredMaterialPreview] = {}
+_MATERIAL_PREVIEWS_LOCK = Lock()
 
 
 class AnchorExtractionService:
@@ -320,19 +326,22 @@ class AnchorExtractionService:
                 for message in messages
             ],
         }
-        _MATERIAL_PREVIEWS[(str(self.database_path.resolve()), token)] = _StoredMaterialPreview(
-            expires_at=expires_at_monotonic,
-            expires_at_iso=expires_at_iso,
-            state="pending",
-            task_type=task_type,
-            material_type=material_type,
-            candidate_ids={item.candidate_id for item in candidates},
-            source_metadata=metadata,
-            source_summary=source_summary,
-            import_metadata=import_metadata,
-            raw_text=full_source_text,
-            prompt_snapshot=prompt_snapshot,
-        )
+        with _MATERIAL_PREVIEWS_LOCK:
+            _MATERIAL_PREVIEWS[
+                (str(self.database_path.resolve()), token)
+            ] = _StoredMaterialPreview(
+                expires_at=expires_at_monotonic,
+                expires_at_iso=expires_at_iso,
+                state="pending",
+                task_type=task_type,
+                material_type=material_type,
+                candidate_ids={item.candidate_id for item in candidates},
+                source_metadata=metadata,
+                source_summary=source_summary,
+                import_metadata=import_metadata,
+                raw_text=full_source_text,
+                prompt_snapshot=prompt_snapshot,
+            )
         return MaterialExtractionPreview(
             preview_token=token,
             expires_at=expires_at_iso,
@@ -351,43 +360,47 @@ class AnchorExtractionService:
         selected_candidate_ids: list[str],
     ) -> dict[str, list[dict[str, Any]]]:
         key = (str(self.database_path.resolve()), preview_token)
-        stored = _MATERIAL_PREVIEWS.get(key)
+        with _MATERIAL_PREVIEWS_LOCK:
+            stored = _MATERIAL_PREVIEWS.get(key)
         if stored is None:
             raise ValueError("Material extraction preview token is invalid.")
-        if stored.state == "consumed":
-            raise ValueError("Material extraction preview token was already used.")
-        if stored.expires_at <= time.monotonic():
-            raise ValueError("Material extraction preview token has expired.")
-        selected_ids, by_id = _validated_candidate_payloads(
-            candidates,
-            selected_candidate_ids,
-            stored.candidate_ids,
-            label="Material",
-        )
-        settings = self.material_service.get_ai_settings(stored.task_type)
-        prepared: list[dict[str, Any]] = []
-        for sort_order, candidate_id in enumerate(selected_ids):
-            candidate = by_id[candidate_id]
-            name = str(candidate.get("name") or "").strip()
-            if not name:
-                raise ValueError(f"Material candidate {candidate_id} requires a name.")
-            candidate_type = str(candidate.get("material_type") or stored.material_type)
-            if candidate_type != stored.material_type:
-                raise ValueError("Material candidate type does not match the preview.")
-            prepared.append(
-                {
-                    "candidate_id": candidate_id,
-                    "name": name,
-                    "description": str(candidate.get("description") or ""),
-                    "content": normalize_material_content(stored.material_type, candidate.get("content")),
-                    "sort_order": sort_order,
-                    "general_tags": _suggested_tags(candidate.get("confirmed_general_tags")),
-                    "applicable_scene_tags": _suggested_tags(candidate.get("confirmed_applicable_scene_tags")),
-                    "category_ids": list(dict.fromkeys(
-                        int(value) for value in candidate.get("category_ids", [])
-                    )),
-                }
+        with stored.lock:
+            _ensure_preview_can_start_apply(stored, "Material")
+            selected_ids, by_id = _validated_candidate_payloads(
+                candidates,
+                selected_candidate_ids,
+                stored.candidate_ids,
+                label="Material",
             )
+            settings = self.material_service.get_ai_settings(stored.task_type)
+            prepared: list[dict[str, Any]] = []
+            for sort_order, candidate_id in enumerate(selected_ids):
+                candidate = by_id[candidate_id]
+                name = str(candidate.get("name") or "").strip()
+                if not name:
+                    raise ValueError(f"Material candidate {candidate_id} requires a name.")
+                candidate_type = str(candidate.get("material_type") or stored.material_type)
+                if candidate_type != stored.material_type:
+                    raise ValueError("Material candidate type does not match the preview.")
+                prepared.append(
+                    {
+                        "candidate_id": candidate_id,
+                        "name": name,
+                        "description": str(candidate.get("description") or ""),
+                        "content": normalize_material_content(
+                            stored.material_type, candidate.get("content")
+                        ),
+                        "sort_order": sort_order,
+                        "general_tags": _suggested_tags(candidate.get("confirmed_general_tags")),
+                        "applicable_scene_tags": _suggested_tags(
+                            candidate.get("confirmed_applicable_scene_tags")
+                        ),
+                        "category_ids": list(
+                            dict.fromkeys(int(value) for value in candidate.get("category_ids", []))
+                        ),
+                    }
+                )
+            stored.state = "applying"
         try:
             material_ids = self.material_service.create_extracted_material_batch(
                 material_type=stored.material_type,
@@ -397,14 +410,27 @@ class AnchorExtractionService:
                 source_metadata=stored.source_metadata,
                 import_metadata=stored.import_metadata,
             )
+        except CandidateApplyError as exc:
+            with stored.lock:
+                stored.state = "pending"
+            return {
+                "created": [],
+                "errors": [{"candidate_id": exc.candidate_id, "error": str(exc)}],
+            }
         except Exception as exc:  # noqa: BLE001
+            with stored.lock:
+                stored.state = "pending"
             return {
                 "created": [],
                 "errors": [
-                    {"candidate_id": selected_ids[-1] if selected_ids else "", "error": str(exc)}
+                    {
+                        "candidate_id": "",
+                        "error": f"The complete material batch was rolled back: {exc}",
+                    }
                 ],
             }
-        stored.state = "consumed"
+        with stored.lock:
+            stored.state = "consumed"
         return {
             "created": [
                 {"candidate_id": candidate_id, "material_id": material_id}
@@ -735,16 +761,19 @@ class AnchorExtractionService:
         token = secrets.token_urlsafe(24)
         expires_at_monotonic, expires_at_iso = _preview_expiry(CHARACTER_PREVIEW_TTL_SECONDS)
         source_summary = _extraction_source_summary(metadata)
-        _CHARACTER_PREVIEWS[(str(self.database_path.resolve()), token)] = _StoredCharacterPreview(
-            expires_at=expires_at_monotonic,
-            expires_at_iso=expires_at_iso,
-            state="pending",
-            candidate_ids={candidate.candidate_id for candidate in candidates},
-            source_metadata=metadata,
-            source_summary=source_summary,
-            import_metadata=import_metadata,
-            raw_text=full_source_text,
-        )
+        with _CHARACTER_PREVIEWS_LOCK:
+            _CHARACTER_PREVIEWS[
+                (str(self.database_path.resolve()), token)
+            ] = _StoredCharacterPreview(
+                expires_at=expires_at_monotonic,
+                expires_at_iso=expires_at_iso,
+                state="pending",
+                candidate_ids={candidate.candidate_id for candidate in candidates},
+                source_metadata=metadata,
+                source_summary=source_summary,
+                import_metadata=import_metadata,
+                raw_text=full_source_text,
+            )
         return CharacterExtractionPreview(
             preview_token=token,
             expires_at=expires_at_iso,
@@ -763,42 +792,42 @@ class AnchorExtractionService:
         category_ids: list[int] | None = None,
     ) -> dict[str, list[dict[str, Any]]]:
         key = (str(self.database_path.resolve()), preview_token)
-        stored = _CHARACTER_PREVIEWS.get(key)
+        with _CHARACTER_PREVIEWS_LOCK:
+            stored = _CHARACTER_PREVIEWS.get(key)
         if stored is None:
             raise ValueError("Character extraction preview token is invalid.")
-        if stored.state == "consumed":
-            raise ValueError("Character extraction preview token was already used.")
-        if stored.expires_at <= time.monotonic():
-            raise ValueError("Character extraction preview token has expired.")
-        if scope not in {"public", "project"}:
-            raise ValueError(f"Unsupported character scope: {scope}")
-        if scope == "project" and project_id is None:
-            raise ValueError("Project character extraction requires a project.")
-        if scope == "project" and category_ids:
-            raise ValueError("Project characters cannot belong to public character categories.")
-        selected_ids, by_id = _validated_candidate_payloads(
-            candidates,
-            selected_candidate_ids,
-            stored.candidate_ids,
-            label="Character",
-        )
-        prepared: list[dict[str, Any]] = []
-        for candidate_id in selected_ids:
-            candidate = by_id[candidate_id]
-            name = str(candidate.get("name") or "").strip()
-            if not name:
-                raise ValueError(f"Character candidate {candidate_id} requires a name.")
-            prepared.append(
-                {
-                    **candidate,
-                    "candidate_id": candidate_id,
-                    "name": name,
-                    "aliases": _string_list(candidate.get("aliases")),
-                    "profile": _object_or_empty(candidate.get("profile")),
-                    "custom_fields": _custom_fields(candidate.get("custom_fields")),
-                    "confirmed_tags": _suggested_tags(candidate.get("confirmed_tags")),
-                }
+        with stored.lock:
+            _ensure_preview_can_start_apply(stored, "Character")
+            if scope not in {"public", "project"}:
+                raise ValueError(f"Unsupported character scope: {scope}")
+            if scope == "project" and project_id is None:
+                raise ValueError("Project character extraction requires a project.")
+            if scope == "project" and category_ids:
+                raise ValueError("Project characters cannot belong to public character categories.")
+            selected_ids, by_id = _validated_candidate_payloads(
+                candidates,
+                selected_candidate_ids,
+                stored.candidate_ids,
+                label="Character",
             )
+            prepared: list[dict[str, Any]] = []
+            for candidate_id in selected_ids:
+                candidate = by_id[candidate_id]
+                name = str(candidate.get("name") or "").strip()
+                if not name:
+                    raise ValueError(f"Character candidate {candidate_id} requires a name.")
+                prepared.append(
+                    {
+                        **candidate,
+                        "candidate_id": candidate_id,
+                        "name": name,
+                        "aliases": _string_list(candidate.get("aliases")),
+                        "profile": _object_or_empty(candidate.get("profile")),
+                        "custom_fields": _custom_fields(candidate.get("custom_fields")),
+                        "confirmed_tags": _suggested_tags(candidate.get("confirmed_tags")),
+                    }
+                )
+            stored.state = "applying"
         try:
             card_ids = self.anchor_service.create_extracted_character_batch(
                 candidates=prepared,
@@ -809,14 +838,27 @@ class AnchorExtractionService:
                 import_metadata=stored.import_metadata,
                 raw_text=stored.raw_text,
             )
+        except CandidateApplyError as exc:
+            with stored.lock:
+                stored.state = "pending"
+            return {
+                "created": [],
+                "errors": [{"candidate_id": exc.candidate_id, "error": str(exc)}],
+            }
         except Exception as exc:  # noqa: BLE001
+            with stored.lock:
+                stored.state = "pending"
             return {
                 "created": [],
                 "errors": [
-                    {"candidate_id": selected_ids[-1] if selected_ids else "", "error": str(exc)}
+                    {
+                        "candidate_id": "",
+                        "error": f"The complete character batch was rolled back: {exc}",
+                    }
                 ],
             }
-        stored.state = "consumed"
+        with stored.lock:
+            stored.state = "consumed"
         return {
             "created": [
                 {"candidate_id": candidate_id, "card_id": card_id}
@@ -1090,6 +1132,15 @@ def _sample_text(text: str) -> str:
 def _preview_expiry(ttl_seconds: int) -> tuple[float, str]:
     expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
     return time.monotonic() + ttl_seconds, expires_at.isoformat()
+
+
+def _ensure_preview_can_start_apply(stored: Any, label: str) -> None:
+    if stored.state == "consumed":
+        raise ValueError(f"{label} extraction preview token was already used.")
+    if stored.state == "applying":
+        raise ValueError(f"{label} extraction preview token is currently being applied.")
+    if stored.expires_at <= time.monotonic():
+        raise ValueError(f"{label} extraction preview token has expired.")
 
 
 def _validated_candidate_payloads(

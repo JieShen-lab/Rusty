@@ -4,7 +4,9 @@ import json
 import sqlite3
 import sys
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
@@ -15,6 +17,7 @@ from rusty.db import session
 from rusty.db.schema import CURRENT_SCHEMA_VERSION, initialize_database
 from rusty.services.ai_client import AIClient, AIResponse
 from rusty.services.anchor_extraction_service import AnchorExtractionService
+from rusty.services import anchor_extraction_service as extraction_module
 from rusty.services.anchor_service import AnchorService
 from rusty.services.material_service import MATERIAL_AI_DEFAULTS, MaterialService
 from rusty.services.model_service import ModelService
@@ -128,7 +131,118 @@ class PreviewApplyContractV23Tests(unittest.TestCase):
                 )
             self.assertEqual(2, len(MaterialService(database_path).list_materials()))
 
-    def test_character_batch_failure_rolls_back_and_token_can_retry(self) -> None:
+    def test_character_token_rejects_concurrent_apply(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            database_path, extraction, _ = self._service(directory)
+            with session(database_path) as connection:
+                project_id = int(
+                    connection.execute(
+                        "INSERT INTO projects(name, status, current_stage) VALUES ('P', 'imported', 'split')"
+                    ).lastrowid
+                )
+            preview = extraction.preview_characters_from_text("Alpha meets Beta.")
+            payload = [
+                {**candidate.__dict__, "confirmed_tags": ["atomic"]}
+                for candidate in preview.candidates
+            ]
+            selected = [candidate.candidate_id for candidate in preview.candidates]
+            entered = threading.Event()
+            release = threading.Event()
+            original = extraction.anchor_service.create_extracted_character_batch
+
+            def blocked_batch(**kwargs):
+                entered.set()
+                self.assertTrue(release.wait(5), "character batch was not released")
+                return original(**kwargs)
+
+            def apply():
+                return extraction.apply_character_extraction(
+                    preview_token=preview.preview_token,
+                    candidates=payload,
+                    selected_candidate_ids=selected,
+                    scope="project",
+                    project_id=project_id,
+                )
+
+            with patch.object(
+                extraction.anchor_service,
+                "create_extracted_character_batch",
+                side_effect=blocked_batch,
+            ), ThreadPoolExecutor(max_workers=2) as executor:
+                first = executor.submit(apply)
+                self.assertTrue(entered.wait(5), "character batch did not start")
+                second = executor.submit(apply)
+                with self.assertRaisesRegex(ValueError, "currently being applied"):
+                    second.result(timeout=5)
+                release.set()
+                result = first.result(timeout=5)
+
+            self.assertEqual(2, len(result["created"]))
+            key = (str(database_path.resolve()), preview.preview_token)
+            self.assertEqual("consumed", extraction_module._CHARACTER_PREVIEWS[key].state)
+            with session(database_path) as connection:
+                self.assertEqual(2, connection.execute("SELECT COUNT(*) FROM character_cards").fetchone()[0])
+                self.assertEqual(1, connection.execute("SELECT COUNT(*) FROM character_tags").fetchone()[0])
+                self.assertEqual(2, connection.execute("SELECT COUNT(*) FROM character_tag_links").fetchone()[0])
+                self.assertEqual(2, connection.execute("SELECT COUNT(*) FROM project_character_bindings").fetchone()[0])
+
+    def test_material_token_rejects_concurrent_apply(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            database_path, extraction, _ = self._service(directory)
+            category = MaterialService(database_path).create_category("plot_skeleton", "atomic")
+            preview = extraction.preview_materials_from_text(
+                "A then B.",
+                task_type="narrative_to_plot_skeleton",
+            )
+            payload = [
+                {
+                    **candidate.__dict__,
+                    "confirmed_general_tags": ["atomic"],
+                    "confirmed_applicable_scene_tags": ["opening"],
+                    "category_ids": [category.id],
+                }
+                for candidate in preview.candidates
+            ]
+            selected = [candidate.candidate_id for candidate in preview.candidates]
+            entered = threading.Event()
+            release = threading.Event()
+            original = extraction.material_service.create_extracted_material_batch
+
+            def blocked_batch(**kwargs):
+                entered.set()
+                self.assertTrue(release.wait(5), "material batch was not released")
+                return original(**kwargs)
+
+            def apply():
+                return extraction.apply_material_extraction(
+                    preview_token=preview.preview_token,
+                    candidates=payload,
+                    selected_candidate_ids=selected,
+                )
+
+            with patch.object(
+                extraction.material_service,
+                "create_extracted_material_batch",
+                side_effect=blocked_batch,
+            ), ThreadPoolExecutor(max_workers=2) as executor:
+                first = executor.submit(apply)
+                self.assertTrue(entered.wait(5), "material batch did not start")
+                second = executor.submit(apply)
+                with self.assertRaisesRegex(ValueError, "currently being applied"):
+                    second.result(timeout=5)
+                release.set()
+                result = first.result(timeout=5)
+
+            self.assertEqual(2, len(result["created"]))
+            key = (str(database_path.resolve()), preview.preview_token)
+            self.assertEqual("consumed", extraction_module._MATERIAL_PREVIEWS[key].state)
+            with session(database_path) as connection:
+                self.assertEqual(2, connection.execute("SELECT COUNT(*) FROM materials").fetchone()[0])
+                self.assertEqual(2, connection.execute("SELECT COUNT(*) FROM material_tags").fetchone()[0])
+                self.assertEqual(4, connection.execute("SELECT COUNT(*) FROM material_tag_links").fetchone()[0])
+                self.assertEqual(2, connection.execute("SELECT COUNT(*) FROM material_category_links").fetchone()[0])
+
+    def test_first_character_candidate_failure_is_attributed_and_token_can_retry(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             database_path, extraction, _ = self._service(directory)
             anchor_service = AnchorService(database_path)
@@ -150,7 +264,7 @@ class PreviewApplyContractV23Tests(unittest.TestCase):
             payload = [
                 {
                     **candidate.__dict__,
-                    "name": "FAIL" if index == 1 else candidate.name,
+                    "name": "FAIL" if index == 0 else candidate.name,
                     "confirmed_tags": ["原子标签"],
                 }
                 for index, candidate in enumerate(preview.candidates)
@@ -164,12 +278,16 @@ class PreviewApplyContractV23Tests(unittest.TestCase):
                 project_id=project_id,
             )
             self.assertEqual([], failed["created"])
+            self.assertEqual(selected[0], failed["errors"][0]["candidate_id"])
+            self.assertNotEqual(selected[-1], failed["errors"][0]["candidate_id"])
             with session(database_path) as connection:
                 self.assertEqual(0, connection.execute("SELECT COUNT(*) FROM character_cards").fetchone()[0])
                 self.assertEqual(0, connection.execute("SELECT COUNT(*) FROM character_tags").fetchone()[0])
                 self.assertEqual(0, connection.execute("SELECT COUNT(*) FROM project_character_bindings").fetchone()[0])
                 connection.execute("DROP TRIGGER fail_character_candidate")
-            payload[1]["name"] = "Beta fixed"
+            key = (str(database_path.resolve()), preview.preview_token)
+            self.assertEqual("pending", extraction_module._CHARACTER_PREVIEWS[key].state)
+            payload[0]["name"] = "Alpha fixed"
             retried = extraction.apply_character_extraction(
                 preview_token=preview.preview_token,
                 candidates=payload,
@@ -203,7 +321,7 @@ class PreviewApplyContractV23Tests(unittest.TestCase):
             )
             self.assertEqual(2, len(retried["created"]))
 
-    def test_material_batch_failure_rolls_back_and_token_can_retry(self) -> None:
+    def test_first_material_candidate_failure_is_attributed_and_token_can_retry(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             database_path, extraction, _ = self._service(directory)
             material_service = MaterialService(database_path)
@@ -224,7 +342,7 @@ class PreviewApplyContractV23Tests(unittest.TestCase):
             payload = [
                 {
                     **candidate.__dict__,
-                    "name": "FAIL" if index == 1 else candidate.name,
+                    "name": "FAIL" if index == 0 else candidate.name,
                     "confirmed_general_tags": ["原子标签"],
                     "confirmed_applicable_scene_tags": ["开场"],
                     "category_ids": [category.id],
@@ -238,17 +356,53 @@ class PreviewApplyContractV23Tests(unittest.TestCase):
                 selected_candidate_ids=selected,
             )
             self.assertEqual([], failed["created"])
+            self.assertEqual(selected[0], failed["errors"][0]["candidate_id"])
+            self.assertNotEqual(selected[-1], failed["errors"][0]["candidate_id"])
             with session(database_path) as connection:
                 self.assertEqual(0, connection.execute("SELECT COUNT(*) FROM materials").fetchone()[0])
                 self.assertEqual(0, connection.execute("SELECT COUNT(*) FROM material_tags").fetchone()[0])
                 self.assertEqual(0, connection.execute("SELECT COUNT(*) FROM material_tag_links").fetchone()[0])
                 self.assertEqual(0, connection.execute("SELECT COUNT(*) FROM material_category_links").fetchone()[0])
                 connection.execute("DROP TRIGGER fail_material_candidate")
-            payload[1]["name"] = "Material Beta fixed"
+            key = (str(database_path.resolve()), preview.preview_token)
+            self.assertEqual("pending", extraction_module._MATERIAL_PREVIEWS[key].state)
+            payload[0]["name"] = "Material Alpha fixed"
             retried = extraction.apply_material_extraction(
                 preview_token=preview.preview_token,
                 candidates=payload,
                 selected_candidate_ids=selected,
+            )
+            self.assertEqual(2, len(retried["created"]))
+
+    def test_batch_level_failure_has_no_candidate_id_and_can_retry(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            database_path, extraction, _ = self._service(directory)
+            preview = extraction.preview_characters_from_text("Alpha meets Beta.")
+            payload = [{**candidate.__dict__, "confirmed_tags": []} for candidate in preview.candidates]
+            selected = [candidate.candidate_id for candidate in preview.candidates]
+            with patch.object(
+                extraction.anchor_service,
+                "create_extracted_character_batch",
+                side_effect=sqlite3.OperationalError("shared commit failure"),
+            ):
+                failed = extraction.apply_character_extraction(
+                    preview_token=preview.preview_token,
+                    candidates=payload,
+                    selected_candidate_ids=selected,
+                    scope="public",
+                    project_id=None,
+                )
+            self.assertEqual([], failed["created"])
+            self.assertEqual("", failed["errors"][0]["candidate_id"])
+            self.assertIn("complete character batch was rolled back", failed["errors"][0]["error"])
+            key = (str(database_path.resolve()), preview.preview_token)
+            self.assertEqual("pending", extraction_module._CHARACTER_PREVIEWS[key].state)
+            retried = extraction.apply_character_extraction(
+                preview_token=preview.preview_token,
+                candidates=payload,
+                selected_candidate_ids=selected,
+                scope="public",
+                project_id=None,
             )
             self.assertEqual(2, len(retried["created"]))
 
