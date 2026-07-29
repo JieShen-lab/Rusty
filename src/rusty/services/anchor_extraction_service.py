@@ -4,6 +4,7 @@ import json
 import secrets
 import time
 from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -113,6 +114,7 @@ class CharacterExtractionCandidate:
 @dataclass(frozen=True)
 class CharacterExtractionPreview:
     preview_token: str
+    expires_at: str
     source_summary: dict[str, Any]
     candidates: list[CharacterExtractionCandidate]
 
@@ -120,6 +122,8 @@ class CharacterExtractionPreview:
 @dataclass
 class _StoredCharacterPreview:
     expires_at: float
+    expires_at_iso: str
+    state: str
     candidate_ids: set[str]
     source_metadata: dict[str, Any]
     source_summary: dict[str, Any]
@@ -133,27 +137,35 @@ _CHARACTER_PREVIEWS: dict[tuple[str, str], _StoredCharacterPreview] = {}
 @dataclass(frozen=True)
 class MaterialExtractionCandidate:
     candidate_id: str
+    material_type: str
     selected: bool
     name: str
     description: str
     content: dict[str, Any]
     suggested_general_tags: list[str]
     suggested_applicable_scene_tags: list[str]
+    evidence: list[dict[str, Any]]
     evidence_summary: str
+    confidence: float
+    warnings: list[str]
 
 
 @dataclass(frozen=True)
 class MaterialExtractionPreview:
     preview_token: str
+    expires_at: str
     task_type: str
     material_type: str
     source_summary: dict[str, Any]
+    prompt_snapshot: dict[str, Any]
     candidates: list[MaterialExtractionCandidate]
 
 
 @dataclass
 class _StoredMaterialPreview:
     expires_at: float
+    expires_at_iso: str
+    state: str
     task_type: str
     material_type: str
     candidate_ids: set[str]
@@ -161,6 +173,7 @@ class _StoredMaterialPreview:
     source_summary: dict[str, Any]
     import_metadata: dict[str, Any]
     raw_text: str
+    prompt_snapshot: dict[str, Any]
 
 
 _MATERIAL_PREVIEWS: dict[tuple[str, str], _StoredMaterialPreview] = {}
@@ -203,21 +216,26 @@ class AnchorExtractionService:
             else "plot_skeleton"
         )
         settings = self.material_service.get_ai_settings(task_type)
-        sample = _sample_text(normalized_text)
+        full_source_text = normalized_text
+        model_sample = _sample_text(full_source_text)
         model = self._resolve_model(model_id if model_id is not None else settings.model_id)
+        messages = self._material_preview_messages(
+            model_sample,
+            task_type=task_type,
+            material_type=material_type,
+            detail_level=settings.detail_level,
+            name=name,
+            generate_general_tags=settings.generate_general_tags,
+            generate_applicable_scene_tags=settings.generate_applicable_scene_tags,
+            custom_requirements=settings.custom_requirements,
+            system_prompt=settings.system_prompt,
+            user_prompt_template=settings.user_prompt_template,
+            analysis_dimensions=settings.analysis_dimensions,
+        )
         response = self.ai_client.chat(
             model,
             self.model_service.get_api_key(model.id),
-            self._material_preview_messages(
-                sample,
-                task_type=task_type,
-                material_type=material_type,
-                detail_level=settings.detail_level,
-                name=name,
-                generate_tags=settings.generate_tags,
-                custom_requirements=settings.custom_requirements,
-                system_prompt=settings.system_prompt,
-            ),
+            messages,
         )
         extracted = _parse_json_object(response.text, "Material extraction preview")
         items = extracted.get("materials")
@@ -243,19 +261,23 @@ class AnchorExtractionService:
             candidates.append(
                 MaterialExtractionCandidate(
                     candidate_id=secrets.token_hex(8),
+                    material_type=material_type,
                     selected=True,
                     name=candidate_name,
                     description=str(item.get("description") or ""),
                     content=normalize_material_content(material_type, raw_content),
                     suggested_general_tags=(
                         _suggested_tags(item.get("suggested_general_tags"))
-                        if settings.generate_tags else []
+                        if settings.generate_general_tags else []
                     ),
                     suggested_applicable_scene_tags=(
                         _suggested_tags(item.get("suggested_applicable_scene_tags"))
-                        if settings.generate_tags else []
+                        if settings.generate_applicable_scene_tags else []
                     ),
+                    evidence=_structured_evidence(item.get("evidence")),
                     evidence_summary=str(item.get("evidence_summary") or ""),
+                    confidence=_confidence(item.get("confidence")),
+                    warnings=_string_list(item.get("warnings")),
                 )
             )
         if not candidates:
@@ -263,7 +285,10 @@ class AnchorExtractionService:
         metadata = {
             **(source_metadata or {}),
             "source_type": (source_metadata or {}).get("source_type", "paste"),
-            "sample_character_count": len(sample),
+            "source_character_count": len(full_source_text),
+            "model_sample_character_count": len(model_sample),
+            "source_truncated_for_model": len(model_sample) < len(full_source_text),
+            "sample_character_count": len(model_sample),
             "task_type": task_type,
             "material_type": material_type,
         }
@@ -277,21 +302,44 @@ class AnchorExtractionService:
             "elapsed_ms": response.elapsed_ms,
         }
         token = secrets.token_urlsafe(24)
+        expires_at_monotonic, expires_at_iso = _preview_expiry(MATERIAL_PREVIEW_TTL_SECONDS)
+        prompt_snapshot = {
+            "task_type": task_type,
+            "material_type": material_type,
+            "model_id": model.id,
+            "detail_level": settings.detail_level,
+            "max_candidates": settings.max_candidates,
+            "system_prompt": settings.system_prompt,
+            "user_prompt_template": settings.user_prompt_template,
+            "analysis_dimensions": list(settings.analysis_dimensions),
+            "generate_general_tags": settings.generate_general_tags,
+            "generate_applicable_scene_tags": settings.generate_applicable_scene_tags,
+            "custom_requirements": settings.custom_requirements,
+            "messages": [
+                {"role": message["role"], "content": message["content"]}
+                for message in messages
+            ],
+        }
         _MATERIAL_PREVIEWS[(str(self.database_path.resolve()), token)] = _StoredMaterialPreview(
-            expires_at=time.monotonic() + MATERIAL_PREVIEW_TTL_SECONDS,
+            expires_at=expires_at_monotonic,
+            expires_at_iso=expires_at_iso,
+            state="pending",
             task_type=task_type,
             material_type=material_type,
             candidate_ids={item.candidate_id for item in candidates},
             source_metadata=metadata,
             source_summary=source_summary,
             import_metadata=import_metadata,
-            raw_text=sample,
+            raw_text=full_source_text,
+            prompt_snapshot=prompt_snapshot,
         )
         return MaterialExtractionPreview(
             preview_token=token,
+            expires_at=expires_at_iso,
             task_type=task_type,
             material_type=material_type,
             source_summary=source_summary,
+            prompt_snapshot=prompt_snapshot,
             candidates=candidates,
         )
 
@@ -305,56 +353,65 @@ class AnchorExtractionService:
         key = (str(self.database_path.resolve()), preview_token)
         stored = _MATERIAL_PREVIEWS.get(key)
         if stored is None:
-            raise ValueError("Material extraction preview token is invalid or already used.")
+            raise ValueError("Material extraction preview token is invalid.")
+        if stored.state == "consumed":
+            raise ValueError("Material extraction preview token was already used.")
         if stored.expires_at <= time.monotonic():
-            _MATERIAL_PREVIEWS.pop(key, None)
             raise ValueError("Material extraction preview token has expired.")
-        selected_ids = list(dict.fromkeys(str(value) for value in selected_candidate_ids))
-        if not set(selected_ids).issubset(stored.candidate_ids):
-            raise ValueError("Material extraction preview token or candidate selection was tampered with.")
-        by_id = {
-            str(item.get("candidate_id") or ""): item
-            for item in candidates
-            if isinstance(item, dict)
-        }
-        _MATERIAL_PREVIEWS.pop(key, None)
-        created: list[dict[str, Any]] = []
-        errors: list[dict[str, Any]] = []
+        selected_ids, by_id = _validated_candidate_payloads(
+            candidates,
+            selected_candidate_ids,
+            stored.candidate_ids,
+            label="Material",
+        )
+        settings = self.material_service.get_ai_settings(stored.task_type)
+        prepared: list[dict[str, Any]] = []
         for sort_order, candidate_id in enumerate(selected_ids):
-            candidate = by_id.get(candidate_id)
-            if candidate is None:
-                errors.append({"candidate_id": candidate_id, "error": "Candidate payload is missing."})
-                continue
+            candidate = by_id[candidate_id]
             name = str(candidate.get("name") or "").strip()
             if not name:
-                errors.append({"candidate_id": candidate_id, "error": "Material name is required."})
-                continue
-            try:
-                material_id = self.material_service.create_extracted_material(
-                    material_type=stored.material_type,
-                    name=name,
-                    description=str(candidate.get("description") or ""),
-                    detail_level=self.material_service.get_ai_settings(stored.task_type).detail_level,
-                    raw_text=stored.raw_text,
-                    content=normalize_material_content(
-                        stored.material_type,
-                        candidate.get("content"),
-                    ),
-                    source_metadata=stored.source_metadata,
-                    import_metadata=stored.import_metadata,
-                    sort_order=sort_order,
-                    general_tags=_suggested_tags(candidate.get("confirmed_general_tags")),
-                    applicable_scene_tags=_suggested_tags(
-                        candidate.get("confirmed_applicable_scene_tags")
-                    ),
-                    category_ids=[
+                raise ValueError(f"Material candidate {candidate_id} requires a name.")
+            candidate_type = str(candidate.get("material_type") or stored.material_type)
+            if candidate_type != stored.material_type:
+                raise ValueError("Material candidate type does not match the preview.")
+            prepared.append(
+                {
+                    "candidate_id": candidate_id,
+                    "name": name,
+                    "description": str(candidate.get("description") or ""),
+                    "content": normalize_material_content(stored.material_type, candidate.get("content")),
+                    "sort_order": sort_order,
+                    "general_tags": _suggested_tags(candidate.get("confirmed_general_tags")),
+                    "applicable_scene_tags": _suggested_tags(candidate.get("confirmed_applicable_scene_tags")),
+                    "category_ids": list(dict.fromkeys(
                         int(value) for value in candidate.get("category_ids", [])
-                    ],
-                )
-                created.append({"candidate_id": candidate_id, "material_id": material_id})
-            except Exception as exc:  # noqa: BLE001
-                errors.append({"candidate_id": candidate_id, "error": str(exc)})
-        return {"created": created, "errors": errors}
+                    )),
+                }
+            )
+        try:
+            material_ids = self.material_service.create_extracted_material_batch(
+                material_type=stored.material_type,
+                candidates=prepared,
+                detail_level=settings.detail_level,
+                raw_text=stored.raw_text,
+                source_metadata=stored.source_metadata,
+                import_metadata=stored.import_metadata,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "created": [],
+                "errors": [
+                    {"candidate_id": selected_ids[-1] if selected_ids else "", "error": str(exc)}
+                ],
+            }
+        stored.state = "consumed"
+        return {
+            "created": [
+                {"candidate_id": candidate_id, "material_id": material_id}
+                for candidate_id, material_id in zip(selected_ids, material_ids, strict=True)
+            ],
+            "errors": [],
+        }
 
     def extract_materials_from_text(
         self,
@@ -370,12 +427,17 @@ class AnchorExtractionService:
     ) -> list[int]:
         if material_type not in MATERIAL_TYPES:
             raise ValueError(f"Unsupported material type: {material_type}")
-        sample = _sample_text(sample_text)
+        full_source_text = sample_text.replace("\r\n", "\n").replace("\r", "\n").strip()
+        if len(full_source_text) > MAX_MATERIAL_EXTRACTION_TEXT_CHARS:
+            raise ValueError(
+                f"Material extraction text must be {MAX_MATERIAL_EXTRACTION_TEXT_CHARS:,} characters or fewer."
+            )
+        model_sample = _sample_text(full_source_text)
         model = self._resolve_model(model_id)
         response = self.ai_client.chat(
             model,
             self.model_service.get_api_key(model.id),
-            self._material_messages(sample, material_type, detail_level, name),
+            self._material_messages(model_sample, material_type, detail_level, name),
         )
         extracted = _parse_json_object(response.text, "Material extraction")
         items = extracted.get("materials")
@@ -384,7 +446,10 @@ class AnchorExtractionService:
         shared_source_metadata = {
             **(source_metadata or {}),
             "source_type": (source_metadata or {}).get("source_type", "paste"),
-            "sample_character_count": len(sample),
+            "source_character_count": len(full_source_text),
+            "model_sample_character_count": len(model_sample),
+            "source_truncated_for_model": len(model_sample) < len(full_source_text),
+            "sample_character_count": len(model_sample),
             "detail_level": detail_level,
             "material_type": material_type,
         }
@@ -418,7 +483,7 @@ class AnchorExtractionService:
                     name=item_name,
                     description=str(item.get("description") or ""),
                     detail_level=detail_level,
-                    raw_text=sample,
+                    raw_text=full_source_text,
                     content=content,
                     analysis_status="analyzed",
                     source_metadata=shared_source_metadata,
@@ -596,12 +661,13 @@ class AnchorExtractionService:
             )
         settings = self.get_character_extraction_settings()
         selected_detail = detail_level or settings.detail_level
-        sample = _sample_text(normalized_text)
+        full_source_text = normalized_text
+        model_sample = _sample_text(full_source_text)
         model = self._resolve_model(model_id if model_id is not None else settings.model_id)
         response = self.ai_client.chat(
             model,
             self.model_service.get_api_key(model.id),
-            self._character_messages(sample, selected_detail, name, settings),
+            self._character_messages(model_sample, selected_detail, name, settings),
         )
         extracted = _parse_json_object(response.text, "Character extraction")
         characters = extracted.get("characters")
@@ -610,7 +676,10 @@ class AnchorExtractionService:
         metadata = {
             **(source_metadata or {}),
             "source_type": (source_metadata or {}).get("source_type", "paste"),
-            "sample_character_count": len(sample),
+            "source_character_count": len(full_source_text),
+            "model_sample_character_count": len(model_sample),
+            "source_truncated_for_model": len(model_sample) < len(full_source_text),
+            "sample_character_count": len(model_sample),
             "detail_level": selected_detail,
         }
         import_metadata = {
@@ -664,17 +733,21 @@ class AnchorExtractionService:
         if not candidates:
             raise ValueError("Character extraction did not produce any valid character cards.")
         token = secrets.token_urlsafe(24)
+        expires_at_monotonic, expires_at_iso = _preview_expiry(CHARACTER_PREVIEW_TTL_SECONDS)
         source_summary = _extraction_source_summary(metadata)
         _CHARACTER_PREVIEWS[(str(self.database_path.resolve()), token)] = _StoredCharacterPreview(
-            expires_at=time.monotonic() + CHARACTER_PREVIEW_TTL_SECONDS,
+            expires_at=expires_at_monotonic,
+            expires_at_iso=expires_at_iso,
+            state="pending",
             candidate_ids={candidate.candidate_id for candidate in candidates},
             source_metadata=metadata,
             source_summary=source_summary,
             import_metadata=import_metadata,
-            raw_text=sample,
+            raw_text=full_source_text,
         )
         return CharacterExtractionPreview(
             preview_token=token,
+            expires_at=expires_at_iso,
             source_summary=source_summary,
             candidates=candidates,
         )
@@ -693,72 +766,64 @@ class AnchorExtractionService:
         stored = _CHARACTER_PREVIEWS.get(key)
         if stored is None:
             raise ValueError("Character extraction preview token is invalid.")
+        if stored.state == "consumed":
+            raise ValueError("Character extraction preview token was already used.")
         if stored.expires_at <= time.monotonic():
-            _CHARACTER_PREVIEWS.pop(key, None)
             raise ValueError("Character extraction preview token has expired.")
-        selected_ids = list(dict.fromkeys(selected_candidate_ids))
-        if not set(selected_ids).issubset(stored.candidate_ids):
-            raise ValueError("Character extraction preview token or candidate selection was tampered with.")
         if scope not in {"public", "project"}:
             raise ValueError(f"Unsupported character scope: {scope}")
         if scope == "project" and project_id is None:
             raise ValueError("Project character extraction requires a project.")
         if scope == "project" and category_ids:
             raise ValueError("Project characters cannot belong to public character categories.")
-        valid_categories = {category.id for category in self.anchor_service.list_character_categories()}
-        if not set(category_ids or []).issubset(valid_categories):
-            raise ValueError("One or more character categories do not exist.")
-
-        by_id = {
-            str(candidate.get("candidate_id") or ""): candidate
-            for candidate in candidates
-            if isinstance(candidate, dict)
-        }
-        created: list[dict[str, Any]] = []
-        errors: list[dict[str, Any]] = []
+        selected_ids, by_id = _validated_candidate_payloads(
+            candidates,
+            selected_candidate_ids,
+            stored.candidate_ids,
+            label="Character",
+        )
+        prepared: list[dict[str, Any]] = []
         for candidate_id in selected_ids:
-            candidate = by_id.get(candidate_id)
-            if candidate is None:
-                errors.append({"candidate_id": candidate_id, "error": "Candidate payload is missing."})
-                continue
+            candidate = by_id[candidate_id]
             name = str(candidate.get("name") or "").strip()
             if not name:
-                errors.append({"candidate_id": candidate_id, "error": "Character name is required."})
-                continue
-            try:
-                tag_ids = [
-                    int(self.anchor_service.create_character_tag(tag_name)["id"])
-                    for tag_name in _suggested_tags(candidate.get("confirmed_tags"))
-                ]
-                card_id = self.anchor_service.create_character_card(
-                    name=name,
-                    aliases=_string_list(candidate.get("aliases")),
-                    description=str(candidate.get("description") or ""),
-                    relationship_notes=str(candidate.get("relationship_notes") or ""),
-                    personality=str(candidate.get("personality") or ""),
-                    speech_style=str(candidate.get("speech_style") or ""),
-                    action_constraints=str(candidate.get("action_constraints") or ""),
-                    anti_ooc_rules=str(candidate.get("anti_ooc_rules") or ""),
-                    profile=_object_or_empty(candidate.get("profile")),
-                    source_metadata=stored.source_metadata,
-                    import_metadata=stored.import_metadata,
-                    scope=scope,
-                    project_id=project_id,
-                    identity=str(candidate.get("identity") or ""),
-                    age=str(candidate.get("age") or ""),
-                    setting_text=str(candidate.get("setting_text") or ""),
-                    custom_fields=_custom_fields(candidate.get("custom_fields")),
-                    raw_text=stored.raw_text,
-                    analysis_status="analyzed",
-                    tag_ids=tag_ids,
-                )
-                if scope == "public":
-                    for category_id in category_ids or []:
-                        self.anchor_service.set_character_category(card_id, category_id, True)
-                created.append({"candidate_id": candidate_id, "card_id": card_id})
-            except Exception as exc:
-                errors.append({"candidate_id": candidate_id, "error": str(exc)})
-        return {"created": created, "errors": errors}
+                raise ValueError(f"Character candidate {candidate_id} requires a name.")
+            prepared.append(
+                {
+                    **candidate,
+                    "candidate_id": candidate_id,
+                    "name": name,
+                    "aliases": _string_list(candidate.get("aliases")),
+                    "profile": _object_or_empty(candidate.get("profile")),
+                    "custom_fields": _custom_fields(candidate.get("custom_fields")),
+                    "confirmed_tags": _suggested_tags(candidate.get("confirmed_tags")),
+                }
+            )
+        try:
+            card_ids = self.anchor_service.create_extracted_character_batch(
+                candidates=prepared,
+                scope=scope,
+                project_id=project_id,
+                category_ids=list(dict.fromkeys(category_ids or [])),
+                source_metadata=stored.source_metadata,
+                import_metadata=stored.import_metadata,
+                raw_text=stored.raw_text,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "created": [],
+                "errors": [
+                    {"candidate_id": selected_ids[-1] if selected_ids else "", "error": str(exc)}
+                ],
+            }
+        stored.state = "consumed"
+        return {
+            "created": [
+                {"candidate_id": candidate_id, "card_id": card_id}
+                for candidate_id, card_id in zip(selected_ids, card_ids, strict=True)
+            ],
+            "errors": [],
+        }
 
     def extract_characters_from_text(
         self,
@@ -925,17 +990,23 @@ class AnchorExtractionService:
         material_type: str,
         detail_level: str,
         name: str | None,
-        generate_tags: bool,
+        generate_general_tags: bool,
+        generate_applicable_scene_tags: bool,
         custom_requirements: str,
         system_prompt: str,
+        user_prompt_template: str,
+        analysis_dimensions: tuple[str, ...],
     ) -> list[dict[str, str]]:
         requested_name = name.strip() if name and name.strip() else "derive from source"
-        tag_rule = (
-            "Suggest 0-8 short retrieval tags in suggested_general_tags and "
-            "0-8 scene applicability tags in suggested_applicable_scene_tags. "
-            "Do not use sentences as tags."
-            if generate_tags
-            else "Return empty arrays for both suggested tag fields."
+        general_tag_rule = (
+            "Suggest 0-8 short retrieval tags in suggested_general_tags."
+            if generate_general_tags
+            else "Return an empty suggested_general_tags array."
+        )
+        applicable_tag_rule = (
+            "Suggest 0-8 scene applicability tags in suggested_applicable_scene_tags."
+            if generate_applicable_scene_tags
+            else "Return an empty suggested_applicable_scene_tags array."
         )
         separation_rule = (
             "This task only creates scene material. Never create, derive, or reference a plot skeleton."
@@ -956,10 +1027,15 @@ class AnchorExtractionService:
                 "content": (
                     f"Task type: {task_type}\nMaterial type: {material_type}\n"
                     f"Suggested name: {requested_name}\nDetail level: {detail_level}\n"
-                    f"{tag_rule}\nAdditional requirements: {custom_requirements or 'None'}\n"
+                    f"Analysis dimensions: {json.dumps(list(analysis_dimensions), ensure_ascii=False)}\n"
+                    f"{general_tag_rule}\n{applicable_tag_rule}\n"
+                    "Tags must be short labels, not sentences.\n"
+                    f"Task prompt template: {user_prompt_template or 'Use the default extraction instructions.'}\n"
+                    f"Additional requirements: {custom_requirements or 'None'}\n"
                     "Return {\"materials\":[{\"name\":\"\",\"description\":\"\","
                     "\"content\":{},\"suggested_general_tags\":[],"
-                    "\"suggested_applicable_scene_tags\":[],\"evidence_summary\":\"\"}]}.\n\n"
+                    "\"suggested_applicable_scene_tags\":[],\"evidence\":[],"
+                    "\"evidence_summary\":\"\",\"confidence\":0.0,\"warnings\":[]}]}.\n\n"
                     f"Source text:\n{sample_text}"
                 ),
             },
@@ -1009,6 +1085,72 @@ def _sample_text(text: str) -> str:
     if not sample:
         raise ValueError("Anchor extraction sample text is required.")
     return sample[:MAX_ANCHOR_SAMPLE_CHARS]
+
+
+def _preview_expiry(ttl_seconds: int) -> tuple[float, str]:
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
+    return time.monotonic() + ttl_seconds, expires_at.isoformat()
+
+
+def _validated_candidate_payloads(
+    candidates: list[dict[str, Any]],
+    selected_candidate_ids: list[str],
+    expected_candidate_ids: set[str],
+    *,
+    label: str,
+) -> tuple[list[str], dict[str, dict[str, Any]]]:
+    if not candidates:
+        raise ValueError(f"{label} candidate payload is empty or tampered.")
+    payload_ids: list[str] = []
+    by_id: dict[str, dict[str, Any]] = {}
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            raise ValueError(f"{label} candidate payload must contain objects.")
+        candidate_id = str(candidate.get("candidate_id") or "").strip()
+        if not candidate_id:
+            raise ValueError(f"{label} candidate_id is required.")
+        if candidate_id in by_id:
+            raise ValueError(f"{label} candidate payload contains duplicate candidate_id: {candidate_id}.")
+        payload_ids.append(candidate_id)
+        by_id[candidate_id] = candidate
+    if set(payload_ids) != expected_candidate_ids:
+        missing = sorted(expected_candidate_ids - set(payload_ids))
+        forged = sorted(set(payload_ids) - expected_candidate_ids)
+        details = []
+        if missing:
+            details.append(f"missing={','.join(missing)}")
+        if forged:
+            details.append(f"unknown={','.join(forged)}")
+        raise ValueError(f"{label} candidate payload does not match preview ({'; '.join(details)}).")
+    selected_ids = [str(value).strip() for value in selected_candidate_ids]
+    if not selected_ids:
+        raise ValueError(f"At least one {label.lower()} candidate must be selected.")
+    if any(not value for value in selected_ids):
+        raise ValueError(f"{label} selected candidate_id is required.")
+    if len(selected_ids) != len(set(selected_ids)):
+        raise ValueError(f"{label} selection contains duplicate candidate_id.")
+    if not set(selected_ids).issubset(expected_candidate_ids):
+        raise ValueError(f"{label} selection contains a candidate not present in the preview.")
+    return selected_ids, by_id
+
+
+def _structured_evidence(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for item in value:
+        if isinstance(item, dict):
+            result.append(dict(item))
+        elif str(item).strip():
+            result.append({"summary": str(item).strip()})
+    return result
+
+
+def _confidence(value: Any) -> float:
+    try:
+        return max(0.0, min(1.0, float(value)))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _parse_json_object(text: str, label: str) -> dict[str, Any]:
@@ -1068,9 +1210,24 @@ def _material_extraction_source_summary(metadata: dict[str, Any]) -> dict[str, A
             "project_id": _positive_int_or_none(metadata.get("project_id")),
         }
     if metadata.get("source_type") == "file":
+        filename = (
+            metadata.get("file_name")
+            or metadata.get("source_file_name")
+            or metadata.get("source_path")
+            or "本地文件"
+        )
         return {
             "kind": "file_import",
-            "label": f"文件 {metadata.get('source_file_name') or '本地文件'}",
+            "label": f"文件 {Path(str(filename)).name}",
+        }
+    if metadata.get("source_type") == "project" or metadata.get("project_id") is not None:
+        project_name = metadata.get("project_name") or metadata.get("source_project_name")
+        return {
+            "kind": "project_selection",
+            "label": f"工程“{project_name}”选区" if project_name else "工程选区",
+            "project_id": _positive_int_or_none(
+                metadata.get("project_id") or metadata.get("source_project_id")
+            ),
         }
     return {"kind": "pasted_text", "label": "粘贴文本"}
 
@@ -1110,8 +1267,22 @@ def _extraction_source_summary(metadata: dict[str, Any]) -> dict[str, Any]:
             "chapter_id": metadata.get("chapter_id"),
         }
     if source_type == "file":
-        filename = str(metadata.get("source_file_name") or "本地文件")
-        return {"kind": "file_import", "label": f"文件 {filename}"}
+        filename = str(
+            metadata.get("file_name")
+            or metadata.get("source_file_name")
+            or metadata.get("source_path")
+            or "本地文件"
+        )
+        return {"kind": "file_import", "label": f"文件 {Path(filename).name}"}
+    if source_type == "project" or metadata.get("project_id") is not None:
+        project_name = metadata.get("project_name") or metadata.get("source_project_name")
+        return {
+            "kind": "project_selection",
+            "label": f"工程“{project_name}”" if project_name else "工程选区",
+            "project_id": _positive_int_or_none(
+                metadata.get("project_id") or metadata.get("source_project_id")
+            ),
+        }
     return {"kind": "ai_extraction", "label": "AI 文本提取"}
 
 

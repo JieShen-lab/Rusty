@@ -838,6 +838,7 @@ class MaterialSourceSummaryOut(BaseModel):
     kind: Literal[
         "manual",
         "document_selection",
+        "project_selection",
         "file_import",
         "pasted_text",
         "ai_extraction",
@@ -972,9 +973,12 @@ class MaterialAISettingsOut(BaseModel):
     model_id: int | None = None
     detail_level: Literal["brief", "standard", "detailed"]
     max_candidates: int
-    generate_tags: bool
-    custom_requirements: str
     system_prompt: str
+    user_prompt_template: str
+    analysis_dimensions: list[str] = Field(default_factory=list)
+    generate_general_tags: bool
+    generate_applicable_scene_tags: bool
+    custom_requirements: str
     updated_at: str
 
 
@@ -982,9 +986,13 @@ class MaterialAISettingsWriteRequest(BaseModel):
     model_id: int | None = None
     detail_level: Literal["brief", "standard", "detailed"] = "standard"
     max_candidates: int = Field(default=6, ge=1, le=20)
-    generate_tags: bool = True
-    custom_requirements: str = ""
     system_prompt: str = ""
+    user_prompt_template: str | None = None
+    analysis_dimensions: list[str] | None = None
+    generate_general_tags: bool | None = None
+    generate_applicable_scene_tags: bool | None = None
+    generate_tags: bool | None = None
+    custom_requirements: str = ""
 
 
 class MaterialExtractionPreviewRequest(BaseModel):
@@ -994,7 +1002,7 @@ class MaterialExtractionPreviewRequest(BaseModel):
         "source_text_to_scene_material",
     ]
     name: str | None = None
-    sample_text: str | None = None
+    sample_text: str | None = Field(default=None, max_length=50000)
     source_path: str | None = None
     source_project_id: int | None = None
     source_document_id: int | None = None
@@ -1004,20 +1012,30 @@ class MaterialExtractionPreviewRequest(BaseModel):
 
 class MaterialExtractionCandidateOut(BaseModel):
     candidate_id: str
+    material_type: Literal["scene_reference", "plot_skeleton"]
     selected: bool = True
     name: str
     description: str = ""
     content: dict[str, Any] = Field(default_factory=dict)
     suggested_general_tags: list[str] = Field(default_factory=list)
     suggested_applicable_scene_tags: list[str] = Field(default_factory=list)
+    evidence: list[dict[str, Any]] = Field(default_factory=list)
     evidence_summary: str = ""
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    warnings: list[str] = Field(default_factory=list)
 
 
 class MaterialExtractionPreviewOut(BaseModel):
     preview_token: str
-    task_type: str
+    expires_at: str
+    task_type: Literal[
+        "narrative_to_plot_skeleton",
+        "plot_text_to_normalized_skeleton",
+        "source_text_to_scene_material",
+    ]
     material_type: Literal["scene_reference", "plot_skeleton"]
     source_summary: MaterialSourceSummaryOut
+    prompt_snapshot: dict[str, Any] = Field(default_factory=dict)
     candidates: list[MaterialExtractionCandidateOut]
 
 
@@ -1211,6 +1229,7 @@ class CharacterExtractionCandidateOut(BaseModel):
 
 class CharacterExtractionPreviewOut(BaseModel):
     preview_token: str
+    expires_at: str
     source_summary: CharacterSourceSummaryOut
     candidates: list[CharacterExtractionCandidateOut]
 

@@ -154,11 +154,12 @@ class MaterialLibraryV22Tests(unittest.TestCase):
                 preview_token=preview.preview_token,
                 candidates=[
                     {
-                        **first.__dict__,
-                        "confirmed_general_tags": ["冒险"],
-                        "confirmed_applicable_scene_tags": ["遗迹"],
-                        "category_ids": [category.id],
+                        **candidate.__dict__,
+                        "confirmed_general_tags": ["冒险"] if candidate.candidate_id == first.candidate_id else [],
+                        "confirmed_applicable_scene_tags": ["遗迹"] if candidate.candidate_id == first.candidate_id else [],
+                        "category_ids": [category.id] if candidate.candidate_id == first.candidate_id else [],
                     }
+                    for candidate in preview.candidates
                 ],
                 selected_candidate_ids=[first.candidate_id],
             )

@@ -413,6 +413,133 @@ class AnchorService:
                 )
             return card_id
 
+    def create_extracted_character_batch(
+        self,
+        *,
+        candidates: list[dict[str, Any]],
+        scope: str,
+        project_id: int | None,
+        category_ids: list[int],
+        source_metadata: dict[str, Any],
+        import_metadata: dict[str, Any],
+        raw_text: str,
+    ) -> list[int]:
+        """Create confirmed characters, tags, categories, and project bindings atomically."""
+        _validate_character_scope(scope, project_id)
+        if not candidates:
+            raise ValueError("At least one character candidate is required.")
+        if scope == "project" and category_ids:
+            raise ValueError("Project characters cannot belong to public character categories.")
+        prepared: list[dict[str, Any]] = []
+        for candidate in candidates:
+            prepared.append(
+                {
+                    **candidate,
+                    "name": _required_name(
+                        str(candidate.get("name") or ""),
+                        "Character card name is required.",
+                    ),
+                    "aliases": _clean_aliases(candidate.get("aliases")),
+                    "custom_fields": _normalize_custom_fields(candidate.get("custom_fields")),
+                    "confirmed_tags": [
+                        _required_tag_name(str(value))
+                        for value in candidate.get("confirmed_tags", [])
+                    ],
+                }
+            )
+        created_ids: list[int] = []
+        with session(self.database_path) as connection:
+            if project_id is not None and connection.execute(
+                "SELECT 1 FROM projects WHERE id = ? AND deleted_at IS NULL",
+                (project_id,),
+            ).fetchone() is None:
+                raise ValueError(f"Project not found: {project_id}")
+            valid_categories = {
+                int(row["id"])
+                for row in connection.execute(
+                    "SELECT id FROM character_categories WHERE deleted_at IS NULL"
+                ).fetchall()
+            }
+            if not set(category_ids).issubset(valid_categories):
+                raise ValueError("One or more character categories do not exist.")
+            for candidate in prepared:
+                tag_ids: list[int] = []
+                for tag_name in candidate["confirmed_tags"]:
+                    normalized_name = _normalize_tag_name(tag_name)
+                    connection.execute(
+                        """
+                        INSERT INTO character_tags (name, normalized_name)
+                        VALUES (?, ?)
+                        ON CONFLICT(normalized_name) WHERE deleted_at IS NULL
+                        DO UPDATE SET updated_at = CURRENT_TIMESTAMP
+                        """,
+                        (tag_name, normalized_name),
+                    )
+                    tag_ids.append(
+                        int(
+                            connection.execute(
+                                """
+                                SELECT id FROM character_tags
+                                WHERE normalized_name = ? AND deleted_at IS NULL
+                                """,
+                                (normalized_name,),
+                            ).fetchone()["id"]
+                        )
+                    )
+                cursor = connection.execute(
+                    """
+                    INSERT INTO character_cards (
+                        name, aliases_json, description, priority, is_main, relationship_notes,
+                        personality, speech_style, action_constraints, anti_ooc_rules,
+                        profile_json, source_metadata_json, import_metadata_json,
+                        scope, project_id, source_character_card_id, source_version,
+                        identity, age, setting_text, custom_fields_json, raw_text, analysis_status
+                    ) VALUES (?, ?, ?, 50, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, 'analyzed')
+                    """,
+                    (
+                        candidate["name"],
+                        json.dumps(candidate["aliases"], ensure_ascii=False),
+                        str(candidate.get("description") or ""),
+                        str(candidate.get("relationship_notes") or ""),
+                        str(candidate.get("personality") or ""),
+                        str(candidate.get("speech_style") or ""),
+                        str(candidate.get("action_constraints") or ""),
+                        str(candidate.get("anti_ooc_rules") or ""),
+                        json.dumps(candidate.get("profile") or {}, ensure_ascii=False),
+                        json.dumps(source_metadata, ensure_ascii=False),
+                        json.dumps(import_metadata, ensure_ascii=False),
+                        scope,
+                        project_id,
+                        str(candidate.get("identity") or "").strip(),
+                        str(candidate.get("age") or "").strip(),
+                        str(candidate.get("setting_text") or ""),
+                        json.dumps(candidate["custom_fields"], ensure_ascii=False),
+                        raw_text,
+                    ),
+                )
+                card_id = int(cursor.lastrowid)
+                created_ids.append(card_id)
+                self._replace_character_tags(connection, card_id, tag_ids)
+                if scope == "project":
+                    connection.execute(
+                        """
+                        INSERT INTO project_character_bindings (
+                            project_id, character_card_id, sort_order, is_active
+                        ) VALUES (?, ?, 0, 1)
+                        """,
+                        (project_id, card_id),
+                    )
+                else:
+                    for category_id in category_ids:
+                        connection.execute(
+                            """
+                            INSERT INTO character_category_links (character_card_id, category_id)
+                            VALUES (?, ?)
+                            """,
+                            (card_id, category_id),
+                        )
+        return created_ids
+
     def update_character_card(
         self,
         card_id: int,
@@ -551,6 +678,7 @@ class AnchorService:
         if source is None:
             raise ValueError(f"Character card not found: {card_id}")
         _validate_character_scope(target_scope, target_project_id)
+        cover_data = self._validated_character_cover_bytes(source)
         copied_id = self.create_character_card(
             name=source.name,
             aliases=source.aliases,
@@ -593,11 +721,8 @@ class AnchorService:
                     ).fetchall()
                 ]
                 self._replace_character_tags(connection, copied_id, tag_ids)
-            source_cover = self.character_cover_file(source.id)
-            if source.cover_path and source_cover is None:
-                raise ValueError("Source character cover is missing or outside the managed directory.")
-            if source_cover is not None:
-                self.save_character_cover(copied_id, source_cover.read_bytes())
+            if cover_data is not None:
+                self.save_character_cover(copied_id, cover_data)
         except Exception:
             copied = self.get_character_card(copied_id)
             copied_cover = copied.cover_path if copied is not None else None
@@ -622,12 +747,7 @@ class AnchorService:
         if source.scope != "public":
             raise ValueError("Only public character cards can be copied to a project.")
 
-        cover_data: bytes | None = None
-        if source.cover_path:
-            source_cover = self.character_cover_file(source.id)
-            if source_cover is None:
-                raise ValueError("Source character cover is missing or outside the managed directory.")
-            cover_data = source_cover.read_bytes()
+        cover_data = self._validated_character_cover_bytes(source)
 
         created_cover: Path | None = None
         try:
@@ -706,11 +826,7 @@ class AnchorService:
                     (target_project_id, copied_id),
                 )
                 if cover_data is not None:
-                    extension, width, height = _inspect_cover(cover_data)
-                    if len(cover_data) > 5 * 1024 * 1024:
-                        raise ValueError("Character cover must be 5 MB or smaller.")
-                    if width is not None and height is not None and (width > 4096 or height > 4096):
-                        raise ValueError("Character cover dimensions must not exceed 4096×4096.")
+                    extension, _, _ = _validate_cover_data(cover_data)
                     cover_dir = self.database_path.parent / "assets" / "character-covers"
                     cover_dir.mkdir(parents=True, exist_ok=True)
                     digest = hashlib.sha256(cover_data).hexdigest()
@@ -776,6 +892,11 @@ class AnchorService:
         if "name" not in selected:
             raise ValueError("Publishing a project character requires the name field.")
         stable = _stable_character_fields(source)
+        cover_data = (
+            self._validated_character_cover_bytes(source)
+            if "cover" in selected and source.cover_path
+            else None
+        )
         tag_ids: list[int] = []
         if "tags" in selected:
             with session(self.database_path) as connection:
@@ -828,18 +949,25 @@ class AnchorService:
             analysis_status=source.analysis_status,
             tag_ids=tag_ids,
         )
-        if "cover" in selected and source.cover_path:
-            cover = self.character_cover_file(source.id)
-            if cover is None:
-                raise ValueError("Source character cover is missing or outside the managed directory.")
+        if cover_data is not None:
             try:
-                self.save_character_cover(published_id, cover.read_bytes())
+                self.save_character_cover(published_id, cover_data)
             except Exception:
+                published = self.get_character_card(published_id)
                 with session(self.database_path) as connection:
+                    connection.execute(
+                        "DELETE FROM character_category_links WHERE character_card_id = ?",
+                        (published_id,),
+                    )
+                    connection.execute(
+                        "DELETE FROM character_tag_links WHERE character_card_id = ?",
+                        (published_id,),
+                    )
                     connection.execute(
                         "DELETE FROM character_cards WHERE id = ?",
                         (published_id,),
                     )
+                self._remove_managed_cover(published.cover_path if published is not None else None)
                 raise
         return published_id
 
@@ -1320,32 +1448,52 @@ class AnchorService:
         current = self.get_character_card(card_id)
         if current is None:
             raise ValueError(f"Character card not found: {card_id}")
-        extension, width, height = _inspect_cover(data)
-        if len(data) > 5 * 1024 * 1024:
-            raise ValueError("Character cover must be 5 MB or smaller.")
-        if width is not None and height is not None and (width > 4096 or height > 4096):
-            raise ValueError("Character cover dimensions must not exceed 4096×4096.")
+        extension, _, _ = _validate_cover_data(data)
         cover_dir = self.database_path.parent / "assets" / "character-covers"
         cover_dir.mkdir(parents=True, exist_ok=True)
         digest = hashlib.sha256(data).hexdigest()
         target = cover_dir / f"{card_id}-{digest[:20]}.{extension}"
-        target.write_bytes(data)
         relative = target.relative_to(self.database_path.parent).as_posix()
-        with session(self.database_path) as connection:
-            connection.execute(
-                """
-                UPDATE character_cards
-                SET cover_path = ?, cover_updated_at = CURRENT_TIMESTAMP,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id = ? AND deleted_at IS NULL
-                """,
-                (relative, card_id),
-            )
+        target_existed = target.exists()
+        try:
+            target.write_bytes(data)
+            with session(self.database_path) as connection:
+                cursor = connection.execute(
+                    """
+                    UPDATE character_cards
+                    SET cover_path = ?, cover_updated_at = CURRENT_TIMESTAMP,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ? AND deleted_at IS NULL
+                    """,
+                    (relative, card_id),
+                )
+                if cursor.rowcount == 0:
+                    raise ValueError(f"Character card not found: {card_id}")
+        except Exception:
+            if not target_existed and target.is_file():
+                target.unlink()
+            raise
         self._remove_managed_cover(current.cover_path, excluding=relative)
         updated = self.get_character_card(card_id)
         if updated is None:
             raise RuntimeError("Character card disappeared after cover update.")
         return updated
+
+    def _validated_character_cover_bytes(self, card: CharacterCard) -> bytes | None:
+        if not card.cover_path:
+            return None
+        path = (self.database_path.parent / card.cover_path).resolve()
+        root = (self.database_path.parent / "assets" / "character-covers").resolve()
+        if root not in path.parents:
+            raise ValueError("Source character cover is outside the managed directory.")
+        if not path.is_file():
+            raise ValueError("Source character cover file is missing.")
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            raise ValueError("Source character cover file is not readable.") from exc
+        _validate_cover_data(data)
+        return data
 
     def remove_character_cover(self, card_id: int) -> CharacterCard:
         current = self.get_character_card(card_id)
@@ -1532,11 +1680,16 @@ class AnchorService:
                 chapter_id=chapter_id,
                 project_id=project_id,
             )
-        source_file_name = str(source_metadata.get("source_file_name") or "").strip()
+        source_file_name = str(
+            source_metadata.get("file_name")
+            or source_metadata.get("source_file_name")
+            or source_metadata.get("source_path")
+            or ""
+        ).strip()
         if source_file_name:
             return CharacterSourceSummary(
                 kind="file_import",
-                label=f"文件 {source_file_name}",
+                label=f"文件 {Path(source_file_name).name}",
                 project_id=project_id,
             )
         if not source_metadata and not import_metadata:
@@ -1758,6 +1911,15 @@ def _inspect_cover(data: bytes) -> tuple[str, int | None, int | None]:
     if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
         return "webp", None, None
     raise ValueError("Character cover must be a PNG, JPEG, or WebP image.")
+
+
+def _validate_cover_data(data: bytes) -> tuple[str, int | None, int | None]:
+    if len(data) > 5 * 1024 * 1024:
+        raise ValueError("Character cover must be 5 MB or smaller.")
+    extension, width, height = _inspect_cover(data)
+    if width is not None and height is not None and (width > 4096 or height > 4096):
+        raise ValueError("Character cover dimensions must not exceed 4096×4096.")
+    return extension, width, height
 
 
 def _loads_json(text: str, fallback: Any) -> Any:

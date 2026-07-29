@@ -1885,9 +1885,11 @@ def create_app(
         )
         return MaterialExtractionPreviewOut(
             preview_token=preview.preview_token,
+            expires_at=preview.expires_at,
             task_type=preview.task_type,
             material_type=preview.material_type,
             source_summary=preview.source_summary,
+            prompt_snapshot=preview.prompt_snapshot,
             candidates=[
                 MaterialExtractionCandidateOut(**candidate.__dict__)
                 for candidate in preview.candidates
@@ -2177,6 +2179,7 @@ def create_app(
         )
         return CharacterExtractionPreviewOut(
             preview_token=preview.preview_token,
+            expires_at=preview.expires_at,
             source_summary=CharacterSourceSummaryOut(**preview.source_summary),
             candidates=[
                 CharacterExtractionCandidateOut(**candidate.__dict__)
@@ -2827,7 +2830,9 @@ def _resolve_anchor_source(
         text = "\n\n".join(f"# {chapter.title}\n{chapter.text}" for chapter in book.chapters)
         return text, {
             "source_type": "file",
+            "file_name": book.source_path.name,
             "source_file_name": book.source_path.name,
+            "source_path": str(source_path),
             "source_format": book.source_format,
             "book_title": book.title,
         }
@@ -2839,12 +2844,16 @@ def _resolve_anchor_source(
         text = "\n\n".join(f"# {chapter.title}\n{chapter.original_text}" for chapter in chapters)
         return text, {
             "source_type": "project",
+            "project_id": project.id,
+            "project_name": project.name,
             "source_project_id": project.id,
             "source_project_name": project.name,
         }
     content = document_library_service.get_content(int(payload.source_document_id))
     return content.text, {
-        "source_type": "document_library",
+        "source_type": "document",
+        "document_id": content.document_id,
+        "document_title": content.title,
         "source_document_id": content.document_id,
         "source_document_title": content.title,
     }

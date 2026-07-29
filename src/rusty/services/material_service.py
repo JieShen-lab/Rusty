@@ -20,6 +20,51 @@ MATERIAL_AI_TASK_TYPES = {
     "plot_text_to_normalized_skeleton",
     "source_text_to_scene_material",
 }
+MATERIAL_AI_DEFAULTS: dict[str, dict[str, Any]] = {
+    "narrative_to_plot_skeleton": {
+        "detail_level": "standard",
+        "max_candidates": 6,
+        "system_prompt": (
+            "Extract a reusable plot skeleton from narrative text. Use only supported facts, "
+            "preserve causal order, and leave missing dimensions empty."
+        ),
+        "user_prompt_template": "Identify the premise, stages, conflicts, turns, climax, resolution, and hooks.",
+        "analysis_dimensions": [
+            "premise", "stages", "conflicts", "turning_points", "climax", "resolution", "hooks",
+        ],
+        "generate_general_tags": True,
+        "generate_applicable_scene_tags": False,
+    },
+    "plot_text_to_normalized_skeleton": {
+        "detail_level": "standard",
+        "max_candidates": 6,
+        "system_prompt": (
+            "Normalize existing plot text into a structured plot skeleton without adding events "
+            "or changing the source order."
+        ),
+        "user_prompt_template": "Normalize the supplied plot while preserving every supported causal link.",
+        "analysis_dimensions": [
+            "premise", "stages", "conflicts", "turning_points", "climax", "resolution", "hooks",
+        ],
+        "generate_general_tags": True,
+        "generate_applicable_scene_tags": False,
+    },
+    "source_text_to_scene_material": {
+        "detail_level": "standard",
+        "max_candidates": 6,
+        "system_prompt": (
+            "Extract reusable scene-writing material from source text. Do not generate a plot skeleton "
+            "or invent unsupported details."
+        ),
+        "user_prompt_template": "Extract scene beats, actions, environment, sensory cues, and writing guidance.",
+        "analysis_dimensions": [
+            "summary", "key_beats", "actions", "environment", "sensory",
+            "writing_guidance", "source_cues", "avoidances", "applicable_conditions",
+        ],
+        "generate_general_tags": True,
+        "generate_applicable_scene_tags": True,
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -68,10 +113,18 @@ class MaterialAISettings:
     model_id: int | None
     detail_level: str
     max_candidates: int
-    generate_tags: bool
-    custom_requirements: str
     system_prompt: str
+    user_prompt_template: str
+    analysis_dimensions: tuple[str, ...]
+    generate_general_tags: bool
+    generate_applicable_scene_tags: bool
+    custom_requirements: str
     updated_at: str
+
+    @property
+    def generate_tags(self) -> bool:
+        """Legacy read compatibility; new callers use the two independent switches."""
+        return self.generate_general_tags and self.generate_applicable_scene_tags
 
 
 @dataclass(frozen=True)
@@ -366,62 +419,123 @@ class MaterialService:
         category_ids: list[int],
     ) -> int:
         """Create one confirmed AI candidate and all accepted links atomically."""
+        return self.create_extracted_material_batch(
+            material_type=material_type,
+            candidates=[
+                {
+                    "name": name,
+                    "description": description,
+                    "content": content,
+                    "sort_order": sort_order,
+                    "general_tags": general_tags,
+                    "applicable_scene_tags": applicable_scene_tags,
+                    "category_ids": category_ids,
+                }
+            ],
+            detail_level=detail_level,
+            raw_text=raw_text,
+            source_metadata=source_metadata,
+            import_metadata=import_metadata,
+        )[0]
+
+    def create_extracted_material_batch(
+        self,
+        *,
+        material_type: str,
+        candidates: list[dict[str, Any]],
+        detail_level: str,
+        raw_text: str,
+        source_metadata: dict[str, Any],
+        import_metadata: dict[str, Any],
+    ) -> list[int]:
+        """Create all confirmed AI candidates and accepted relations in one transaction."""
         material_type = _validate_type(material_type)
-        clean_name = _required_name(name)
         detail_level = _validate_detail_level(detail_level)
-        general_names = _normalized_tag_names(general_tags)
-        applicable_names = _normalized_tag_names(applicable_scene_tags)
-        with session(self.database_path) as connection:
-            cursor = connection.execute(
-                """
-                INSERT INTO materials (
-                    material_type, scope, project_id, name, description, detail_level,
-                    raw_text, content_json, analysis_status, source_metadata_json,
-                    import_metadata_json, sort_order
-                ) VALUES (?, 'public', NULL, ?, ?, ?, ?, ?, 'analyzed', ?, ?, ?)
-                """,
-                (
-                    material_type,
-                    clean_name,
-                    description,
-                    detail_level,
-                    raw_text,
-                    json.dumps(normalize_material_content(material_type, content), ensure_ascii=False),
-                    json.dumps(source_metadata, ensure_ascii=False),
-                    json.dumps(import_metadata, ensure_ascii=False),
-                    sort_order,
-                ),
+        if not candidates:
+            raise ValueError("At least one material candidate is required.")
+        prepared: list[dict[str, Any]] = []
+        for candidate in candidates:
+            prepared.append(
+                {
+                    **candidate,
+                    "name": _required_name(str(candidate.get("name") or "")),
+                    "content": normalize_material_content(material_type, candidate.get("content")),
+                    "general_tags": _normalized_tag_names(candidate.get("general_tags") or []),
+                    "applicable_scene_tags": _normalized_tag_names(
+                        candidate.get("applicable_scene_tags") or []
+                    ),
+                    "category_ids": [int(value) for value in candidate.get("category_ids", [])],
+                }
             )
-            material_id = int(cursor.lastrowid)
-            for group, names in (
-                ("general", general_names),
-                ("applicable_scene", applicable_names),
-            ):
-                for tag_name in names:
-                    connection.execute(
-                        """
-                        INSERT INTO material_tags (name, normalized_name, tag_group)
-                        VALUES (?, ?, ?)
-                        ON CONFLICT(normalized_name, tag_group) WHERE deleted_at IS NULL
-                        DO UPDATE SET updated_at = CURRENT_TIMESTAMP
-                        """,
-                        (tag_name, _normalize_tag_name(tag_name), group),
-                    )
-                    tag_id = int(
+        created_ids: list[int] = []
+        with session(self.database_path) as connection:
+            valid_categories = {
+                int(row["id"])
+                for row in connection.execute(
+                    "SELECT id FROM material_categories WHERE material_type = ? AND deleted_at IS NULL",
+                    (material_type,),
+                ).fetchall()
+            }
+            for candidate in prepared:
+                if not set(candidate["category_ids"]).issubset(valid_categories):
+                    raise ValueError("One or more material categories do not exist or have the wrong type.")
+            for candidate in prepared:
+                cursor = connection.execute(
+                    """
+                    INSERT INTO materials (
+                        material_type, scope, project_id, name, description, detail_level,
+                        raw_text, content_json, analysis_status, source_metadata_json,
+                        import_metadata_json, sort_order
+                    ) VALUES (?, 'public', NULL, ?, ?, ?, ?, ?, 'analyzed', ?, ?, ?)
+                    """,
+                    (
+                        material_type,
+                        candidate["name"],
+                        str(candidate.get("description") or ""),
+                        detail_level,
+                        raw_text,
+                        json.dumps(candidate["content"], ensure_ascii=False),
+                        json.dumps(source_metadata, ensure_ascii=False),
+                        json.dumps(import_metadata, ensure_ascii=False),
+                        int(candidate.get("sort_order") or 0),
+                    ),
+                )
+                material_id = int(cursor.lastrowid)
+                created_ids.append(material_id)
+                for group, names in (
+                    ("general", candidate["general_tags"]),
+                    ("applicable_scene", candidate["applicable_scene_tags"]),
+                ):
+                    for tag_name in names:
                         connection.execute(
                             """
-                            SELECT id FROM material_tags
-                            WHERE normalized_name = ? AND tag_group = ? AND deleted_at IS NULL
+                            INSERT INTO material_tags (name, normalized_name, tag_group)
+                            VALUES (?, ?, ?)
+                            ON CONFLICT(normalized_name, tag_group) WHERE deleted_at IS NULL
+                            DO UPDATE SET updated_at = CURRENT_TIMESTAMP
                             """,
-                            (_normalize_tag_name(tag_name), group),
-                        ).fetchone()["id"]
-                    )
-                    connection.execute(
-                        "INSERT OR IGNORE INTO material_tag_links (material_id, tag_id) VALUES (?, ?)",
-                        (material_id, tag_id),
-                    )
-            self._replace_categories(connection, material_id, category_ids, material_type)
-        return material_id
+                            (tag_name, _normalize_tag_name(tag_name), group),
+                        )
+                        tag_id = int(
+                            connection.execute(
+                                """
+                                SELECT id FROM material_tags
+                                WHERE normalized_name = ? AND tag_group = ? AND deleted_at IS NULL
+                                """,
+                                (_normalize_tag_name(tag_name), group),
+                            ).fetchone()["id"]
+                        )
+                        connection.execute(
+                            "INSERT OR IGNORE INTO material_tag_links (material_id, tag_id) VALUES (?, ?)",
+                            (material_id, tag_id),
+                        )
+                self._replace_categories(
+                    connection,
+                    material_id,
+                    candidate["category_ids"],
+                    material_type,
+                )
+        return created_ids
 
     def update_material(
         self,
@@ -1021,14 +1135,36 @@ class MaterialService:
         model_id: int | None,
         detail_level: str,
         max_candidates: int,
-        generate_tags: bool,
-        custom_requirements: str,
         system_prompt: str,
+        custom_requirements: str,
+        user_prompt_template: str | None = None,
+        analysis_dimensions: list[str] | None = None,
+        generate_general_tags: bool | None = None,
+        generate_applicable_scene_tags: bool | None = None,
+        generate_tags: bool | None = None,
     ) -> MaterialAISettings:
         _validate_ai_task_type(task_type)
         _validate_detail_level(detail_level)
         if max_candidates < 1 or max_candidates > 20:
             raise ValueError("max_candidates must be between 1 and 20.")
+        current = self.get_ai_settings(task_type)
+        dimensions = _normalized_dimensions(
+            list(current.analysis_dimensions) if analysis_dimensions is None else analysis_dimensions
+        )
+        general_tags = (
+            generate_tags if generate_general_tags is None and generate_tags is not None
+            else current.generate_general_tags if generate_general_tags is None
+            else generate_general_tags
+        )
+        applicable_tags = (
+            generate_tags if generate_applicable_scene_tags is None and generate_tags is not None
+            else current.generate_applicable_scene_tags
+            if generate_applicable_scene_tags is None
+            else generate_applicable_scene_tags
+        )
+        prompt_template = (
+            current.user_prompt_template if user_prompt_template is None else user_prompt_template
+        )
         with session(self.database_path) as connection:
             if model_id is not None:
                 model = connection.execute(
@@ -1041,34 +1177,53 @@ class MaterialService:
                 """
                 UPDATE material_ai_settings
                 SET model_id = ?, detail_level = ?, max_candidates = ?,
-                    generate_tags = ?, custom_requirements = ?, system_prompt = ?,
+                    system_prompt = ?, user_prompt_template = ?,
+                    analysis_dimensions_json = ?,
+                    generate_general_tags = ?, generate_applicable_scene_tags = ?,
+                    generate_tags = ?, custom_requirements = ?,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE task_type = ?
                 """,
                 (
-                    model_id, detail_level, max_candidates, int(generate_tags),
-                    custom_requirements, system_prompt, task_type,
+                    model_id,
+                    detail_level,
+                    max_candidates,
+                    system_prompt,
+                    prompt_template,
+                    json.dumps(dimensions, ensure_ascii=False),
+                    int(general_tags),
+                    int(applicable_tags),
+                    int(general_tags or applicable_tags),
+                    custom_requirements,
+                    task_type,
                 ),
             )
         return self.get_ai_settings(task_type)
 
     def reset_ai_settings(self, task_type: str) -> MaterialAISettings:
-        default_prompts = {
-            "narrative_to_plot_skeleton": "从叙事文本提炼可复用剧情骨架。只使用来源中有证据的因果、冲突和转折；缺失项留空。",
-            "plot_text_to_normalized_skeleton": "把已有剧情文本规范化为结构化剧情骨架。保持原有事件次序和事实，不添加新情节。",
-            "source_text_to_scene_material": "从来源文本提炼场景写作素材，只总结场面、动作、环境、感官和写作提示，不生成剧情骨架。",
-        }
         _validate_ai_task_type(task_type)
+        defaults = MATERIAL_AI_DEFAULTS[task_type]
         with session(self.database_path) as connection:
             connection.execute(
                 """
                 UPDATE material_ai_settings
                 SET model_id = NULL, detail_level = 'standard', max_candidates = 6,
-                    generate_tags = 1, custom_requirements = '', system_prompt = ?,
+                    generate_tags = ?,
+                    generate_general_tags = ?, generate_applicable_scene_tags = ?,
+                    custom_requirements = '', system_prompt = ?,
+                    user_prompt_template = ?, analysis_dimensions_json = ?,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE task_type = ?
                 """,
-                (default_prompts[task_type], task_type),
+                (
+                    int(defaults["generate_general_tags"] or defaults["generate_applicable_scene_tags"]),
+                    int(defaults["generate_general_tags"]),
+                    int(defaults["generate_applicable_scene_tags"]),
+                    defaults["system_prompt"],
+                    defaults["user_prompt_template"],
+                    json.dumps(defaults["analysis_dimensions"], ensure_ascii=False),
+                    task_type,
+                ),
             )
         return self.get_ai_settings(task_type)
 
@@ -1211,9 +1366,12 @@ class MaterialService:
             model_id=int(row["model_id"]) if row["model_id"] is not None else None,
             detail_level=str(row["detail_level"]),
             max_candidates=int(row["max_candidates"]),
-            generate_tags=bool(row["generate_tags"]),
-            custom_requirements=str(row["custom_requirements"]),
             system_prompt=str(row["system_prompt"]),
+            user_prompt_template=str(row["user_prompt_template"]),
+            analysis_dimensions=tuple(_json_string_list(row["analysis_dimensions_json"])),
+            generate_general_tags=bool(row["generate_general_tags"]),
+            generate_applicable_scene_tags=bool(row["generate_applicable_scene_tags"]),
+            custom_requirements=str(row["custom_requirements"]),
             updated_at=str(row["updated_at"]),
         )
 
@@ -1276,6 +1434,18 @@ def _normalized_tag_names(values: list[str]) -> list[str]:
             names.append(name)
             seen.add(normalized)
     return names
+
+
+def _normalized_dimensions(values: list[str]) -> list[str]:
+    dimensions: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        dimension = str(value).strip()
+        key = dimension.casefold()
+        if dimension and key not in seen:
+            dimensions.append(dimension)
+            seen.add(key)
+    return dimensions
 
 
 def _validate_timeline(start: int | None, end: int | None) -> None:
@@ -1404,6 +1574,7 @@ def _material_source_summary(
     chapter_title = str(source_metadata.get("chapter_title") or "").strip()
     file_name = str(
         source_metadata.get("file_name")
+        or source_metadata.get("source_file_name")
         or source_metadata.get("source_path")
         or ""
     ).strip()
@@ -1425,7 +1596,7 @@ def _material_source_summary(
             or ""
         ).strip()
         return MaterialSourceSummary(
-            "manual",
+            "project_selection",
             f"工程“{project_name}”选区" if project_name else "工程选区",
             project_id=project_id,
             chapter_id=chapter_id,
@@ -1464,6 +1635,14 @@ def _json_int_list(value: object) -> list[int]:
         if parsed_item is not None and parsed_item not in result:
             result.append(parsed_item)
     return result
+
+
+def _json_string_list(value: object) -> list[str]:
+    try:
+        parsed = json.loads(str(value or "[]"))
+    except (TypeError, json.JSONDecodeError):
+        return []
+    return [str(item) for item in parsed if str(item).strip()] if isinstance(parsed, list) else []
 
 
 def _json_object(value: str) -> dict[str, Any]:

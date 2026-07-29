@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .connection import session
 
-CURRENT_SCHEMA_VERSION = 22
+CURRENT_SCHEMA_VERSION = 23
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -2555,6 +2555,69 @@ def _migrate_to_v22(connection: sqlite3.Connection) -> None:
                 (filter_id, int(tag_row["tag_id"])),
             )
 
+
+def _migrate_to_v23(connection: sqlite3.Connection) -> None:
+    """Expand the three material AI task settings without losing v22 preferences."""
+    columns = {
+        str(row[1])
+        for row in connection.execute("PRAGMA table_info(material_ai_settings)").fetchall()
+    }
+    additions = {
+        "user_prompt_template": "TEXT NOT NULL DEFAULT ''",
+        "analysis_dimensions_json": "TEXT NOT NULL DEFAULT '[]'",
+        "generate_general_tags": "INTEGER NOT NULL DEFAULT 1",
+        "generate_applicable_scene_tags": "INTEGER NOT NULL DEFAULT 1",
+    }
+    for column_name, declaration in additions.items():
+        if column_name not in columns:
+            connection.execute(
+                f"ALTER TABLE material_ai_settings ADD COLUMN {column_name} {declaration}"
+            )
+
+    defaults = {
+        "narrative_to_plot_skeleton": {
+            "user_prompt_template": "Identify the premise, stages, conflicts, turns, climax, resolution, and hooks.",
+            "analysis_dimensions": [
+                "premise", "stages", "conflicts", "turning_points", "climax", "resolution", "hooks",
+            ],
+        },
+        "plot_text_to_normalized_skeleton": {
+            "user_prompt_template": "Normalize the supplied plot while preserving every supported causal link.",
+            "analysis_dimensions": [
+                "premise", "stages", "conflicts", "turning_points", "climax", "resolution", "hooks",
+            ],
+        },
+        "source_text_to_scene_material": {
+            "user_prompt_template": "Extract scene beats, actions, environment, sensory cues, and writing guidance.",
+            "analysis_dimensions": [
+                "summary", "key_beats", "actions", "environment", "sensory",
+                "writing_guidance", "source_cues", "avoidances", "applicable_conditions",
+            ],
+        },
+    }
+    for task_type, values in defaults.items():
+        connection.execute(
+            """
+            UPDATE material_ai_settings
+            SET user_prompt_template = CASE
+                    WHEN user_prompt_template = '' THEN ?
+                    ELSE user_prompt_template
+                END,
+                analysis_dimensions_json = CASE
+                    WHEN analysis_dimensions_json = '[]' THEN ?
+                    ELSE analysis_dimensions_json
+                END,
+                generate_general_tags = generate_tags,
+                generate_applicable_scene_tags = generate_tags
+            WHERE task_type = ?
+            """,
+            (
+                values["user_prompt_template"],
+                json.dumps(values["analysis_dimensions"], ensure_ascii=False),
+                task_type,
+            ),
+        )
+
 def _safe_json_list(value: object) -> list[dict[str, object]]:
     try:
         parsed = json.loads(str(value or "[]"))
@@ -2927,6 +2990,7 @@ MIGRATIONS = {
     20: _migrate_to_v20,
     21: _migrate_to_v21,
     22: _migrate_to_v22,
+    23: _migrate_to_v23,
 }
 
 
