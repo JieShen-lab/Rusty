@@ -107,8 +107,25 @@ export type LibraryDocumentContent = {
   chapter_id: number | null;
   title: string;
   text: string;
-  start_offset: number | null;
-  end_offset: number | null;
+  body_text: string;
+  section_start_offset: number;
+  body_start_offset: number;
+  end_offset: number;
+  start_offset: number;
+};
+
+export type LibraryDocumentDraft = {
+  id: number;
+  document_id: number;
+  chapter_id: number | null;
+  base_revision_id: number;
+  title: string;
+  text: string;
+  updated_at: string;
+};
+
+export type LibraryDocumentCreateChapterResult = LibraryDocumentCleanupResult & {
+  created_chapter_id: number;
 };
 
 export type ResourceTag = {

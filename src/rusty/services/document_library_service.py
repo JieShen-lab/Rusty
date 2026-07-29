@@ -13,7 +13,7 @@ from rusty.db import initialize_database, session
 from rusty.exporters import build_txt_export, export_epub
 from rusty.importers import parse_docx, parse_epub, parse_txt
 from rusty.importers.txt import read_text_with_encoding, split_chapters
-from rusty.models import ChapterRecord, ParsedBook, ParsedChapter
+from rusty.models import ChapterRecord, ParsedBook, ParsedChapter, count_text_units
 
 
 SUPPORTED_DOCUMENT_SUFFIXES = {".txt", ".epub", ".docx"}
@@ -76,6 +76,22 @@ class CleanupResult:
     document: LibraryDocument
     revision: DocumentRevision
     created: bool
+    created_chapter_id: int | None = None
+
+
+class DraftConflictError(RuntimeError):
+    """Raised when a draft no longer targets the active document revision."""
+
+
+@dataclass(frozen=True)
+class LibraryDocumentDraft:
+    id: int
+    document_id: int
+    chapter_id: int | None
+    base_revision_id: int
+    title: str
+    text: str
+    updated_at: str
 
 
 @dataclass(frozen=True)
@@ -116,8 +132,11 @@ class LibraryDocumentContent:
     chapter_id: int | None
     title: str
     text: str
-    start_offset: int | None = None
-    end_offset: int | None = None
+    body_text: str
+    section_start_offset: int
+    body_start_offset: int
+    end_offset: int
+    start_offset: int
 
 
 @dataclass(frozen=True)
@@ -142,10 +161,6 @@ class SplitPreview:
 def default_document_library_path() -> Path:
     base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
     return base / "Rusty" / "document-library"
-
-
-def _count_words(text: str) -> int:
-    return len(re.findall(r"[\w\u4e00-\u9fff]+", text))
 
 
 def _validate_continuous_boundaries(
@@ -584,7 +599,7 @@ class DocumentLibraryService:
                         source_size,
                         len(encoded_text),
                         len(book.chapters),
-                        book.total_words,
+                        count_text_units(normalized_text),
                         json.dumps(metadata, ensure_ascii=False),
                     ),
                 )
@@ -746,32 +761,150 @@ class DocumentLibraryService:
     def get_content(self, document_id: int, chapter_id: int | None = None) -> LibraryDocumentContent:
         document = self._get_document(document_id)
         revision = self._ensure_initial_revision(document_id)
+        source_text = Path(revision.storage_path).read_text(encoding="utf-8")
         if chapter_id is None:
-            text = Path(revision.storage_path).read_text(encoding="utf-8")
             return LibraryDocumentContent(
                 document_id=document.id,
                 revision_id=revision.id,
                 chapter_id=None,
                 title=document.title,
-                text=text,
+                text=source_text,
+                body_text=source_text,
+                section_start_offset=0,
+                body_start_offset=0,
+                end_offset=len(source_text),
                 start_offset=0,
-                end_offset=len(text),
             )
 
         chapter = next((item for item in self.list_chapters(document_id) if item.id == chapter_id), None)
         if chapter is None:
             raise FileNotFoundError(f"找不到当前版本的章节：{chapter_id}")
-        source_text = Path(revision.storage_path).read_text(encoding="utf-8")
-        start_offset, end_offset = self._chapter_offsets(source_text, chapter)
+        section_start, end_offset = self._chapter_offsets(source_text, chapter)
+        body_start = self._chapter_body_start(source_text, chapter, section_start, end_offset)
+        body_text = source_text[body_start:end_offset]
         return LibraryDocumentContent(
             document_id=document.id,
             revision_id=revision.id,
             chapter_id=chapter.id,
             title=chapter.title,
-            text=source_text[start_offset:end_offset],
-            start_offset=start_offset,
+            text=source_text[section_start:end_offset],
+            body_text=body_text,
+            section_start_offset=section_start,
+            body_start_offset=body_start,
             end_offset=end_offset,
+            start_offset=section_start,
         )
+
+    def get_draft(self, document_id: int, chapter_id: int | None = None) -> LibraryDocumentDraft | None:
+        self._get_document(document_id)
+        with session(self.database_path) as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM library_document_drafts
+                WHERE document_id = ?
+                  AND ((? IS NULL AND chapter_id IS NULL) OR chapter_id = ?)
+                """,
+                (document_id, chapter_id, chapter_id),
+            ).fetchone()
+        if row is None:
+            return None
+        return LibraryDocumentDraft(
+            id=int(row["id"]),
+            document_id=int(row["document_id"]),
+            chapter_id=int(row["chapter_id"]) if row["chapter_id"] is not None else None,
+            base_revision_id=int(row["base_revision_id"]),
+            title=str(row["title"]),
+            text=str(row["text"]),
+            updated_at=str(row["updated_at"]),
+        )
+
+    def save_draft(
+        self,
+        document_id: int,
+        *,
+        base_revision_id: int,
+        title: str,
+        text: str,
+        chapter_id: int | None = None,
+    ) -> LibraryDocumentDraft:
+        document = self._get_document(document_id)
+        current = self._ensure_initial_revision(document_id)
+        if current.id != base_revision_id:
+            raise DraftConflictError(
+                f"Draft base revision {base_revision_id} is stale; current revision is {current.id}."
+            )
+        normalized_title = title.strip()
+        if chapter_id is None:
+            if not normalized_title:
+                normalized_title = document.title
+        else:
+            chapter = next((item for item in self.list_chapters(document_id) if item.id == chapter_id), None)
+            if chapter is None:
+                raise FileNotFoundError(f"找不到当前版本的章节：{chapter_id}")
+        normalized_text = text.replace("\r\n", "\n").replace("\r", "\n").replace("\x00", "")
+        with session(self.database_path) as connection:
+            existing = connection.execute(
+                """
+                SELECT id FROM library_document_drafts
+                WHERE document_id = ?
+                  AND ((? IS NULL AND chapter_id IS NULL) OR chapter_id = ?)
+                """,
+                (document_id, chapter_id, chapter_id),
+            ).fetchone()
+            if existing is None:
+                cursor = connection.execute(
+                    """
+                    INSERT INTO library_document_drafts (
+                        document_id, chapter_id, base_revision_id, title, text
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (document_id, chapter_id, base_revision_id, normalized_title, normalized_text),
+                )
+                draft_id = int(cursor.lastrowid)
+            else:
+                draft_id = int(existing["id"])
+                connection.execute(
+                    """
+                    UPDATE library_document_drafts
+                    SET base_revision_id = ?, title = ?, text = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (base_revision_id, normalized_title, normalized_text, draft_id),
+                )
+        draft = self.get_draft(document_id, chapter_id)
+        if draft is None:
+            raise RuntimeError(f"Draft {draft_id} was not persisted.")
+        return draft
+
+    def discard_draft(self, document_id: int, chapter_id: int | None = None) -> None:
+        self._get_document(document_id)
+        with session(self.database_path) as connection:
+            connection.execute(
+                """
+                DELETE FROM library_document_drafts
+                WHERE document_id = ?
+                  AND ((? IS NULL AND chapter_id IS NULL) OR chapter_id = ?)
+                """,
+                (document_id, chapter_id, chapter_id),
+            )
+
+    def commit_draft(self, document_id: int, chapter_id: int | None = None) -> CleanupResult:
+        draft = self.get_draft(document_id, chapter_id)
+        if draft is None:
+            raise FileNotFoundError("No saved draft exists for this document scope.")
+        current = self._ensure_initial_revision(document_id)
+        if current.id != draft.base_revision_id:
+            raise DraftConflictError(
+                f"Draft base revision {draft.base_revision_id} is stale; current revision is {current.id}."
+            )
+        result = self._commit_content(
+            document_id,
+            text=draft.text,
+            title=draft.title,
+            chapter_id=chapter_id,
+        )
+        self.discard_draft(document_id, chapter_id)
+        return result
 
     def save_content(
         self,
@@ -781,18 +914,60 @@ class DocumentLibraryService:
         title: str | None = None,
         chapter_id: int | None = None,
     ) -> CleanupResult:
+        content = self.get_content(document_id, chapter_id)
+        self.save_draft(
+            document_id,
+            base_revision_id=content.revision_id,
+            title=title if title is not None else content.title,
+            text=text,
+            chapter_id=chapter_id,
+        )
+        return self.commit_draft(document_id, chapter_id)
+
+    def rename_chapter(self, document_id: int, chapter_id: int, title: str) -> CleanupResult:
+        """Rename a chapter through its own revision path without changing the document title."""
+        content = self.get_content(document_id, chapter_id)
+        self.save_draft(
+            document_id,
+            chapter_id=chapter_id,
+            base_revision_id=content.revision_id,
+            title=title,
+            text=content.body_text,
+        )
+        return self.commit_draft(document_id, chapter_id)
+
+    def _commit_content(
+        self,
+        document_id: int,
+        *,
+        text: str,
+        title: str,
+        chapter_id: int | None,
+    ) -> CleanupResult:
         document = self._get_document(document_id)
         current_revision = self._ensure_initial_revision(document_id)
         if chapter_id is None:
             new_text = self._normalize_text(text)
+            chapter_boundaries = None
         else:
+            normalized_title = title.strip()
+            if not normalized_title:
+                raise ValueError("章节标题不能为空。")
             source_text = Path(current_revision.storage_path).read_text(encoding="utf-8")
             chapters = self.list_chapters(document_id)
             target = next((chapter for chapter in chapters if chapter.id == chapter_id), None)
             if target is None:
                 raise FileNotFoundError(f"找不到章节：{chapter_id}")
             start, end = self._chapter_offsets(source_text, target)
-            replacement = self._normalize_text(text)
+            normalized_body = text.replace("\r\n", "\n").replace("\r", "\n").replace("\x00", "").strip()
+            body_start = self._chapter_body_start(source_text, target, start, end)
+            if body_start > start:
+                segment = source_text[start:end]
+                leading_prefix = segment[: len(segment) - len(segment.lstrip("\n"))]
+                trailing_separator = "\n" if end == len(source_text) else "\n\n"
+                replacement = f"{leading_prefix}{normalized_title}\n\n{normalized_body}{trailing_separator}"
+            else:
+                replacement = self._normalize_text(text)
             new_text = source_text[:start] + replacement + source_text[end:]
             delta = len(replacement) - (end - start)
             chapter_boundaries = []
@@ -805,14 +980,11 @@ class DocumentLibraryService:
                     chapter_end += delta
                 chapter_boundaries.append(
                     {
-                        "title": chapter.title,
+                        "title": normalized_title if chapter.id == target.id else chapter.title,
                         "start_offset": chapter_start,
                         "end_offset": chapter_end,
                     }
                 )
-        if title and title.strip():
-            self.update_document_metadata(document_id, title=title, author=document.author)
-            document = self._get_document(document_id)
         revision = self._create_text_revision(
             document,
             current_revision,
@@ -821,6 +993,8 @@ class DocumentLibraryService:
             {},
             chapter_boundaries=chapter_boundaries if chapter_id is not None else None,
         )
+        if chapter_id is None and title.strip() and title.strip() != document.title:
+            self.update_document_metadata(document_id, title=title.strip(), author=document.author)
         return CleanupResult(document=self._get_document(document_id), revision=revision, created=True)
 
     def merge_documents(self, document_ids: list[int], title: str, author: str | None = None) -> LibraryDocument:
@@ -864,7 +1038,7 @@ class DocumentLibraryService:
                         len(encoded),
                         len(encoded),
                         len(book.chapters),
-                        book.total_words,
+                        count_text_units(merged_text),
                         json.dumps({"merge_sources": sources}, ensure_ascii=False),
                     ),
                 )
@@ -891,7 +1065,8 @@ class DocumentLibraryService:
         *,
         title: str,
         text: str,
-        position: str = "end",
+        position: str = "after",
+        anchor_chapter_id: int | None = None,
         current_chapter_id: int | None = None,
     ) -> CleanupResult:
         document = self._get_document(document_id)
@@ -901,15 +1076,21 @@ class DocumentLibraryService:
         chapter_text = self._normalize_text(f"{title.strip()}\n\n{text.strip()}")
         if not title.strip():
             raise ValueError("章节标题不能为空。")
+        if anchor_chapter_id is None:
+            anchor_chapter_id = current_chapter_id
+        legacy_end = position == "end"
+        if legacy_end:
+            position = "after"
+            anchor_chapter_id = None
+        if position not in {"before", "after"}:
+            raise ValueError("插入位置必须是 before 或 after。")
         insert_at = len(source_text)
-        if position in {"before", "after"}:
-            target = next((chapter for chapter in chapters if chapter.id == current_chapter_id), None)
+        if chapters and not legacy_end:
+            target = next((chapter for chapter in chapters if chapter.id == anchor_chapter_id), None)
             if target is None:
-                raise FileNotFoundError(f"找不到章节：{current_chapter_id}")
+                raise FileNotFoundError(f"找不到锚点章节：{anchor_chapter_id}")
             start, end = self._chapter_offsets(source_text, target)
             insert_at = start if position == "before" else end
-        elif position != "end":
-            raise ValueError("插入位置必须是 before、after 或 end。")
         leading_separator = "\n\n" if insert_at > 0 and not source_text[:insert_at].endswith("\n\n") else ""
         trailing_separator = "" if chapter_text.endswith("\n") else "\n"
         inserted_text = leading_separator + chapter_text + trailing_separator
@@ -946,7 +1127,20 @@ class DocumentLibraryService:
             {"operation": "create_chapter"},
             chapter_boundaries=chapter_boundaries,
         )
-        return CleanupResult(document=self._get_document(document_id), revision=revision, created=True)
+        created_chapter = next(
+            (
+                chapter
+                for chapter in self.list_chapters(document_id)
+                if chapter.start_offset == inserted_start and chapter.title == title.strip()
+            ),
+            None,
+        )
+        return CleanupResult(
+            document=self._get_document(document_id),
+            revision=revision,
+            created=True,
+            created_chapter_id=created_chapter.id if created_chapter else None,
+        )
 
     def preview_regex_split(self, document_id: int, pattern: str) -> SplitPreview:
         revision = self._ensure_initial_revision(document_id)
@@ -962,37 +1156,32 @@ class DocumentLibraryService:
         token = hashlib.sha256(f"{revision.id}:{pattern}:{self._revision_hash(revision.id)}".encode("utf-8")).hexdigest()
         return SplitPreview(preview_token=token, revision_id=revision.id, chapter_count=len(chapters), chapters=chapters)
 
-    def apply_regex_split(self, document_id: int, pattern: str, preview_token: str) -> list[LibraryChapter]:
+    def apply_regex_split(
+        self,
+        document_id: int,
+        pattern: str,
+        preview_token: str,
+        boundaries: list[dict[str, object]] | None = None,
+    ) -> list[LibraryChapter]:
         preview = self.preview_regex_split(document_id, pattern)
         if preview.preview_token != preview_token:
             raise ValueError("分章预览已失效，请重新预览。")
-        with session(self.database_path) as connection:
-            connection.execute("DELETE FROM library_document_chapters WHERE revision_id = ?", (preview.revision_id,))
-            for chapter in preview.chapters:
-                connection.execute(
-                    """
-                    INSERT INTO library_document_chapters (
-                        document_id, revision_id, chapter_index, title, start_line, end_line,
-                        start_offset, end_offset, word_count
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        document_id,
-                        preview.revision_id,
-                        chapter.index,
-                        chapter.title,
-                        chapter.start_line,
-                        chapter.end_line,
-                        chapter.start_offset,
-                        chapter.end_offset,
-                        chapter.word_count,
-                    ),
-                )
-            connection.execute(
-                "UPDATE library_documents SET chapter_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (len(preview.chapters), document_id),
-            )
-        return self.list_chapters(document_id)
+        _, chapters = self.apply_split_boundaries(
+            document_id,
+            source_revision_id=preview.revision_id,
+            boundaries=boundaries or [
+                {
+                    "title": chapter.title,
+                    "start_offset": chapter.start_offset,
+                    "end_offset": chapter.end_offset,
+                    "reason": "regex match",
+                }
+                for chapter in preview.chapters
+            ],
+            revision_type="split_regex",
+            metadata={"pattern": pattern, "preview_token": preview_token},
+        )
+        return chapters
 
     def apply_split_boundaries(
         self,
@@ -1031,7 +1220,7 @@ class DocumentLibraryService:
                         text.count("\n", 0, end) + 1,
                         start,
                         end,
-                        _count_words(text[start:end]),
+                        count_text_units(text[start:end]),
                     ),
                 )
             connection.execute(
@@ -1040,7 +1229,7 @@ class DocumentLibraryService:
                 SET chapter_count = ?, word_count = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
-                (len(normalized), _count_words(text), document_id),
+                (len(normalized), count_text_units(text), document_id),
             )
         return revision, self.list_chapters(document_id)
 
@@ -1087,7 +1276,7 @@ class DocumentLibraryService:
                     text.count("\n", 0, end_offset) + 1,
                     start_offset,
                     end_offset,
-                    _count_words(text[start_offset:end_offset]),
+                    count_text_units(text[start_offset:end_offset]),
                 ),
             )
             ordered = connection.execute(
@@ -1197,7 +1386,7 @@ class DocumentLibraryService:
                         str(storage_path),
                         len(encoded_text),
                         len(chapters),
-                        sum(chapter.word_count for chapter in chapters),
+                        count_text_units(cleaned_text),
                         revision_id,
                         document_id,
                     ),
@@ -1217,8 +1406,7 @@ class DocumentLibraryService:
         with session(self.database_path) as connection:
             row = connection.execute(
                 """
-                SELECT r.*, COUNT(c.id) AS chapter_count,
-                       COALESCE(SUM(c.word_count), 0) AS word_count
+                SELECT r.*, COUNT(c.id) AS chapter_count
                 FROM library_document_revisions r
                 LEFT JOIN library_document_chapters c ON c.revision_id = r.id
                 WHERE r.id = ? AND r.document_id = ?
@@ -1231,6 +1419,7 @@ class DocumentLibraryService:
             storage_path = Path(str(row["storage_path"]))
             if not storage_path.is_file():
                 raise FileNotFoundError(f"找不到版本文件：{storage_path}")
+            revision_text = storage_path.read_text(encoding="utf-8")
             connection.execute(
                 """
                 UPDATE library_documents
@@ -1243,7 +1432,7 @@ class DocumentLibraryService:
                     str(storage_path),
                     storage_path.stat().st_size,
                     int(row["chapter_count"]),
-                    int(row["word_count"]),
+                    count_text_units(revision_text),
                     "imported" if row["revision_type"] == "import" else "processed",
                     revision_id,
                     document_id,
@@ -1316,7 +1505,7 @@ class DocumentLibraryService:
                                 normalized_text.count("\n", 0, end) + 1,
                                 start,
                                 end,
-                                _count_words(normalized_text[start:end]),
+                                count_text_units(normalized_text[start:end]),
                             ),
                         )
                     chapter_count = len(ordered)
@@ -1333,7 +1522,7 @@ class DocumentLibraryService:
                         content_hash,
                         len(encoded_text),
                         chapter_count,
-                        book.total_words,
+                        count_text_units(encoded_text.decode("utf-8")),
                         revision_id,
                         document.id,
                     ),
@@ -1356,6 +1545,24 @@ class DocumentLibraryService:
             chapter.start_line,
             chapter.end_line,
         )
+
+    @staticmethod
+    def _chapter_body_start(
+        text: str,
+        chapter: LibraryChapter,
+        section_start: int,
+        section_end: int,
+    ) -> int:
+        segment = text[section_start:section_end]
+        leading = len(segment) - len(segment.lstrip("\n"))
+        title_segment = segment[leading:]
+        first_newline = title_segment.find("\n")
+        if first_newline < 0 or title_segment[:first_newline].strip() != chapter.title.strip():
+            return section_start
+        relative = leading + first_newline + 1
+        if relative < len(segment) and segment[relative] == "\n":
+            relative += 1
+        return section_start + relative
 
     @staticmethod
     def _chapter_offsets_from_lines(text: str, start_line: int | None, end_line: int | None) -> tuple[int, int]:
@@ -1390,7 +1597,7 @@ class DocumentLibraryService:
                     end_line=end_line,
                     start_offset=start,
                     end_offset=end,
-                    word_count=_count_words(text[start:end]),
+                    word_count=count_text_units(text[start:end]),
                 )
             )
         return candidates
@@ -1699,7 +1906,7 @@ class DocumentLibraryService:
                     chapter.end_line,
                     start_offset,
                     end_offset,
-                    chapter.word_count,
+                    count_text_units(full_text[start_offset:end_offset]),
                 ),
             )
 

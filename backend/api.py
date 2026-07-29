@@ -27,9 +27,11 @@ from rusty.services.chapter_split_service import ChapterSplitService
 from rusty.services.document_library_service import (
     DocumentLibraryService,
     DocumentRevision,
+    DraftConflictError,
     LibraryChapter,
     LibraryDocument,
     LibraryDocumentContent,
+    LibraryDocumentDraft,
     ProcessingTemplate,
 )
 from rusty.services.document_split_ai_service import DocumentSplitAIService
@@ -77,6 +79,9 @@ from .schemas import (
     LibraryDocumentChapterOut,
     LibraryDocumentChapterReorderRequest,
     LibraryDocumentContentOut,
+    LibraryDocumentDraftOut,
+    LibraryDocumentDraftScopeRequest,
+    LibraryDocumentDraftWriteRequest,
     LibraryDocumentSaveContentRequest,
     LibraryDocumentExportRequest,
     LibraryDocumentExportResponse,
@@ -96,6 +101,7 @@ from .schemas import (
     DocumentLibraryMigrateRequest,
     DocumentLibrarySettingsOut,
     DocumentCreateChapterRequest,
+    DocumentCreateChapterResponse,
     DocumentCategoryOut,
     DocumentMergeRequest,
     ModelTestResponse,
@@ -193,7 +199,9 @@ def create_app(
     anchor_ai_client=None,
     prompt_package_ai_client=None,
 ) -> FastAPI:
-    db_path = Path(os.environ.get("RUSTY_DATABASE_PATH", database_path or default_database_path()))
+    db_path = Path(database_path) if database_path is not None else Path(
+        os.environ.get("RUSTY_DATABASE_PATH", default_database_path())
+    )
     project_service = ProjectService(db_path)
     chapter_split_service = ChapterSplitService()
     document_library_service = DocumentLibraryService(db_path)
@@ -224,7 +232,7 @@ def create_app(
         CORSMiddleware,
         allow_origins=_allowed_origins(),
         allow_credentials=False,
-        allow_methods=["GET", "POST"],
+        allow_methods=["GET", "POST", "PUT"],
         allow_headers=["Content-Type", API_TOKEN_HEADER],
     )
 
@@ -431,6 +439,69 @@ def create_app(
             document_library_service.get_content(document_id, chapter_id)
         )
 
+    @app.get(
+        "/api/documents/{document_id}/draft",
+        response_model=LibraryDocumentDraftOut | None,
+    )
+    def get_library_document_draft(
+        document_id: int,
+        chapter_id: int | None = None,
+    ) -> LibraryDocumentDraftOut | None:
+        draft = document_library_service.get_draft(document_id, chapter_id)
+        return _library_document_draft_out(draft) if draft is not None else None
+
+    @app.put(
+        "/api/documents/{document_id}/draft",
+        response_model=LibraryDocumentDraftOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def save_library_document_draft(
+        document_id: int,
+        payload: LibraryDocumentDraftWriteRequest,
+    ) -> LibraryDocumentDraftOut:
+        try:
+            draft = document_library_service.save_draft(
+                document_id,
+                base_revision_id=payload.base_revision_id,
+                title=payload.title,
+                text=payload.text,
+                chapter_id=payload.chapter_id,
+            )
+        except DraftConflictError as exc:
+            raise _http_error(409, "document_draft_conflict", str(exc)) from exc
+        return _library_document_draft_out(draft)
+
+    @app.post(
+        "/api/documents/{document_id}/draft/commit",
+        response_model=LibraryDocumentCleanupResponse,
+        dependencies=[Depends(_require_token)],
+    )
+    def commit_library_document_draft(
+        document_id: int,
+        payload: LibraryDocumentDraftScopeRequest,
+    ) -> LibraryDocumentCleanupResponse:
+        try:
+            result = document_library_service.commit_draft(document_id, payload.chapter_id)
+        except DraftConflictError as exc:
+            raise _http_error(409, "document_draft_conflict", str(exc)) from exc
+        return LibraryDocumentCleanupResponse(
+            document=_library_document_out(result.document),
+            revision=_document_revision_out(result.revision),
+            created=result.created,
+        )
+
+    @app.post(
+        "/api/documents/{document_id}/draft/discard",
+        response_model=dict[str, bool],
+        dependencies=[Depends(_require_token)],
+    )
+    def discard_library_document_draft(
+        document_id: int,
+        payload: LibraryDocumentDraftScopeRequest,
+    ) -> dict[str, bool]:
+        document_library_service.discard_draft(document_id, payload.chapter_id)
+        return {"ok": True}
+
     @app.post(
         "/api/documents/{document_id}/content",
         response_model=LibraryDocumentCleanupResponse,
@@ -457,21 +528,24 @@ def create_app(
 
     @app.post(
         "/api/documents/{document_id}/chapters",
-        response_model=LibraryDocumentCleanupResponse,
+        response_model=DocumentCreateChapterResponse,
         dependencies=[Depends(_require_token)],
     )
-    def create_library_document_chapter(document_id: int, payload: DocumentCreateChapterRequest) -> LibraryDocumentCleanupResponse:
+    def create_library_document_chapter(document_id: int, payload: DocumentCreateChapterRequest) -> DocumentCreateChapterResponse:
         result = document_library_service.create_chapter(
             document_id,
             title=payload.title,
             text=payload.text,
             position=payload.position,
-            current_chapter_id=payload.current_chapter_id,
+            anchor_chapter_id=payload.anchor_chapter_id,
         )
-        return LibraryDocumentCleanupResponse(
+        if result.created_chapter_id is None:
+            raise RuntimeError("Created chapter could not be resolved in the new revision.")
+        return DocumentCreateChapterResponse(
             document=_library_document_out(result.document),
             revision=_document_revision_out(result.revision),
             created=result.created,
+            created_chapter_id=result.created_chapter_id,
         )
 
     @app.post("/api/documents/{document_id}/split/regex/preview", response_model=SplitPreview)
@@ -505,7 +579,12 @@ def create_app(
     def apply_regex_document_split(document_id: int, payload: RegexSplitApplyRequest) -> list[LibraryDocumentChapterOut]:
         return [
             _library_chapter_out(chapter)
-            for chapter in document_library_service.apply_regex_split(document_id, payload.pattern, payload.preview_token)
+            for chapter in document_library_service.apply_regex_split(
+                document_id,
+                payload.pattern,
+                payload.preview_token,
+                [chapter.model_dump() for chapter in payload.chapters] if payload.chapters is not None else None,
+            )
         ]
 
     @app.post(
@@ -2100,6 +2179,10 @@ def _library_chapter_out(chapter: LibraryChapter) -> LibraryDocumentChapterOut:
 
 def _library_document_content_out(content: LibraryDocumentContent) -> LibraryDocumentContentOut:
     return LibraryDocumentContentOut(**content.__dict__)
+
+
+def _library_document_draft_out(draft: LibraryDocumentDraft) -> LibraryDocumentDraftOut:
+    return LibraryDocumentDraftOut(**draft.__dict__)
 
 
 def _chapter_out(chapter: ChapterRecord) -> ChapterOut:

@@ -151,8 +151,32 @@ class LibraryDocumentContentOut(BaseModel):
     chapter_id: int | None
     title: str
     text: str
-    start_offset: int | None = None
-    end_offset: int | None = None
+    body_text: str
+    section_start_offset: int
+    body_start_offset: int
+    end_offset: int
+    start_offset: int
+
+
+class LibraryDocumentDraftOut(BaseModel):
+    id: int
+    document_id: int
+    chapter_id: int | None
+    base_revision_id: int
+    title: str
+    text: str
+    updated_at: str
+
+
+class LibraryDocumentDraftWriteRequest(BaseModel):
+    base_revision_id: int
+    title: str
+    text: str
+    chapter_id: int | None = None
+
+
+class LibraryDocumentDraftScopeRequest(BaseModel):
+    chapter_id: int | None = None
 
 
 class LibraryDocumentSaveContentRequest(BaseModel):
@@ -170,8 +194,12 @@ class DocumentMergeRequest(BaseModel):
 class DocumentCreateChapterRequest(BaseModel):
     title: str = Field(min_length=1)
     text: str = ""
-    position: Literal["before", "after", "end"] = "end"
-    current_chapter_id: int | None = None
+    position: Literal["before", "after"] = "after"
+    anchor_chapter_id: int | None = None
+
+
+class DocumentCreateChapterResponse(LibraryDocumentCleanupResponse):
+    created_chapter_id: int
 
 
 class SplitChapterCandidate(BaseModel):
@@ -198,6 +226,7 @@ class RegexSplitPreviewRequest(BaseModel):
 class RegexSplitApplyRequest(BaseModel):
     pattern: str = Field(min_length=1)
     preview_token: str = Field(min_length=1)
+    chapters: list[SplitChapterCandidate] | None = None
 
 
 class ManualChapterMarkRequest(BaseModel):

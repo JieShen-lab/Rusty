@@ -24,6 +24,11 @@ let tagAssignmentRequests: Array<{ documentId: number; tagId: number; selected: 
 async function mockApi(page: Page) {
   let skeletonNodes: Array<Record<string, unknown>> = [{ id: 'n1', event: '发现钥匙' }];
   let documentItems = baseDocumentItems.map((item) => ({ ...item, tags: [...item.tags], category_ids: [...item.category_ids], categories: [...item.categories] }));
+  let documentDraft: { id: number; document_id: number; chapter_id: number | null; base_revision_id: number; title: string; text: string; updated_at: string } | null = null;
+  let documentRevisionNumber = 1;
+  let documentBody = '林舟推门而入，看见桌上的钥匙。';
+  let documentChapterTitle = '第一章';
+  let extraChapter: { id: number; document_id: number; revision_id: number; index: number; title: string; start_line: number; end_line: number; start_offset: number; end_offset: number; word_count: number } | null = null;
   await page.route('http://127.0.0.1:8765/api/**', async (route) => {
     const url = new URL(route.request().url());
     const path = url.pathname;
@@ -71,15 +76,46 @@ async function mockApi(page: Page) {
     else if (path === '/api/document-processing-templates') body = [];
     else if (/^\/api\/documents\/\d+\/revisions$/.test(path)) {
       const documentId = Number(path.split('/')[3]);
-      body = [{ id: documentId, document_id: documentId, revision_number: 1, revision_type: 'import', storage_path: documentItems.find((item) => item.id === documentId)?.storage_path, word_count: 16, created_at: '' }];
+      body = Array.from({ length: documentRevisionNumber }, (_, index) => ({ id: documentId * 10 + index + 1, document_id: documentId, revision_number: index + 1, revision_type: index ? 'manual_edit' : 'import', storage_path: index + 1 === documentRevisionNumber ? documentItems.find((item) => item.id === documentId)?.storage_path : `D:/Rusty/novel-v${index + 1}.txt`, word_count: 16, created_at: '' })).reverse();
+    }
+    else if (/^\/api\/documents\/\d+\/chapters$/.test(path) && route.request().method() === 'POST') {
+      const documentId = Number(path.split('/')[3]);
+      const request = route.request().postDataJSON() as { title: string; text: string };
+      documentRevisionNumber += 1;
+      extraChapter = { id: 999, document_id: documentId, revision_id: documentId * 10 + documentRevisionNumber, index: 2, title: request.title, start_line: 3, end_line: 4, start_offset: 30, end_offset: 30 + request.title.length + request.text.length + 2, word_count: Array.from(request.title + request.text).filter((value) => !/\s/u.test(value)).length };
+      documentItems = documentItems.map((item) => item.id === documentId ? { ...item, chapter_count: 2 } : item);
+      body = { document: documentItems.find((item) => item.id === documentId), revision: { id: documentId * 10 + documentRevisionNumber, document_id: documentId, revision_number: documentRevisionNumber, revision_type: 'manual_edit', storage_path: `D:/Rusty/novel-v${documentRevisionNumber}.txt`, template_id: null, parent_revision_id: documentId * 10 + documentRevisionNumber - 1, created_at: '' }, created: true, created_chapter_id: 999 };
     }
     else if (/^\/api\/documents\/\d+\/chapters$/.test(path)) {
       const documentId = Number(path.split('/')[3]);
-      body = [{ id: documentId, document_id: documentId, revision_id: documentId, index: 1, title: '第一章', start_line: 1, end_line: 2, start_offset: 0, end_offset: 16, word_count: 16 }];
+      body = [{ id: documentId * 100 + documentRevisionNumber, document_id: documentId, revision_id: documentId * 10 + documentRevisionNumber, index: 1, title: documentChapterTitle, start_line: 1, end_line: 2, start_offset: 0, end_offset: documentBody.length + documentChapterTitle.length + 2, word_count: Array.from(documentChapterTitle + documentBody).filter((value) => !/\s/u.test(value)).length }, ...(extraChapter ? [extraChapter] : [])];
+    }
+    else if (/^\/api\/documents\/\d+\/draft$/.test(path) && route.request().method() === 'GET') {
+      const requestedChapterId = url.searchParams.has('chapter_id') ? Number(url.searchParams.get('chapter_id')) : null;
+      body = documentDraft?.chapter_id === requestedChapterId ? documentDraft : null;
+    }
+    else if (/^\/api\/documents\/\d+\/draft$/.test(path) && route.request().method() === 'PUT') {
+      const documentId = Number(path.split('/')[3]);
+      const request = route.request().postDataJSON() as { chapter_id: number | null; base_revision_id: number; title: string; text: string };
+      documentDraft = { id: 99, document_id: documentId, chapter_id: request.chapter_id, base_revision_id: request.base_revision_id, title: request.title, text: request.text, updated_at: '2026-07-29 12:00:00' };
+      body = documentDraft;
+    }
+    else if (/^\/api\/documents\/\d+\/draft\/commit$/.test(path)) {
+      const documentId = Number(path.split('/')[3]);
+      if (documentDraft) {
+        documentBody = documentDraft.text;
+        documentChapterTitle = documentDraft.title;
+      }
+      documentDraft = null;
+      documentRevisionNumber += 1;
+      body = { document: { ...documentItems.find((item) => item.id === documentId), word_count: Array.from(documentBody).filter((value) => !/\s/u.test(value)).length }, revision: { id: documentId * 10 + documentRevisionNumber, document_id: documentId, revision_number: documentRevisionNumber, revision_type: 'manual_edit', storage_path: `D:/Rusty/novel-v${documentRevisionNumber}.txt`, template_id: null, parent_revision_id: documentId * 10 + documentRevisionNumber - 1, created_at: '' }, created: true };
     }
     else if (/^\/api\/documents\/\d+\/content$/.test(path)) {
       const documentId = Number(path.split('/')[3]);
-      body = { document_id: documentId, revision_id: documentId, chapter_id: documentId, title: '第一章', text: '林舟推门而入，看见桌上的钥匙。', start_offset: 0, end_offset: 16 };
+      const requestedChapterId = Number(url.searchParams.get('chapter_id'));
+      body = requestedChapterId === 999 && extraChapter
+        ? { document_id: documentId, revision_id: extraChapter.revision_id, chapter_id: 999, title: extraChapter.title, text: `${extraChapter.title}\n\n新增正文`, body_text: '新增正文', section_start_offset: extraChapter.start_offset, body_start_offset: extraChapter.start_offset + extraChapter.title.length + 2, start_offset: extraChapter.start_offset, end_offset: extraChapter.end_offset }
+        : { document_id: documentId, revision_id: documentId * 10 + documentRevisionNumber, chapter_id: documentId * 100 + documentRevisionNumber, title: documentChapterTitle, text: `${documentChapterTitle}\n\n${documentBody}`, body_text: documentBody, section_start_offset: 0, body_start_offset: documentChapterTitle.length + 2, start_offset: 0, end_offset: documentBody.length + documentChapterTitle.length + 2 };
     }
     else if (path === '/api/projects/1') body = { id: 1, name: '示例工程', author: '', purpose: 'rewrite', status: 'ready', source_path: '', workspace_path: '', total_chapters: 1, total_words: 16, processed_chapters: 0, settings: { processing_mode: 'rewrite' }, created_at: '', updated_at: '' };
     else if (path === '/api/projects/1/chapters') body = [{ id: 1, project_id: 1, index: 1, title: '第一章', original_text: '林舟推门而入，看见桌上的钥匙。', rewritten_text: '', word_count: 16, status: 'pending', created_at: '', updated_at: '' }];
@@ -211,7 +247,7 @@ test('标签管理弹窗显式移除关联并显示当前版本文件', async ({
   await expect(page.locator('.document-detail-panel').getByRole('button', { name: '长篇', exact: true })).toHaveCount(0);
 });
 
-test('文档正文右键菜单、手动章节标记与 AI 分章入口', async ({ page }) => {
+test('文档正文右键菜单、编辑命令与统一分章入口', async ({ page }) => {
   await page.goto('/documents');
   await page.getByRole('button', { name: '示例长篇，作者' }).dblclick();
   const editor = page.locator('textarea.manuscript-editor');
@@ -233,19 +269,73 @@ test('文档正文右键菜单、手动章节标记与 AI 分章入口', async (
   await page.getByRole('button', { name: '添加为场景素材' }).click();
   await expect(page.getByRole('dialog').filter({ hasText: '场景素材名称' })).toBeVisible();
   await page.getByRole('button', { name: '取消' }).last().click();
-  await expect(page.getByRole('button', { name: '标记章节开始' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'AI 分章' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '标记章节', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '分章', exact: true })).toHaveCount(1);
+  await expect(page.getByRole('button', { name: 'AI 分章', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '正则分章', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '引用范围', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: '分章', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'AI 识别' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '正则识别' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '手动标记' })).toBeVisible();
 });
 
-test('未保存正文取消切换后仍保留编辑内容', async ({ page }) => {
+test('正文自动保存草稿、手动保存单一版本并打开文字整理弹窗', async ({ page }) => {
   await page.goto('/documents');
   await page.getByRole('button', { name: '示例长篇，作者' }).dblclick();
   const editor = page.locator('textarea.manuscript-editor');
-  await editor.fill('未保存内容-UNIQUE');
-  page.once('dialog', (dialog) => dialog.dismiss());
+  await editor.fill('自动草稿-UNIQUE');
+  await expect(page.getByText(/尚未保存草稿/)).toBeVisible();
+  await expect(page.getByText(/草稿已保存/)).toBeVisible({ timeout: 3000 });
+  await expect(page.getByText('版本 1 · 导入版')).toHaveCount(0);
+  await page.getByRole('button', { name: '保存', exact: true }).click();
+  await expect(page.getByText(/正文已保存为新版本/)).toBeVisible();
+  if (process.env.RUSTY_E2E_SCREENSHOT_DIR) {
+    await page.screenshot({ path: `${process.env.RUSTY_E2E_SCREENSHOT_DIR}/document-editor-saved.png` });
+  }
+  await page.getByRole('button', { name: '版本记录' }).click();
+  await expect(page.getByText('版本 2 · 手动编辑')).toBeVisible();
+  await page.getByRole('button', { name: '关闭' }).click();
   await page.getByRole('button', { name: '文字整理' }).click();
-  await expect(editor).toHaveValue('未保存内容-UNIQUE');
-  await expect(page.getByText(/未保存/).first()).toBeVisible();
+  await expect(page.getByRole('dialog').filter({ hasText: '文字整理' })).toBeVisible();
+  await expect(page.getByRole('dialog').filter({ hasText: '文字整理' }).getByText('版本记录')).toHaveCount(0);
+  if (process.env.RUSTY_E2E_SCREENSHOT_DIR) {
+    await page.screenshot({ path: `${process.env.RUSTY_E2E_SCREENSHOT_DIR}/document-cleanup-dialog.png` });
+  }
+});
+
+test('章节标题、实时字数及受控撤销重做保持同步', async ({ page }) => {
+  await page.goto('/documents');
+  await page.getByRole('button', { name: '示例长篇，作者' }).dblclick();
+  const editor = page.locator('textarea.manuscript-editor');
+  const title = page.locator('.document-editor-title input');
+  await title.fill('即时新标题');
+  await expect(page.locator('.chapter-list').getByText('即时新标题')).toBeVisible();
+  await editor.fill('中文 A，🙂');
+  await expect(page.locator('.document-workspace-stats').getByText('10', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '撤销', exact: true }).click();
+  await expect(editor).toHaveValue('林舟推门而入，看见桌上的钥匙。');
+  await page.getByRole('button', { name: '重做', exact: true }).click();
+  await expect(editor).toHaveValue('中文 A，🙂');
+  await editor.press('Control+z');
+  await expect(editor).toHaveValue('林舟推门而入，看见桌上的钥匙。');
+  await editor.press('Control+Shift+z');
+  await expect(editor).toHaveValue('中文 A，🙂');
+});
+
+test('新增章节按目录序号解析锚点并自动选中新章节', async ({ page }) => {
+  await page.goto('/documents');
+  await page.getByRole('button', { name: '示例长篇，作者' }).dblclick();
+  await page.getByRole('button', { name: '新增章节' }).click();
+  const dialog = page.getByRole('dialog').filter({ hasText: '新增章节' });
+  await dialog.getByLabel('章节标题').fill('插入的新章');
+  await dialog.getByLabel('插入位置').selectOption('after-index');
+  await dialog.getByLabel('章节序号').fill('1');
+  await expect(dialog.getByText('匹配：第一章')).toBeVisible();
+  await dialog.getByLabel('正文').fill('新增正文');
+  await dialog.getByRole('button', { name: '保存为新版本' }).click();
+  await expect(page.locator('.chapter-row[aria-current="page"]').getByText('插入的新章')).toBeVisible();
+  await expect(page.locator('.document-editor-title input')).toHaveValue('插入的新章');
 });
 
 test('场景改写完成三段确认流程', async ({ page }) => {

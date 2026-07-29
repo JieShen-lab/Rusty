@@ -11,12 +11,120 @@ from docx import Document
 from ebooklib import epub
 
 from rusty.db import session
-from rusty.models import ParsedBook, ParsedChapter
+from rusty.models import ParsedBook, ParsedChapter, count_text_units
 from rusty.services.project_service import ProjectService
-from rusty.services.document_library_service import DocumentLibraryService
+from rusty.services.document_library_service import DocumentLibraryService, DraftConflictError
 
 
 class DocumentLibraryServiceTests(unittest.TestCase):
+    def test_draft_autosave_does_not_create_revision_and_manual_commit_creates_one(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            source = root / "draft.txt"
+            source.write_text("第一章\n\n原正文。\n\n第二章\n\n后续正文。\n", encoding="utf-8")
+            service = DocumentLibraryService(root / "rusty.db", root / "library")
+            document = service.import_document(source).document
+            chapter = service.list_chapters(document.id)[0]
+            content = service.get_content(document.id, chapter.id)
+            revision_count = len(service.list_revisions(document.id))
+
+            draft = service.save_draft(
+                document.id,
+                chapter_id=chapter.id,
+                base_revision_id=content.revision_id,
+                title="第一章（修订）",
+                text="草稿正文🙂。",
+            )
+
+            self.assertEqual(revision_count, len(service.list_revisions(document.id))
+            )
+            self.assertEqual("草稿正文🙂。", service.get_draft(document.id, chapter.id).text)
+            committed = service.commit_draft(document.id, chapter.id)
+            self.assertEqual(revision_count + 1, len(service.list_revisions(document.id)))
+            self.assertEqual("manual_edit", committed.revision.revision_type)
+            self.assertIsNone(service.get_draft(document.id, chapter.id))
+            current_chapters = service.list_chapters(document.id)
+            renamed = next(item for item in current_chapters if item.index == 1)
+            self.assertEqual("第一章（修订）", renamed.title)
+            self.assertEqual("草稿正文🙂。\n\n", service.get_content(document.id, renamed.id).body_text)
+            self.assertEqual(draft.base_revision_id, committed.revision.parent_revision_id)
+
+    def test_stale_chapter_draft_conflicts_after_revision_changes(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            source = root / "conflict.txt"
+            source.write_text("第一章\n\n正文。\n", encoding="utf-8")
+            service = DocumentLibraryService(root / "rusty.db", root / "library")
+            document = service.import_document(source).document
+            chapter = service.list_chapters(document.id)[0]
+            content = service.get_content(document.id, chapter.id)
+            service.save_draft(
+                document.id,
+                chapter_id=chapter.id,
+                base_revision_id=content.revision_id,
+                title=content.title,
+                text="尚未提交",
+            )
+            service.save_content(document.id, text="全文替换")
+
+            with self.assertRaises(DraftConflictError):
+                service.commit_draft(document.id, chapter.id)
+            self.assertEqual("尚未提交", service.get_draft(document.id, chapter.id).text)
+
+    def test_chapter_title_body_offsets_and_unicode_counts_stay_consistent(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            source_text = "第一章\n\n中 A，。\u3000\n🙂\n\n第二章\n\n尾声。\n"
+            source = root / "counts.txt"
+            source.write_text(source_text, encoding="utf-8")
+            service = DocumentLibraryService(root / "rusty.db", root / "library")
+            document = service.import_document(source).document
+            first, second = service.list_chapters(document.id)
+            first_content = service.get_content(document.id, first.id)
+            old_second_start = second.start_offset
+
+            self.assertEqual("第一章", first_content.title)
+            self.assertNotIn("第一章", first_content.body_text)
+            self.assertGreater(first_content.body_start_offset, first_content.section_start_offset)
+            self.assertEqual(count_text_units(source_text), document.word_count)
+
+            service.save_draft(
+                document.id,
+                chapter_id=first.id,
+                base_revision_id=first_content.revision_id,
+                title="新标题",
+                text="加长正文 ABC🙂。",
+            )
+            service.commit_draft(document.id, first.id)
+            updated = service.list_chapters(document.id)
+            updated_first, updated_second = updated
+            updated_content = service.get_content(document.id, updated_first.id)
+            stored = Path(service.list_revisions(document.id)[0].storage_path).read_text(encoding="utf-8")
+
+            self.assertEqual("新标题", updated_first.title)
+            self.assertTrue(stored[updated_first.start_offset:updated_first.end_offset].lstrip("\n").startswith("新标题\n\n"))
+            self.assertGreater(updated_second.start_offset, old_second_start)
+            self.assertEqual(count_text_units(stored), service.list_documents()[0].word_count)
+
+    def test_regex_split_creates_revision_and_old_revision_can_be_restored(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            source = root / "split.txt"
+            source.write_text("第一章\n正文\n第二章\n正文\n", encoding="utf-8")
+            service = DocumentLibraryService(root / "rusty.db", root / "library")
+            document = service.import_document(source).document
+            original = service.list_revisions(document.id)[0]
+            preview = service.preview_regex_split(document.id, r"^第.+章$")
+
+            saved = service.apply_regex_split(document.id, r"^第.+章$", preview.preview_token)
+
+            self.assertEqual(2, len(saved))
+            current = service.list_revisions(document.id)[0]
+            self.assertEqual("split_regex", current.revision_type)
+            self.assertEqual(2, len(service.list_revisions(document.id)))
+            restored = service.activate_revision(document.id, original.id)
+            self.assertEqual(original.storage_path, restored.storage_path)
+
     def test_categories_are_many_to_many_and_independent_from_tags(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)

@@ -106,7 +106,7 @@ class DocumentSplitAIService:
             int(proposal["document_id"]),
             source_revision_id=int(proposal["source_revision_id"]),
             boundaries=validated,
-            revision_type="ai_split",
+            revision_type="split_ai",
             metadata={
                 "proposal_id": proposal_id,
                 "model_invocation_id": proposal["model_invocation_id"],

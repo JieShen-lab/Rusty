@@ -9,7 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from rusty.db import CURRENT_SCHEMA_VERSION, connect, initialize_database
-from rusty.db.schema import _migrate_to_v14, _migrate_to_v15, _migrate_to_v17
+from rusty.db.schema import _migrate_to_v14, _migrate_to_v15, _migrate_to_v17, _migrate_to_v18
 
 
 class SchemaTests(unittest.TestCase):
@@ -94,6 +94,7 @@ class SchemaTests(unittest.TestCase):
         self.assertNotIn("material_category_links", table_names)
         self.assertIn("document_categories", table_names)
         self.assertIn("document_category_links", table_names)
+        self.assertIn("library_document_drafts", table_names)
         self.assertIn("project_outline_bindings", table_names)
         self.assertIn("project_character_bindings", table_names)
         self.assertIn("chapter_stage_status", table_names)
@@ -114,6 +115,54 @@ class SchemaTests(unittest.TestCase):
 
         self.assertEqual(CURRENT_SCHEMA_VERSION, version)
         self.assertEqual(1, split_rule_count)
+
+    def test_v17_to_v18_draft_migration_is_idempotent_and_scopes_null_chapter(self) -> None:
+        connection = sqlite3.connect(":memory:")
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.executescript(
+            """
+            CREATE TABLE library_documents (id INTEGER PRIMARY KEY);
+            CREATE TABLE library_document_revisions (
+                id INTEGER PRIMARY KEY,
+                document_id INTEGER NOT NULL
+            );
+            CREATE TABLE library_document_chapters (
+                id INTEGER PRIMARY KEY,
+                document_id INTEGER NOT NULL,
+                revision_id INTEGER NOT NULL
+            );
+            INSERT INTO library_documents (id) VALUES (1);
+            INSERT INTO library_document_revisions (id, document_id) VALUES (10, 1);
+            INSERT INTO library_document_chapters (id, document_id, revision_id) VALUES (20, 1, 10);
+            """
+        )
+
+        _migrate_to_v18(connection)
+        _migrate_to_v18(connection)
+        connection.execute(
+            """
+            INSERT INTO library_document_drafts
+                (document_id, chapter_id, base_revision_id, title, text)
+            VALUES (1, NULL, 10, '全文', '草稿')
+            """
+        )
+        with self.assertRaises(sqlite3.IntegrityError):
+            connection.execute(
+                """
+                INSERT INTO library_document_drafts
+                    (document_id, chapter_id, base_revision_id, title, text)
+                VALUES (1, NULL, 10, '重复', '草稿')
+                """
+            )
+        connection.execute(
+            """
+            INSERT INTO library_document_drafts
+                (document_id, chapter_id, base_revision_id, title, text)
+            VALUES (1, 20, 10, '章节', '草稿')
+            """
+        )
+        self.assertEqual(2, connection.execute("SELECT COUNT(*) FROM library_document_drafts").fetchone()[0])
 
     def test_v16_document_tags_migrate_to_v17_categories_idempotently(self) -> None:
         connection = sqlite3.connect(":memory:")

@@ -28,7 +28,9 @@ import type {
   LibraryDocument,
   LibraryDocumentCleanupResult,
   LibraryDocumentChapter,
+  LibraryDocumentCreateChapterResult,
   LibraryDocumentContent,
+  LibraryDocumentDraft,
   LibraryDocumentExportResult,
   LibraryDocumentImportResult,
   LibraryDocumentRevision,
@@ -288,6 +290,43 @@ export function getLibraryDocumentContent(documentId: number, chapterId?: number
   return request<LibraryDocumentContent>(`/api/documents/${documentId}/content${query}`);
 }
 
+export function getLibraryDocumentDraft(documentId: number, chapterId?: number | null) {
+  const query = chapterId == null ? '' : `?chapter_id=${chapterId}`;
+  return request<LibraryDocumentDraft | null>(`/api/documents/${documentId}/draft${query}`);
+}
+
+export function saveLibraryDocumentDraft(
+  documentId: number,
+  baseRevisionId: number,
+  title: string,
+  text: string,
+  chapterId?: number | null,
+) {
+  return request<LibraryDocumentDraft>(`/api/documents/${documentId}/draft`, {
+    method: 'PUT',
+    body: JSON.stringify({
+      base_revision_id: baseRevisionId,
+      title,
+      text,
+      chapter_id: chapterId ?? null,
+    }),
+  });
+}
+
+export function commitLibraryDocumentDraft(documentId: number, chapterId?: number | null) {
+  return request<LibraryDocumentCleanupResult>(`/api/documents/${documentId}/draft/commit`, {
+    method: 'POST',
+    body: JSON.stringify({ chapter_id: chapterId ?? null }),
+  });
+}
+
+export function discardLibraryDocumentDraft(documentId: number, chapterId?: number | null) {
+  return request<{ ok: boolean }>(`/api/documents/${documentId}/draft/discard`, {
+    method: 'POST',
+    body: JSON.stringify({ chapter_id: chapterId ?? null }),
+  });
+}
+
 export function saveLibraryDocumentContent(documentId: number, text: string, title?: string | null, chapterId?: number | null) {
   return request<LibraryDocumentCleanupResult>(`/api/documents/${documentId}/content`, {
     method: 'POST',
@@ -306,12 +345,12 @@ export function createLibraryDocumentChapter(
   documentId: number,
   title: string,
   text: string,
-  position: 'before' | 'after' | 'end',
-  currentChapterId?: number | null,
+  position: 'before' | 'after',
+  anchorChapterId?: number | null,
 ) {
-  return request<LibraryDocumentCleanupResult>(`/api/documents/${documentId}/chapters`, {
+  return request<LibraryDocumentCreateChapterResult>(`/api/documents/${documentId}/chapters`, {
     method: 'POST',
-    body: JSON.stringify({ title, text, position, current_chapter_id: currentChapterId ?? null }),
+    body: JSON.stringify({ title, text, position, anchor_chapter_id: anchorChapterId ?? null }),
   });
 }
 
@@ -322,10 +361,15 @@ export function previewRegexSplit(documentId: number, pattern: string) {
   });
 }
 
-export function applyRegexSplit(documentId: number, pattern: string, previewToken: string) {
+export function applyRegexSplit(
+  documentId: number,
+  pattern: string,
+  previewToken: string,
+  chapters?: SplitPreview['chapters'],
+) {
   return request<LibraryDocumentChapter[]>(`/api/documents/${documentId}/split/regex/apply`, {
     method: 'POST',
-    body: JSON.stringify({ pattern, preview_token: previewToken }),
+    body: JSON.stringify({ pattern, preview_token: previewToken, chapters: chapters ?? null }),
   });
 }
 

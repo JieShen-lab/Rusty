@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .connection import session
 
-CURRENT_SCHEMA_VERSION = 17
+CURRENT_SCHEMA_VERSION = 18
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -678,6 +678,19 @@ CREATE TABLE IF NOT EXISTS library_document_chapters (
     FOREIGN KEY (revision_id) REFERENCES library_document_revisions(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS library_document_drafts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    document_id INTEGER NOT NULL,
+    chapter_id INTEGER,
+    base_revision_id INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    text TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (document_id) REFERENCES library_documents(id) ON DELETE CASCADE,
+    FOREIGN KEY (chapter_id) REFERENCES library_document_chapters(id) ON DELETE CASCADE,
+    FOREIGN KEY (base_revision_id) REFERENCES library_document_revisions(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS document_library_settings (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     storage_path TEXT NOT NULL,
@@ -702,6 +715,14 @@ CREATE INDEX IF NOT EXISTS idx_library_revisions_document_number
     ON library_document_revisions(document_id, revision_number DESC);
 CREATE INDEX IF NOT EXISTS idx_library_chapters_revision_order
     ON library_document_chapters(revision_id, chapter_index);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_library_drafts_document_full
+    ON library_document_drafts(document_id)
+    WHERE chapter_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_library_drafts_document_chapter
+    ON library_document_drafts(document_id, chapter_id)
+    WHERE chapter_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_library_drafts_base_revision
+    ON library_document_drafts(base_revision_id, updated_at DESC);
 """
 
 DEFAULT_SEED_SQL = """
@@ -2043,6 +2064,34 @@ def _migrate_to_v17(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_to_v18(connection: sqlite3.Connection) -> None:
+    """Add revision-bound autosave drafts without mutating revision files."""
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS library_document_drafts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            document_id INTEGER NOT NULL,
+            chapter_id INTEGER,
+            base_revision_id INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            text TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (document_id) REFERENCES library_documents(id) ON DELETE CASCADE,
+            FOREIGN KEY (chapter_id) REFERENCES library_document_chapters(id) ON DELETE CASCADE,
+            FOREIGN KEY (base_revision_id) REFERENCES library_document_revisions(id) ON DELETE CASCADE
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_library_drafts_document_full
+            ON library_document_drafts(document_id)
+            WHERE chapter_id IS NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_library_drafts_document_chapter
+            ON library_document_drafts(document_id, chapter_id)
+            WHERE chapter_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_library_drafts_base_revision
+            ON library_document_drafts(base_revision_id, updated_at DESC);
+        """
+    )
+
+
 def _safe_json_list(value: object) -> list[dict[str, object]]:
     try:
         parsed = json.loads(str(value or "[]"))
@@ -2410,6 +2459,7 @@ MIGRATIONS = {
     15: _migrate_to_v15,
     16: _migrate_to_v16,
     17: _migrate_to_v17,
+    18: _migrate_to_v18,
 }
 
 

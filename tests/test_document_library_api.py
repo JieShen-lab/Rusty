@@ -16,6 +16,84 @@ from backend.api import create_app
 
 
 class DocumentLibraryApiTests(unittest.TestCase):
+    def test_document_draft_api_autosaves_commits_once_and_reports_conflict(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            source = root / "draft-api.txt"
+            source.write_text("第一章\n\n正文。\n\n第二章\n\n尾声。\n", encoding="utf-8")
+            environment = {
+                "RUSTY_API_TOKEN": "document-test-token",
+                "RUSTY_DOCUMENT_LIBRARY_PATH": str(root / "library"),
+            }
+            headers = {"X-Rusty-Token": "document-test-token"}
+            with patch.dict(os.environ, environment):
+                client = TestClient(create_app(root / "rusty.db"))
+                imported = client.post("/api/documents/import", headers=headers, json={"source_path": str(source)})
+                document_id = imported.json()["document"]["id"]
+                chapter = client.get(f"/api/documents/{document_id}/chapters").json()[0]
+                content = client.get(
+                    f"/api/documents/{document_id}/content",
+                    params={"chapter_id": chapter["id"]},
+                ).json()
+                before = client.get(f"/api/documents/{document_id}/revisions").json()
+                saved = client.put(
+                    f"/api/documents/{document_id}/draft",
+                    headers=headers,
+                    json={
+                        "chapter_id": chapter["id"],
+                        "base_revision_id": content["revision_id"],
+                        "title": "新标题",
+                        "text": "草稿正文",
+                    },
+                )
+                after_autosave = client.get(f"/api/documents/{document_id}/revisions").json()
+                committed = client.post(
+                    f"/api/documents/{document_id}/draft/commit",
+                    headers=headers,
+                    json={"chapter_id": chapter["id"]},
+                )
+
+                self.assertEqual(200, saved.status_code)
+                self.assertEqual(len(before), len(after_autosave))
+                self.assertEqual(200, committed.status_code)
+                self.assertEqual(len(before) + 1, len(client.get(f"/api/documents/{document_id}/revisions").json()))
+                self.assertIsNone(
+                    client.get(
+                        f"/api/documents/{document_id}/draft",
+                        params={"chapter_id": chapter["id"]},
+                    ).json()
+                )
+
+                current_chapter = client.get(f"/api/documents/{document_id}/chapters").json()[0]
+                current_content = client.get(
+                    f"/api/documents/{document_id}/content",
+                    params={"chapter_id": current_chapter["id"]},
+                ).json()
+                client.put(
+                    f"/api/documents/{document_id}/draft",
+                    headers=headers,
+                    json={
+                        "chapter_id": current_chapter["id"],
+                        "base_revision_id": current_content["revision_id"],
+                        "title": current_content["title"],
+                        "text": "会冲突的草稿",
+                    },
+                )
+                full = client.get(f"/api/documents/{document_id}/content").json()
+                client.post(
+                    f"/api/documents/{document_id}/content",
+                    headers=headers,
+                    json={"chapter_id": None, "title": full["title"], "text": full["body_text"] + "新版本"},
+                )
+                conflict = client.post(
+                    f"/api/documents/{document_id}/draft/commit",
+                    headers=headers,
+                    json={"chapter_id": current_chapter["id"]},
+                )
+
+            self.assertEqual(409, conflict.status_code)
+            self.assertEqual("document_draft_conflict", conflict.json()["error"])
+
     def test_import_and_list_document(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)
@@ -119,6 +197,7 @@ class DocumentLibraryApiTests(unittest.TestCase):
             self.assertEqual(200, exported_epub.status_code)
             self.assertTrue(txt_output.is_file())
             self.assertTrue(epub_output.is_file())
+            self.assertEqual(200, migrated.status_code, migrated.text)
             self.assertEqual(str((root / "migrated-library").resolve()), migrated.json()["storage_path"])
             self.assertEqual(200, listed.status_code)
             self.assertEqual(1, len(listed.json()))
