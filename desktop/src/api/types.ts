@@ -593,6 +593,7 @@ export type CharacterExtractionCandidate = {
 
 export type CharacterExtractionPreview = {
   preview_token: string;
+  expires_at: string;
   source_summary: CharacterSourceSummary;
   candidates: CharacterExtractionCandidate[];
 };
@@ -615,6 +616,7 @@ export type MaterialSourceSummary = {
   kind:
     | 'manual'
     | 'document_selection'
+    | 'project_selection'
     | 'file_import'
     | 'pasted_text'
     | 'ai_extraction'
@@ -701,14 +703,18 @@ export type MaterialAISettings = {
   model_id: number | null;
   detail_level: StyleDetailLevel;
   max_candidates: number;
-  generate_tags: boolean;
-  custom_requirements: string;
   system_prompt: string;
+  user_prompt_template: string;
+  analysis_dimensions: string[];
+  generate_general_tags: boolean;
+  generate_applicable_scene_tags: boolean;
+  custom_requirements: string;
   updated_at: string;
 };
 
 export type MaterialExtractionCandidate = {
   candidate_id: string;
+  material_type: MaterialType;
   selected: boolean;
   name: string;
   description: string;
@@ -718,14 +724,19 @@ export type MaterialExtractionCandidate = {
   confirmed_general_tags?: string[];
   confirmed_applicable_scene_tags?: string[];
   category_ids?: number[];
+  evidence: Array<Record<string, unknown>>;
   evidence_summary: string;
+  confidence: number;
+  warnings: string[];
 };
 
 export type MaterialExtractionPreview = {
   preview_token: string;
+  expires_at: string;
   task_type: MaterialAITask;
   material_type: MaterialType;
   source_summary: MaterialSourceSummary;
+  prompt_snapshot: Record<string, unknown>;
   candidates: MaterialExtractionCandidate[];
 };
 

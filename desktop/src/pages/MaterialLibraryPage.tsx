@@ -260,7 +260,6 @@ export function MaterialLibraryPage() {
 
       <div className="document-library-layout material-browser-layout material-library-unified">
         <aside className="document-tag-panel material-library-sidebar">
-          <header><h2>素材库</h2></header>
           <nav aria-label="素材范围">
             {MATERIAL_SECTIONS.map((section) => {
               const sectionCategories = categories.filter((item) => item.material_type === section.type);
@@ -502,6 +501,12 @@ export function MaterialLibraryPage() {
               });
               if (result.errors.length) {
                 setError(result.errors.map((item) => item.error).filter(Boolean).join('；'));
+                return;
+              }
+              const selectedCount = candidates.filter((item) => item.selected).length;
+              if (result.created.length !== selectedCount || result.created.length === 0) {
+                setError('素材创建未全部成功，请修改候选后重试。');
+                return;
               }
               setNewType(null);
               setExtractionLaunch(null);
@@ -773,6 +778,10 @@ function NewMaterialWorkflow({
                           return;
                         }
                         void file.text().then((value) => {
+                          if (value.length > 50000) {
+                            onError('来源文本不能超过 50,000 字符。');
+                            return;
+                          }
                           setText(value);
                           setFileName(file.name);
                           setSourceMode('file');
@@ -787,6 +796,7 @@ function NewMaterialWorkflow({
                 <textarea
                   aria-label="来源文本"
                   className="material-source-textarea"
+                  maxLength={50000}
                   onChange={(event) => setText(event.target.value)}
                   placeholder="粘贴文本，或从文档选区进入此流程"
                   value={text}
@@ -798,12 +808,15 @@ function NewMaterialWorkflow({
           </div>
         </>
       ) : (
-        <CandidateEditor
-          candidates={candidates}
-          categories={categories}
-          onChange={setCandidates}
-          tags={tags}
-        />
+        <>
+          <div className="inline-alert" role="status">来源：{preview.source_summary.label}</div>
+          <CandidateEditor
+            candidates={candidates}
+            categories={categories}
+            onChange={setCandidates}
+            tags={tags}
+          />
+        </>
       )}
     </LibraryDialog>
   );
@@ -840,6 +853,11 @@ function CandidateEditor({
           <Field label="摘要">
             <textarea value={candidate.description} onChange={(event) => patch(candidate.candidate_id, { description: event.target.value })} />
           </Field>
+          <StructuredContentEditor
+            content={candidate.content}
+            materialType={candidate.material_type}
+            onChange={(content) => patch(candidate.candidate_id, { content })}
+          />
           <CandidateTags
             candidate={candidate}
             group="general"
@@ -1064,14 +1082,13 @@ function StructuredContentEditor({
             </div>
             {items.map((item, index) => (
               <div className="material-structured-row" key={item.id}>
-                <textarea
-                  aria-label={`${humanizeKey(key)} ${index + 1}`}
-                  value={item.summary}
-                  onChange={(event) => onChange({
+                <StructuredItemFields
+                  item={item}
+                  label={`${humanizeKey(key)} ${index + 1}`}
+                  materialType={materialType}
+                  onChange={(value) => onChange({
                     ...content,
-                    [key]: items.map((current) => current.id === item.id
-                      ? { ...current, summary: event.target.value }
-                      : current),
+                    [key]: items.map((current) => current.id === item.id ? value : current),
                   })}
                 />
                 <button
@@ -1101,22 +1118,88 @@ function StructuredContentEditor({
         const value = content[key];
         const objectValue = value && typeof value === 'object' ? value as Record<string, unknown> : {};
         return (
-          <Field key={key} label={key === 'climax' ? '高潮' : '结局'}>
-            <textarea
-              value={String(objectValue.summary ?? value ?? '')}
-              onChange={(event) => onChange({
+          <div className="material-structured-section" key={key}>
+            <strong>{key === 'climax' ? '高潮' : '结局'}</strong>
+            <StructuredItemFields
+              item={{
+                ...objectValue,
+                id: String(objectValue.id ?? key),
+                summary: String(objectValue.summary ?? value ?? ''),
+              }}
+              label={key === 'climax' ? '高潮' : '结局'}
+              materialType={materialType}
+              onChange={(next) => onChange({
                 ...content,
-                [key]: {
-                  ...objectValue,
-                  id: String(objectValue.id ?? key),
-                  summary: event.target.value,
-                },
+                [key]: next,
               })}
             />
-          </Field>
+          </div>
         );
       }) : null}
     </section>
+  );
+}
+
+const PLOT_ITEM_ARRAY_FIELDS = [
+  'causes',
+  'effects',
+  'characters',
+  'locations',
+  'must_keep_details',
+  'forbidden_changes',
+] as const;
+
+function StructuredItemFields({
+  item,
+  label,
+  materialType,
+  onChange,
+}: {
+  item: { id: string; summary: string; [key: string]: unknown };
+  label: string;
+  materialType: MaterialType;
+  onChange: (value: { id: string; summary: string; [key: string]: unknown }) => void;
+}) {
+  const patch = (value: Record<string, unknown>) => onChange({ ...item, ...value });
+  return (
+    <div className="material-structured-fields">
+      <label>
+        <span>标题或名称</span>
+        <input
+          aria-label={`${label} 标题`}
+          value={String(item.title ?? '')}
+          onChange={(event) => patch({ title: event.target.value })}
+        />
+      </label>
+      <label>
+        <span>摘要或正文</span>
+        <textarea
+          aria-label={label}
+          value={item.summary}
+          onChange={(event) => patch({ summary: event.target.value })}
+        />
+      </label>
+      <label>
+        <span>证据或来源提示</span>
+        <textarea
+          aria-label={`${label} 证据`}
+          value={String(item.evidence_summary ?? item.source_hint ?? '')}
+          onChange={(event) => patch({ evidence_summary: event.target.value })}
+        />
+      </label>
+      {materialType === 'plot_skeleton' ? PLOT_ITEM_ARRAY_FIELDS.map((field) => (
+        <label key={field}>
+          <span>{humanizeKey(field)}（每行一项）</span>
+          <textarea
+            aria-label={`${label} ${humanizeKey(field)}`}
+            value={stringArray(item[field]).join('\n')}
+            onChange={(event) => patch({
+              [field]: event.target.value.split('\n').map((value) => value.trim()).filter(Boolean),
+            })}
+          />
+        </label>
+      )) : null}
+    </div>
   );
 }
 
@@ -1318,9 +1401,12 @@ function MaterialSettingsDialog({
               model_id: current.model_id,
               detail_level: current.detail_level,
               max_candidates: current.max_candidates,
-              generate_tags: current.generate_tags,
-              custom_requirements: current.custom_requirements,
               system_prompt: current.system_prompt,
+              user_prompt_template: current.user_prompt_template,
+              analysis_dimensions: current.analysis_dimensions,
+              generate_general_tags: current.generate_general_tags,
+              generate_applicable_scene_tags: current.generate_applicable_scene_tags,
+              custom_requirements: current.custom_requirements,
             }).then((value) => {
               setSettings((items) => items.map((item) => item.task_type === task ? value : item));
               onClose();
@@ -1354,16 +1440,32 @@ function MaterialSettingsDialog({
           <Field label="最大候选数">
             <input max={20} min={1} type="number" value={current.max_candidates} onChange={(event) => patch({ max_candidates: Number(event.target.value) || 1 })} />
           </Field>
-          <label className="wide material-settings-check">
-            <input checked={current.generate_tags} onChange={(event) => patch({ generate_tags: event.target.checked })} type="checkbox" />
-            生成通用标签和适用场景标签建议
+          <label className="material-settings-check">
+            <input checked={current.generate_general_tags} onChange={(event) => patch({ generate_general_tags: event.target.checked })} type="checkbox" />
+            生成通用标签建议
           </label>
+          <label className="material-settings-check">
+            <input checked={current.generate_applicable_scene_tags} onChange={(event) => patch({ generate_applicable_scene_tags: event.target.checked })} type="checkbox" />
+            生成适用场景标签建议
+          </label>
+          <Field className="wide" label="分析维度（每行一项）">
+            <textarea
+              value={current.analysis_dimensions.join('\n')}
+              onChange={(event) => patch({
+                analysis_dimensions: event.target.value.split('\n').map((item) => item.trim()).filter(Boolean),
+              })}
+            />
+          </Field>
+          <Field className="wide" label="用户提示词模板">
+            <textarea value={current.user_prompt_template} onChange={(event) => patch({ user_prompt_template: event.target.value })} />
+          </Field>
           <Field className="wide" label="附加要求">
             <textarea value={current.custom_requirements} onChange={(event) => patch({ custom_requirements: event.target.value })} />
           </Field>
           <Field className="wide" label="系统提示词（不会显示 API key）">
             <textarea className="material-system-prompt" value={current.system_prompt} onChange={(event) => patch({ system_prompt: event.target.value })} />
           </Field>
+          <p className="wide material-form-hint">最后更新：{current.updated_at || '尚未记录'}</p>
         </div>
       ) : <LibraryEmptyState title="正在读取设置…" />}
     </LibraryDialog>
@@ -1454,6 +1556,12 @@ function humanizeKey(key: string) {
     source_cues: '来源线索',
     avoidances: '避免事项',
     applicable_conditions: '适用条件',
+    causes: '原因',
+    effects: '影响',
+    characters: '人物',
+    locations: '地点',
+    must_keep_details: '必须保留',
+    forbidden_changes: '禁止改动',
   };
   return labels[key] ?? key;
 }
@@ -1478,6 +1586,12 @@ function moveItem<T>(items: T[], from: number, to: number) {
   const [item] = next.splice(from, 1);
   next.splice(to, 0, item);
   return next;
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string')
+    : typeof value === 'string' && value.trim() ? [value] : [];
 }
 
 function errorMessage(reason: unknown) {

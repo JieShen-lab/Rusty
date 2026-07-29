@@ -10,8 +10,8 @@ Rusty 是本地优先的小说资料管理、文档整理与 AI 辅助改写桌�
 - 管理统一的全局素材资产、公共/工程角色卡和独立文档库；素材不再创建公共/工程副本。
 - 使用独立标签和类型专属分类组织素材；素材标签分为通用标签与适用场景标签，公共角色另有独立的多对多分类。
 - 编辑文档正文，保存 revision，合并文档、新增章节、正则分章和文字整理。
-- 从文档正文选区进入角色 AI 提取候选流程；候选与标签建议经用户确认后才写入角色库。
-- 文档或工程选区可进入素材“来源 → preview → 人工确认 → apply”流程，也可只保存为待整理来源；AI preview 不写素材、标签或分类。
+- 从文档正文选区进入角色 AI 提取候选流程；Preview 不写数据，Apply 在同一事务中创建角色、标签、分类和工程绑定，成功后 Token 单次消费，失败时整批回滚并允许重试。
+- 文档或工程选区可进入素材“来源 → preview → 人工确认 → apply”流程，也可只保存为待整理来源；Preview 不写素材、标签或分类，Apply 整批原子提交。完整来源最多 50,000 字符，模型采样最多 16,000 字符且不会覆盖最终 `raw_text`。
 - 工程通过剧情骨架/场景素材各自的标签筛选和手动固定 ID 使用统一素材，自动检索不会纳入未分析素材。
 - “新建角色”提供互不依赖的手动创建和 AI 文本提取模式；AI 提取采用 preview/apply 两阶段接口。
 - 公共角色添加到工程时创建带公共基线快照的独立副本并自动绑定；工程角色可只导出勾选的稳定字段为新的公共角色，项目动态状态仍留在事实账本和场景人物状态中。
@@ -78,7 +78,7 @@ python -m rusty.db.schema rusty.db
 - `src/rusty/services/prompt_service.py`: prompt template CRUD and project-level prompt overrides
 - `src/rusty/services/pipeline_service.py`: AI summary, scene detection, rewrite, retry, pause, and merge workflow
 - `src/rusty/db/connection.py`: SQLite connection defaults
-- `src/rusty/db/schema.py`: v21 schema, migrations, indexes, and seed data
+- `src/rusty/db/schema.py`: v23 schema, migrations, indexes, and seed data
 - `tests/`: database, service, API, pipeline, importer/exporter, and UI tests
 
 旧版 PySide6 入口仍可通过 `.\.venv\Scripts\rusty` 启动，但新增功能以 Electron 桌面端为准。

@@ -50,6 +50,7 @@ export function CharacterCreateDialog({
   const [projectId, setProjectId] = useState<number | null>(initialProjectId);
   const [categoryIds, setCategoryIds] = useState<number[]>([]);
   const [previewToken, setPreviewToken] = useState('');
+  const [sourceSummaryLabel, setSourceSummaryLabel] = useState('');
   const [candidates, setCandidates] = useState<CharacterExtractionCandidate[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -69,6 +70,7 @@ export function CharacterCreateDialog({
         source_metadata: initialLaunch?.sourceMetadata ?? {},
       });
       setPreviewToken(result.preview_token);
+      setSourceSummaryLabel(result.source_summary.label);
       // Suggestions are deliberately not confirmed until the user clicks them.
       setCandidates(result.candidates.map((candidate) => ({ ...candidate, confirmed_tags: [] })));
     } catch (reason) {
@@ -107,11 +109,15 @@ export function CharacterCreateDialog({
         category_ids: scope === 'public' ? categoryIds : [],
       });
       const ids = result.created.flatMap((item) => item.card_id === null ? [] : [item.card_id]);
-      if (result.errors.length) {
-        setResultMessage(`已创建 ${ids.length} 个角色，${result.errors.length} 个失败：${result.errors.map((item) => item.error).join('；')}`);
+      if (result.errors.length || ids.length !== selected.length) {
+        setError(
+          result.errors.map((item) => item.error).filter(Boolean).join('；')
+          || '角色创建未全部成功，请修改候选后重试。',
+        );
+        return;
       }
-      if (ids.length) onCreated(ids, scope, scope === 'project' ? projectId : null);
-      else setError(result.errors.map((item) => item.error).join('；') || '未创建任何角色。');
+      setResultMessage(`已创建 ${ids.length} 个角色。`);
+      onCreated(ids, scope, scope === 'project' ? projectId : null);
     } catch (reason) {
       setError(errorMessage(reason));
     } finally {
@@ -170,7 +176,13 @@ export function CharacterCreateDialog({
                     hidden
                     onChange={(event) => {
                       const file = event.target.files?.[0];
-                      if (file) void file.text().then(setText);
+                      if (file) void file.text().then((value) => {
+                        if (value.length > 50000) {
+                          setError('来源文本不能超过 50,000 字符。');
+                          return;
+                        }
+                        setText(value);
+                      });
                     }}
                     type="file"
                   />
@@ -193,6 +205,7 @@ export function CharacterCreateDialog({
           ) : (
             <div className="character-candidate-list">
               <header><strong>候选角色</strong><span>确认前不会写入角色库；标签建议也需逐个确认。</span></header>
+              <div className="inline-alert" role="status">来源：{sourceSummaryLabel}</div>
               {candidates.map((candidate) => (
                 <CandidateEditor
                   candidate={candidate}

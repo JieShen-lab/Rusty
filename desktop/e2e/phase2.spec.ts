@@ -26,8 +26,8 @@ const projectCharacter = {
   source_summary: { kind: 'public_copy' as const, label: '公共角色“林舟”', project_id: 1, source_card_id: 1 },
 };
 const materials = [
-  { id: 1, material_type: 'scene_reference', scope: 'public', project_id: null, project_name: null, name: '雨夜追逐', description: '雨夜动作参考', detail_level: 'standard', raw_text: '', content: {}, analysis_status: 'unanalyzed', source_metadata: {}, import_metadata: {}, source_material_id: null, source_version: null, timeline_start_chapter: null, timeline_end_chapter: null, sort_order: 0, version: 1, created_at: '', updated_at: '', tags: [] },
-  { id: 2, material_type: 'plot_skeleton', scope: 'public', project_id: null, project_name: null, name: '误会解除', description: '事件骨架', detail_level: 'standard', raw_text: '', content: {}, analysis_status: 'analyzed', source_metadata: {}, import_metadata: {}, source_material_id: null, source_version: null, timeline_start_chapter: null, timeline_end_chapter: null, sort_order: 0, version: 1, created_at: '', updated_at: '', tags: [] },
+  { id: 1, material_type: 'scene_reference', scope: 'public', project_id: null, project_name: null, name: '雨夜追逐', description: '雨夜动作参考', detail_level: 'standard', raw_text: '', content: { schema_version: 1, summary: '雨夜追逐', key_beats: [{ id: 'beat-fixed', title: '跃上屋顶', summary: '快速追逐', evidence_summary: '屋顶湿滑', unknown: 'keep' }], actions: [], environment: [], sensory: [], writing_guidance: [], source_cues: [], avoidances: [], applicable_conditions: [], legacy_extra: { keep: true } }, analysis_status: 'analyzed', source_metadata: {}, import_metadata: {}, source_material_id: null, source_version: null, timeline_start_chapter: null, timeline_end_chapter: null, sort_order: 0, version: 1, created_at: '', updated_at: '', tags: [] },
+  { id: 2, material_type: 'plot_skeleton', scope: 'public', project_id: null, project_name: null, name: '误会解除', description: '事件骨架', detail_level: 'standard', raw_text: '', content: { schema_version: 1, premise: '误会造成分离', stages: [{ id: 'stage-fixed', title: '误会发生', summary: '两人争执', causes: ['错误线索'], effects: ['暂时分离'], characters: ['林舟'], locations: ['旧城'], must_keep_details: ['钥匙'], forbidden_changes: ['不能提前和解'], unknown: 'keep' }], conflicts: [], turning_points: [], climax: { id: 'climax', title: '真相', summary: '发现真相' }, resolution: { id: 'resolution', title: '和解', summary: '解除误会' }, hooks: [], legacy_extra: { keep: true } }, analysis_status: 'analyzed', source_metadata: {}, import_metadata: {}, source_material_id: null, source_version: null, timeline_start_chapter: null, timeline_end_chapter: null, sort_order: 0, version: 1, created_at: '', updated_at: '', tags: [] },
 ];
 const baseDocumentItems = [
   { id: 1, title: '示例长篇', author: '作者', description: null, source_filename: 'novel.txt', source_format: 'txt', storage_path: 'D:/Rusty/novel-v2.txt', source_size_bytes: 100, stored_size_bytes: 100, chapter_count: 1, word_count: 16, status: 'ready', favorite: false, tags: ['长篇'], is_project_document: false, category_ids: [11, 12], categories: ['研究', '待整理'], project_ids: [], created_at: '2026-07-29 10:00:00', updated_at: '' },
@@ -50,6 +50,7 @@ async function mockApi(page: Page) {
   let documentDraft: { id: number; document_id: number; chapter_id: number | null; base_revision_id: number; title: string; text: string; updated_at: string } | null = null;
   let documentRevisionNumber = 1;
   let documentBody = '林舟推门而入，看见桌上的钥匙。';
+  let materialItems = materials.map((item) => ({ ...item, content: structuredClone(item.content) }));
   let documentChapterTitle = '第一章';
   let volumeTitle = '第七卷 雨夜';
   let extraChapter: { id: number; document_id: number; revision_id: number; index: number; title: string; start_line: number; end_line: number; start_offset: number; end_offset: number; word_count: number; volume_id: number } | null = null;
@@ -63,7 +64,11 @@ async function mockApi(page: Page) {
     else if (path === '/api/character-projects/summary') body = projects.map((project, index) => ({ project_id: project.id, project_name: project.name, character_count: index === 0 ? 1 : 0, updated_at: project.updated_at }));
     else if (path === '/api/models') body = [{ id: 1, display_name: '测试模型', provider: 'openai_compatible', base_url: '', model_name: 'test', is_default: true, created_at: '', updated_at: '' }];
     else if (path === '/api/character-extraction/settings') body = { model_id: 1, detail_level: 'standard', max_candidates: 8, extract_all_characters: true, generate_tags: true, generate_appearance: true, generate_relationships: true, generate_personality: true, generate_speech_style: true, generate_action_constraints: true, generate_anti_ooc_rules: true, generate_abilities_background: true, custom_requirements: '', system_prompt: '不得补全无证据事实', prompt_preview: '不得补全无证据事实' };
-    else if (path === '/api/characters/extract/preview') body = { preview_token: 'preview-test', source_summary: { kind: 'ai_extraction', label: 'AI 文本提取' }, candidates: [{ candidate_id: 'alice', selected: true, name: '林舟', aliases: [], description: '调查者', identity: '调查者', age: '', setting_text: '', relationship_notes: '寻找阿音', personality: '冷静', speech_style: '', action_constraints: '', anti_ooc_rules: '', profile: {}, custom_fields: [], suggested_tags: ['主角', '冷静'], evidence_summary: '林舟主动调查钥匙。' }, { candidate_id: 'ayin', selected: true, name: '阿音', aliases: [], description: '线索提供者', identity: '', age: '', setting_text: '', relationship_notes: '', personality: '', speech_style: '', action_constraints: '', anti_ooc_rules: '', profile: {}, custom_fields: [], suggested_tags: [], evidence_summary: '阿音递出钥匙。' }] };
+    else if (path === '/api/characters/extract/preview') {
+      const request = route.request().postDataJSON() as { source_metadata?: Record<string, unknown> };
+      const metadata = request.source_metadata ?? {};
+      body = { preview_token: 'preview-test', expires_at: '2030-01-01T00:00:00Z', source_summary: metadata.document_title ? { kind: 'document_selection', label: `《${metadata.document_title}》 · ${metadata.chapter_title}`, document_id: metadata.document_id, chapter_id: metadata.chapter_id } : { kind: 'ai_extraction', label: 'AI 文本提取' }, candidates: [{ candidate_id: 'alice', selected: true, name: '林舟', aliases: [], description: '调查者', identity: '调查者', age: '', setting_text: '', relationship_notes: '寻找阿音', personality: '冷静', speech_style: '', action_constraints: '', anti_ooc_rules: '', profile: {}, custom_fields: [], suggested_tags: ['主角', '冷静'], evidence_summary: '林舟主动调查钥匙。' }, { candidate_id: 'ayin', selected: true, name: '阿音', aliases: [], description: '线索提供者', identity: '', age: '', setting_text: '', relationship_notes: '', personality: '', speech_style: '', action_constraints: '', anti_ooc_rules: '', profile: {}, custom_fields: [], suggested_tags: [], evidence_summary: '阿音递出钥匙。' }] };
+    }
     else if (path === '/api/characters/extract/apply') body = { created: [{ candidate_id: 'alice', card_id: 8, error: null }, { candidate_id: 'ayin', card_id: 9, error: null }], errors: [] };
     else if (path === '/api/projects/1/characters') body = { character_cards: [projectCharacter] };
     else if (path === '/api/projects/1/materials') body = materials.filter((item) => !url.searchParams.get('material_type') || item.material_type === url.searchParams.get('material_type')).map((item) => ({
@@ -78,24 +83,31 @@ async function mockApi(page: Page) {
     else if (path === '/api/characters') body = url.searchParams.has('category_id') ? [publicCharacter] : [publicCharacter];
     else if (path === '/api/material-categories') body = [];
     else if (path === '/api/material-ai-settings') body = [
-      { task_type: 'narrative_to_plot_skeleton', model_id: 1, detail_level: 'standard', max_candidates: 6, generate_tags: true, custom_requirements: '', system_prompt: '只使用来源证据。', updated_at: '' },
-      { task_type: 'plot_text_to_normalized_skeleton', model_id: 1, detail_level: 'standard', max_candidates: 6, generate_tags: true, custom_requirements: '', system_prompt: '不添加新情节。', updated_at: '' },
-      { task_type: 'source_text_to_scene_material', model_id: 1, detail_level: 'standard', max_candidates: 6, generate_tags: true, custom_requirements: '', system_prompt: '只整理场景写法。', updated_at: '' },
+      { task_type: 'narrative_to_plot_skeleton', model_id: 1, detail_level: 'standard', max_candidates: 6, generate_general_tags: true, generate_applicable_scene_tags: false, analysis_dimensions: ['premise', 'stages'], user_prompt_template: '整理剧情', custom_requirements: '', system_prompt: '只使用来源证据。', updated_at: '' },
+      { task_type: 'plot_text_to_normalized_skeleton', model_id: 1, detail_level: 'standard', max_candidates: 6, generate_general_tags: true, generate_applicable_scene_tags: false, analysis_dimensions: ['premise', 'stages'], user_prompt_template: '规范剧情', custom_requirements: '', system_prompt: '不添加新情节。', updated_at: '' },
+      { task_type: 'source_text_to_scene_material', model_id: 1, detail_level: 'standard', max_candidates: 6, generate_general_tags: true, generate_applicable_scene_tags: true, analysis_dimensions: ['summary', 'key_beats'], user_prompt_template: '整理场景', custom_requirements: '', system_prompt: '只整理场景写法。', updated_at: '' },
     ];
-    else if (path === '/api/material-extractions/preview') body = {
+    else if (path === '/api/material-extractions/preview') {
+      const request = route.request().postDataJSON() as { source_metadata?: Record<string, unknown> };
+      const metadata = request.source_metadata ?? {};
+      body = {
       preview_token: 'material-preview',
+      expires_at: '2030-01-01T00:00:00Z',
       task_type: 'source_text_to_scene_material',
       material_type: 'scene_reference',
-      source_summary: { kind: 'pasted_text', label: '粘贴文本' },
+      source_summary: metadata.document_title ? { kind: 'document_selection', label: `《${metadata.document_title}》 · ${metadata.chapter_title}`, document_id: metadata.document_id, chapter_id: metadata.chapter_id } : { kind: 'pasted_text', label: '粘贴文本' },
+      prompt_snapshot: { task_type: 'source_text_to_scene_material' },
       candidates: [{
-        candidate_id: 'scene-1', selected: true, name: '雨夜追逐', description: '雨夜动作参考',
-        content: { schema_version: 1, summary: '雨夜追逐的动作与感官提示。' },
+        candidate_id: 'scene-1', material_type: 'scene_reference', selected: true, name: '雨夜追逐', description: '雨夜动作参考',
+        content: { schema_version: 1, summary: '雨夜追逐的动作与感官提示。', key_beats: [{ id: 'beat-1', title: '跃上屋顶', summary: '快速追逐', evidence_summary: '湿滑屋顶' }] },
         suggested_general_tags: ['动作'], suggested_applicable_scene_tags: ['雨夜'],
-        evidence_summary: '原文明确包含雨夜和追逐。',
+        evidence: [{ quote: '雨夜追逐' }], evidence_summary: '原文明确包含雨夜和追逐。',
+        confidence: 0.9, warnings: [],
       }],
-    };
+      };
+    }
     else if (path === '/api/material-extractions/apply') body = { created: [{ candidate_id: 'scene-1', material_id: 1, error: null }], errors: [] };
-    else if (path === '/api/materials') body = materials.map((item) => ({
+    else if (path === '/api/materials') body = materialItems.map((item) => ({
       ...item,
       general_tags: item.tags,
       applicable_scene_tags: [],
@@ -106,6 +118,25 @@ async function mockApi(page: Page) {
     else if (/^\/api\/materials\/1\/analyze$/.test(path)) body = { material_id: 1, model_id: 1, invocation_id: 9, existing: {}, proposal: { summary: '模型分析摘要' } };
     else if (/^\/api\/materials\/1\/analysis\/apply$/.test(path)) body = { ...materials[0], analysis_status: 'analyzed', content: { summary: '模型分析摘要' } };
     else if (path === '/api/materials/import-json') body = { imported: [{ index: 0, id: 3, name: '导入场景', material_type: 'scene_reference' }], errors: [] };
+    else if (/^\/api\/materials\/\d+$/.test(path)) {
+      const materialId = Number(path.split('/').at(-1));
+      const current = materialItems.find((item) => item.id === materialId);
+      if (route.request().method() === 'POST' && current) {
+        const request = route.request().postDataJSON() as Record<string, unknown>;
+        materialItems = materialItems.map((item) => item.id === materialId
+          ? { ...item, ...request, version: item.version + 1 }
+          : item);
+      }
+      const updated = materialItems.find((item) => item.id === materialId) ?? current;
+      body = updated ? {
+        ...updated,
+        general_tags: updated.tags,
+        applicable_scene_tags: [],
+        category_ids: [],
+        categories: [],
+        source_summary: { kind: 'manual', label: '本地创建' },
+      } : {};
+    }
     else if (path === '/api/documents') body = documentItems;
     else if (path === '/api/document-tags') body = documentTags;
     else if (path === '/api/document-categories') body = documentCategories;
@@ -273,6 +304,105 @@ test('素材库使用统一范围、结构化新建与 AI 候选确认流程', a
   await expect(page.getByText('雨夜', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: '确认创建' }).click();
   await expect(page.getByText(/已创建 1 条素材/)).toBeVisible();
+});
+
+test('角色候选 Apply 失败后保留弹窗并允许修改重试', async ({ page }) => {
+  let attempts = 0;
+  await page.route('http://127.0.0.1:8765/api/characters/extract/apply', async (route) => {
+    attempts += 1;
+    await route.fulfill({
+      contentType: 'application/json',
+      status: 200,
+      body: JSON.stringify(attempts === 1
+        ? { created: [], errors: [{ candidate_id: 'ayin', card_id: null, error: '候选写入失败' }] }
+        : { created: [{ candidate_id: 'alice', card_id: 8, error: null }, { candidate_id: 'ayin', card_id: 9, error: null }], errors: [] }),
+    });
+  });
+  await page.goto('/characters');
+  await page.getByRole('button', { name: /新建角色/ }).first().click();
+  const dialog = page.getByRole('dialog', { name: '新建角色' });
+  await dialog.getByRole('tab', { name: '从文本提取' }).click();
+  await dialog.getByLabel('来源文本').fill('林舟接过阿音递来的钥匙。');
+  await dialog.getByRole('button', { name: '生成候选角色' }).click();
+  await dialog.getByRole('button', { name: /确认创建/ }).click();
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole('alert')).toContainText('候选写入失败');
+  await dialog.getByLabel('角色名称').nth(1).fill('阿音（修正）');
+  await dialog.getByRole('button', { name: /确认创建/ }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(attempts).toBe(2);
+});
+
+test('素材候选 Apply 失败后保留候选并允许修改重试', async ({ page }) => {
+  let attempts = 0;
+  await page.route('http://127.0.0.1:8765/api/material-extractions/apply', async (route) => {
+    attempts += 1;
+    await route.fulfill({
+      contentType: 'application/json',
+      status: 200,
+      body: JSON.stringify(attempts === 1
+        ? { created: [], errors: [{ candidate_id: 'scene-1', material_id: null, error: '素材事务已回滚' }] }
+        : { created: [{ candidate_id: 'scene-1', material_id: 1, error: null }], errors: [] }),
+    });
+  });
+  await page.goto('/materials');
+  await page.getByRole('button', { name: '新建场景素材', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByRole('tab', { name: '从来源整理' }).click();
+  await dialog.getByLabel('来源文本').fill('雨夜里，人物沿着湿滑屋顶快速追逐。');
+  await dialog.getByRole('button', { name: /生成候选/ }).click();
+  await dialog.getByRole('button', { name: '确认创建' }).click();
+  await expect(dialog).toBeVisible();
+  await expect(page.getByRole('alert')).toContainText('素材事务已回滚');
+  await dialog.getByLabel('名称').fill('雨夜追逐（修正）');
+  await dialog.getByRole('button', { name: '确认创建' }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(attempts).toBe(2);
+});
+
+test('剧情骨架详细字段可编辑保存并重新打开', async ({ page }) => {
+  await page.goto('/materials');
+  const plotSection = page.locator('.material-sidebar-section').filter({ hasText: '剧情骨架' });
+  await plotSection.getByRole('button', { name: /全部内容/ }).click();
+  await page.locator('.material-compact-card').filter({ hasText: '误会解除' }).dblclick();
+  let editor = page.getByRole('dialog', { name: '编辑素材' });
+  await editor.getByLabel('阶段 1 标题').fill('误会升级');
+  await editor.getByLabel('阶段 1 原因').fill('错误线索\n隐瞒事实');
+  await editor.getByLabel('阶段 1 禁止改动').fill('不能提前和解');
+  await editor.getByRole('button', { name: '保存' }).click();
+  await page.locator('.material-compact-card').filter({ hasText: '误会解除' }).dblclick();
+  editor = page.getByRole('dialog', { name: '编辑素材' });
+  await expect(editor.getByLabel('阶段 1 标题')).toHaveValue('误会升级');
+  await expect(editor.getByLabel('阶段 1 原因')).toHaveValue('错误线索\n隐瞒事实');
+  await expect(editor.getByLabel('阶段 1 禁止改动')).toHaveValue('不能提前和解');
+});
+
+test('场景素材详细字段可编辑保存并重新打开', async ({ page }) => {
+  await page.goto('/materials');
+  const sceneSection = page.locator('.material-sidebar-section').filter({ hasText: '场景素材' });
+  await sceneSection.getByRole('button', { name: /全部内容/ }).click();
+  await page.locator('.material-compact-card').filter({ hasText: '雨夜追逐' }).dblclick();
+  let editor = page.getByRole('dialog', { name: '编辑素材' });
+  await editor.getByLabel('关键节拍 1 标题').fill('跨过屋脊');
+  await editor.getByLabel('关键节拍 1', { exact: true }).fill('人物在湿滑屋脊保持平衡');
+  await editor.getByLabel('关键节拍 1 证据').fill('原文提及湿滑屋顶');
+  await editor.getByRole('button', { name: '保存' }).click();
+  await page.locator('.material-compact-card').filter({ hasText: '雨夜追逐' }).dblclick();
+  editor = page.getByRole('dialog', { name: '编辑素材' });
+  await expect(editor.getByLabel('关键节拍 1 标题')).toHaveValue('跨过屋脊');
+  await expect(editor.getByLabel('关键节拍 1', { exact: true })).toHaveValue('人物在湿滑屋脊保持平衡');
+  await expect(editor.getByLabel('关键节拍 1 证据')).toHaveValue('原文提及湿滑屋顶');
+});
+
+test('素材库侧栏无重复标题且 1440 深色主题无横向溢出', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('/materials');
+  await expect(page.locator('.material-library-sidebar').getByRole('heading', { name: '素材库' })).toHaveCount(0);
+  await page.getByRole('button', { name: '切换到深色模式' }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
+  expect(overflow).toBe(false);
+  await expect(page.getByRole('button', { name: '新建剧情骨架', exact: true })).toBeVisible();
 });
 
 test('角色库按工程和公共分类导航，标签只在右侧筛选且摘要保持紧凑', async ({ page }) => {
@@ -457,6 +587,9 @@ test('文档正文右键菜单、编辑命令与统一分章入口', async ({ pa
   await expect(page.getByRole('dialog').filter({ hasText: '新建场景素材' })).toBeVisible();
   await expect(page.getByRole('tab', { name: '从来源整理' })).toHaveAttribute('aria-selected', 'true');
   await expect(page.getByLabel('来源文本')).not.toHaveValue('');
+  await page.getByRole('button', { name: /生成候选/ }).click();
+  await expect(page.getByText('来源：《示例长篇》 · 第一章')).toBeVisible();
+  await page.getByRole('button', { name: '返回来源' }).click();
   await page.getByRole('button', { name: '取消' }).last().click();
   await page.goBack();
   await page.getByRole('button', { name: '示例长篇，作者' }).dblclick();
@@ -486,6 +619,8 @@ test('文档选区通过 history state 进入角色候选流程而不直接创�
   await expect(dialog.getByRole('tab', { name: '从文本提取' })).toHaveAttribute('aria-selected', 'true');
   await expect(dialog.getByLabel('来源文本')).toHaveValue('林舟推门');
   await expect(dialog.getByRole('button', { name: '生成候选角色' })).toBeVisible();
+  await dialog.getByRole('button', { name: '生成候选角色' }).click();
+  await expect(dialog.getByText('来源：《示例长篇》 · 第一章')).toBeVisible();
 });
 
 test('正文自动保存草稿、手动保存单一版本并打开文字整理弹窗', async ({ page }) => {
