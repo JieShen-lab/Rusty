@@ -336,6 +336,93 @@ class DocumentLibraryServiceTests(unittest.TestCase):
             self.assertIn("开篇\n\n第一段。", stored_text)
             self.assertEqual(".txt", Path(result.document.storage_path).suffix)
 
+    def test_volume_hierarchy_survives_chapter_edit_and_revision_restore(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            source = root / "volumes.txt"
+            source.write_text(
+                "第七卷 雨夜\n\n第787章 雨夜\n正文一。\n\n第788章 风声\n正文二。\n",
+                encoding="utf-8",
+            )
+            service = DocumentLibraryService(root / "rusty.db", root / "library")
+            document = service.import_document(source).document
+            original_revision = service.list_revisions(document.id)[0]
+            directory_before = service.get_directory(document.id)
+
+            first_chapter = directory_before.volumes[0][1][0]
+            edit = service.rename_chapter(document.id, first_chapter.id, "第787章 新雨")
+            directory_after = service.get_directory(document.id)
+
+            self.assertEqual(1, len(directory_after.volumes))
+            self.assertEqual("第七卷 雨夜", directory_after.volumes[0][0].title)
+            self.assertEqual(
+                ["第787章 新雨", "第788章 风声"],
+                [chapter.title for chapter in directory_after.volumes[0][1]],
+            )
+            self.assertTrue(all(chapter.volume_id == directory_after.volumes[0][0].id for chapter in directory_after.volumes[0][1]))
+
+            renamed_volume = service.rename_volume(
+                document.id,
+                directory_after.volumes[0][0].id,
+                "雨夜篇",
+            )
+            service.apply_cleanup(
+                document.id,
+                service.list_processing_templates()[0].id,
+            )
+            after_cleanup = service.get_directory(document.id)
+            self.assertEqual("雨夜篇", after_cleanup.volumes[0][0].title)
+
+            service.activate_revision(document.id, original_revision.id)
+            restored = service.get_directory(document.id)
+            self.assertEqual("第七卷 雨夜", restored.volumes[0][0].title)
+            self.assertEqual("第787章 雨夜", restored.volumes[0][1][0].title)
+            self.assertNotEqual(original_revision.id, edit.revision.id)
+            self.assertNotEqual(edit.revision.id, renamed_volume.revision.id)
+
+    def test_merge_preserves_authoritative_volume_and_chapter_structure_and_exports(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            first_path = root / "first.txt"
+            second_path = root / "second.txt"
+            first_path.write_text(
+                "第七卷 雨夜\n\n第787章 雨夜\n正文一。\n\n第788章 风声\n正文二。\n",
+                encoding="utf-8",
+            )
+            second_path.write_text("第九章 归途\n正文三。\n", encoding="utf-8")
+            service = DocumentLibraryService(root / "rusty.db", root / "library")
+            first = service.import_document(first_path).document
+            second = service.import_document(second_path).document
+            first_revision = service.list_revisions(first.id)[0]
+            second_revision = service.list_revisions(second.id)[0]
+
+            merged = service.merge_documents([first.id, second.id], "合并本")
+            directory_result = service.get_directory(merged.id)
+            merged_revision = service.list_revisions(merged.id)[0]
+            txt_path = service.export_document(merged.id, "txt", root / "merged.txt")
+            epub_path = service.export_document(merged.id, "epub", root / "merged.epub")
+
+            self.assertEqual("merge", merged_revision.revision_type)
+            self.assertEqual(["第七卷 雨夜"], [item[0].title for item in directory_result.volumes])
+            self.assertEqual(
+                ["第787章 雨夜", "第788章 风声"],
+                [chapter.title for chapter in directory_result.volumes[0][1]],
+            )
+            self.assertEqual(["第九章 归途"], [chapter.title for chapter in directory_result.unassigned_chapters])
+            self.assertEqual(first_revision.id, service.list_revisions(first.id)[0].id)
+            self.assertEqual(second_revision.id, service.list_revisions(second.id)[0].id)
+
+            exported_text = txt_path.read_text(encoding="utf-8")
+            self.assertLess(exported_text.index("第七卷 雨夜"), exported_text.index("第787章 雨夜"))
+            self.assertLess(exported_text.index("第788章 风声"), exported_text.index("第九章 归途"))
+            self.assertEqual(1, exported_text.count("第七卷 雨夜"))
+            self.assertEqual(1, exported_text.count("第787章 雨夜"))
+
+            exported_book = epub.read_epub(str(epub_path))
+            self.assertEqual(2, len(exported_book.toc))
+            self.assertIsInstance(exported_book.toc[0], tuple)
+            self.assertEqual(2, len(exported_book.toc[0][1]))
+
 
 def _write_sample_epub(path: Path) -> None:
     book = epub.EpubBook()

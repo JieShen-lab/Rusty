@@ -11,9 +11,9 @@ from pathlib import Path
 
 from rusty.db import initialize_database, session
 from rusty.exporters import build_txt_export, export_epub
-from rusty.importers import parse_docx, parse_epub, parse_txt
-from rusty.importers.txt import read_text_with_encoding, split_chapters
-from rusty.models import ChapterRecord, ParsedBook, ParsedChapter, count_text_units
+from rusty.importers import parse_docx, parse_epub, parse_txt, split_document_structure
+from rusty.importers.txt import read_text_with_encoding
+from rusty.models import ChapterRecord, ParsedBook, ParsedChapter, ParsedVolume, count_text_units
 
 
 SUPPORTED_DOCUMENT_SUFFIXES = {".txt", ".epub", ".docx"}
@@ -123,6 +123,24 @@ class LibraryChapter:
     start_offset: int | None
     end_offset: int | None
     word_count: int
+    volume_id: int | None = None
+
+
+@dataclass(frozen=True)
+class LibraryVolume:
+    id: int
+    revision_id: int
+    index: int
+    title: str
+    start_offset: int
+    end_offset: int
+    word_count: int
+
+
+@dataclass(frozen=True)
+class LibraryDocumentDirectory:
+    volumes: list[tuple[LibraryVolume, list[LibraryChapter]]]
+    unassigned_chapters: list[LibraryChapter]
 
 
 @dataclass(frozen=True)
@@ -623,7 +641,13 @@ class DocumentLibraryService:
                     "UPDATE library_documents SET current_revision_id = ? WHERE id = ?",
                     (revision_id, document_id),
                 )
-                self._insert_chapters(connection, document_id, revision_id, book.chapters)
+                self._insert_chapters(
+                    connection,
+                    document_id,
+                    revision_id,
+                    book.chapters,
+                    book.volumes or [],
+                )
         except Exception:
             storage_path.unlink(missing_ok=True)
             raise
@@ -715,16 +739,73 @@ class DocumentLibraryService:
                 start_offset=int(row["start_offset"]) if row["start_offset"] is not None else None,
                 end_offset=int(row["end_offset"]) if row["end_offset"] is not None else None,
                 word_count=int(row["word_count"]),
+                volume_id=int(row["volume_id"]) if row["volume_id"] is not None else None,
             )
             for row in rows
         ]
 
-    def reorder_chapters(self, document_id: int, ordered_chapter_ids: list[int]) -> list[LibraryChapter]:
+    def list_volumes(self, document_id: int) -> list[LibraryVolume]:
+        revision = self._ensure_initial_revision(document_id)
+        text = Path(revision.storage_path).read_text(encoding="utf-8")
+        with session(self.database_path) as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM library_document_volumes
+                WHERE revision_id = ?
+                ORDER BY volume_index
+                """,
+                (revision.id,),
+            ).fetchall()
+        return [
+            LibraryVolume(
+                id=int(row["id"]),
+                revision_id=int(row["revision_id"]),
+                index=int(row["volume_index"]),
+                title=str(row["title"]),
+                start_offset=int(row["start_offset"]),
+                end_offset=int(row["end_offset"]),
+                word_count=count_text_units(
+                    text[int(row["start_offset"]):int(row["end_offset"])]
+                ),
+            )
+            for row in rows
+        ]
+
+    def get_directory(self, document_id: int) -> LibraryDocumentDirectory:
+        volumes = self.list_volumes(document_id)
+        chapters = self.list_chapters(document_id)
+        by_volume: dict[int, list[LibraryChapter]] = {
+            volume.id: [] for volume in volumes
+        }
+        unassigned: list[LibraryChapter] = []
+        for chapter in chapters:
+            if chapter.volume_id is not None and chapter.volume_id in by_volume:
+                by_volume[chapter.volume_id].append(chapter)
+            else:
+                unassigned.append(chapter)
+        return LibraryDocumentDirectory(
+            volumes=[(volume, by_volume[volume.id]) for volume in volumes],
+            unassigned_chapters=unassigned,
+        )
+
+    def reorder_chapters(
+        self,
+        document_id: int,
+        ordered_chapter_ids: list[int],
+        volume_assignments: dict[int, int | None] | None = None,
+    ) -> list[LibraryChapter]:
         revision = self._ensure_initial_revision(document_id)
         chapters = self.list_chapters(document_id)
         existing_ids = {chapter.id for chapter in chapters}
         if len(ordered_chapter_ids) != len(existing_ids) or set(ordered_chapter_ids) != existing_ids:
             raise ValueError("章节顺序必须包含当前版本的全部章节且不能重复。")
+        valid_volume_ids = {volume.id for volume in self.list_volumes(document_id)}
+        for chapter_id, volume_id in (volume_assignments or {}).items():
+            if chapter_id not in existing_ids:
+                raise ValueError(f"章节不属于当前版本：{chapter_id}")
+            if volume_id is not None and volume_id not in valid_volume_ids:
+                raise ValueError(f"卷不属于当前版本：{volume_id}")
         with session(self.database_path) as connection:
             for chapter_id in ordered_chapter_ids:
                 connection.execute(
@@ -743,6 +824,15 @@ class DocumentLibraryService:
                     WHERE id = ? AND document_id = ? AND revision_id = ?
                     """,
                     (chapter_index, chapter_id, document_id, revision.id),
+                )
+            for chapter_id, volume_id in (volume_assignments or {}).items():
+                connection.execute(
+                    """
+                    UPDATE library_document_chapters
+                    SET volume_id = ?
+                    WHERE id = ? AND document_id = ? AND revision_id = ?
+                    """,
+                    (volume_id, chapter_id, document_id, revision.id),
                 )
         return self.list_chapters(document_id)
 
@@ -936,6 +1026,66 @@ class DocumentLibraryService:
         )
         return self.commit_draft(document_id, chapter_id)
 
+    def rename_volume(self, document_id: int, volume_id: int, title: str) -> CleanupResult:
+        normalized_title = title.strip()
+        if not normalized_title:
+            raise ValueError("卷标题不能为空。")
+        document = self._get_document(document_id)
+        current = self._ensure_initial_revision(document_id)
+        text = Path(current.storage_path).read_text(encoding="utf-8")
+        volumes = self.list_volumes(document_id)
+        target = next((volume for volume in volumes if volume.id == volume_id), None)
+        if target is None:
+            raise FileNotFoundError(f"找不到卷：{volume_id}")
+        title_start = target.start_offset
+        title_end = text.find("\n", title_start, target.end_offset)
+        if title_end < 0:
+            title_end = target.end_offset
+        if text[title_start:title_end].strip() != target.title.strip():
+            raise ValueError("卷标题不再对应当前版本文本，请重新加载后再试。")
+        replacement = normalized_title
+        new_text = text[:title_start] + replacement + text[title_end:]
+        delta = len(replacement) - (title_end - title_start)
+        volume_index_by_id = {volume.id: volume.index for volume in volumes}
+        chapter_boundaries = []
+        for chapter in self.list_chapters(document_id):
+            start, end = self._chapter_offsets(text, chapter)
+            if start >= title_end:
+                start += delta
+                end += delta
+            chapter_boundaries.append(
+                {
+                    "title": chapter.title,
+                    "start_offset": start,
+                    "end_offset": end,
+                    "volume_index": volume_index_by_id.get(chapter.volume_id),
+                }
+            )
+        volume_boundaries = self._shift_volume_boundaries(
+            volumes,
+            title_start,
+            title_end,
+            delta,
+        )
+        for boundary in volume_boundaries:
+            if int(boundary["volume_index"]) == target.index:
+                boundary["title"] = normalized_title
+                break
+        revision = self._create_text_revision(
+            document,
+            current,
+            new_text,
+            "manual_edit",
+            {"operation": "rename_volume", "source_volume_id": volume_id},
+            chapter_boundaries=chapter_boundaries,
+            volume_boundaries=volume_boundaries,
+        )
+        return CleanupResult(
+            document=self._get_document(document_id),
+            revision=revision,
+            created=True,
+        )
+
     def _commit_content(
         self,
         document_id: int,
@@ -949,12 +1099,15 @@ class DocumentLibraryService:
         if chapter_id is None:
             new_text = self._normalize_text(text)
             chapter_boundaries = None
+            volume_boundaries = None
         else:
             normalized_title = title.strip()
             if not normalized_title:
                 raise ValueError("章节标题不能为空。")
             source_text = Path(current_revision.storage_path).read_text(encoding="utf-8")
             chapters = self.list_chapters(document_id)
+            volumes = self.list_volumes(document_id)
+            volume_index_by_id = {volume.id: volume.index for volume in volumes}
             target = next((chapter for chapter in chapters if chapter.id == chapter_id), None)
             if target is None:
                 raise FileNotFoundError(f"找不到章节：{chapter_id}")
@@ -983,8 +1136,15 @@ class DocumentLibraryService:
                         "title": normalized_title if chapter.id == target.id else chapter.title,
                         "start_offset": chapter_start,
                         "end_offset": chapter_end,
+                        "volume_index": volume_index_by_id.get(chapter.volume_id),
                     }
                 )
+            volume_boundaries = self._shift_volume_boundaries(
+                volumes,
+                start,
+                end,
+                delta,
+            )
         revision = self._create_text_revision(
             document,
             current_revision,
@@ -992,6 +1152,7 @@ class DocumentLibraryService:
             "manual_edit",
             {},
             chapter_boundaries=chapter_boundaries if chapter_id is not None else None,
+            volume_boundaries=volume_boundaries if chapter_id is not None else None,
         )
         if chapter_id is None and title.strip() and title.strip() != document.title:
             self.update_document_metadata(document_id, title=title.strip(), author=document.author)
@@ -1003,14 +1164,82 @@ class DocumentLibraryService:
         normalized_title = title.strip()
         if not normalized_title:
             raise ValueError("合并后的文档标题不能为空。")
-        parts: list[str] = []
+        merged_parts: list[str] = []
+        merged_length = 0
+        chapter_boundaries: list[dict[str, object]] = []
+        volume_boundaries: list[dict[str, object]] = []
         sources: list[dict[str, object]] = []
-        for document_id in document_ids:
+        next_volume_index = 1
+        for merge_order, document_id in enumerate(document_ids, start=1):
             document = self._get_document(document_id)
             revision = self._ensure_initial_revision(document_id)
-            parts.append(Path(revision.storage_path).read_text(encoding="utf-8").strip())
-            sources.append({"document_id": document.id, "revision_id": revision.id, "title": document.title})
-        merged_text = self._normalize_text("\n\n".join(part for part in parts if part))
+            source_text = Path(revision.storage_path).read_text(encoding="utf-8")
+            separator = ""
+            if merged_parts:
+                current = "".join(merged_parts)
+                separator = "" if current.endswith("\n\n") else ("\n" if current.endswith("\n") else "\n\n")
+                merged_parts.append(separator)
+                merged_length += len(separator)
+            source_start = merged_length
+            merged_parts.append(source_text)
+            merged_length += len(source_text)
+            volumes = self.list_volumes(document_id)
+            volume_index_map: dict[int, int] = {}
+            for volume in volumes:
+                merged_index = next_volume_index
+                next_volume_index += 1
+                volume_index_map[volume.id] = merged_index
+                volume_boundaries.append(
+                    {
+                        "volume_index": merged_index,
+                        "title": volume.title,
+                        "start_offset": source_start + volume.start_offset,
+                        "end_offset": source_start + volume.end_offset,
+                    }
+                )
+            chapters = self.list_chapters(document_id)
+            if not chapters:
+                chapter_boundaries.append(
+                    {
+                        "title": "第一章",
+                        "start_offset": source_start,
+                        "end_offset": source_start + len(source_text),
+                        "volume_index": None,
+                    }
+                )
+            else:
+                for chapter in chapters:
+                    start, end = self._chapter_offsets(source_text, chapter)
+                    chapter_boundaries.append(
+                        {
+                            "title": chapter.title,
+                            "start_offset": source_start + start,
+                            "end_offset": source_start + end,
+                            "volume_index": volume_index_map.get(chapter.volume_id),
+                        }
+                    )
+            sources.append(
+                {
+                    "document_id": document.id,
+                    "revision_id": revision.id,
+                    "title": document.title,
+                    "merge_order": merge_order,
+                }
+            )
+        merged_text = self._normalize_text("".join(merged_parts))
+        if chapter_boundaries:
+            final_delta = len(merged_text) - merged_length
+            if final_delta:
+                last = max(chapter_boundaries, key=lambda item: int(item["end_offset"]))
+                last["end_offset"] = int(last["end_offset"]) + final_delta
+                containing_volume = last.get("volume_index")
+                if containing_volume is not None:
+                    volume = next(
+                        item
+                        for item in volume_boundaries
+                        if int(item["volume_index"]) == int(containing_volume)
+                    )
+                    volume["end_offset"] = int(volume["end_offset"]) + final_delta
         encoded = merged_text.encode("utf-8")
         content_hash = hashlib.sha256(encoded).hexdigest()
         self.library_path.mkdir(parents=True, exist_ok=True)
@@ -1018,7 +1247,6 @@ class DocumentLibraryService:
         temporary_path = storage_path.with_suffix(".tmp")
         temporary_path.write_bytes(encoded)
         temporary_path.replace(storage_path)
-        book = parse_txt(storage_path)
         try:
             with session(self.database_path) as connection:
                 cursor = connection.execute(
@@ -1037,7 +1265,7 @@ class DocumentLibraryService:
                         content_hash,
                         len(encoded),
                         len(encoded),
-                        len(book.chapters),
+                        len(chapter_boundaries),
                         count_text_units(merged_text),
                         json.dumps({"merge_sources": sources}, ensure_ascii=False),
                     ),
@@ -1053,7 +1281,59 @@ class DocumentLibraryService:
                 )
                 revision_id = int(revision_cursor.lastrowid)
                 connection.execute("UPDATE library_documents SET current_revision_id = ? WHERE id = ?", (revision_id, document_id))
-                self._insert_chapters(connection, document_id, revision_id, book.chapters)
+                volume_ids: dict[int, int] = {}
+                for volume_index, boundary in enumerate(
+                    sorted(volume_boundaries, key=lambda item: int(item["start_offset"])),
+                    start=1,
+                ):
+                    volume_cursor = connection.execute(
+                        """
+                        INSERT INTO library_document_volumes (
+                            document_id, revision_id, volume_index, title,
+                            start_offset, end_offset
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            document_id,
+                            revision_id,
+                            volume_index,
+                            str(boundary["title"]),
+                            int(boundary["start_offset"]),
+                            int(boundary["end_offset"]),
+                        ),
+                    )
+                    volume_ids[int(boundary["volume_index"])] = int(volume_cursor.lastrowid)
+                for chapter_index, boundary in enumerate(
+                    sorted(chapter_boundaries, key=lambda item: int(item["start_offset"])),
+                    start=1,
+                ):
+                    start = int(boundary["start_offset"])
+                    end = int(boundary["end_offset"])
+                    connection.execute(
+                        """
+                        INSERT INTO library_document_chapters (
+                            document_id, revision_id, chapter_index, title,
+                            start_line, end_line, start_offset, end_offset,
+                            word_count, volume_id
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            document_id,
+                            revision_id,
+                            chapter_index,
+                            str(boundary["title"]),
+                            merged_text.count("\n", 0, start) + 1,
+                            merged_text.count("\n", 0, end) + 1,
+                            start,
+                            end,
+                            count_text_units(merged_text[start:end]),
+                            volume_ids.get(
+                                int(boundary["volume_index"])
+                                if boundary.get("volume_index") is not None
+                                else -1
+                            ),
+                        ),
+                    )
         except Exception:
             storage_path.unlink(missing_ok=True)
             raise
@@ -1073,6 +1353,8 @@ class DocumentLibraryService:
         current_revision = self._ensure_initial_revision(document_id)
         source_text = Path(current_revision.storage_path).read_text(encoding="utf-8")
         chapters = self.list_chapters(document_id)
+        volumes = self.list_volumes(document_id)
+        volume_index_by_id = {volume.id: volume.index for volume in volumes}
         chapter_text = self._normalize_text(f"{title.strip()}\n\n{text.strip()}")
         if not title.strip():
             raise ValueError("章节标题不能为空。")
@@ -1085,6 +1367,7 @@ class DocumentLibraryService:
         if position not in {"before", "after"}:
             raise ValueError("插入位置必须是 before 或 after。")
         insert_at = len(source_text)
+        target: LibraryChapter | None = None
         if chapters and not legacy_end:
             target = next((chapter for chapter in chapters if chapter.id == anchor_chapter_id), None)
             if target is None:
@@ -1109,6 +1392,7 @@ class DocumentLibraryService:
                     "title": chapter.title,
                     "start_offset": start,
                     "end_offset": end,
+                    "volume_index": volume_index_by_id.get(chapter.volume_id),
                 }
             )
         chapter_boundaries.append(
@@ -1116,6 +1400,7 @@ class DocumentLibraryService:
                 "title": title.strip(),
                 "start_offset": inserted_start,
                 "end_offset": inserted_end,
+                "volume_index": volume_index_by_id.get(target.volume_id) if target else None,
             }
         )
         chapter_boundaries.sort(key=lambda item: int(item["start_offset"]))
@@ -1126,6 +1411,12 @@ class DocumentLibraryService:
             "manual_edit",
             {"operation": "create_chapter"},
             chapter_boundaries=chapter_boundaries,
+            volume_boundaries=self._shift_volume_boundaries(
+                volumes,
+                insert_at,
+                insert_at,
+                delta,
+            ),
         )
         created_chapter = next(
             (
@@ -1198,18 +1489,66 @@ class DocumentLibraryService:
             raise ValueError("The document changed after the split preview; generate a new preview.")
         text = Path(current.storage_path).read_text(encoding="utf-8")
         normalized = _validate_continuous_boundaries(text, boundaries)
-        revision = self._create_text_revision(document, current, text, revision_type, metadata or {})
+        current_volumes = self.list_volumes(document_id)
+        volume_index_by_id = {volume.id: volume.index for volume in current_volumes}
+        revision = self._create_text_revision(
+            document,
+            current,
+            text,
+            revision_type,
+            metadata or {},
+            chapter_boundaries=[
+                {
+                    "title": chapter.title,
+                    "start_offset": self._chapter_offsets(text, chapter)[0],
+                    "end_offset": self._chapter_offsets(text, chapter)[1],
+                    "volume_index": volume_index_by_id.get(chapter.volume_id),
+                }
+                for chapter in self.list_chapters(document_id)
+            ],
+            volume_boundaries=[
+                {
+                    "volume_index": volume.index,
+                    "title": volume.title,
+                    "start_offset": volume.start_offset,
+                    "end_offset": volume.end_offset,
+                }
+                for volume in current_volumes
+            ],
+        )
         with session(self.database_path) as connection:
             connection.execute("DELETE FROM library_document_chapters WHERE revision_id = ?", (revision.id,))
+            revision_volumes = connection.execute(
+                "SELECT id, start_offset, end_offset FROM library_document_volumes WHERE revision_id = ?",
+                (revision.id,),
+            ).fetchall()
             for index, boundary in enumerate(normalized, start=1):
                 start = int(boundary["start_offset"])
                 end = int(boundary["end_offset"])
+                volume_row = next(
+                    (
+                        row
+                        for row in revision_volumes
+                        if int(row["start_offset"]) <= start < int(row["end_offset"])
+                    ),
+                    None,
+                )
+                volume_id = int(volume_row["id"]) if volume_row is not None else None
+                if volume_row is not None and start == int(volume_row["start_offset"]):
+                    heading_end = text.find("\n", start, end)
+                    if heading_end >= 0:
+                        content_start = heading_end + 1
+                        while content_start < end and text[content_start] == "\n":
+                            content_start += 1
+                        if content_start < end:
+                            start = content_start
                 connection.execute(
                     """
                     INSERT INTO library_document_chapters (
                         document_id, revision_id, chapter_index, title,
-                        start_line, end_line, start_offset, end_offset, word_count
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        start_line, end_line, start_offset, end_offset, word_count,
+                        volume_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         document_id,
@@ -1221,6 +1560,7 @@ class DocumentLibraryService:
                         start,
                         end,
                         count_text_units(text[start:end]),
+                        volume_id,
                     ),
                 )
             connection.execute(
@@ -1250,6 +1590,14 @@ class DocumentLibraryService:
                 raise ValueError(
                     f"Chapter range overlaps '{chapter.title}' [{existing_start}, {existing_end})."
                 )
+        volume_id = next(
+            (
+                volume.id
+                for volume in self.list_volumes(document_id)
+                if volume.start_offset <= start_offset < volume.end_offset
+            ),
+            None,
+        )
         with session(self.database_path) as connection:
             temporary_index = -(
                 int(
@@ -1264,8 +1612,8 @@ class DocumentLibraryService:
                 """
                 INSERT INTO library_document_chapters (
                     document_id, revision_id, chapter_index, title, start_line, end_line,
-                    start_offset, end_offset, word_count
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    start_offset, end_offset, word_count, volume_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     document_id,
@@ -1277,6 +1625,7 @@ class DocumentLibraryService:
                     start_offset,
                     end_offset,
                     count_text_units(text[start_offset:end_offset]),
+                    volume_id,
                 ),
             )
             ordered = connection.execute(
@@ -1315,9 +1664,19 @@ class DocumentLibraryService:
         if normalized_format not in {"txt", "epub"}:
             raise ValueError("仅支持导出 TXT 或 EPUB。")
         chapters = self._chapter_records_for_export(document)
+        volume_titles = {
+            volume.id: volume.title for volume in self.list_volumes(document_id)
+        }
         if normalized_format == "txt":
             output.parent.mkdir(parents=True, exist_ok=True)
-            output.write_text(build_txt_export(chapters, use_rewrites=False), encoding="utf-8")
+            output.write_text(
+                build_txt_export(
+                    chapters,
+                    use_rewrites=False,
+                    volume_titles=volume_titles,
+                ),
+                encoding="utf-8",
+            )
             return output
         return export_epub(
             chapters,
@@ -1325,6 +1684,7 @@ class DocumentLibraryService:
             title=document.title,
             author=document.author,
             use_rewrites=False,
+            volume_titles=volume_titles,
         )
 
     def apply_cleanup(self, document_id: int, template_id: int) -> CleanupResult:
@@ -1351,7 +1711,11 @@ class DocumentLibraryService:
         temporary_path = storage_path.with_suffix(".tmp")
         temporary_path.write_bytes(encoded_text)
         temporary_path.replace(storage_path)
-        chapters = split_chapters(cleaned_text, pattern)
+        chapters, volumes = split_document_structure(
+            cleaned_text,
+            pattern,
+            {volume.title for volume in self.list_volumes(document_id)},
+        )
 
         try:
             with session(self.database_path) as connection:
@@ -1373,7 +1737,13 @@ class DocumentLibraryService:
                     ),
                 )
                 revision_id = int(cursor.lastrowid)
-                self._insert_chapters(connection, document_id, revision_id, chapters)
+                self._insert_chapters(
+                    connection,
+                    document_id,
+                    revision_id,
+                    chapters,
+                    volumes,
+                )
                 connection.execute(
                     """
                     UPDATE library_documents
@@ -1448,6 +1818,7 @@ class DocumentLibraryService:
         revision_type: str,
         metadata: dict[str, object],
         chapter_boundaries: list[dict[str, object]] | None = None,
+        volume_boundaries: list[dict[str, object]] | None = None,
     ) -> DocumentRevision:
         encoded_text = self._normalize_text(text).encode("utf-8")
         content_hash = hashlib.sha256(encoded_text).hexdigest()
@@ -1458,6 +1829,17 @@ class DocumentLibraryService:
         temporary_path.write_bytes(encoded_text)
         temporary_path.replace(storage_path)
         book = parse_txt(storage_path)
+        parsed_chapters = book.chapters
+        parsed_volumes = book.volumes or []
+        if chapter_boundaries is None:
+            known_volume_titles = {
+                volume.title for volume in self.list_volumes(document.id)
+            }
+            if known_volume_titles:
+                parsed_chapters, parsed_volumes = split_document_structure(
+                    encoded_text.decode("utf-8"),
+                    known_volume_titles=known_volume_titles,
+                )
         try:
             with session(self.database_path) as connection:
                 cursor = connection.execute(
@@ -1479,10 +1861,46 @@ class DocumentLibraryService:
                 )
                 revision_id = int(cursor.lastrowid)
                 if chapter_boundaries is None:
-                    self._insert_chapters(connection, document.id, revision_id, book.chapters)
-                    chapter_count = len(book.chapters)
+                    self._insert_chapters(
+                        connection,
+                        document.id,
+                        revision_id,
+                        parsed_chapters,
+                        parsed_volumes,
+                    )
+                    chapter_count = len(parsed_chapters)
                 else:
                     normalized_text = encoded_text.decode("utf-8")
+                    volume_ids: dict[int, int] = {}
+                    for volume_index, boundary in enumerate(
+                        sorted(
+                            volume_boundaries or [],
+                            key=lambda item: int(item["start_offset"]),
+                        ),
+                        start=1,
+                    ):
+                        start = int(boundary["start_offset"])
+                        end = int(boundary["end_offset"])
+                        if start < 0 or end <= start or end > len(normalized_text):
+                            raise ValueError("Preserved volume offset is invalid in the new revision.")
+                        cursor = connection.execute(
+                            """
+                            INSERT INTO library_document_volumes (
+                                document_id, revision_id, volume_index, title,
+                                start_offset, end_offset
+                            ) VALUES (?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                document.id,
+                                revision_id,
+                                volume_index,
+                                str(boundary["title"]),
+                                start,
+                                end,
+                            ),
+                        )
+                        source_index = int(boundary.get("volume_index", volume_index))
+                        volume_ids[source_index] = int(cursor.lastrowid)
                     ordered = sorted(chapter_boundaries, key=lambda item: int(item["start_offset"]))
                     for index, boundary in enumerate(ordered, start=1):
                         start = int(boundary["start_offset"])
@@ -1493,8 +1911,9 @@ class DocumentLibraryService:
                             """
                             INSERT INTO library_document_chapters (
                                 document_id, revision_id, chapter_index, title,
-                                start_line, end_line, start_offset, end_offset, word_count
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                start_line, end_line, start_offset, end_offset, word_count,
+                                volume_id
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """,
                             (
                                 document.id,
@@ -1506,6 +1925,11 @@ class DocumentLibraryService:
                                 start,
                                 end,
                                 count_text_units(normalized_text[start:end]),
+                                volume_ids.get(
+                                    int(boundary["volume_index"])
+                                    if boundary.get("volume_index") is not None
+                                    else -1
+                                ),
                             ),
                         )
                     chapter_count = len(ordered)
@@ -1545,6 +1969,33 @@ class DocumentLibraryService:
             chapter.start_line,
             chapter.end_line,
         )
+
+    @staticmethod
+    def _shift_volume_boundaries(
+        volumes: list[LibraryVolume],
+        edit_start: int,
+        edit_end: int,
+        delta: int,
+    ) -> list[dict[str, object]]:
+        boundaries: list[dict[str, object]] = []
+        for volume in volumes:
+            start, end = volume.start_offset, volume.end_offset
+            if start >= edit_end and not (
+                edit_start == edit_end and start < edit_start <= end
+            ):
+                start += delta
+                end += delta
+            elif start <= edit_start <= end:
+                end += delta
+            boundaries.append(
+                {
+                    "volume_index": volume.index,
+                    "title": volume.title,
+                    "start_offset": start,
+                    "end_offset": end,
+                }
+            )
+        return boundaries
 
     @staticmethod
     def _chapter_body_start(
@@ -1690,7 +2141,13 @@ class DocumentLibraryService:
             )
             revision_id = int(cursor.lastrowid)
             book = parse_txt(storage_path)
-            self._insert_chapters(connection, document_id, revision_id, book.chapters)
+            self._insert_chapters(
+                connection,
+                document_id,
+                revision_id,
+                book.chapters,
+                book.volumes or [],
+            )
             connection.execute(
                 "UPDATE library_documents SET current_revision_id = ? WHERE id = ?",
                 (revision_id, document_id),
@@ -1770,35 +2227,11 @@ class DocumentLibraryService:
         revision = self._ensure_initial_revision(document.id)
         chapters = self.list_chapters(document.id)
         text = Path(revision.storage_path).read_text(encoding="utf-8")
-        lines = text.splitlines()
-        title_positions: list[int | None] = []
-        used_positions: set[int] = set()
-        for chapter in chapters:
-            position = next(
-                (
-                    index
-                    for index, line in enumerate(lines)
-                    if index not in used_positions and line.strip() == chapter.title.strip()
-                ),
-                None,
-            )
-            title_positions.append(position)
-            if position is not None:
-                used_positions.add(position)
-
         records: list[ChapterRecord] = []
-        for index, chapter in enumerate(chapters):
-            position = title_positions[index]
-            next_positions = [
-                item
-                for item in title_positions
-                if position is not None and item is not None and item > position
-            ]
-            end = min(next_positions) if next_positions else len(lines)
-            if position is None:
-                body = text if len(chapters) == 1 else ""
-            else:
-                body = "\n".join(lines[position + 1:end]).strip()
+        for chapter in chapters:
+            start, end = self._chapter_offsets(text, chapter)
+            body_start = self._chapter_body_start(text, chapter, start, end)
+            body = text[body_start:end].strip()
             records.append(
                 ChapterRecord(
                     id=chapter.id,
@@ -1811,6 +2244,7 @@ class DocumentLibraryService:
                     status="export",
                     start_line=chapter.start_line,
                     end_line=chapter.end_line,
+                    volume_id=chapter.volume_id,
                 )
             )
         if records:
@@ -1878,12 +2312,41 @@ class DocumentLibraryService:
         return normalized
 
     @staticmethod
-    def _insert_chapters(connection, document_id: int, revision_id: int, chapters: list[ParsedChapter]) -> None:
+    def _insert_chapters(
+        connection,
+        document_id: int,
+        revision_id: int,
+        chapters: list[ParsedChapter],
+        volumes: list[ParsedVolume] | None = None,
+    ) -> None:
         revision_row = connection.execute(
             "SELECT storage_path FROM library_document_revisions WHERE id = ?",
             (revision_id,),
         ).fetchone()
         full_text = Path(str(revision_row["storage_path"])).read_text(encoding="utf-8") if revision_row else ""
+        volume_ids: dict[int, int] = {}
+        for volume in volumes or []:
+            start_offset, end_offset = DocumentLibraryService._chapter_offsets_from_lines(
+                full_text,
+                volume.start_line,
+                volume.end_line,
+            )
+            cursor = connection.execute(
+                """
+                INSERT INTO library_document_volumes (
+                    document_id, revision_id, volume_index, title, start_offset, end_offset
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    document_id,
+                    revision_id,
+                    volume.index,
+                    volume.title,
+                    start_offset,
+                    end_offset,
+                ),
+            )
+            volume_ids[volume.index] = int(cursor.lastrowid)
         for chapter in chapters:
             start_offset, end_offset = DocumentLibraryService._chapter_offsets_from_lines(
                 full_text,
@@ -1894,8 +2357,8 @@ class DocumentLibraryService:
                 """
                 INSERT INTO library_document_chapters (
                     document_id, revision_id, chapter_index, title,
-                    start_line, end_line, start_offset, end_offset, word_count
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    start_line, end_line, start_offset, end_offset, word_count, volume_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     document_id,
@@ -1907,6 +2370,7 @@ class DocumentLibraryService:
                     start_offset,
                     end_offset,
                     count_text_units(full_text[start_offset:end_offset]),
+                    volume_ids.get(chapter.volume_index) if chapter.volume_index is not None else None,
                 ),
             )
 

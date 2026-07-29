@@ -99,6 +99,23 @@ export type LibraryDocumentChapter = {
   start_offset: number | null;
   end_offset: number | null;
   word_count: number;
+  volume_id: number | null;
+};
+
+export type LibraryDocumentVolume = {
+  id: number;
+  revision_id: number;
+  index: number;
+  title: string;
+  start_offset: number;
+  end_offset: number;
+  word_count: number;
+  chapters: LibraryDocumentChapter[];
+};
+
+export type LibraryDocumentDirectory = {
+  volumes: LibraryDocumentVolume[];
+  unassigned_chapters: LibraryDocumentChapter[];
 };
 
 export type LibraryDocumentContent = {

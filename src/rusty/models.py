@@ -12,10 +12,19 @@ class ParsedChapter:
     text: str
     start_line: int | None = None
     end_line: int | None = None
+    volume_index: int | None = None
 
     @property
     def word_count(self) -> int:
         return count_text_units(self.text)
+
+
+@dataclass(frozen=True)
+class ParsedVolume:
+    index: int
+    title: str
+    start_line: int
+    end_line: int
 
 
 @dataclass(frozen=True)
@@ -27,6 +36,7 @@ class ParsedBook:
     source_format: str
     source_encoding: str | None
     chapters: list[ParsedChapter]
+    volumes: list[ParsedVolume] | None = None
     publisher: str | None = None
     description: str | None = None
     source_identifier: str | None = None
@@ -82,6 +92,7 @@ class ChapterRecord:
     status: str
     start_line: int | None
     end_line: int | None
+    volume_id: int | None = None
 
 
 @dataclass(frozen=True)

@@ -143,6 +143,27 @@ class LibraryDocumentChapterOut(BaseModel):
     start_offset: int | None = None
     end_offset: int | None = None
     word_count: int
+    volume_id: int | None = None
+
+
+class LibraryDocumentVolumeOut(BaseModel):
+    id: int
+    revision_id: int
+    index: int
+    title: str
+    start_offset: int
+    end_offset: int
+    word_count: int
+    chapters: list[LibraryDocumentChapterOut] = Field(default_factory=list)
+
+
+class LibraryDocumentDirectoryOut(BaseModel):
+    volumes: list[LibraryDocumentVolumeOut] = Field(default_factory=list)
+    unassigned_chapters: list[LibraryDocumentChapterOut] = Field(default_factory=list)
+
+
+class LibraryDocumentVolumeRenameRequest(BaseModel):
+    title: str = Field(min_length=1)
 
 
 class LibraryDocumentContentOut(BaseModel):
@@ -247,6 +268,7 @@ class AISplitApplyRequest(BaseModel):
 
 class LibraryDocumentChapterReorderRequest(BaseModel):
     ordered_chapter_ids: list[int] = Field(min_length=1)
+    volume_assignments: dict[int, int | None] = Field(default_factory=dict)
 
 
 class LibraryDocumentExportRequest(BaseModel):

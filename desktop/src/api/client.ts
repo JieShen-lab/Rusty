@@ -30,6 +30,7 @@ import type {
   LibraryDocumentChapter,
   LibraryDocumentCreateChapterResult,
   LibraryDocumentContent,
+  LibraryDocumentDirectory,
   LibraryDocumentDraft,
   LibraryDocumentExportResult,
   LibraryDocumentImportResult,
@@ -285,6 +286,10 @@ export function getLibraryDocumentChapters(documentId: number) {
   return request<LibraryDocumentChapter[]>(`/api/documents/${documentId}/chapters`);
 }
 
+export function getLibraryDocumentDirectory(documentId: number) {
+  return request<LibraryDocumentDirectory>(`/api/documents/${documentId}/directory`);
+}
+
 export function getLibraryDocumentContent(documentId: number, chapterId?: number | null) {
   const query = chapterId == null ? '' : `?chapter_id=${chapterId}`;
   return request<LibraryDocumentContent>(`/api/documents/${documentId}/content${query}`);
@@ -386,10 +391,24 @@ export function markLibraryDocumentChapter(
   });
 }
 
-export function reorderLibraryDocumentChapters(documentId: number, orderedChapterIds: number[]) {
+export function reorderLibraryDocumentChapters(
+  documentId: number,
+  orderedChapterIds: number[],
+  volumeAssignments: Record<number, number | null> = {},
+) {
   return request<LibraryDocumentChapter[]>(`/api/documents/${documentId}/chapters/reorder`, {
     method: 'POST',
-    body: JSON.stringify({ ordered_chapter_ids: orderedChapterIds }),
+    body: JSON.stringify({
+      ordered_chapter_ids: orderedChapterIds,
+      volume_assignments: volumeAssignments,
+    }),
+  });
+}
+
+export function renameLibraryDocumentVolume(documentId: number, volumeId: number, title: string) {
+  return request<LibraryDocumentCleanupResult>(`/api/documents/${documentId}/volumes/${volumeId}`, {
+    method: 'POST',
+    body: JSON.stringify({ title }),
   });
 }
 

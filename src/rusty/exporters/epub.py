@@ -16,6 +16,7 @@ def export_epub(
     language: str | None = None,
     identifier: str | None = None,
     use_rewrites: bool = True,
+    volume_titles: dict[int, str] | None = None,
 ) -> Path:
     if not chapters:
         raise ValueError("Project has no chapters to export.")
@@ -31,6 +32,9 @@ def export_epub(
         book.add_author(author)
 
     epub_chapters = []
+    toc_items: list[object] = []
+    volume_chapters: dict[int, list[epub.EpubHtml]] = {}
+    volume_order: list[int] = []
     for export_index, chapter in enumerate(chapters, start=1):
         chapter_doc = epub.EpubHtml(
             title=chapter.title,
@@ -40,8 +44,28 @@ def export_epub(
         chapter_doc.content = _chapter_html(chapter, use_rewrites=use_rewrites)
         book.add_item(chapter_doc)
         epub_chapters.append(chapter_doc)
+        volume_id = getattr(chapter, "volume_id", None)
+        if volume_id is None or volume_id not in (volume_titles or {}):
+            toc_items.append(chapter_doc)
+        else:
+            if volume_id not in volume_chapters:
+                volume_chapters[volume_id] = []
+                volume_order.append(volume_id)
+                toc_items.append(volume_id)
+            volume_chapters[volume_id].append(chapter_doc)
 
-    book.toc = tuple(epub_chapters)
+    nested_toc: list[object] = []
+    for item in toc_items:
+        if isinstance(item, int):
+            nested_toc.append(
+                (
+                    epub.Section(html.escape((volume_titles or {})[item])),
+                    tuple(volume_chapters[item]),
+                )
+            )
+        else:
+            nested_toc.append(item)
+    book.toc = tuple(nested_toc)
     book.spine = ["nav", *epub_chapters]
     book.add_item(epub.EpubNcx())
     book.add_item(epub.EpubNav())
