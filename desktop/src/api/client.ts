@@ -20,8 +20,15 @@ import type {
   ModelConfig,
   ModelTestResult,
   Material,
+  MaterialAISettings,
+  MaterialAITask,
+  MaterialCategory,
+  MaterialExtractionApplyResult,
+  MaterialExtractionCandidate,
+  MaterialExtractionPreview,
   MaterialExtractWrite,
   MaterialScope,
+  MaterialTagGroup,
   MaterialType,
   MaterialUpdate,
   MaterialWrite,
@@ -48,6 +55,7 @@ import type {
   Project,
   ProjectCharacterBindings,
   ProjectDetail,
+  ProjectMaterialFilter,
   ProjectOutlineBinding,
   ProjectPurpose,
   ProjectSettingsWrite,
@@ -641,28 +649,38 @@ export function getMaterials(filters: {
   project_id?: number;
   material_type?: MaterialType;
   tag_id?: number;
+  tag_group?: MaterialTagGroup;
+  category_id?: number;
   analysis_status?: 'unanalyzed' | 'analyzed';
+  pending_imports?: boolean;
   untagged?: boolean;
   query?: string;
+  limit?: number;
+  offset?: number;
 } = {}) {
   const params = new URLSearchParams();
   if (filters.scope) params.set('scope', filters.scope);
   if (filters.project_id !== undefined) params.set('project_id', String(filters.project_id));
   if (filters.material_type) params.set('material_type', filters.material_type);
   if (filters.tag_id !== undefined) params.set('tag_id', String(filters.tag_id));
+  if (filters.tag_group) params.set('tag_group', filters.tag_group);
+  if (filters.category_id !== undefined) params.set('category_id', String(filters.category_id));
   if (filters.analysis_status) params.set('analysis_status', filters.analysis_status);
+  if (filters.pending_imports) params.set('pending_imports', 'true');
   if (filters.untagged) params.set('untagged', 'true');
   if (filters.query) params.set('query', filters.query);
+  if (filters.limit !== undefined) params.set('limit', String(filters.limit));
+  if (filters.offset !== undefined) params.set('offset', String(filters.offset));
   const query = params.size ? `?${params.toString()}` : '';
   return request<Material[]>(`/api/materials${query}`);
 }
 
-export function getMaterialTags() {
-  return request<ResourceTag[]>('/api/material-tags');
+export function getMaterialTags(tagGroup?: MaterialTagGroup) {
+  return request<ResourceTag[]>(`/api/material-tags${tagGroup ? `?tag_group=${tagGroup}` : ''}`);
 }
 
-export function createMaterialTag(name: string) {
-  return request<ResourceTag>('/api/material-tags', { method: 'POST', body: JSON.stringify({ name }) });
+export function createMaterialTag(name: string, tagGroup: MaterialTagGroup = 'general') {
+  return request<ResourceTag>('/api/material-tags', { method: 'POST', body: JSON.stringify({ name, tag_group: tagGroup }) });
 }
 
 export function renameMaterialTag(tagId: number, name: string) {
@@ -797,6 +815,103 @@ export function assignCharacterTag(cardId: number, tagId: number, selected: bool
   return request<CharacterCard>(`/api/characters/${cardId}/tags/${tagId}`, {
     method: 'POST',
     body: JSON.stringify({ selected }),
+  });
+}
+
+export function getMaterialCategories(materialType?: MaterialType) {
+  const query = materialType ? `?material_type=${materialType}` : '';
+  return request<MaterialCategory[]>(`/api/material-categories${query}`);
+}
+
+export function createMaterialCategory(materialType: MaterialType, name: string) {
+  return request<MaterialCategory>('/api/material-categories', {
+    method: 'POST',
+    body: JSON.stringify({ material_type: materialType, name }),
+  });
+}
+
+export function renameMaterialCategory(categoryId: number, name: string) {
+  return request<MaterialCategory>(`/api/material-categories/${categoryId}`, {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  });
+}
+
+export function deleteMaterialCategory(categoryId: number) {
+  return request<{ ok: boolean }>(`/api/material-categories/${categoryId}/delete`, { method: 'POST' });
+}
+
+export function assignMaterialCategory(materialId: number, categoryId: number, selected: boolean) {
+  return request<Material>(`/api/materials/${materialId}/categories/${categoryId}`, {
+    method: 'POST',
+    body: JSON.stringify({ selected }),
+  });
+}
+
+export function getProjectMaterialFilters(projectId: number) {
+  return request<ProjectMaterialFilter[]>(`/api/projects/${projectId}/material-filters`);
+}
+
+export function getProjectMaterials(projectId: number, materialType?: MaterialType) {
+  const query = materialType ? `?material_type=${materialType}` : '';
+  return request<Material[]>(`/api/projects/${projectId}/materials${query}`);
+}
+
+export function setProjectMaterialFilter(
+  projectId: number,
+  materialType: MaterialType,
+  payload: Omit<ProjectMaterialFilter, 'project_id' | 'material_type'>,
+) {
+  return request<ProjectMaterialFilter>(`/api/projects/${projectId}/material-filters/${materialType}`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function getMaterialAISettings(taskType?: MaterialAITask) {
+  return taskType
+    ? request<MaterialAISettings>(`/api/material-ai-settings/${taskType}`)
+    : request<MaterialAISettings[]>('/api/material-ai-settings');
+}
+
+export function updateMaterialAISettings(
+  taskType: MaterialAITask,
+  payload: Omit<MaterialAISettings, 'task_type' | 'updated_at'>,
+) {
+  return request<MaterialAISettings>(`/api/material-ai-settings/${taskType}`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function resetMaterialAISettings(taskType: MaterialAITask) {
+  return request<MaterialAISettings>(`/api/material-ai-settings/${taskType}/reset`, { method: 'POST' });
+}
+
+export function previewMaterialExtraction(payload: {
+  task_type: MaterialAITask;
+  name?: string | null;
+  sample_text?: string | null;
+  source_path?: string | null;
+  source_project_id?: number | null;
+  source_document_id?: number | null;
+  model_id?: number | null;
+  source_metadata?: Record<string, unknown>;
+}) {
+  return request<MaterialExtractionPreview>('/api/material-extractions/preview', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function applyMaterialExtraction(payload: {
+  preview_token: string;
+  candidates: MaterialExtractionCandidate[];
+  selected_candidate_ids: string[];
+}) {
+  return request<MaterialExtractionApplyResult>('/api/material-extractions/apply', {
+    method: 'POST',
+    body: JSON.stringify(payload),
   });
 }
 

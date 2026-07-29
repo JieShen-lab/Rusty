@@ -10,7 +10,12 @@ from typing import Any
 from rusty.db import session
 from rusty.services.ai_client import AIClient, OpenAICompatibleClient
 from rusty.services.anchor_service import AnchorService
-from rusty.services.material_service import MATERIAL_TYPES, MaterialService
+from rusty.services.material_service import (
+    MATERIAL_AI_TASK_TYPES,
+    MATERIAL_TYPES,
+    MaterialService,
+    normalize_material_content,
+)
 from rusty.services.model_service import ModelConfig, ModelService
 from rusty.services.project_service import ProjectService, default_database_path
 
@@ -18,6 +23,8 @@ MAX_ANCHOR_SAMPLE_CHARS = 16000
 MAX_CHARACTER_EXTRACTION_TEXT_CHARS = 50000
 MAX_CHARACTER_CANDIDATES = 20
 CHARACTER_PREVIEW_TTL_SECONDS = 15 * 60
+MATERIAL_PREVIEW_TTL_SECONDS = 15 * 60
+MAX_MATERIAL_EXTRACTION_TEXT_CHARS = 50000
 OUTLINE_DIMENSIONS = [
     "fixed_plot_beats",
     "causal_chain",
@@ -123,6 +130,42 @@ class _StoredCharacterPreview:
 _CHARACTER_PREVIEWS: dict[tuple[str, str], _StoredCharacterPreview] = {}
 
 
+@dataclass(frozen=True)
+class MaterialExtractionCandidate:
+    candidate_id: str
+    selected: bool
+    name: str
+    description: str
+    content: dict[str, Any]
+    suggested_general_tags: list[str]
+    suggested_applicable_scene_tags: list[str]
+    evidence_summary: str
+
+
+@dataclass(frozen=True)
+class MaterialExtractionPreview:
+    preview_token: str
+    task_type: str
+    material_type: str
+    source_summary: dict[str, Any]
+    candidates: list[MaterialExtractionCandidate]
+
+
+@dataclass
+class _StoredMaterialPreview:
+    expires_at: float
+    task_type: str
+    material_type: str
+    candidate_ids: set[str]
+    source_metadata: dict[str, Any]
+    source_summary: dict[str, Any]
+    import_metadata: dict[str, Any]
+    raw_text: str
+
+
+_MATERIAL_PREVIEWS: dict[tuple[str, str], _StoredMaterialPreview] = {}
+
+
 class AnchorExtractionService:
     def __init__(
         self,
@@ -135,6 +178,183 @@ class AnchorExtractionService:
         self.anchor_service = AnchorService(self.database_path)
         self.material_service = MaterialService(self.database_path)
         self.ai_client = ai_client or OpenAICompatibleClient()
+
+    def preview_materials_from_text(
+        self,
+        sample_text: str,
+        *,
+        task_type: str,
+        name: str | None = None,
+        model_id: int | None = None,
+        source_metadata: dict[str, Any] | None = None,
+    ) -> MaterialExtractionPreview:
+        if task_type not in MATERIAL_AI_TASK_TYPES:
+            raise ValueError(f"Unsupported material extraction task: {task_type}")
+        normalized_text = sample_text.replace("\r\n", "\n").replace("\r", "\n").strip()
+        if not normalized_text:
+            raise ValueError("Material extraction text is empty.")
+        if len(normalized_text) > MAX_MATERIAL_EXTRACTION_TEXT_CHARS:
+            raise ValueError(
+                f"Material extraction text must be {MAX_MATERIAL_EXTRACTION_TEXT_CHARS:,} characters or fewer."
+            )
+        material_type = (
+            "scene_reference"
+            if task_type == "source_text_to_scene_material"
+            else "plot_skeleton"
+        )
+        settings = self.material_service.get_ai_settings(task_type)
+        sample = _sample_text(normalized_text)
+        model = self._resolve_model(model_id if model_id is not None else settings.model_id)
+        response = self.ai_client.chat(
+            model,
+            self.model_service.get_api_key(model.id),
+            self._material_preview_messages(
+                sample,
+                task_type=task_type,
+                material_type=material_type,
+                detail_level=settings.detail_level,
+                name=name,
+                generate_tags=settings.generate_tags,
+                custom_requirements=settings.custom_requirements,
+                system_prompt=settings.system_prompt,
+            ),
+        )
+        extracted = _parse_json_object(response.text, "Material extraction preview")
+        items = extracted.get("materials")
+        if not isinstance(items, list) or not items:
+            raise ValueError("Material extraction response must contain a non-empty materials list.")
+        candidates: list[MaterialExtractionCandidate] = []
+        for item in items[: settings.max_candidates]:
+            if not isinstance(item, dict):
+                continue
+            candidate_name = str(item.get("name") or name or "").strip()
+            if not candidate_name:
+                continue
+            raw_content = item.get("content")
+            if not isinstance(raw_content, dict):
+                raw_content = {
+                    key: value
+                    for key, value in item.items()
+                    if key not in {
+                        "name", "description", "suggested_general_tags",
+                        "suggested_applicable_scene_tags", "evidence_summary",
+                    }
+                }
+            candidates.append(
+                MaterialExtractionCandidate(
+                    candidate_id=secrets.token_hex(8),
+                    selected=True,
+                    name=candidate_name,
+                    description=str(item.get("description") or ""),
+                    content=normalize_material_content(material_type, raw_content),
+                    suggested_general_tags=(
+                        _suggested_tags(item.get("suggested_general_tags"))
+                        if settings.generate_tags else []
+                    ),
+                    suggested_applicable_scene_tags=(
+                        _suggested_tags(item.get("suggested_applicable_scene_tags"))
+                        if settings.generate_tags else []
+                    ),
+                    evidence_summary=str(item.get("evidence_summary") or ""),
+                )
+            )
+        if not candidates:
+            raise ValueError("Material extraction did not produce any valid candidates.")
+        metadata = {
+            **(source_metadata or {}),
+            "source_type": (source_metadata or {}).get("source_type", "paste"),
+            "sample_character_count": len(sample),
+            "task_type": task_type,
+            "material_type": material_type,
+        }
+        source_summary = _material_extraction_source_summary(metadata)
+        import_metadata = {
+            "created_by": "ai_material_extraction",
+            "task_type": task_type,
+            "model_id": model.id,
+            "model_name": model.model_name,
+            "token_usage": response.token_usage,
+            "elapsed_ms": response.elapsed_ms,
+        }
+        token = secrets.token_urlsafe(24)
+        _MATERIAL_PREVIEWS[(str(self.database_path.resolve()), token)] = _StoredMaterialPreview(
+            expires_at=time.monotonic() + MATERIAL_PREVIEW_TTL_SECONDS,
+            task_type=task_type,
+            material_type=material_type,
+            candidate_ids={item.candidate_id for item in candidates},
+            source_metadata=metadata,
+            source_summary=source_summary,
+            import_metadata=import_metadata,
+            raw_text=sample,
+        )
+        return MaterialExtractionPreview(
+            preview_token=token,
+            task_type=task_type,
+            material_type=material_type,
+            source_summary=source_summary,
+            candidates=candidates,
+        )
+
+    def apply_material_extraction(
+        self,
+        *,
+        preview_token: str,
+        candidates: list[dict[str, Any]],
+        selected_candidate_ids: list[str],
+    ) -> dict[str, list[dict[str, Any]]]:
+        key = (str(self.database_path.resolve()), preview_token)
+        stored = _MATERIAL_PREVIEWS.get(key)
+        if stored is None:
+            raise ValueError("Material extraction preview token is invalid or already used.")
+        if stored.expires_at <= time.monotonic():
+            _MATERIAL_PREVIEWS.pop(key, None)
+            raise ValueError("Material extraction preview token has expired.")
+        selected_ids = list(dict.fromkeys(str(value) for value in selected_candidate_ids))
+        if not set(selected_ids).issubset(stored.candidate_ids):
+            raise ValueError("Material extraction preview token or candidate selection was tampered with.")
+        by_id = {
+            str(item.get("candidate_id") or ""): item
+            for item in candidates
+            if isinstance(item, dict)
+        }
+        _MATERIAL_PREVIEWS.pop(key, None)
+        created: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        for sort_order, candidate_id in enumerate(selected_ids):
+            candidate = by_id.get(candidate_id)
+            if candidate is None:
+                errors.append({"candidate_id": candidate_id, "error": "Candidate payload is missing."})
+                continue
+            name = str(candidate.get("name") or "").strip()
+            if not name:
+                errors.append({"candidate_id": candidate_id, "error": "Material name is required."})
+                continue
+            try:
+                material_id = self.material_service.create_extracted_material(
+                    material_type=stored.material_type,
+                    name=name,
+                    description=str(candidate.get("description") or ""),
+                    detail_level=self.material_service.get_ai_settings(stored.task_type).detail_level,
+                    raw_text=stored.raw_text,
+                    content=normalize_material_content(
+                        stored.material_type,
+                        candidate.get("content"),
+                    ),
+                    source_metadata=stored.source_metadata,
+                    import_metadata=stored.import_metadata,
+                    sort_order=sort_order,
+                    general_tags=_suggested_tags(candidate.get("confirmed_general_tags")),
+                    applicable_scene_tags=_suggested_tags(
+                        candidate.get("confirmed_applicable_scene_tags")
+                    ),
+                    category_ids=[
+                        int(value) for value in candidate.get("category_ids", [])
+                    ],
+                )
+                created.append({"candidate_id": candidate_id, "material_id": material_id})
+            except Exception as exc:  # noqa: BLE001
+                errors.append({"candidate_id": candidate_id, "error": str(exc)})
+        return {"created": created, "errors": errors}
 
     def extract_materials_from_text(
         self,
@@ -698,6 +918,54 @@ class AnchorExtractionService:
         ]
 
     @staticmethod
+    def _material_preview_messages(
+        sample_text: str,
+        *,
+        task_type: str,
+        material_type: str,
+        detail_level: str,
+        name: str | None,
+        generate_tags: bool,
+        custom_requirements: str,
+        system_prompt: str,
+    ) -> list[dict[str, str]]:
+        requested_name = name.strip() if name and name.strip() else "derive from source"
+        tag_rule = (
+            "Suggest 0-8 short retrieval tags in suggested_general_tags and "
+            "0-8 scene applicability tags in suggested_applicable_scene_tags. "
+            "Do not use sentences as tags."
+            if generate_tags
+            else "Return empty arrays for both suggested tag fields."
+        )
+        separation_rule = (
+            "This task only creates scene material. Never create, derive, or reference a plot skeleton."
+            if task_type == "source_text_to_scene_material"
+            else "This task only creates a plot skeleton. Never derive scene material."
+        )
+        return [
+            {
+                "role": "system",
+                "content": (
+                    f"{system_prompt}\n{separation_rule}\n"
+                    "Return strict JSON only. Never invent unsupported facts. "
+                    "Missing dimensions must be empty."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Task type: {task_type}\nMaterial type: {material_type}\n"
+                    f"Suggested name: {requested_name}\nDetail level: {detail_level}\n"
+                    f"{tag_rule}\nAdditional requirements: {custom_requirements or 'None'}\n"
+                    "Return {\"materials\":[{\"name\":\"\",\"description\":\"\","
+                    "\"content\":{},\"suggested_general_tags\":[],"
+                    "\"suggested_applicable_scene_tags\":[],\"evidence_summary\":\"\"}]}.\n\n"
+                    f"Source text:\n{sample_text}"
+                ),
+            },
+        ]
+
+    @staticmethod
     def _material_messages(
         sample_text: str,
         material_type: str,
@@ -781,6 +1049,30 @@ def _suggested_tags(value: Any) -> list[str]:
         tags.append(name)
         seen.add(key)
     return tags
+
+
+def _material_extraction_source_summary(metadata: dict[str, Any]) -> dict[str, Any]:
+    document_id = _positive_int_or_none(metadata.get("document_id"))
+    chapter_id = _positive_int_or_none(metadata.get("chapter_id"))
+    document_title = str(metadata.get("document_title") or "").strip()
+    chapter_title = str(metadata.get("chapter_title") or "").strip()
+    if document_id is not None or metadata.get("source_type") == "document":
+        label = f"《{document_title}》" if document_title else "文档选区"
+        if chapter_title:
+            label += f" · {chapter_title}"
+        return {
+            "kind": "document_selection",
+            "label": label,
+            "document_id": document_id,
+            "chapter_id": chapter_id,
+            "project_id": _positive_int_or_none(metadata.get("project_id")),
+        }
+    if metadata.get("source_type") == "file":
+        return {
+            "kind": "file_import",
+            "label": f"文件 {metadata.get('source_file_name') or '本地文件'}",
+        }
+    return {"kind": "pasted_text", "label": "粘贴文本"}
 
 
 def _custom_fields(value: Any) -> list[dict[str, Any]]:

@@ -151,6 +151,7 @@ export type ResourceTag = {
   normalized_name: string;
   sort_order: number;
   resource_count: number;
+  tag_group?: 'general' | 'applicable_scene';
 };
 
 export type LibraryDocumentExportResult = {
@@ -638,6 +639,35 @@ export type CharacterExtractionApplyResult = {
 export type AnalysisStatus = 'unanalyzed' | 'analyzed';
 export type MaterialType = 'scene_reference' | 'plot_skeleton';
 export type MaterialScope = 'public' | 'project';
+export type MaterialTagGroup = 'general' | 'applicable_scene';
+export type MaterialAITask =
+  | 'narrative_to_plot_skeleton'
+  | 'plot_text_to_normalized_skeleton'
+  | 'source_text_to_scene_material';
+
+export type MaterialSourceSummary = {
+  kind:
+    | 'manual'
+    | 'document_selection'
+    | 'file_import'
+    | 'pasted_text'
+    | 'ai_extraction'
+    | 'legacy_copy'
+    | 'legacy_project_material';
+  label: string;
+  document_id?: number | null;
+  chapter_id?: number | null;
+  project_id?: number | null;
+};
+
+export type MaterialCategory = {
+  id: number;
+  material_type: MaterialType;
+  name: string;
+  normalized_name: string;
+  sort_order: number;
+  resource_count: number;
+};
 
 export type Material = {
   id: number;
@@ -662,6 +692,11 @@ export type Material = {
   created_at: string;
   updated_at: string;
   tags: string[];
+  general_tags: string[];
+  applicable_scene_tags: string[];
+  category_ids: number[];
+  categories: string[];
+  source_summary: MaterialSourceSummary;
 };
 
 export type MaterialWrite = {
@@ -680,6 +715,7 @@ export type MaterialWrite = {
   timeline_end_chapter?: number | null;
   sort_order?: number;
   tag_ids?: number[];
+  category_ids?: number[];
 };
 
 export type MaterialUpdate = Omit<MaterialWrite, 'material_type' | 'scope' | 'project_id' | 'source_metadata' | 'import_metadata'>;
@@ -694,6 +730,54 @@ export type MaterialAnalysisProposal = {
 
 export type MaterialExtractWrite = AnchorExtractWrite & {
   material_type: MaterialType;
+};
+
+export type ProjectMaterialFilter = {
+  project_id: number;
+  material_type: MaterialType;
+  match_mode: 'any' | 'all';
+  tag_ids: number[];
+  manual_material_ids: number[];
+  include_scene_keywords: boolean;
+  include_applicable_scene_tags: boolean;
+};
+
+export type MaterialAISettings = {
+  task_type: MaterialAITask;
+  model_id: number | null;
+  detail_level: StyleDetailLevel;
+  max_candidates: number;
+  generate_tags: boolean;
+  custom_requirements: string;
+  system_prompt: string;
+  updated_at: string;
+};
+
+export type MaterialExtractionCandidate = {
+  candidate_id: string;
+  selected: boolean;
+  name: string;
+  description: string;
+  content: Record<string, unknown>;
+  suggested_general_tags: string[];
+  suggested_applicable_scene_tags: string[];
+  confirmed_general_tags?: string[];
+  confirmed_applicable_scene_tags?: string[];
+  category_ids?: number[];
+  evidence_summary: string;
+};
+
+export type MaterialExtractionPreview = {
+  preview_token: string;
+  task_type: MaterialAITask;
+  material_type: MaterialType;
+  source_summary: MaterialSourceSummary;
+  candidates: MaterialExtractionCandidate[];
+};
+
+export type MaterialExtractionApplyResult = {
+  created: Array<{ candidate_id: string; material_id: number | null; error: string | null }>;
+  errors: Array<{ candidate_id: string; material_id: number | null; error: string | null }>;
 };
 
 export type SelectionResourceCreate = {

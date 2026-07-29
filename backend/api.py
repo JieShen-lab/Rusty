@@ -104,7 +104,16 @@ from .schemas import (
     LibraryDocumentOut,
     LibraryDocumentRevisionOut,
     MaterialAnalyzeRequest,
+    MaterialAISettingsOut,
+    MaterialAISettingsWriteRequest,
     MaterialAnalysisApplyRequest,
+    MaterialCategoryCreateRequest,
+    MaterialCategoryOut,
+    MaterialExtractionApplyOut,
+    MaterialExtractionApplyRequest,
+    MaterialExtractionCandidateOut,
+    MaterialExtractionPreviewOut,
+    MaterialExtractionPreviewRequest,
     MaterialJsonImportRequest,
     MaterialCopyRequest,
     MaterialExtractOut,
@@ -127,6 +136,8 @@ from .schemas import (
     PreviewRequest,
     PreviewResponse,
     ProjectDetailOut,
+    ProjectMaterialFilterOut,
+    ProjectMaterialFilterWriteRequest,
     ProjectCharacterBindingRequest,
     ProjectCharacterBindingsOut,
     ProjectOutlineBindingOut,
@@ -1562,9 +1573,14 @@ def create_app(
         project_id: int | None = None,
         material_type: str | None = None,
         tag_id: int | None = None,
+        tag_group: str | None = None,
+        category_id: int | None = None,
         analysis_status: str | None = None,
+        pending_imports: bool = False,
         untagged: bool = False,
         query: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> list[MaterialOut]:
         return [
             _material_out(item)
@@ -1573,19 +1589,26 @@ def create_app(
                 project_id=project_id,
                 material_type=material_type,
                 tag_id=tag_id,
+                tag_group=tag_group,
+                category_id=category_id,
                 analysis_status=analysis_status,
+                pending_imports=pending_imports,
                 untagged=untagged,
                 query=query,
+                limit=limit,
+                offset=offset,
             )
         ]
 
     @app.get("/api/material-tags", response_model=list[ResourceTagOut])
-    def list_material_tags() -> list[ResourceTagOut]:
-        return [_resource_tag_out(tag) for tag in material_service.list_tags()]
+    def list_material_tags(tag_group: str | None = None) -> list[ResourceTagOut]:
+        return [_resource_tag_out(tag) for tag in material_service.list_tags(tag_group)]
 
     @app.post("/api/material-tags", response_model=ResourceTagOut, dependencies=[Depends(_require_token)])
     def create_material_tag(payload: ResourceTagCreateRequest) -> ResourceTagOut:
-        return _resource_tag_out(material_service.create_tag(payload.name))
+        return _resource_tag_out(
+            material_service.create_tag(payload.name, tag_group=payload.tag_group)
+        )
 
     @app.post("/api/material-tags/{tag_id}", response_model=ResourceTagOut, dependencies=[Depends(_require_token)])
     def rename_material_tag(tag_id: int, payload: ResourceTagRenameRequest) -> ResourceTagOut:
@@ -1603,6 +1626,144 @@ def create_app(
     )
     def assign_material_tag(material_id: int, tag_id: int, payload: ResourceTagAssignmentRequest) -> MaterialOut:
         return _material_out(material_service.set_material_tag(material_id, tag_id, payload.selected))
+
+    @app.get("/api/material-categories", response_model=list[MaterialCategoryOut])
+    def list_material_categories(material_type: str | None = None) -> list[MaterialCategoryOut]:
+        return [
+            MaterialCategoryOut(**item.__dict__)
+            for item in material_service.list_categories(material_type)
+        ]
+
+    @app.post(
+        "/api/material-categories",
+        response_model=MaterialCategoryOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def create_material_category(payload: MaterialCategoryCreateRequest) -> MaterialCategoryOut:
+        return MaterialCategoryOut(
+            **material_service.create_category(payload.material_type, payload.name).__dict__
+        )
+
+    @app.post(
+        "/api/material-categories/{category_id}",
+        response_model=MaterialCategoryOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def rename_material_category(
+        category_id: int,
+        payload: ResourceTagRenameRequest,
+    ) -> MaterialCategoryOut:
+        return MaterialCategoryOut(
+            **material_service.rename_category(category_id, payload.name).__dict__
+        )
+
+    @app.post(
+        "/api/material-categories/{category_id}/delete",
+        response_model=dict[str, bool],
+        dependencies=[Depends(_require_token)],
+    )
+    def delete_material_category(category_id: int) -> dict[str, bool]:
+        material_service.delete_category(category_id)
+        return {"ok": True}
+
+    @app.post(
+        "/api/materials/{material_id}/categories/{category_id}",
+        response_model=MaterialOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def assign_material_category(
+        material_id: int,
+        category_id: int,
+        payload: ResourceTagAssignmentRequest,
+    ) -> MaterialOut:
+        return _material_out(
+            material_service.set_material_category(material_id, category_id, payload.selected)
+        )
+
+    @app.get(
+        "/api/projects/{project_id}/material-filters",
+        response_model=list[ProjectMaterialFilterOut],
+    )
+    def get_project_material_filters(project_id: int) -> list[ProjectMaterialFilterOut]:
+        return [
+            ProjectMaterialFilterOut(
+                project_id=item.project_id,
+                material_type=item.material_type,
+                match_mode=item.match_mode,
+                tag_ids=list(item.tag_ids),
+                manual_material_ids=list(item.manual_material_ids),
+                include_scene_keywords=item.include_scene_keywords,
+                include_applicable_scene_tags=item.include_applicable_scene_tags,
+            )
+            for item in material_service.get_project_material_filters(project_id)
+        ]
+
+    @app.get("/api/projects/{project_id}/materials", response_model=list[MaterialOut])
+    def list_project_materials(
+        project_id: int,
+        material_type: str | None = None,
+    ) -> list[MaterialOut]:
+        return [
+            _material_out(item)
+            for item in material_service.list_materials_for_project(
+                project_id,
+                material_type=material_type,
+            )
+        ]
+
+    @app.post(
+        "/api/projects/{project_id}/material-filters/{material_type}",
+        response_model=ProjectMaterialFilterOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def set_project_material_filter(
+        project_id: int,
+        material_type: str,
+        payload: ProjectMaterialFilterWriteRequest,
+    ) -> ProjectMaterialFilterOut:
+        item = material_service.set_project_material_filter(
+            project_id,
+            material_type,
+            **payload.model_dump(),
+        )
+        return ProjectMaterialFilterOut(
+            project_id=item.project_id,
+            material_type=item.material_type,
+            match_mode=item.match_mode,
+            tag_ids=list(item.tag_ids),
+            manual_material_ids=list(item.manual_material_ids),
+            include_scene_keywords=item.include_scene_keywords,
+            include_applicable_scene_tags=item.include_applicable_scene_tags,
+        )
+
+    @app.get("/api/material-ai-settings", response_model=list[MaterialAISettingsOut])
+    def list_material_ai_settings() -> list[MaterialAISettingsOut]:
+        return [MaterialAISettingsOut(**item.__dict__) for item in material_service.list_ai_settings()]
+
+    @app.get("/api/material-ai-settings/{task_type}", response_model=MaterialAISettingsOut)
+    def get_material_ai_settings(task_type: str) -> MaterialAISettingsOut:
+        return MaterialAISettingsOut(**material_service.get_ai_settings(task_type).__dict__)
+
+    @app.post(
+        "/api/material-ai-settings/{task_type}",
+        response_model=MaterialAISettingsOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def update_material_ai_settings(
+        task_type: str,
+        payload: MaterialAISettingsWriteRequest,
+    ) -> MaterialAISettingsOut:
+        return MaterialAISettingsOut(
+            **material_service.update_ai_settings(task_type, **payload.model_dump()).__dict__
+        )
+
+    @app.post(
+        "/api/material-ai-settings/{task_type}/reset",
+        response_model=MaterialAISettingsOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def reset_material_ai_settings(task_type: str) -> MaterialAISettingsOut:
+        return MaterialAISettingsOut(**material_service.reset_ai_settings(task_type).__dict__)
 
     @app.post("/api/materials", response_model=MaterialOut, dependencies=[Depends(_require_token)])
     def create_material(payload: MaterialWriteRequest) -> MaterialOut:
@@ -1700,6 +1861,53 @@ def create_app(
                 model_id=payload.model_id,
                 invocation_id=payload.invocation_id,
             )
+        )
+
+    @app.post(
+        "/api/material-extractions/preview",
+        response_model=MaterialExtractionPreviewOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def preview_material_extraction(
+        payload: MaterialExtractionPreviewRequest,
+    ) -> MaterialExtractionPreviewOut:
+        text, resolved_metadata = _resolve_anchor_source(
+            payload,
+            project_service=project_service,
+            document_library_service=document_library_service,
+        )
+        preview = anchor_extraction_service.preview_materials_from_text(
+            text,
+            task_type=payload.task_type,
+            name=payload.name,
+            model_id=payload.model_id,
+            source_metadata={**resolved_metadata, **payload.source_metadata},
+        )
+        return MaterialExtractionPreviewOut(
+            preview_token=preview.preview_token,
+            task_type=preview.task_type,
+            material_type=preview.material_type,
+            source_summary=preview.source_summary,
+            candidates=[
+                MaterialExtractionCandidateOut(**candidate.__dict__)
+                for candidate in preview.candidates
+            ],
+        )
+
+    @app.post(
+        "/api/material-extractions/apply",
+        response_model=MaterialExtractionApplyOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def apply_material_extraction(
+        payload: MaterialExtractionApplyRequest,
+    ) -> MaterialExtractionApplyOut:
+        result = anchor_extraction_service.apply_material_extraction(
+            **payload.model_dump()
+        )
+        return MaterialExtractionApplyOut(
+            created=result["created"],
+            errors=result["errors"],
         )
 
     @app.post("/api/material-extractions", response_model=MaterialExtractOut, dependencies=[Depends(_require_token)])
@@ -2528,6 +2736,9 @@ def _outline_out(template: OutlineTemplate) -> OutlineTemplateOut:
 
 
 def _material_out(material: Material) -> MaterialOut:
+    source_summary = material.source_summary
+    if source_summary is None:
+        raise RuntimeError("Material source summary was not generated.")
     return MaterialOut(
         id=material.id,
         material_type=material.material_type,
@@ -2551,6 +2762,11 @@ def _material_out(material: Material) -> MaterialOut:
         created_at=material.created_at,
         updated_at=material.updated_at,
         tags=list(material.tags),
+        general_tags=list(material.general_tags),
+        applicable_scene_tags=list(material.applicable_scene_tags),
+        category_ids=list(material.category_ids),
+        categories=list(material.categories),
+        source_summary=source_summary.__dict__,
     )
 
 
