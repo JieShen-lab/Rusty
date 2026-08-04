@@ -216,7 +216,7 @@ SQLite + OS keyring + 本地文件
 
 ## 5. 数据实现
 
-数据库当前架构版本为 20。主要数据域包括：
+数据库当前架构版本为 35。主要数据域包括：
 
 - 项目、书籍元数据、导入来源、分章规则和章节；
 - AI 模型、提示词模板、项目提示词和项目设置；
@@ -292,6 +292,14 @@ Set-Location desktop
 npm run build
 ```
 
+桌面自动化分为三类，不能互相替代：
+
+```powershell
+npm run test:e2e          # Mock 浏览器 UI
+npm run test:e2e:real     # React 浏览器 UI + FastAPI + SQLite + FakeLLM
+npm run test:e2e:electron # 实际 Electron + preload + FastAPI + SQLite + FakeLLM
+```
+
 完整后端测试覆盖数据库迁移、导入导出、项目与文档库、卷章层级、草稿与 revision、模型密钥隔离、提示词兼容、素材与锚点、API 权限、流水线成功/失败/重试、结构化改写校验，以及 PySide6 基础 UI。
 
 ## 9. 当前边界
@@ -304,7 +312,8 @@ npm run build
 - “引用范围”仍未持久化或接入下游消费，因此 Electron 工作台暂不显示该入口。
 - 当前仓库没有桌面安装包构建与签名脚本，开发运行以源码环境为主。
 
-> 2026-07-29：工程类型、分支、模块化细纲和三类写作工作流的数据库、领域服务与 API
-> 已完成重构；Electron 已接入分支持久化，但三类写作工作流的桌面端完整提交闭环仍待接入。
+> 2026-08-04：工程类型、任意语义锚点与父分支锚点、模块化细纲和三类写作工作流已接入
+> Electron。`bounded_insert` 默认保留原文并执行插入；接缝按各自来源独立校验哈希。
+> 自动化明确区分浏览器真实后端集成测试与实际 Electron E2E。
 > 最新模型与迁移说明见 [workflow-refactor.md](workflow-refactor.md)，审计基线见
 > [workflow-refactor-audit.md](workflow-refactor-audit.md)。

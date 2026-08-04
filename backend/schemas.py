@@ -537,11 +537,18 @@ class SeamProposal(StrictWorkflowModel):
     source_hash: str = Field(min_length=1)
     reason: str = ""
     status: Literal["draft", "confirmed", "rejected"] = "draft"
+    source_anchor: StoryAnchorRequest | None = None
+    source_version_id: int | None = Field(default=None, ge=1)
+
+
+class SeamReviewItem(StrictWorkflowModel):
+    seam_id: int = Field(ge=1)
+    decision: Literal["confirmed", "rejected"]
+    proposed_text: str | None = None
 
 
 class SeamReviewRequest(StrictWorkflowModel):
-    seams: list[SeamProposal] = Field(min_length=1)
-    current_source_text: str
+    reviews: list[SeamReviewItem] = Field(min_length=1)
 
 
 class PlotGenerationStartRequest(StrictWorkflowModel):
@@ -557,6 +564,7 @@ class PlotGenerationStartRequest(StrictWorkflowModel):
     style_profile_id: int | None = Field(default=None, ge=1)
     parent_branch_id: int | None = Field(default=None, ge=1)
     branch_name: str = Field(default="Generated branch", min_length=1)
+    range_operation: Literal["insert_between", "replace_range"] = "insert_between"
 
     @model_validator(mode="after")
     def validate_return_anchor(self) -> "PlotGenerationStartRequest":
@@ -591,6 +599,7 @@ class PlotGenerationRunResponse(BaseModel):
     project_id: int
     branch_id: int | None
     generation_mode: str
+    range_operation: str = "insert_between"
     output_topology: str
     status: str
     stage: str

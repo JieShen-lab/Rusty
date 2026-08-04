@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import sys
+from copy import deepcopy
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -16,6 +17,10 @@ from rusty.db import session
 from rusty.services.branch_service import BranchService
 from rusty.services.project_service import ProjectService
 from rusty.services.rewrite_workflow_service import RewriteWorkflowService
+from rusty.services.model_service import ModelService
+from rusty.services.prompt_service import PromptService
+from rusty.services.analysis_service import AnalysisService
+from rusty.services.scene_service import SceneService
 
 
 SKELETON = {
@@ -54,9 +59,15 @@ SKELETON = {
 
 
 class RealE2EFakeLLM:
+    def __init__(self):
+        self.required_end = {}
+
     def generate_json(self, stage, payload):
         if stage == "propose_target_skeleton":
-            return {"target_skeleton": SKELETON}
+            target = deepcopy(SKELETON)
+            target["required_start_state"] = dict(payload["context"].get("start_state") or {})
+            target["required_end_state"] = dict(payload["context"].get("return_state_constraints") or {})
+            return {"target_skeleton": target}
         if stage == "propose_seams":
             text = payload["context"]["start_anchor_context"]["text"]
             digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -83,11 +94,12 @@ class RealE2EFakeLLM:
                 })
             return {"seams": seams}
         if stage == "generate_scene_plan":
+            self.required_end = dict(payload["target_skeleton"].get("required_end_state") or {})
             return {"chapters": [{"title": "新章节", "summary": "新路线", "scenes": [{"title": "新场景", "direction": "推进冲突"}]}]}
         if stage == "generate_next_scene":
             return {"text": "人物遭遇伏击并化解危机。"}
         if stage == "update_fact_ledger":
-            return {"facts_after": {**payload["facts_before"], "ambush_resolved": True}}
+            return {"facts_after": {**payload["facts_before"], **self.required_end, "ambush_resolved": True}}
         if stage == "consistency_check":
             return {"issues": [], "final_state": {**payload["final_state"], "ambush_resolved": True}}
         if stage == "prose_rewrite_plan":
@@ -121,9 +133,14 @@ class RealE2EFakeLLM:
 
 
 def seed(database: Path) -> None:
+    ModelService(database).create_model(
+        "Fake E2E Model", "openai_compatible", "http://127.0.0.1/fake", "fake", is_default=True
+    )
+    PromptService(database).create_template("Fake Rewrite Prompt", is_default=True)
+    AnalysisService(database).create_template("Fake Analysis Prompt", is_default=True)
     projects = ProjectService(database)
     workflow = RewriteWorkflowService(database)
-    sources = ROOT / "tmp" / "real-e2e"
+    sources = database.parent
     sources.mkdir(parents=True, exist_ok=True)
     for index, kind in enumerate(
         ["rewrite", "rewrite", "rewrite", "branch", "branch", "branch", "branch", "rewrite"],
@@ -131,7 +148,7 @@ def seed(database: Path) -> None:
     ):
         source = sources / f"source-{index}.txt"
         source.write_text(
-            "1. 第一章\n人物进入院子。旧设定仍有效。人物返回客栈。",
+            "1. 第一章\n人物进入院子。\n\n他检查了院门。\n\n旧设定仍有效。\n\n人物返回客栈。",
             encoding="utf-8",
         )
         project_id = projects.create_project(
@@ -141,6 +158,27 @@ def seed(database: Path) -> None:
             project_kind=kind,
         )
         chapter = projects.list_chapters(project_id)[0]
+        scene_service = SceneService(database)
+        split_at = chapter.original_text.index("旧设定")
+        scenes = scene_service.split_chapter(chapter.id, proposed_boundaries=[split_at])
+        scene_service.save_fact_ledger(
+            scenes[0].id,
+            {
+                "location": "院子",
+                "gate_checked": True,
+                "required_start_state": {"location": "院门"},
+                "required_end_state": {"location": "院子", "gate_checked": True},
+            },
+        )
+        scene_service.save_fact_ledger(
+            scenes[1].id,
+            {
+                "location": "客栈",
+                "original_future_event": True,
+                "required_start_state": {"location": "客栈", "gate_checked": True},
+                "required_end_state": {"location": "客栈", "original_future_event": True},
+            },
+        )
         if index == 2:
             version = workflow.create_structured_skeleton(
                 project_id=project_id,
@@ -163,14 +201,14 @@ def seed(database: Path) -> None:
                 },
             )
             parent_chapter = branches.create_chapter(
-                parent["id"], title="父分支章节", facts_after={"parent": True}
+                parent["id"], title="父分支章节", facts_after={"parent_secret_known": True, "location": "地下室"}
             )
             branches.save_scene(
                 parent["id"],
                 branch_chapter_id=parent_chapter["id"],
                 title="父分支场景",
-                generated_text="父分支新场景。",
-                facts_after={"parent": True},
+                generated_text="父分支在地下室发现秘密。",
+                facts_after={"parent_secret_known": True, "location": "地下室"},
             )
         if index == 8:
             with session(database) as connection:
@@ -185,16 +223,17 @@ def seed(database: Path) -> None:
 
 
 if __name__ == "__main__":
-    database = ROOT / "tmp" / "real-e2e" / "rusty.db"
+    runtime_name = os.environ.get("RUSTY_E2E_RUNTIME_NAME", "real-e2e")
+    database = ROOT / "tmp" / runtime_name / "rusty.db"
     database.parent.mkdir(parents=True, exist_ok=True)
     if database.exists():
         database.unlink()
-    os.environ["RUSTY_API_TOKEN"] = "real-e2e-token"
-    os.environ["RUSTY_API_ALLOWED_ORIGINS"] = "http://127.0.0.1:4174"
+    os.environ.setdefault("RUSTY_API_TOKEN", "real-e2e-token")
+    os.environ.setdefault("RUSTY_API_ALLOWED_ORIGINS", "http://127.0.0.1:4174")
     seed(database)
     uvicorn.run(
         create_app(database, workflow_ai_client=RealE2EFakeLLM()),
         host="127.0.0.1",
-        port=8766,
+        port=int(os.environ.get("RUSTY_API_PORT", "8766")),
         log_level="warning",
     )

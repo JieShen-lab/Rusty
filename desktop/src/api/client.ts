@@ -554,6 +554,10 @@ export function getStoryBranches(projectId: number) {
   return request<StoryBranch[]>(`/api/projects/${projectId}/branches`);
 }
 
+export function getBranchChapters(branchId: number) {
+  return request<import('./types').BranchChapterRecord[]>(`/api/branches/${branchId}/chapters`);
+}
+
 export function createStoryBranch(projectId: number, payload: BranchCreateRequest) {
   return request<StoryBranch>(`/api/projects/${projectId}/branches`, {
     method: 'POST',
@@ -579,20 +583,7 @@ export function getPlotGenerationRun(runId: number) {
 export function confirmPlotGenerationSeams(runId: number, payload: PlotGenerationSeamConfirmRequest) {
   return request<PlotGenerationRun>(`/api/plot-generation/runs/${runId}/seams`, {
     method: 'POST',
-    body: JSON.stringify({
-      current_source_text: payload.current_source_text,
-      seams: payload.seams.map((seam) => ({
-        id: seam.id ?? null,
-        seam_kind: seam.seam_kind,
-        operation: seam.operation,
-        original_text: seam.original_text,
-        proposed_text: seam.proposed_text,
-        source_range: seam.source_range,
-        source_hash: seam.source_hash,
-        reason: seam.reason,
-        status: seam.status,
-      })),
-    }),
+    body: JSON.stringify(payload),
   });
 }
 
@@ -1289,6 +1280,10 @@ export function reviseStorySkeleton(
 
 export function getChapterStorySkeleton(chapterId: number) {
   return request<import('./types').PreferredStorySkeleton>(`/api/chapters/${chapterId}/story-skeleton`);
+}
+
+export function getStorySkeletonVersion(skeletonId: number, version: number) {
+  return request<import('./types').StorySkeletonVersion>(`/api/story-skeletons/${skeletonId}/versions/${version}`);
 }
 
 export function confirmStorySkeleton(skeletonId: number, version?: number) {

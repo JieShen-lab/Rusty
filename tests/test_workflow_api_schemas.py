@@ -90,6 +90,25 @@ class WorkflowAPISchemaTests(unittest.TestCase):
         )
         self.assert_validation_error(response)
 
+    def test_invalid_seam_decision_is_rejected_without_source_text_payload(self) -> None:
+        response = self.client.post(
+            "/api/plot-generation/runs/1/seams",
+            headers=self.headers,
+            json={"reviews": [{"seam_id": 1, "decision": "apply"}]},
+        )
+        self.assert_validation_error(response)
+
+    def test_legacy_authoritative_source_text_is_rejected(self) -> None:
+        response = self.client.post(
+            "/api/plot-generation/runs/1/seams",
+            headers=self.headers,
+            json={
+                "reviews": [{"seam_id": 1, "decision": "confirmed"}],
+                "current_source_text": "untrusted",
+            },
+        )
+        self.assert_validation_error(response)
+
     def test_unknown_fields_are_rejected_at_each_nested_boundary(self) -> None:
         response = self.client.post(
             "/api/projects/1/branches",

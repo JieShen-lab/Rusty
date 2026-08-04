@@ -634,6 +634,29 @@ class ContextService:
             "return_anchor_context": returned,
         }
 
+    def resolve_generation_anchor_source(
+        self,
+        project_id: int,
+        anchor: dict[str, Any],
+        *,
+        parent_branch_id: int | None = None,
+    ) -> dict[str, Any]:
+        """Resolve the authoritative current text unit bound to a generation anchor."""
+        resolved = self._resolve_generation_anchor(
+            project_id, anchor, parent_branch_id=parent_branch_id
+        )
+        source_text = str(resolved.get("source_text", resolved["text"]))
+        return {
+            "text": source_text,
+            "source_hash": self.branch_service.source_hash(source_text),
+            "source_version_id": resolved.get("source_version_id"),
+            "source_range": dict(
+                resolved.get("source_range")
+                or {"start": 0, "end": len(source_text)}
+            ),
+            "offset": int(resolved.get("local_offset", resolved.get("offset", 0))),
+        }
+
     def _resolve_generation_anchor(
         self,
         project_id: int,
@@ -646,42 +669,60 @@ class ContextService:
             if parent_branch_id is None:
                 raise ValueError("Branch content anchors require parent_branch_id.")
             chapters = self.branch_service.list_chapters(parent_branch_id)
-            selected_chapter = next(
-                (
-                    chapter
-                    for chapter in chapters
-                    if int(chapter["id"]) == int(anchor.get("branch_chapter_id") or -1)
-                    or any(
-                        int(scene["id"]) == int(anchor.get("branch_scene_id") or -1)
-                        for scene in chapter["scenes"]
-                    )
-                ),
-                None,
-            )
+            selected_chapter = next((chapter for chapter in chapters if (
+                int(chapter["id"]) == int(anchor.get("branch_chapter_id") or -1)
+                or any(int(scene["id"]) == int(anchor.get("branch_scene_id") or -1) for scene in chapter["scenes"])
+            )), None)
             if selected_chapter is None:
                 raise ValueError("Branch anchor could not be resolved.")
-            selected_scene = next(
-                (
-                    scene
-                    for scene in selected_chapter["scenes"]
-                    if int(scene["id"]) == int(anchor.get("branch_scene_id") or -1)
-                ),
-                selected_chapter["scenes"][-1] if selected_chapter["scenes"] else None,
-            )
-            text = selected_scene["generated_text"] if selected_scene else ""
-            facts = (
-                selected_scene["facts_after"]
-                if selected_scene
-                else selected_chapter["facts_after"]
-            )
+            selected_scene = None
+            if anchor_type == "branch_scene":
+                selected_scene = self.branch_service.get_scene(
+                    int(anchor["branch_scene_id"]),
+                    version_id=(int(anchor["source_version_id"]) if anchor.get("source_version_id") else None),
+                )
+                text = selected_scene["generated_text"]
+                facts = selected_scene["facts_after"]
+                source_version_id = int(selected_scene["version_id"])
+            else:
+                selected_chapter = self.branch_service.get_chapter(
+                    int(anchor["branch_chapter_id"]),
+                    version_id=(int(anchor["source_version_id"]) if anchor.get("source_version_id") else None),
+                )
+                current_scenes = self.branch_service.list_scenes(
+                    parent_branch_id,
+                    branch_chapter_id=int(selected_chapter["id"]),
+                )
+                text = "\n\n".join(str(scene["generated_text"]) for scene in current_scenes)
+                facts = selected_chapter["facts_after"]
+                source_version_id = int(selected_chapter["version_id"])
+            history: list[str] = []
+            for chapter in chapters:
+                for scene in chapter["scenes"]:
+                    history.append(str(scene["generated_text"]))
+                    if selected_scene is not None and int(scene["id"]) == int(selected_scene["id"]):
+                        break
+                if selected_scene is not None and any(int(scene["id"]) == int(selected_scene["id"]) for scene in chapter["scenes"]):
+                    break
+                if selected_scene is None and int(chapter["id"]) == int(selected_chapter["id"]):
+                    break
+            history_text = "\n\n".join(history)
+            local_offset = 0 if anchor.get("side") == "before" else len(text)
             return {
                 "source_kind": "branch",
                 "text": text,
-                "previous_text_tail": text[-1200:],
+                "source_text": text,
+                "offset": local_offset,
+                "local_offset": local_offset,
+                "source_version_id": source_version_id,
+                "source_hash": self.branch_service.source_hash(text),
+                "source_range": {"start": 0, "end": len(text)},
+                "previous_text_tail": history_text[: len(history_text) - len(text) + local_offset][-1200:],
                 "state": facts,
                 "fact_ledger": facts,
-                "character_states": [],
+                "character_states": facts.get("character_states", []),
                 "previous_generated_scene": text,
+                "generated_history": history,
             }
 
         chapters = self.scene_service.project_service.list_chapters(project_id)
@@ -708,7 +749,45 @@ class ContextService:
             offset = scene.original_end_offset
         elif anchor_type == "text_offset":
             offset = int(anchor["text_offset"])
-        source_text = chapter.original_text
+        elif anchor_type == "skeleton_node":
+            with session(self.database_path) as connection:
+                row = connection.execute(
+                    """
+                    SELECT s.chapter_id, s.scene_id, v.skeleton_json
+                    FROM story_skeleton_versions v
+                    JOIN story_skeletons s ON s.id = v.skeleton_id
+                    WHERE v.id = ? AND s.project_id = ?
+                    """,
+                    (anchor["skeleton_version_id"], project_id),
+                ).fetchone()
+            if row is None:
+                raise ValueError("Skeleton anchor does not belong to project.")
+            chapter = self.scene_service.project_service.get_chapter(int(row["chapter_id"]))
+            if chapter is None:
+                raise ValueError("Skeleton anchor chapter is missing.")
+            if row["scene_id"] is not None:
+                scene = self.scene_service.get_scene(int(row["scene_id"]))
+            structured = json.loads(row["skeleton_json"] or "{}")
+            node = next((item for item in structured.get("event_nodes", []) if str(item.get("id")) == str(anchor["node_id"])), None)
+            if node is None:
+                raise ValueError("Skeleton node could not be resolved.")
+            span = node.get("source_span") if isinstance(node.get("source_span"), dict) else {}
+            start_value = span.get("start", span.get("start_offset"))
+            end_value = span.get("end", span.get("end_offset"))
+            if start_value is not None and end_value is not None:
+                offset = int(start_value if anchor.get("side") == "before" else end_value)
+            elif scene is not None:
+                offset = scene.original_start_offset if anchor.get("side") == "before" else scene.original_end_offset
+            else:
+                offset = 0 if anchor.get("side") == "before" else len(chapter.original_text)
+        if offset < 0 or offset > len(chapter.original_text):
+            raise ValueError("Anchor text_offset is outside the chapter text.")
+        if scene is not None and anchor.get("text_offset") is not None and not (
+            scene.original_start_offset <= offset <= scene.original_end_offset
+        ):
+            raise ValueError("Anchor text_offset is outside the selected scene.")
+        chapter_text = chapter.original_text
+        source_scene = scene
         siblings = self.scene_service.list_scenes(chapter.id)
         if scene is None and siblings:
             eligible = [
@@ -717,14 +796,26 @@ class ContextService:
             scene = eligible[-1] if eligible else siblings[0]
         facts = self.scene_service.get_fact_ledger(scene.id) if scene is not None else {}
         states = self.scene_service.list_character_states(scene.id) if scene is not None else []
+        at_start = anchor_type in {"chapter_start", "scene_start"} or anchor.get("side") == "before"
+        state = facts.get("required_start_state", facts) if at_start else facts.get("required_end_state", facts)
+        source_text = source_scene.original_text if source_scene is not None else chapter_text
+        local_offset = (
+            max(0, min(len(source_text), offset - source_scene.original_start_offset))
+            if source_scene is not None
+            else offset
+        )
         return {
             "source_kind": "original",
             "chapter_id": chapter.id,
             "scene_id": scene.id if scene is not None else None,
-            "text": source_text,
+            "text": chapter_text,
+            "source_text": source_text,
             "offset": offset,
-            "previous_text_tail": source_text[:offset][-1200:],
-            "state": facts.get("required_end_state", facts),
+            "local_offset": local_offset,
+            "source_hash": self.branch_service.source_hash(source_text),
+            "source_range": {"start": 0, "end": len(source_text)},
+            "previous_text_tail": chapter_text[:offset][-1200:],
+            "state": state,
             "fact_ledger": facts,
             "character_states": states,
         }

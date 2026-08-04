@@ -320,6 +320,8 @@ export type SeamProposal = {
   source_hash: string;
   reason: string;
   status: 'draft' | 'confirmed' | 'rejected';
+  source_anchor?: StoryAnchor | null;
+  source_version_id?: number | null;
 };
 
 export type StructuredEventNode = {
@@ -332,30 +334,30 @@ export type StructuredEventNode = {
   time_state: WorkflowObject;
   causes: string[];
   effects: string[];
+  motivation?: string;
+  knowledge_changes?: string[];
   locked: boolean;
   source_span: WorkflowObject | null;
   confidence: number;
-  motivation?: unknown;
-  knowledge_changes?: unknown;
 };
 
 export type StructuredSkeleton = {
   metadata: WorkflowObject;
   event_nodes: StructuredEventNode[];
-  causal_links: unknown[];
-  character_state_changes: unknown[];
-  location_changes: unknown[];
-  time_changes: unknown[];
-  object_changes: unknown[];
-  knowledge_changes: unknown[];
-  relationship_changes: unknown[];
-  foreshadowing: unknown[];
-  open_threads: unknown[];
-  resolved_threads: unknown[];
+  causal_links: WorkflowObject[];
+  character_state_changes: WorkflowObject[];
+  location_changes: WorkflowObject[];
+  time_changes: WorkflowObject[];
+  object_changes: WorkflowObject[];
+  knowledge_changes: WorkflowObject[];
+  relationship_changes: WorkflowObject[];
+  foreshadowing: WorkflowObject[];
+  open_threads: WorkflowObject[];
+  resolved_threads: WorkflowObject[];
   required_start_state: WorkflowObject;
   required_end_state: WorkflowObject;
-  editable_points: unknown[];
-  source_references: unknown[];
+  editable_points: WorkflowObject[];
+  source_references: WorkflowObject[];
 };
 
 export type PlotGenerationStartRequest = {
@@ -369,11 +371,15 @@ export type PlotGenerationStartRequest = {
   style_profile_id?: number | null;
   parent_branch_id?: number | null;
   branch_name?: string;
+  range_operation?: 'insert_between' | 'replace_range';
 };
 
 export type PlotGenerationSeamConfirmRequest = {
-  seams: SeamProposal[];
-  current_source_text: string;
+  reviews: Array<{
+    seam_id: number;
+    decision: 'confirmed' | 'rejected';
+    proposed_text?: string | null;
+  }>;
 };
 
 export type GeneratedSceneRequest = {
@@ -391,6 +397,7 @@ export type PlotGenerationRun = {
   project_id: number;
   branch_id: number | null;
   generation_mode: PlotGenerationStartRequest['generation_mode'];
+  range_operation: 'insert_between' | 'replace_range';
   output_topology: 'in_place' | 'branch';
   status: string;
   stage: string;
@@ -1160,8 +1167,37 @@ export type PreferredStorySkeleton = {
   format: 'structured' | 'legacy_summary' | 'missing';
   skeleton_id?: number;
   version?: number;
+  version_id?: number;
+  status?: 'draft' | 'confirmed';
   structured?: StructuredSkeleton;
   legacy_summary?: string;
+};
+
+export type BranchSceneRecord = {
+  id: number;
+  branch_id: number;
+  branch_chapter_id: number;
+  sequence_index: number;
+  scene_index: number;
+  title: string;
+  current_version: number;
+  version_id: number;
+  generated_text: string;
+  facts_after: WorkflowObject;
+};
+
+export type BranchChapterRecord = {
+  id: number;
+  branch_id: number;
+  sequence_index: number;
+  title: string;
+  current_version: number;
+  version_id: number;
+  version: number;
+  summary: string;
+  facts_before: WorkflowObject;
+  facts_after: WorkflowObject;
+  scenes: BranchSceneRecord[];
 };
 
 export type RewriteMode = 'skeleton_rewrite' | 'expansion';

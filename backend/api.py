@@ -890,14 +890,6 @@ def create_app(
         values = payload.model_dump()
         start_anchor = values["start_anchor"]
         return_anchor = values["return_anchor"]
-        if not start_anchor.get("source_hash"):
-            source_text = "\n\n".join(
-                chapter.original_text for chapter in project_service.list_chapters(project_id)
-            )
-            source_hash = branch_service.source_hash(source_text)
-            start_anchor["source_hash"] = source_hash
-            if return_anchor is not None:
-                return_anchor.setdefault("source_hash", source_hash)
         return branch_service.create_branch(
             project_id=project_id,
             name=values["name"],
@@ -929,8 +921,7 @@ def create_app(
     def confirm_plot_generation_seams(run_id: int, payload: PlotGenerationSeamConfirmRequest) -> dict[str, Any]:
         return plot_generation_orchestrator.confirm_seams(
             run_id,
-            [seam.model_dump() for seam in payload.seams],
-            current_source_text=payload.current_source_text,
+            [review.model_dump() for review in payload.reviews],
         )
 
     @app.post("/api/plot-generation/runs/{run_id}/skeleton", response_model=PlotGenerationRunResponse, dependencies=[Depends(_require_token)])
@@ -1372,6 +1363,13 @@ def create_app(
         if not skeleton:
             raise FileNotFoundError(f"Story skeleton not found for chapter: {chapter_id}")
         return skeleton
+
+    @app.get(
+        "/api/story-skeletons/{skeleton_id}/versions/{version}",
+        response_model=dict[str, Any],
+    )
+    def get_story_skeleton_version(skeleton_id: int, version: int) -> dict[str, Any]:
+        return rewrite_workflow_service.get_skeleton_version(skeleton_id, version).__dict__
 
     @app.post(
         "/api/story-skeletons/{skeleton_id}/confirm",

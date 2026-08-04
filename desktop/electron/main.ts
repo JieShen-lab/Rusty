@@ -214,6 +214,9 @@ function createWindow(): void {
 }
 
 ipcMain.handle('rusty:select-book-file', async () => {
+  if (process.env.NODE_ENV === 'test' && process.env.RUSTY_E2E_BOOK_FILE) {
+    return process.env.RUSTY_E2E_BOOK_FILE;
+  }
   const result = await dialog.showOpenDialog({
     title: '选择电子书文件',
     properties: ['openFile'],
@@ -223,6 +226,9 @@ ipcMain.handle('rusty:select-book-file', async () => {
 });
 
 ipcMain.handle('rusty:select-library-document-file', async () => {
+  if (process.env.NODE_ENV === 'test' && process.env.RUSTY_E2E_BOOK_FILE) {
+    return process.env.RUSTY_E2E_BOOK_FILE;
+  }
   const result = await dialog.showOpenDialog({
     title: '导入文档到文档库',
     properties: ['openFile'],
@@ -232,6 +238,9 @@ ipcMain.handle('rusty:select-library-document-file', async () => {
 });
 
 ipcMain.handle('rusty:select-document-library-directory', async () => {
+  if (process.env.NODE_ENV === 'test' && process.env.RUSTY_E2E_WORKSPACE) {
+    return process.env.RUSTY_E2E_WORKSPACE;
+  }
   const result = await dialog.showOpenDialog({
     title: '选择文档保存目录',
     properties: ['openDirectory', 'createDirectory'],
@@ -240,6 +249,9 @@ ipcMain.handle('rusty:select-document-library-directory', async () => {
 });
 
 ipcMain.handle('rusty:select-document-export-path', async (_event, format: 'txt' | 'epub', title: string) => {
+  if (process.env.NODE_ENV === 'test' && process.env.RUSTY_E2E_EXPORT_PATH) {
+    return process.env.RUSTY_E2E_EXPORT_PATH;
+  }
   const extension = format === 'epub' ? 'epub' : 'txt';
   const result = await dialog.showSaveDialog({
     title: `导出 ${format.toUpperCase()}`,
@@ -250,6 +262,9 @@ ipcMain.handle('rusty:select-document-export-path', async (_event, format: 'txt'
 });
 
 ipcMain.handle('rusty:select-workspace-directory', async () => {
+  if (process.env.NODE_ENV === 'test' && process.env.RUSTY_E2E_WORKSPACE) {
+    return process.env.RUSTY_E2E_WORKSPACE;
+  }
   const result = await dialog.showOpenDialog({
     title: '选择工作目录',
     properties: ['openDirectory', 'createDirectory'],

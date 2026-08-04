@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .connection import session
 
-CURRENT_SCHEMA_VERSION = 33
+CURRENT_SCHEMA_VERSION = 35
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -3168,6 +3168,32 @@ def _migrate_to_v33(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_to_v34(connection: sqlite3.Connection) -> None:
+    _add_column_if_missing(
+        connection,
+        "plot_generation_runs",
+        "range_operation",
+        "range_operation TEXT NOT NULL DEFAULT 'insert_between' "
+        "CHECK (range_operation IN ('insert_between', 'replace_range'))",
+    )
+
+
+def _migrate_to_v35(connection: sqlite3.Connection) -> None:
+    for table in ("branch_seams", "rewrite_seams"):
+        _add_column_if_missing(
+            connection,
+            table,
+            "source_anchor_json",
+            "source_anchor_json TEXT NOT NULL DEFAULT '{}'",
+        )
+        _add_column_if_missing(
+            connection,
+            table,
+            "source_version_id",
+            "source_version_id INTEGER",
+        )
+
+
 def _safe_json_list(value: object) -> list[dict[str, object]]:
     try:
         parsed = json.loads(str(value or "[]"))
@@ -3551,6 +3577,8 @@ MIGRATIONS = {
     31: _migrate_to_v31,
     32: _migrate_to_v32,
     33: _migrate_to_v33,
+    34: _migrate_to_v34,
+    35: _migrate_to_v35,
 }
 
 

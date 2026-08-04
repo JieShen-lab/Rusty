@@ -52,11 +52,16 @@ class PlotGenerationOrchestrator:
         selected_material_ids: list[int] | None = None,
         style_profile_id: int | None = None,
         branch_name: str = "Generated branch",
+        range_operation: str = "insert_between",
     ) -> dict[str, Any]:
         required_kind, topology, needs_return = self._validate_mode(
             project_id, generation_mode, return_anchor
         )
         del required_kind
+        if range_operation not in {"insert_between", "replace_range"}:
+            raise ValueError(f"Unsupported range operation: {range_operation}")
+        if generation_mode != "bounded_insert" and range_operation != "insert_between":
+            raise ValueError("range_operation only applies to bounded_insert runs.")
         context = self.contexts.compile_plot_generation_context(
             project_id=project_id,
             start_anchor=start_anchor,
@@ -69,6 +74,8 @@ class PlotGenerationOrchestrator:
         )
         source_text = str(context["start_anchor_context"].get("text") or "")
         start_anchor = {**start_anchor}
+        if start_anchor.get("chapter_id") is None and context["start_anchor_context"].get("chapter_id") is not None:
+            start_anchor["chapter_id"] = int(context["start_anchor_context"]["chapter_id"])
         if (
             start_anchor.get("text_offset") is None
             and context["start_anchor_context"].get("offset") is not None
@@ -76,13 +83,25 @@ class PlotGenerationOrchestrator:
             start_anchor["text_offset"] = int(
                 context["start_anchor_context"]["offset"]
             )
+        if context["start_anchor_context"].get("source_version_id") is not None:
+            start_anchor.setdefault(
+                "source_version_id",
+                int(context["start_anchor_context"]["source_version_id"]),
+            )
+        authoritative_start_hash = str(context["start_anchor_context"].get("source_hash") or self.branches.source_hash(source_text))
+        if start_anchor.get("source_hash") and start_anchor["source_hash"] != authoritative_start_hash:
+            raise ValueError("Start anchor source_hash does not match the current source.")
         if not start_anchor.get("source_hash"):
-            start_anchor["source_hash"] = self.branches.source_hash(source_text)
+            start_anchor["source_hash"] = str(
+                authoritative_start_hash
+            )
         if return_anchor is not None:
             return_text = str(
                 (context.get("return_anchor_context") or {}).get("text") or source_text
             )
             return_anchor = {**return_anchor}
+            if return_anchor.get("chapter_id") is None and (context.get("return_anchor_context") or {}).get("chapter_id") is not None:
+                return_anchor["chapter_id"] = int(context["return_anchor_context"]["chapter_id"])
             if (
                 return_anchor.get("text_offset") is None
                 and (context.get("return_anchor_context") or {}).get("offset")
@@ -91,8 +110,19 @@ class PlotGenerationOrchestrator:
                 return_anchor["text_offset"] = int(
                     context["return_anchor_context"]["offset"]
                 )
+            authoritative_return_hash = str((context.get("return_anchor_context") or {}).get("source_hash") or self.branches.source_hash(return_text))
+            if return_anchor.get("source_hash") and return_anchor["source_hash"] != authoritative_return_hash:
+                raise ValueError("Return anchor source_hash does not match the current source.")
             if not return_anchor.get("source_hash"):
-                return_anchor["source_hash"] = self.branches.source_hash(return_text)
+                return_anchor["source_hash"] = str(
+                    authoritative_return_hash
+                )
+            if (context.get("return_anchor_context") or {}).get("source_version_id") is not None:
+                return_anchor.setdefault(
+                    "source_version_id",
+                    int(context["return_anchor_context"]["source_version_id"]),
+                )
+            self.branches.validate_anchor_order(project_id, start_anchor, return_anchor)
 
         proposed = self.ai.generate_json(
             project_id=project_id,
@@ -124,6 +154,12 @@ class PlotGenerationOrchestrator:
                 branch_mode=generation_mode,
                 start_anchor=start_anchor,
                 return_anchor=return_anchor,
+                base_source_version_id=(
+                    int(start_anchor["source_version_id"])
+                    if parent_branch_id is not None
+                    and start_anchor.get("source_version_id") is not None
+                    else None
+                ),
             )
             branch_id = int(branch["id"])
         with session(self.database_path) as connection:
@@ -136,7 +172,8 @@ class PlotGenerationOrchestrator:
                     issues_json, status, stage, user_direction,
                     selected_character_ids_json, selected_material_ids_json,
                     style_profile_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    , range_operation
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     project_id,
@@ -158,6 +195,7 @@ class PlotGenerationOrchestrator:
                     json.dumps(selected_character_ids or []),
                     json.dumps(selected_material_ids or []),
                     style_profile_id,
+                    range_operation,
                 ),
             )
         return self.get_run(int(cursor.lastrowid))
@@ -219,29 +257,39 @@ class PlotGenerationOrchestrator:
     def confirm_seams(
         self,
         run_id: int,
-        seams: list[dict[str, Any]],
-        *,
-        current_source_text: str,
+        reviews: list[dict[str, Any]],
     ) -> dict[str, Any]:
         run = self.get_run(run_id)
-        actual_hash = self.branches.source_hash(current_source_text)
         reviewed = []
         stored_by_id = {int(item["id"]): item for item in self._stored_seams(run)}
-        for seam in seams:
-            if seam.get("status") not in {"confirmed", "rejected"}:
+        validated: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]] = []
+        for review in reviews:
+            decision = str(review.get("decision") or "")
+            if decision not in {"confirmed", "rejected"}:
                 raise ValueError("All generation seams must be explicitly reviewed.")
-            seam_id = int(seam.get("id") or 0)
+            seam_id = int(review.get("seam_id") or 0)
             if seam_id not in stored_by_id:
                 raise ValueError("Generation seam does not belong to this run.")
-            if seam.get("status") == "confirmed" and seam.get("source_hash") != actual_hash:
+            current_source = self._resolve_seam_source(run, stored_by_id[seam_id])
+            if (
+                decision == "confirmed"
+                and current_source["source_hash"] != stored_by_id[seam_id]["source_hash"]
+            ):
                 raise ValueError("Generation seam source hash mismatch.")
+            validated.append((review, stored_by_id[seam_id], current_source))
+        for review, stored, current_source in validated:
+            decision = str(review["decision"])
             reviewed.append(
                 self._review_stored_seam(
                     run,
-                    seam_id,
-                    decision=str(seam["status"]),
-                    current_source_text=current_source_text,
-                    proposed_text=str(seam.get("proposed_text") or ""),
+                    int(stored["id"]),
+                    decision=decision,
+                    current_source_text=current_source["text"],
+                    proposed_text=(
+                        str(review["proposed_text"])
+                        if review.get("proposed_text") is not None
+                        else str(stored.get("proposed_text") or "")
+                    ),
                 )
             )
         scene_plan = self.ai.generate_json(
@@ -382,13 +430,21 @@ class PlotGenerationOrchestrator:
             if chapter is None:
                 raise FileNotFoundError("Bounded insert chapter not found.")
             inserted = "\n\n".join(scene["text"] for scene in generated)
-            rewritten = _compose_bounded_insert(
-                chapter.original_text,
-                int(start["text_offset"]),
-                int(end["text_offset"]),
-                inserted,
-                run["seams"],
-            )
+            if run["range_operation"] == "replace_range":
+                rewritten = _compose_replace_range(
+                    chapter.original_text,
+                    int(start["text_offset"]),
+                    int(end["text_offset"]),
+                    inserted,
+                    run["seams"],
+                )
+            else:
+                rewritten = _compose_insert_between(
+                    chapter.original_text,
+                    int(start["text_offset"]),
+                    inserted,
+                    run["seams"],
+                )
             self.projects.save_chapter_rewrite(chapter.id, rewritten)
             result = {"chapter_id": chapter.id, "rewritten_text": rewritten}
         self._update_run(
@@ -443,15 +499,18 @@ class PlotGenerationOrchestrator:
                 )
         stored = []
         for seam in seams:
+            binding = self._seam_binding(run, str(seam["seam_kind"]))
             if run["branch_id"] is not None:
                 item = self.branches.create_seam(
                     int(run["branch_id"]),
                     seam_kind=str(seam["seam_kind"]),
                     operation=str(seam["operation"]),
-                    original_text=str(seam.get("original_text") or ""),
+                    original_text=binding["text"],
                     proposed_text=str(seam.get("proposed_text") or ""),
-                    source_range=dict(seam.get("source_range") or {}),
-                    source_hash=str(seam["source_hash"]),
+                    source_anchor=binding["anchor"],
+                    source_version_id=binding.get("source_version_id"),
+                    source_range=binding["source_range"],
+                    source_hash=binding["source_hash"],
                     reason=str(seam.get("reason") or ""),
                     plot_run_id=int(run["id"]),
                 )
@@ -462,19 +521,21 @@ class PlotGenerationOrchestrator:
                         INSERT INTO rewrite_seams(
                             run_id, project_id, seam_kind, operation,
                             original_text, proposed_text, source_range_json,
-                            source_hash, reason
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            source_hash, reason, source_anchor_json, source_version_id
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             run["id"],
                             run["project_id"],
                             seam["seam_kind"],
                             seam["operation"],
-                            seam.get("original_text") or "",
+                            binding["text"],
                             seam.get("proposed_text") or "",
-                            json.dumps(seam.get("source_range") or {}),
-                            seam["source_hash"],
+                            json.dumps(binding["source_range"], ensure_ascii=False),
+                            binding["source_hash"],
                             seam.get("reason") or "",
+                            json.dumps(binding["anchor"], ensure_ascii=False),
+                            binding.get("source_version_id"),
                         ),
                     )
                     rewrite_seam_id = int(cursor.lastrowid)
@@ -536,7 +597,50 @@ class PlotGenerationOrchestrator:
             raise FileNotFoundError("Rewrite seam not found.")
         result = dict(row)
         result["source_range"] = json.loads(row["source_range_json"])
+        result["source_anchor"] = json.loads(row["source_anchor_json"] or "{}")
         return result
+
+    def _seam_binding(self, run: dict[str, Any], seam_kind: str) -> dict[str, Any]:
+        anchor = run["start_anchor"] if seam_kind == "entry" else run["return_anchor"]
+        if not isinstance(anchor, dict):
+            raise ValueError(f"{seam_kind} seam has no source anchor.")
+        source = self._resolve_anchor_source(run, anchor)
+        return {**source, "anchor": anchor}
+
+    def _resolve_seam_source(
+        self, run: dict[str, Any], seam: dict[str, Any]
+    ) -> dict[str, Any]:
+        anchor = seam.get("source_anchor")
+        if not isinstance(anchor, dict) or not anchor:
+            anchor = (
+                run["start_anchor"]
+                if seam["seam_kind"] == "entry"
+                else run["return_anchor"]
+            )
+        if not isinstance(anchor, dict):
+            raise ValueError("Generation seam source anchor is missing.")
+        current_anchor = dict(anchor)
+        if current_anchor.get("anchor_type") in {"branch_chapter", "branch_scene"}:
+            current_anchor.pop("source_version_id", None)
+        source = self._resolve_anchor_source(run, current_anchor)
+        if seam.get("source_version_id") is not None and source.get("source_version_id") != seam.get("source_version_id"):
+            raise ValueError("Generation seam source version changed.")
+        return source
+
+    def _resolve_anchor_source(
+        self, run: dict[str, Any], anchor: dict[str, Any]
+    ) -> dict[str, Any]:
+        parent_branch_id = None
+        if anchor.get("anchor_type") in {"branch_chapter", "branch_scene"}:
+            if run.get("branch_id") is None:
+                raise ValueError("Branch seam anchor has no generated branch.")
+            branch = self.branches.get_branch(int(run["branch_id"]))
+            parent_branch_id = branch.get("parent_branch_id")
+        return self.contexts.resolve_generation_anchor_source(
+            int(run["project_id"]),
+            anchor,
+            parent_branch_id=(int(parent_branch_id) if parent_branch_id else None),
+        )
 
     def _validate_mode(
         self,
@@ -604,16 +708,11 @@ def _state_issues(required: dict[str, Any], actual: dict[str, Any]) -> list[dict
 def _seam_contribution(seam: dict[str, Any]) -> str:
     if seam.get("status") != "confirmed":
         return ""
-    original = str(seam.get("original_text") or "")
     proposed = str(seam.get("proposed_text") or "")
     operation = seam.get("operation")
     if operation == "keep":
-        return original
-    if operation == "insert_before":
-        return proposed + original
-    if operation == "insert_after":
-        return original + proposed
-    if operation == "replace_range":
+        return ""
+    if operation in {"insert_before", "insert_after", "replace_range"}:
         return proposed
     raise ValueError("Unsupported seam operation.")
 
@@ -631,22 +730,48 @@ def _apply_branch_seam_text(
     return scenes
 
 
-def _compose_bounded_insert(
+def _compose_insert_between(
+    original: str,
+    insert_offset: int,
+    generated: str,
+    seams: list[dict[str, Any]],
+) -> str:
+    if not 0 <= insert_offset <= len(original):
+        raise ValueError("Insert offset is outside the source text.")
+    entry_text, return_text = _bounded_seam_text(seams)
+    return (
+        original[:insert_offset]
+        + entry_text
+        + generated
+        + return_text
+        + original[insert_offset:]
+    )
+
+
+def _compose_replace_range(
     original: str,
     start_offset: int,
     end_offset: int,
     generated: str,
     seams: list[dict[str, Any]],
 ) -> str:
-    confirmed = [seam for seam in seams if seam.get("status") == "confirmed"]
-    entry = next((item for item in confirmed if item.get("seam_kind") == "entry"), None)
-    returned = next((item for item in confirmed if item.get("seam_kind") == "return"), None)
-    entry_text = _seam_contribution(entry) if entry is not None else ""
-    return_text = _seam_contribution(returned) if returned is not None else ""
+    if not 0 <= start_offset <= end_offset <= len(original):
+        raise ValueError("Replacement range is outside the source text.")
+    entry_text, return_text = _bounded_seam_text(seams)
     return (
         original[:start_offset]
         + entry_text
         + generated
         + return_text
         + original[end_offset:]
+    )
+
+
+def _bounded_seam_text(seams: list[dict[str, Any]]) -> tuple[str, str]:
+    confirmed = [seam for seam in seams if seam.get("status") == "confirmed"]
+    entry = next((item for item in confirmed if item.get("seam_kind") == "entry"), None)
+    returned = next((item for item in confirmed if item.get("seam_kind") == "return"), None)
+    return (
+        _seam_contribution(entry) if entry is not None else "",
+        _seam_contribution(returned) if returned is not None else "",
     )

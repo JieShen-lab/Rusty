@@ -29,9 +29,14 @@ import type {
   PlotGenerationRun,
   ProseRewriteRun,
   SeamProposal,
+  StoryAnchor,
   StoryBranch,
   StructuredSkeleton,
 } from '../api/types';
+import { StoryAnchorPicker } from './StoryAnchorPicker';
+import { ModularSkeletonEditor } from './ModularSkeletonEditor';
+import type { SkeletonVersionInfo } from './ModularSkeletonEditor';
+export { ModularSkeletonEditor } from './ModularSkeletonEditor';
 
 type Operation = 'plot_generation' | 'prose_rewrite' | 'canon_change';
 type GenerationMode = 'bounded_insert' | 'open_continuation' | 'fork' | 'fork_and_rejoin';
@@ -62,8 +67,16 @@ export function RewriteOperationPanel({
 }) {
   const [operation, setOperation] = useState<Operation>('plot_generation');
   const [direction, setDirection] = useState('');
+  const [rangeOperation, setRangeOperation] = useState<'insert_between' | 'replace_range'>('insert_between');
+  const [startAnchor, setStartAnchor] = useState<StoryAnchor>(chapter
+    ? { anchor_type: 'chapter_end', chapter_id: chapter.id }
+    : { anchor_type: 'document_end' });
+  const [returnAnchor, setReturnAnchor] = useState<StoryAnchor>(chapter
+    ? { anchor_type: 'chapter_end', chapter_id: chapter.id }
+    : { anchor_type: 'document_end' });
   const [sourceSkeleton, setSourceSkeleton] = useState<StructuredSkeleton | null>(null);
   const [sourceSkeletonId, setSourceSkeletonId] = useState<number | null>(null);
+  const [sourceSkeletonInfo, setSourceSkeletonInfo] = useState<SkeletonVersionInfo | null>(null);
   const [oldFact, setOldFact] = useState('');
   const [newFact, setNewFact] = useState('');
   const [busy, setBusy] = useState(false);
@@ -81,6 +94,16 @@ export function RewriteOperationPanel({
     getCanonChangeRun,
   );
 
+  useEffect(() => {
+    if (!chapter) return;
+    setStartAnchor((current) => current.anchor_type === 'document_end'
+      ? { anchor_type: 'chapter_end', chapter_id: chapter.id }
+      : current);
+    setReturnAnchor((current) => current.anchor_type === 'document_end'
+      ? { anchor_type: 'chapter_end', chapter_id: chapter.id }
+      : current);
+  }, [chapter]);
+
   async function perform(action: () => Promise<void>) {
     setBusy(true);
     setError('');
@@ -94,8 +117,11 @@ export function RewriteOperationPanel({
     const run = await startPlotGeneration({
       project_id: projectId,
       generation_mode: 'bounded_insert',
-      start_anchor: { anchor_type: 'chapter_start', chapter_id: chapter.id },
-      return_anchor: { anchor_type: 'chapter_end', chapter_id: chapter.id },
+      range_operation: rangeOperation,
+      start_anchor: startAnchor,
+      return_anchor: rangeOperation === 'replace_range'
+        ? returnAnchor
+        : startAnchor,
       user_direction: direction.trim(),
     });
     setPlotRun(run, run.id);
@@ -132,6 +158,7 @@ export function RewriteOperationPanel({
     }
     setSourceSkeleton(loaded.structured);
     setSourceSkeletonId(loaded.skeleton_id);
+    setSourceSkeletonInfo({ version: loaded.version ?? 1, status: loaded.status ?? 'draft', previousVersion: (loaded.version ?? 1) > 1 ? (loaded.version ?? 1) - 1 : null });
   }
 
   async function saveSkeleton() {
@@ -140,7 +167,8 @@ export function RewriteOperationPanel({
       const version = await reviseStorySkeleton(
         sourceSkeletonId, undefined, '用户在模块化编辑器中修改', sourceSkeleton,
       );
-      await confirmStorySkeleton(sourceSkeletonId, version.version);
+      const confirmed = await confirmStorySkeleton(sourceSkeletonId, version.version);
+      setSourceSkeletonInfo({ version: confirmed.version, status: confirmed.status, previousVersion: confirmed.version > 1 ? confirmed.version - 1 : null });
       return;
     }
     const version = await createStorySkeleton({
@@ -151,7 +179,8 @@ export function RewriteOperationPanel({
       structured_skeleton: sourceSkeleton,
     });
     setSourceSkeletonId(version.skeleton_id);
-    await confirmStorySkeleton(version.skeleton_id, version.version);
+    const confirmed = await confirmStorySkeleton(version.skeleton_id, version.version);
+    setSourceSkeletonInfo({ version: confirmed.version, status: confirmed.status, previousVersion: confirmed.version > 1 ? confirmed.version - 1 : null });
   }
 
   async function beginCanon() {
@@ -176,8 +205,9 @@ export function RewriteOperationPanel({
       {error ? <p role="alert">{error}</p> : null}
       {operation === 'plot_generation' ? (
         <div className="operation-fields">
-          <label>起点<input readOnly value={chapter ? `${chapter.title} 开始` : '请选择章节'} /></label>
-          <label>回接点<input readOnly value={chapter ? `${chapter.title} 结束` : '请选择章节'} /></label>
+          <label>插入方式<select aria-label="插入方式" onChange={(event) => setRangeOperation(event.target.value as typeof rangeOperation)} value={rangeOperation}><option value="insert_between">在节点后插入</option><option value="replace_range">替换选定范围</option></select></label>
+          {chapter ? <StoryAnchorPicker chapters={[chapter]} label="插入点" onChange={setStartAnchor} value={startAnchor} /> : null}
+          {rangeOperation === 'replace_range' && chapter ? <StoryAnchorPicker chapters={[chapter]} label="范围终点" onChange={setReturnAnchor} value={returnAnchor} /> : <label>回接点<input readOnly value="插入点后原文" /></label>}
           <label className="wide">新增剧情目标<textarea onChange={(event) => setDirection(event.target.value)} value={direction} /></label>
           {!plotRun ? <button disabled={busy || !chapter || !direction.trim()} onClick={() => void perform(beginPlot)} type="button">启动分析</button> : <RunStatus run={plotRun} />}
           {plotRun?.stage === 'confirm_target_skeleton' ? (
@@ -188,7 +218,7 @@ export function RewriteOperationPanel({
           ) : null}
           {plotRun?.stage === 'confirm_seams' && Array.isArray(plotRun.seams) && chapter ? (
             <SeamReview
-              onConfirm={(seams) => void perform(async () => setPlotRun(await confirmPlotGenerationSeams(plotRun.id, { seams, current_source_text: chapter.original_text }), plotRun.id))}
+              onConfirm={(seams) => void perform(async () => setPlotRun(await confirmPlotGenerationSeams(plotRun.id, { reviews: seamReviews(seams) }), plotRun.id))}
               seams={plotRun.seams}
             />
           ) : null}
@@ -201,7 +231,7 @@ export function RewriteOperationPanel({
         <div className="operation-fields">
           <label>范围<input readOnly value={chapter?.title ?? '请选择章节'} /></label>
           <label>源细纲<button disabled={busy || !chapter} onClick={() => void perform(loadSkeleton)} type="button">加载已确认版本</button></label>
-          {sourceSkeleton ? <ModularSkeletonEditor onChange={setSourceSkeleton} skeleton={sourceSkeleton} /> : null}
+          {sourceSkeleton ? <ModularSkeletonEditor onChange={setSourceSkeleton} skeleton={sourceSkeleton} versionInfo={sourceSkeletonInfo} /> : null}
           {sourceSkeleton ? <button disabled={busy} onClick={() => void perform(saveSkeleton)} type="button">保存并确认细纲版本</button> : null}
           <label className="wide">目标风格与说明<textarea onChange={(event) => setDirection(event.target.value)} value={direction} /></label>
           {!proseRun ? <button disabled={busy || !sourceSkeleton} onClick={() => void perform(beginProse)} type="button">生成重写计划</button> : <RunStatus run={proseRun} />}
@@ -235,34 +265,30 @@ export function BranchWorkspacePanel({
   const [mode, setMode] = useState<Exclude<GenerationMode, 'bounded_insert'>>('open_continuation');
   const [branches, setBranches] = useState<StoryBranch[]>([]);
   const [currentBranchId, setCurrentBranchId] = useState<number | null>(null);
-  const [startChapterId, setStartChapterId] = useState<number | null>(chapters[0]?.id ?? null);
-  const [returnChapterId, setReturnChapterId] = useState<number | null>(chapters.at(-1)?.id ?? null);
+  const [startAnchor, setStartAnchor] = useState<StoryAnchor>({ anchor_type: 'document_end' });
+  const [returnAnchor, setReturnAnchor] = useState<StoryAnchor>(chapters.at(-1)
+    ? { anchor_type: 'chapter_end', chapter_id: chapters.at(-1)!.id }
+    : { anchor_type: 'document_end' });
   const [direction, setDirection] = useState('');
   const [characterIds, setCharacterIds] = useState('');
   const [materialIds, setMaterialIds] = useState('');
   const [styleId, setStyleId] = useState('');
   const [run, setRun] = usePersistedRun(`rusty.plot-run.${projectId}`, getPlotGenerationRun);
   const [error, setError] = useState('');
-  const sourceChapter = chapters.find((item) => item.id === startChapterId) ?? chapters.at(-1);
+  const sourceChapter = chapters.find((item) => item.id === startAnchor.chapter_id) ?? chapters.at(-1);
 
   useEffect(() => {
     void getStoryBranches(projectId).then(setBranches).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : '无法读取分支'));
   }, [projectId]);
 
   async function begin() {
-    if (!sourceChapter || !direction.trim()) return;
-    const startAnchor = mode === 'open_continuation'
-      ? { anchor_type: 'document_end' as const }
-      : { anchor_type: 'chapter_end' as const, chapter_id: sourceChapter.id };
-    const returnAnchor = mode === 'fork_and_rejoin'
-      ? { anchor_type: 'chapter_start' as const, chapter_id: returnChapterId ?? sourceChapter.id }
-      : null;
+    if (!direction.trim()) return;
     try {
       const next = await startPlotGeneration({
         project_id: projectId,
         generation_mode: mode,
         start_anchor: startAnchor,
-        return_anchor: returnAnchor,
+        return_anchor: mode === 'fork_and_rejoin' ? returnAnchor : null,
         parent_branch_id: currentBranchId,
         user_direction: direction.trim(),
         selected_character_ids: parseIds(characterIds),
@@ -302,15 +328,15 @@ export function BranchWorkspacePanel({
         <main>
           {error ? <p role="alert">{error}</p> : null}
           <div className="operation-fields">
-            <label>起点<select disabled={mode === 'open_continuation'} onChange={(event) => setStartChapterId(Number(event.target.value))} value={startChapterId ?? ''}>{chapters.map((chapter) => <option key={chapter.id} value={chapter.id}>{chapter.title} 末尾</option>)}</select></label>
-            {mode === 'fork_and_rejoin' ? <label>回接点<select onChange={(event) => setReturnChapterId(Number(event.target.value))} value={returnChapterId ?? ''}>{chapters.map((chapter) => <option key={chapter.id} value={chapter.id}>{chapter.title} 开始</option>)}</select></label> : null}
+            <StoryAnchorPicker allowDocumentEnd chapters={chapters} label="起点" onChange={setStartAnchor} parentBranchId={currentBranchId} value={startAnchor} />
+            {mode === 'fork_and_rejoin' ? <StoryAnchorPicker chapters={chapters} label="回接点" onChange={setReturnAnchor} value={returnAnchor} /> : null}
             <label className="wide">剧情目标<textarea onChange={(event) => setDirection(event.target.value)} value={direction} /></label>
             <label>人物 ID<input onChange={(event) => setCharacterIds(event.target.value)} placeholder="逗号分隔" value={characterIds} /></label>
             <label>素材 ID<input onChange={(event) => setMaterialIds(event.target.value)} placeholder="逗号分隔" value={materialIds} /></label>
             <label>风格 ID<input onChange={(event) => setStyleId(event.target.value)} value={styleId} /></label>
             {!run ? <button className="button primary" disabled={!direction.trim()} onClick={() => void begin()} type="button">启动分析并创建分支</button> : <RunStatus run={run} />}
             {run?.stage === 'confirm_target_skeleton' ? <ModularSkeletonEditor onConfirm={(skeleton) => void confirmPlotGenerationSkeleton(run.id, skeleton).then((next) => setRun(next, next.id)).catch((reason) => setError(String(reason)))} skeleton={run.target_skeleton} /> : null}
-            {run?.stage === 'confirm_seams' && Array.isArray(run.seams) && sourceChapter ? <SeamReview onConfirm={(seams) => void confirmPlotGenerationSeams(run.id, { seams, current_source_text: sourceChapter.original_text }).then((next) => setRun(next, next.id)).catch((reason) => setError(String(reason)))} seams={run.seams} /> : null}
+            {run?.stage === 'confirm_seams' && Array.isArray(run.seams) && sourceChapter ? <SeamReview onConfirm={(seams) => void confirmPlotGenerationSeams(run.id, { reviews: seamReviews(seams) }).then((next) => setRun(next, next.id)).catch((reason) => setError(String(reason)))} seams={run.seams} /> : null}
             {run?.status === 'ready' ? <button onClick={() => void executePlotGeneration(run.id, {}).then((next) => setRun(next, next.id)).catch((reason) => setError(String(reason)))} type="button">逐场景生成并检查</button> : null}
             {run?.status === 'completed' ? <pre className="wide">{JSON.stringify(run.result, null, 2)}</pre> : null}
             {run?.status === 'blocked' ? <pre className="wide">{JSON.stringify(run.issues, null, 2)}</pre> : null}
@@ -364,36 +390,6 @@ export function LegacyExtractPanel({
   );
 }
 
-export function ModularSkeletonEditor({
-  onChange,
-  onConfirm,
-  skeleton,
-}: {
-  onChange?: (skeleton: StructuredSkeleton) => void;
-  onConfirm?: (skeleton: StructuredSkeleton) => void;
-  skeleton?: StructuredSkeleton;
-}) {
-  const [value, setValue] = useState<StructuredSkeleton | null>(skeleton ?? null);
-  useEffect(() => setValue(skeleton ?? null), [skeleton]);
-  function update(next: StructuredSkeleton) { setValue(next); onChange?.(next); }
-  if (!value) return <section className="modular-skeleton-editor" aria-label="模块化细纲编辑器"><p>尚未加载结构化细纲。</p></section>;
-  const current = value;
-  function reorder(from: number, to: number) {
-    const nodes = [...current.event_nodes];
-    const [moved] = nodes.splice(from, 1);
-    nodes.splice(to, 0, moved);
-    update({ ...current, event_nodes: nodes.map((node, index) => ({ ...node, order: index + 1 })) });
-  }
-  return (
-    <section className="modular-skeleton-editor wide" aria-label="模块化细纲编辑器">
-      <header><div><span>模块化细纲</span><h3>事件链</h3></div><button onClick={() => update({ ...current, event_nodes: [...current.event_nodes, emptyEvent(current.event_nodes.length + 1)] })} type="button">插入事件</button></header>
-      {current.event_nodes.map((node, index) => <article draggable key={node.id} onDragOver={(event) => event.preventDefault()} onDragStart={(event) => event.dataTransfer.setData('text/plain', String(index))} onDrop={(event) => reorder(Number(event.dataTransfer.getData('text/plain')), index)}><span aria-label="拖拽排序">⋮</span><strong>{index + 1}</strong><input aria-label={`事件 ${index + 1}`} onChange={(event) => update({ ...current, event_nodes: current.event_nodes.map((item) => item.id === node.id ? { ...item, summary: event.target.value } : item) })} value={node.summary} /><label><input checked={node.locked} onChange={(event) => update({ ...current, event_nodes: current.event_nodes.map((item) => item.id === node.id ? { ...item, locked: event.target.checked } : item) })} type="checkbox" />锁定</label><button disabled={node.locked} onClick={() => update({ ...current, event_nodes: current.event_nodes.filter((item) => item.id !== node.id) })} type="button">删除</button><small>来源与因果：{node.causes.join('、') || '无'}</small></article>)}
-      <div className="skeleton-module-grid">{['人物状态', '时间与地点', '物品变化', '知识变化', '关系变化', '伏笔', '未解决线索', '开始状态', '结束状态', '插入点', '回接条件'].map((label) => <span key={label}>{label}</span>)}</div>
-      {onConfirm ? <button className="button primary" onClick={() => onConfirm(current)} type="button">确认目标细纲</button> : null}
-    </section>
-  );
-}
-
 export function SeamReview({
   onConfirm,
   seams = [],
@@ -428,12 +424,19 @@ function RunStatus({ run }: { run: { id: number; status: string; stage?: string 
   return <p className="wide" role="status">运行 #{run.id} · {run.stage ? `${run.stage} · ` : ''}{run.status}</p>;
 }
 
-function emptyEvent(order: number): StructuredSkeleton['event_nodes'][number] {
-  return { id: crypto.randomUUID(), order, event_type: 'user_event', summary: '', participants: [], location: '', time_state: {}, causes: [], effects: [], locked: false, source_span: null, confidence: 1 };
-}
-
 function parseIds(value: string): number[] {
   return value.split(',').map((item) => Number(item.trim())).filter((item) => Number.isInteger(item) && item > 0);
+}
+
+function seamReviews(seams: SeamProposal[]) {
+  return seams.map((seam) => {
+    if (!seam.id || seam.status === 'draft') throw new Error('所有接缝必须先确认或拒绝。');
+    return {
+      seam_id: seam.id,
+      decision: seam.status,
+      proposed_text: seam.proposed_text,
+    };
+  });
 }
 
 function OperationButton({ active, icon, label, onClick }: { active: boolean; icon: ReactNode; label: string; onClick: () => void }) {

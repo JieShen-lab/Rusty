@@ -53,7 +53,6 @@ class BranchServiceTests(unittest.TestCase):
     def anchor(self, anchor_type: str, **values):
         return {
             "anchor_type": anchor_type,
-            "source_hash": self.hash,
             **values,
         }
 
@@ -383,6 +382,118 @@ class BranchServiceTests(unittest.TestCase):
                     node_id="missing-node",
                 ),
             )
+
+    def test_anchor_offsets_hash_and_return_order_are_validated(self) -> None:
+        invalid_offsets = [-1, len(self.chapter.original_text) + 1]
+        for offset in invalid_offsets:
+            with self.subTest(offset=offset):
+                with self.assertRaisesRegex(ValueError, "text_offset"):
+                    self.service.create_branch(
+                        project_id=self.project_id,
+                        name="invalid offset",
+                        branch_mode="fork",
+                        start_anchor=self.anchor(
+                            "text_offset",
+                            chapter_id=self.chapter.id,
+                            text_offset=offset,
+                            side="after",
+                        ),
+                    )
+        with self.assertRaisesRegex(ValueError, "text_offset"):
+            self.service.create_branch(
+                project_id=self.project_id,
+                name="scene offset",
+                branch_mode="fork",
+                start_anchor=self.anchor(
+                    "scene_end",
+                    scene_id=self.scenes[0].id,
+                    text_offset=self.scenes[0].original_end_offset + 1,
+                ),
+            )
+        with self.assertRaisesRegex(ValueError, "source_hash"):
+            self.service.create_branch(
+                project_id=self.project_id,
+                name="stale hash",
+                branch_mode="fork",
+                start_anchor=self.anchor(
+                    "chapter_end", chapter_id=self.chapter.id, source_hash="stale"
+                ),
+            )
+        created = self.service.create_branch(
+            project_id=self.project_id,
+            name="server hash",
+            branch_mode="fork",
+            start_anchor=self.anchor("scene_end", scene_id=self.scenes[0].id),
+        )
+        self.assertEqual(
+            self.service.source_hash(self.scenes[0].original_text),
+            created["start_anchor"]["source_hash"],
+        )
+        with self.assertRaisesRegex(ValueError, "earlier"):
+            self.service.create_branch(
+                project_id=self.project_id,
+                name="reverse rejoin",
+                branch_mode="fork_and_rejoin",
+                start_anchor=self.anchor("chapter_end", chapter_id=self.chapter.id),
+                return_anchor=self.anchor("chapter_start", chapter_id=self.chapter.id),
+            )
+
+    def test_delete_rejects_unfinished_run_then_soft_deletes_content(self) -> None:
+        branch = self.service.create_branch(
+            project_id=self.project_id,
+            name="running",
+            branch_mode="fork",
+            start_anchor=self.anchor("document_end"),
+        )
+        chapter = self.service.create_chapter(branch["id"], title="generated")
+        scene = self.service.save_scene(
+            branch["id"],
+            branch_chapter_id=chapter["id"],
+            title="generated scene",
+            generated_text="Generated branch text.",
+        )
+        connection = sqlite3.connect(self.database)
+        try:
+            cursor = connection.execute(
+                """
+                INSERT INTO plot_generation_runs(
+                    project_id, branch_id, generation_mode, output_topology,
+                    start_anchor_json, target_skeleton_json
+                ) VALUES (?, ?, 'fork', 'branch', '{}', '{}')
+                """,
+                (self.project_id, branch["id"]),
+            )
+            run_id = int(cursor.lastrowid)
+            connection.commit()
+        finally:
+            connection.close()
+        with self.assertRaisesRegex(ValueError, "unfinished"):
+            self.service.delete_branch(branch["id"])
+        connection = sqlite3.connect(self.database)
+        try:
+            connection.execute(
+                "UPDATE plot_generation_runs SET status = 'completed' WHERE id = ?",
+                (run_id,),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        self.service.delete_branch(branch["id"])
+        with self.assertRaises(FileNotFoundError):
+            self.service.get_branch(branch["id"])
+        self.assertEqual([], self.service.list_scenes(branch["id"]))
+        connection = sqlite3.connect(self.database)
+        try:
+            deleted = connection.execute(
+                "SELECT deleted_at FROM branch_scenes WHERE id = ?", (scene["id"],)
+            ).fetchone()[0]
+            original = connection.execute(
+                "SELECT original_text FROM chapters WHERE id = ?", (self.chapter.id,)
+            ).fetchone()[0]
+        finally:
+            connection.close()
+        self.assertIsNotNone(deleted)
+        self.assertEqual(self.chapter.original_text, original)
 
     def test_child_branch_rejects_another_parent_scene_version(self) -> None:
         first = self.service.create_branch(

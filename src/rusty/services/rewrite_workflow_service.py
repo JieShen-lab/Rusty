@@ -296,7 +296,7 @@ class RewriteWorkflowService:
         with session(self.database_path) as connection:
             row = connection.execute(
                 """
-                SELECT s.id, s.current_version, v.skeleton_json
+                SELECT s.id, s.current_version, s.status, v.id AS version_id, v.skeleton_json
                 FROM story_skeletons s
                 JOIN story_skeleton_versions v
                   ON v.skeleton_id = s.id AND v.version = s.current_version
@@ -311,6 +311,8 @@ class RewriteWorkflowService:
                     "format": "structured",
                     "skeleton_id": int(row["id"]),
                     "version": int(row["current_version"]),
+                    "version_id": int(row["version_id"]),
+                    "status": str(row["status"]),
                     "structured": _json_object(row["skeleton_json"]),
                 }
             legacy = connection.execute(
