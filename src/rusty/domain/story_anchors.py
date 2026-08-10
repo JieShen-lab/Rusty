@@ -17,12 +17,9 @@ STORY_ANCHOR_TYPES = frozenset(
 BRANCH_CONTENT_ANCHOR_TYPES = frozenset({"branch_chapter", "branch_scene"})
 ORIGINAL_ANCHOR_TYPES = STORY_ANCHOR_TYPES - BRANCH_CONTENT_ANCHOR_TYPES
 
-BRANCH_GENERATION_MODES = frozenset(
-    {"open_continuation", "fork", "fork_and_rejoin"}
-)
+BRANCH_GENERATION_MODES = frozenset({"open_continuation", "fork"})
 GENERATION_MODE_RULES = {
     "bounded_insert": ("rewrite", "in_place", True),
     "open_continuation": ("branch", "branch", False),
     "fork": ("branch", "branch", False),
-    "fork_and_rejoin": ("branch", "branch", True),
 }

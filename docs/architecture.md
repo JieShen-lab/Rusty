@@ -18,7 +18,7 @@ Electron main/preload + React UI
 
 Electron owns the desktop process, preload bridge, backend lifecycle and native file boundaries. React owns editing, review and presentation state. It does not decide workflow validity or write SQLite directly.
 
-FastAPI is the transport boundary. `backend/api.py` creates services and registers routers. Domain routers validate HTTP payloads, invoke services and map errors; they do not own SQL, workflow transitions or fact merging. Plot/Prose/Canon/Branch/version routes live in `backend/routes/workflows.py`. Their strict contracts live in `backend/workflow_schemas.py` and remain re-exported from `backend.schemas` for compatibility.
+FastAPI is the transport boundary. `backend/api.py` creates services and registers routers. Domain routers validate HTTP payloads, invoke services and map errors; they do not own SQL, workflow transitions or fact merging. Plot/Prose/Branch/version routes live in `backend/routes/workflows.py`. Their strict contracts live in `backend/workflow_schemas.py` and remain re-exported from `backend.schemas` for compatibility.
 
 ## Core content model
 
@@ -30,7 +30,7 @@ Original chapter text and `chapter_source_versions` are immutable source history
 
 ### Rewrite versions
 
-`ChapterVersionService` owns the append-only `chapter_rewrite_versions` chain and current head. Plot, Prose, Canon, manual edits, restore and the legacy pipeline append through this service. A historical derivation points to the version it actually used.
+`ChapterVersionService` owns the append-only `chapter_rewrite_versions` chain and current head. Plot, Prose, manual edits, restore and the legacy pipeline append through this service. A historical derivation points to the version it actually used.
 
 Each rewrite version freezes its text/hash, parent/source, source operation, chapter facts, fact-chain status, structure provenance and version-local semantic map. `RewriteVersionMapService` maps stable scene/event identities to spans and local states in one version. Semantic anchors resolve against that map; they do not search original text or reuse original offsets.
 
@@ -42,22 +42,19 @@ Facts have explicit levels: chapter start/end, local semantic segment, scene led
 
 ## Branch model
 
-`BranchService` owns branch topology, source anchors, seams and branch persistence.
+`BranchService` owns independent branch routes, source anchors and versioned branch persistence.
 
 - A root branch starts from an original semantic anchor.
-- A child branch starts from a `branch_chapter` or `branch_scene` owned by its parent.
+- Continuing a route appends new versioned chapters to that same branch.
 - Branch chapters and scenes have immutable versions.
 - `branch_chapter_version_scenes` freezes the scene-version order of a chapter snapshot.
 - Branch writes never overwrite the original baseline.
-- Seams bind to their own source anchor/version/range/hash and are reviewed atomically.
 
 ## Workflow ownership
 
-`PlotGenerationOrchestrator` owns Plot lifecycle, target skeleton, seams, incremental progress, consistency checks, retry/cancel and final commit. Its status vocabulary comes from `rusty.domain.plot_workflow`. Source text, map and resolved anchors are frozen at start; source-head CAS prevents stale overwrite.
+`PlotGenerationOrchestrator` owns Plot lifecycle, target skeleton, incremental progress, consistency warnings, retry/cancel and final commit. Its status vocabulary comes from `rusty.domain.plot_workflow`. Source text, map and resolved anchors are frozen at start; source-head CAS prevents stale overwrite.
 
 `ProseRewriteOrchestrator` owns planning, generation, observed-skeleton extraction, drift checks and version finalization. Source text, structure and map belong to the same selected snapshot.
-
-`CanonChangeOrchestrator` owns candidate scanning, semantic impact analysis, patch review, atomic apply and downstream fact propagation. Canon writes produce new rewrite or branch versions rather than overwriting history.
 
 Shared analysis services provide document, scene, skeleton, style, character and fact extraction to both project kinds. `ContextService` resolves sources and compiles context blocks; prompt/model strategy is outside cleanup scope.
 
@@ -75,10 +72,9 @@ Compatibility code needs an owning test or documented upgrade reason. Lack of a 
 | Default SQLite location | `rusty.db.paths` |
 | Rewrite version/head/projection | `ChapterVersionService` |
 | Version-local semantic anchors/states | `RewriteVersionMapService` + `ContextService` |
-| Branch topology and versions | `BranchService` |
+| Independent branch routes and versions | `BranchService` |
 | Plot lifecycle | `PlotGenerationOrchestrator` |
 | Prose lifecycle | `ProseRewriteOrchestrator` |
-| Canon lifecycle | `CanonChangeOrchestrator` |
 | Shared skeleton/fact analysis | shared analysis/content services |
 | Workflow HTTP routes/contracts | `backend/routes/workflows.py` + `backend/workflow_schemas.py` |
 | Electron workflow UI | `WorkflowRefactorPanels`, `WorkflowPanelShared`, `StoryAnchorPicker` |

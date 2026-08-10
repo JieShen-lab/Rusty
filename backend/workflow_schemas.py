@@ -9,17 +9,6 @@ class StrictWorkflowModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class SourceRange(StrictWorkflowModel):
-    start: int = Field(ge=0)
-    end: int = Field(ge=0)
-
-    @model_validator(mode="after")
-    def validate_order(self) -> "SourceRange":
-        if self.end < self.start:
-            raise ValueError("source_range.end must be greater than or equal to start")
-        return self
-
-
 class StoryAnchorRequest(StrictWorkflowModel):
     anchor_type: Literal[
         "document_end",
@@ -67,20 +56,8 @@ class StoryAnchorRequest(StrictWorkflowModel):
 
 class BranchCreateRequest(StrictWorkflowModel):
     name: str = Field(min_length=1)
-    branch_mode: Literal["open_continuation", "fork", "fork_and_rejoin"]
-    parent_branch_id: int | None = Field(default=None, ge=1)
+    branch_mode: Literal["open_continuation", "fork"]
     start_anchor: StoryAnchorRequest
-    return_anchor: StoryAnchorRequest | None = None
-    base_source_version_id: int | None = Field(default=None, ge=1)
-    downstream_strategy: Literal["replace", "reference", "rejoin"] | None = None
-
-    @model_validator(mode="after")
-    def validate_return_anchor(self) -> "BranchCreateRequest":
-        if self.branch_mode == "fork_and_rejoin" and self.return_anchor is None:
-            raise ValueError("fork_and_rejoin requires return_anchor")
-        if self.branch_mode != "fork_and_rejoin" and self.return_anchor is not None:
-            raise ValueError(f"{self.branch_mode} does not accept return_anchor")
-        return self
 
 
 class StoryBranchResponse(BaseModel):
@@ -97,30 +74,6 @@ class StoryBranchResponse(BaseModel):
     return_anchor: dict[str, Any] | None = None
     created_at: str
     updated_at: str
-
-
-class SeamProposal(StrictWorkflowModel):
-    id: int | None = Field(default=None, ge=1)
-    seam_kind: Literal["entry", "return"]
-    operation: Literal["keep", "insert_before", "insert_after", "replace_range"]
-    original_text: str = ""
-    proposed_text: str = ""
-    source_range: SourceRange
-    source_hash: str = Field(min_length=1)
-    reason: str = ""
-    status: Literal["draft", "confirmed", "rejected"] = "draft"
-    source_anchor: StoryAnchorRequest | None = None
-    source_version_id: int | None = Field(default=None, ge=1)
-
-
-class SeamReviewItem(StrictWorkflowModel):
-    seam_id: int = Field(ge=1)
-    decision: Literal["confirmed", "rejected"]
-    proposed_text: str | None = None
-
-
-class SeamReviewRequest(StrictWorkflowModel):
-    reviews: list[SeamReviewItem] = Field(min_length=1)
 
 
 class CurrentChapterSource(StrictWorkflowModel):
@@ -163,7 +116,7 @@ class StoryAnchorPreviewResponse(BaseModel):
 class PlotGenerationStartRequest(StrictWorkflowModel):
     project_id: int = Field(ge=1)
     generation_mode: Literal[
-        "bounded_insert", "open_continuation", "fork", "fork_and_rejoin"
+        "bounded_insert", "open_continuation", "fork"
     ]
     start_anchor: StoryAnchorRequest
     return_anchor: StoryAnchorRequest | None = None
@@ -171,14 +124,14 @@ class PlotGenerationStartRequest(StrictWorkflowModel):
     selected_character_ids: list[int] = Field(default_factory=list)
     selected_material_ids: list[int] = Field(default_factory=list)
     style_profile_id: int | None = Field(default=None, ge=1)
-    parent_branch_id: int | None = Field(default=None, ge=1)
+    branch_id: int | None = Field(default=None, ge=1)
     branch_name: str = Field(default="Generated branch", min_length=1)
     range_operation: Literal["insert_between", "replace_range"] = "insert_between"
     source: ChapterSourceSelection = Field(default_factory=CurrentChapterSource)
 
     @model_validator(mode="after")
     def validate_return_anchor(self) -> "PlotGenerationStartRequest":
-        requires_return = self.generation_mode in {"bounded_insert", "fork_and_rejoin"}
+        requires_return = self.generation_mode == "bounded_insert"
         if requires_return and self.return_anchor is None:
             raise ValueError(f"{self.generation_mode} requires return_anchor")
         if not requires_return and self.return_anchor is not None:
@@ -188,10 +141,6 @@ class PlotGenerationStartRequest(StrictWorkflowModel):
 
 class PlotGenerationSkeletonConfirmRequest(StrictWorkflowModel):
     target_skeleton: dict[str, Any]
-
-
-class PlotGenerationSeamConfirmRequest(SeamReviewRequest):
-    pass
 
 
 class GeneratedSceneRequest(StrictWorkflowModel):
@@ -267,7 +216,7 @@ class ProseRewritePlanRequest(StrictWorkflowModel):
 
 
 class ProseRewriteExecuteRequest(StrictWorkflowModel):
-    auto_repair: bool = True
+    pass
 
 
 class ProseRewriteRunResponse(BaseModel):
@@ -290,65 +239,6 @@ class ProseRewriteRunResponse(BaseModel):
     result_version_id: int | None = None
     generation_attempt: int = 0
     operation_type: Literal["prose_rewrite"] = "prose_rewrite"
-    created_at: str
-    updated_at: str
-
-
-class CanonChangeScanRequest(StrictWorkflowModel):
-    project_id: int = Field(ge=1)
-    old_fact: dict[str, Any]
-    new_fact: dict[str, Any]
-    effective_order: int = Field(ge=0)
-    branch_id: int | None = Field(default=None, ge=1)
-    source: ChapterSourceSelection = Field(default_factory=CurrentChapterSource)
-
-
-class CanonPatchReviewRequest(StrictWorkflowModel):
-    decision: Literal["accepted", "rejected", "edited", "skipped"]
-    replacement_text: str | None = None
-
-    @model_validator(mode="after")
-    def validate_edited_text(self) -> "CanonPatchReviewRequest":
-        if self.decision == "edited" and not self.replacement_text:
-            raise ValueError("edited patches require replacement_text")
-        return self
-
-
-class CanonPatchResponse(BaseModel):
-    id: int
-    run_id: int
-    route_kind: str
-    target_id: int
-    source_range: dict[str, Any]
-    source_hash: str
-    original_text: str
-    replacement_text: str
-    impact_type: str
-    reason: str
-    confidence: float
-    evidence: list[Any]
-    requires_confirmation: bool
-    status: str
-    source_base_version_id: int | None = None
-    result_version_id: int | None = None
-
-
-class CanonChangeRunResponse(BaseModel):
-    id: int
-    project_id: int
-    branch_id: int | None
-    effective_order: int
-    status: Literal[
-        "scanning", "reviewing", "blocked", "ready_to_apply",
-        "applying", "applied", "failed", "cancelled"
-    ]
-    old_fact: dict[str, Any]
-    new_fact: dict[str, Any]
-    fact_ledger: dict[str, Any]
-    consistency_issues: list[dict[str, Any]]
-    patches: list[CanonPatchResponse]
-    source_snapshots: dict[str, Any] = Field(default_factory=dict)
-    operation_type: Literal["canon_change"] = "canon_change"
     created_at: str
     updated_at: str
 
@@ -384,4 +274,3 @@ class RewriteVersionSkeletonResponse(BaseModel):
     structured: dict[str, Any]
     source_kind: Literal["rewrite_version"]
     status: str
-

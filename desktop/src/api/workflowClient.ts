@@ -1,15 +1,10 @@
 import type {
   BranchChapterRecord,
   BranchCreateRequest,
-  CanonChangeRun,
-  CanonChangeScanRequest,
-  CanonPatch,
-  CanonPatchReviewRequest,
   ChapterRewriteVersion,
   ChapterSourceSelection,
   PlotGenerationExecuteRequest,
   PlotGenerationRun,
-  PlotGenerationSeamConfirmRequest,
   PlotGenerationStartRequest,
   ProseRewriteExecuteRequest,
   ProseRewritePlanRequest,
@@ -86,20 +81,9 @@ export function getPlotGenerationRun(runId: number) {
   return request<PlotGenerationRun>(`/api/plot-generation/runs/${runId}`);
 }
 
-export function getPlotGenerationRuns(projectId: number) {
-  return request<PlotGenerationRun[]>(`/api/projects/${projectId}/plot-generation/runs`);
-}
-
 export function cancelPlotGeneration(runId: number) {
   return request<PlotGenerationRun>(`/api/plot-generation/runs/${runId}/cancel`, {
     method: 'POST',
-  });
-}
-
-export function confirmPlotGenerationSeams(runId: number, payload: PlotGenerationSeamConfirmRequest) {
-  return request<PlotGenerationRun>(`/api/plot-generation/runs/${runId}/seams`, {
-    method: 'POST',
-    body: JSON.stringify(payload),
   });
 }
 
@@ -140,10 +124,6 @@ export function getProseRewriteRun(runId: number) {
   return request<ProseRewriteRun>(`/api/prose-rewrite/runs/${runId}`);
 }
 
-export function getProseRewriteRuns(projectId: number) {
-  return request<ProseRewriteRun[]>(`/api/projects/${projectId}/prose-rewrite/runs`);
-}
-
 export function executeProseRewrite(runId: number, payload: ProseRewriteExecuteRequest) {
   return request<ProseRewriteRun>(`/api/prose-rewrite/runs/${runId}/execute`, {
     method: 'POST',
@@ -159,38 +139,6 @@ export function cancelProseRewrite(runId: number) {
 
 export function retryProseRewrite(runId: number) {
   return request<ProseRewriteRun>(`/api/prose-rewrite/runs/${runId}/retry`, {
-    method: 'POST',
-  });
-}
-
-export function scanCanonChange(payload: CanonChangeScanRequest) {
-  return request<CanonChangeRun>('/api/canon-change/runs', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
-}
-
-export function getCanonChangeRun(runId: number) {
-  return request<CanonChangeRun>(`/api/canon-change/runs/${runId}`);
-}
-
-export function getCanonChangeRuns(projectId: number) {
-  return request<CanonChangeRun[]>(`/api/projects/${projectId}/canon-change/runs`);
-}
-
-export function reviewCanonPatch(patchId: number, payload: CanonPatchReviewRequest) {
-  return request<CanonPatch>(`/api/canon-change/patches/${patchId}/review`, {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
-}
-
-export function applyCanonChange(runId: number) {
-  return request<CanonChangeRun>(`/api/canon-change/runs/${runId}/apply`, { method: 'POST' });
-}
-
-export function cancelCanonChange(runId: number) {
-  return request<CanonChangeRun>(`/api/canon-change/runs/${runId}/cancel`, {
     method: 'POST',
   });
 }

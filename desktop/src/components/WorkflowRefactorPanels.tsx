@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { GitBranch, GitFork, ListTree, Plus, RefreshCw, Settings2 } from 'lucide-react';
+import { GitBranch, GitFork, Plus, RefreshCw } from 'lucide-react';
 import {
   confirmStorySkeleton,
   createProjectFromLegacy,
@@ -9,38 +9,30 @@ import {
   reviseStorySkeleton,
 } from '../api/client';
 import {
-  applyCanonChange,
-  cancelCanonChange,
   cancelPlotGeneration,
   cancelProseRewrite,
-  confirmPlotGenerationSeams,
   confirmPlotGenerationSkeleton,
   deleteStoryBranch,
   executePlotGeneration,
   executeProseRewrite,
   generateNextPlotScene,
-  getCanonChangeRun,
+  getBranchChapters,
   getChapterRewriteVersions,
   getRewriteVersionSkeleton,
   getPlotGenerationRun,
-  getPlotGenerationRuns,
   getProseRewriteRun,
-  getProseRewriteRuns,
-  getCanonChangeRuns,
   getStoryBranches,
   planProseRewrite,
   retryPlotGeneration,
   retryProseRewrite,
-  scanCanonChange,
+  restoreChapterRewriteVersion,
   startPlotGeneration,
 } from '../api/workflowClient';
 import type {
-  CanonChangeRun,
+  BranchChapterRecord,
   Chapter,
   ChapterRewriteVersion,
   ChapterSourceSelection,
-  PlotGenerationRun,
-  ProseRewriteRun,
   StoryAnchor,
   StoryBranch,
   StructuredSkeleton,
@@ -50,21 +42,15 @@ import { ModularSkeletonEditor } from './ModularSkeletonEditor';
 import type { SkeletonVersionInfo } from './ModularSkeletonEditor';
 import { usePersistedWorkflowRun } from '../hooks/usePersistedWorkflowRun';
 import {
-  CanonPatchReview,
   OperationButton,
-  parseIds,
   plannedSceneCount,
   RewriteVersionHistory,
-  RunHistory,
   RunStatus,
-  SeamReview,
-  seamReviews,
 } from './WorkflowPanelShared';
 export { ModularSkeletonEditor } from './ModularSkeletonEditor';
-export { SeamReview } from './WorkflowPanelShared';
 
-type Operation = 'plot_generation' | 'prose_rewrite' | 'canon_change';
-type GenerationMode = 'bounded_insert' | 'open_continuation' | 'fork' | 'fork_and_rejoin';
+type Operation = 'plot_generation' | 'prose_rewrite';
+type GenerationMode = 'bounded_insert' | 'open_continuation' | 'fork';
 
 export function RewriteOperationPanel({
   chapter,
@@ -86,8 +72,6 @@ export function RewriteOperationPanel({
   const [sourceSkeletonId, setSourceSkeletonId] = useState<number | null>(null);
   const [sourceSkeletonVersionId, setSourceSkeletonVersionId] = useState<number | null>(null);
   const [sourceSkeletonInfo, setSourceSkeletonInfo] = useState<SkeletonVersionInfo | null>(null);
-  const [oldFact, setOldFact] = useState('');
-  const [newFact, setNewFact] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [plotRun, setPlotRun, clearPlotRun] = usePersistedWorkflowRun(
@@ -98,13 +82,6 @@ export function RewriteOperationPanel({
     `rusty.prose-run.${projectId}`,
     getProseRewriteRun,
   );
-  const [canonRun, setCanonRun, clearCanonRun] = usePersistedWorkflowRun(
-    `rusty.canon-run.${projectId}`,
-    getCanonChangeRun,
-  );
-  const [plotHistory, setPlotHistory] = useState<PlotGenerationRun[]>([]);
-  const [proseHistory, setProseHistory] = useState<ProseRewriteRun[]>([]);
-  const [canonHistory, setCanonHistory] = useState<CanonChangeRun[]>([]);
   const [rewriteVersions, setRewriteVersions] = useState<ChapterRewriteVersion[]>([]);
   const [workflowSource, setWorkflowSource] = useState<ChapterSourceSelection>({ kind: 'current' });
   const [viewedVersion, setViewedVersion] = useState<ChapterRewriteVersion | null>(null);
@@ -133,21 +110,6 @@ export function RewriteOperationPanel({
 
   useEffect(() => {
     let active = true;
-    Promise.all([
-      getPlotGenerationRuns(projectId),
-      getProseRewriteRuns(projectId),
-      getCanonChangeRuns(projectId),
-    ]).then(([plots, prose, canon]) => {
-      if (!active) return;
-      setPlotHistory(plots);
-      setProseHistory(prose);
-      setCanonHistory(canon);
-    }).catch(() => undefined);
-    return () => { active = false; };
-  }, [canonRun?.status, plotRun?.status, proseRun?.status, projectId]);
-
-  useEffect(() => {
-    let active = true;
     setWorkflowSource({ kind: 'current' });
     setViewedVersion(null);
     if (!chapter) {
@@ -158,7 +120,7 @@ export function RewriteOperationPanel({
       .then((versions) => { if (active) setRewriteVersions(versions); })
       .catch(() => { if (active) setRewriteVersions([]); });
     return () => { active = false; };
-  }, [chapter?.id, canonRun?.status, plotRun?.status, proseRun?.status]);
+  }, [chapter?.id, plotRun?.status, proseRun?.status]);
 
   useEffect(() => {
     if (!chapter) return;
@@ -204,11 +166,6 @@ export function RewriteOperationPanel({
       preservation_policy: {
         events: true,
         event_order: true,
-        character_motivations: true,
-        behavior_results: true,
-        knowledge_reveal_order: true,
-        causal_links: true,
-        foreshadowing: true,
         required_start_state: true,
         required_end_state: true,
         locked_node_ids: sourceSkeleton.event_nodes.filter((node) => node.locked).map((node) => node.id),
@@ -267,16 +224,10 @@ export function RewriteOperationPanel({
     setSourceSkeletonInfo({ version: confirmed.version, status: confirmed.status, previousVersion: confirmed.version > 1 ? confirmed.version - 1 : null });
   }
 
-  async function beginCanon() {
-    if (!chapter || !oldFact.trim() || !newFact.trim()) return;
-    const run = await scanCanonChange({
-      project_id: projectId,
-      old_fact: { attribute: 'user_fact', value: oldFact.trim() },
-      new_fact: { attribute: 'user_fact', value: newFact.trim() },
-      effective_order: chapter.index,
-      source: workflowSource,
-    });
-    setCanonRun(run, run.id);
+  async function restoreVersion(version: ChapterRewriteVersion) {
+    await restoreChapterRewriteVersion(version.id);
+    if (chapter) setRewriteVersions(await getChapterRewriteVersions(chapter.id));
+    setWorkflowSource({ kind: 'current' });
   }
 
   return (
@@ -285,11 +236,11 @@ export function RewriteOperationPanel({
       <div className="workflow-operation-grid">
         <OperationButton active={operation === 'plot_generation'} icon={<Plus size={18} />} label="增加剧情" onClick={() => setOperation('plot_generation')} />
         <OperationButton active={operation === 'prose_rewrite'} icon={<RefreshCw size={18} />} label="重写正文" onClick={() => setOperation('prose_rewrite')} />
-        <OperationButton active={operation === 'canon_change'} icon={<Settings2 size={18} />} label="修改设定" onClick={() => setOperation('canon_change')} />
       </div>
       {chapter ? (
         <RewriteVersionHistory
           onSelectSource={(version) => setWorkflowSource({ kind: 'rewrite_version', version_id: version.id })}
+          onRestore={(version) => void perform(() => restoreVersion(version))}
           onUseCurrent={() => setWorkflowSource({ kind: 'current' })}
           onUseOriginal={() => setWorkflowSource({ kind: 'original' })}
           onView={setViewedVersion}
@@ -302,8 +253,8 @@ export function RewriteOperationPanel({
       {operation === 'plot_generation' ? (
         <div className="operation-fields">
           <label>插入方式<select aria-label="插入方式" onChange={(event) => setRangeOperation(event.target.value as typeof rangeOperation)} value={rangeOperation}><option value="insert_between">在节点后插入</option><option value="replace_range">替换选定范围</option></select></label>
-          {chapter ? <StoryAnchorPicker chapters={[chapter]} label="插入点" onChange={setStartAnchor} projectId={projectId} source={workflowSource} sourceTextLength={selectedRewriteVersion?.rewritten_text.length ?? chapter.original_text.length} sourceVersionId={selectedRewriteVersion?.id ?? null} value={startAnchor} /> : null}
-          {rangeOperation === 'replace_range' && chapter ? <StoryAnchorPicker chapters={[chapter]} label="范围终点" onChange={setReturnAnchor} projectId={projectId} source={workflowSource} sourceTextLength={selectedRewriteVersion?.rewritten_text.length ?? chapter.original_text.length} sourceVersionId={selectedRewriteVersion?.id ?? null} value={returnAnchor} /> : <label>回接点<input readOnly value="插入点后原文" /></label>}
+          {chapter ? <StoryAnchorPicker chapters={[chapter]} label="插入点" onChange={setStartAnchor} projectId={projectId} source={workflowSource} sourceVersionId={selectedRewriteVersion?.id ?? null} value={startAnchor} /> : null}
+          {rangeOperation === 'replace_range' && chapter ? <StoryAnchorPicker chapters={[chapter]} label="范围终点" onChange={setReturnAnchor} projectId={projectId} source={workflowSource} sourceVersionId={selectedRewriteVersion?.id ?? null} value={returnAnchor} /> : null}
           <label className="wide">新增剧情目标<textarea onChange={(event) => setDirection(event.target.value)} value={direction} /></label>
           <p className="wide">默认基于当前正文版本继续操作；也可以显式选择原始基线或历史版本作为本次来源。</p>
           <p className="wide">本次来源：{sourceLabel}</p>
@@ -314,21 +265,14 @@ export function RewriteOperationPanel({
               skeleton={plotRun.target_skeleton}
             />
           ) : null}
-          {plotRun?.stage === 'confirm_seams' && Array.isArray(plotRun.seams) && chapter ? (
-            <SeamReview
-              onConfirm={(seams) => void perform(async () => setPlotRun(await confirmPlotGenerationSeams(plotRun.id, { reviews: seamReviews(seams) }), plotRun.id))}
-              seams={plotRun.seams}
-            />
-          ) : null}
           {plotRun && ['ready', 'generating'].includes(plotRun.status) ? <><p className="wide">已完成 {plotRun.next_scene_cursor} / {plannedSceneCount(plotRun)} 个场景</p><button disabled={busy} onClick={() => void perform(async () => setPlotRun(await generateNextPlotScene(plotRun.id), plotRun.id))} type="button">生成下一场景</button><button disabled={busy} onClick={() => void perform(async () => setPlotRun(await executePlotGeneration(plotRun.id, {}), plotRun.id))} type="button">生成全部剩余场景</button></> : null}
-          {plotRun?.status === 'completed' ? <><p className="wide">本次运行已完成</p><pre className="wide">{JSON.stringify(plotRun.result, null, 2)}</pre><button onClick={clearPlotRun} type="button">开始新的运行</button></> : null}
+          {plotRun?.status === 'completed' ? <><p className="wide">新正文版本已经保存。</p>{Array.isArray(plotRun.issues) && plotRun.issues.length ? <p className="wide">生成结果有一些创作建议，您可以查看正文后决定是否再次调整。</p> : null}<button onClick={clearPlotRun} type="button">开始新的创作</button></> : null}
           {plotRun?.status === 'cancelled' ? <><p className="wide">本次运行已取消</p><button onClick={clearPlotRun} type="button">开始新的运行</button></> : null}
           {plotRun?.status === 'repair_required' ? <><button disabled={busy} onClick={() => void perform(async () => setPlotRun(await retryPlotGeneration(plotRun.id), plotRun.id))} type="button">重新生成</button><button disabled={busy} onClick={() => void perform(async () => setPlotRun(await cancelPlotGeneration(plotRun.id), plotRun.id))} type="button">放弃本次运行</button></> : null}
           {plotRun?.status === 'planning_blocked' ? <button disabled={busy} onClick={() => void perform(async () => setPlotRun(await cancelPlotGeneration(plotRun.id), plotRun.id))} type="button">放弃本次运行</button> : null}
           {plotRun && ['awaiting_skeleton', 'awaiting_seams', 'ready', 'generating'].includes(plotRun.status) ? <button disabled={busy} onClick={() => void perform(async () => setPlotRun(await cancelPlotGeneration(plotRun.id), plotRun.id))} type="button">取消运行</button> : null}
           {plotRun?.status === 'failed' ? <><button disabled={busy} onClick={() => void perform(async () => setPlotRun(await retryPlotGeneration(plotRun.id), plotRun.id))} type="button">重试</button><button disabled={busy} onClick={() => void perform(async () => setPlotRun(await cancelPlotGeneration(plotRun.id), plotRun.id))} type="button">取消运行</button></> : null}
-          {plotRun && ['planning_blocked', 'repair_required'].includes(plotRun.status) ? <pre className="wide">{JSON.stringify(plotRun.issues, null, 2)}</pre> : null}
-          <RunHistory label="剧情生成历史" runs={plotHistory} onSelect={(selected) => setPlotRun(selected, selected.id)} />
+          {plotRun && Array.isArray(plotRun.issues) && plotRun.issues.length ? <p className="wide">请检查生成结果中的连续性提示。</p> : null}
         </div>
       ) : null}
       {operation === 'prose_rewrite' ? (
@@ -340,27 +284,12 @@ export function RewriteOperationPanel({
           <label className="wide">目标风格与说明<textarea onChange={(event) => setDirection(event.target.value)} value={direction} /></label>
           <p className="wide">本次来源：{sourceLabel}</p>
           {!proseRun ? <button disabled={busy || !sourceSkeleton || !sourceSkeletonVersionId} onClick={() => void perform(beginProse)} type="button">生成重写计划</button> : <RunStatus run={proseRun} />}
-          {proseRun?.status === 'planned' ? <button disabled={busy} onClick={() => void perform(async () => setProseRun(await executeProseRewrite(proseRun.id, { auto_repair: true }), proseRun.id))} type="button">生成正文并自动检查</button> : null}
-          {proseRun ? <pre className="wide">{JSON.stringify(proseRun.issues, null, 2)}</pre> : null}
+          {proseRun?.status === 'planned' ? <button disabled={busy} onClick={() => void perform(async () => setProseRun(await executeProseRewrite(proseRun.id, {}), proseRun.id))} type="button">生成正文并检查</button> : null}
+          {proseRun?.issues.length ? <p className="wide">正文已保存，但存在创作一致性提示；您可以接受结果或调整要求后重新创作。</p> : null}
           {proseRun?.status === 'completed' ? <button onClick={clearProseRun} type="button">开始新的运行</button> : null}
           {proseRun && ['planned', 'generating', 'blocked', 'failed'].includes(proseRun.status) ? <button disabled={busy} onClick={() => void perform(async () => setProseRun(await cancelProseRewrite(proseRun.id), proseRun.id))} type="button">Cancel run</button> : null}
           {proseRun && ['blocked', 'failed'].includes(proseRun.status) ? <button disabled={busy} onClick={() => void perform(async () => setProseRun(await retryProseRewrite(proseRun.id), proseRun.id))} type="button">Retry run</button> : null}
           {proseRun?.status === 'cancelled' ? <button onClick={clearProseRun} type="button">Start new run</button> : null}
-          <RunHistory label="正文重写历史" runs={proseHistory} onSelect={(selected) => setProseRun(selected, selected.id)} />
-        </div>
-      ) : null}
-      {operation === 'canon_change' ? (
-        <div className="operation-fields">
-          <label>旧设定<input onChange={(event) => setOldFact(event.target.value)} value={oldFact} /></label>
-          <label>新设定<input onChange={(event) => setNewFact(event.target.value)} value={newFact} /></label>
-          <label>生效点<input readOnly value={chapter ? `第 ${chapter.index} 章` : '请选择章节'} /></label>
-          <button disabled={busy || !oldFact.trim() || !newFact.trim()} onClick={() => void perform(beginCanon)} type="button">扫描下游影响</button>
-          {canonRun ? <CanonPatchReview onChange={(run) => setCanonRun(run, run.id)} run={canonRun} /> : null}
-          {canonRun?.patches.some((patch) => ['accepted', 'edited'].includes(patch.status)) ? <button disabled={busy} onClick={() => void perform(async () => setCanonRun(await applyCanonChange(canonRun.id), canonRun.id))} type="button">原子应用已接受补丁</button> : null}
-          {canonRun?.status === 'applied' ? <button onClick={clearCanonRun} type="button">开始新的运行</button> : null}
-          {canonRun && ['scanning', 'reviewing', 'blocked', 'ready_to_apply', 'failed'].includes(canonRun.status) ? <button disabled={busy} onClick={() => void perform(async () => setCanonRun(await cancelCanonChange(canonRun.id), canonRun.id))} type="button">Cancel run</button> : null}
-          {canonRun?.status === 'cancelled' ? <button onClick={clearCanonRun} type="button">Start new run</button> : null}
-          <RunHistory label="设定变更历史" runs={canonHistory} onSelect={(selected) => setCanonRun(selected, selected.id)} />
         </div>
       ) : null}
     </section>
@@ -378,53 +307,51 @@ export function BranchWorkspacePanel({
   const [mode, setMode] = useState<Exclude<GenerationMode, 'bounded_insert'>>('open_continuation');
   const [branches, setBranches] = useState<StoryBranch[]>([]);
   const [selectedBranchId, setSelectedBranchId] = useState<number | null>(null);
-  const [sourceParentBranchId, setSourceParentBranchId] = useState<number | null>(null);
-  const [activeRunBranchId, setActiveRunBranchId] = useState<number | null>(null);
+  const [branchChapters, setBranchChapters] = useState<BranchChapterRecord[]>([]);
   const [startAnchor, setStartAnchor] = useState<StoryAnchor>({ anchor_type: 'document_end' });
-  const [returnAnchor, setReturnAnchor] = useState<StoryAnchor>(chapters.at(-1)
-    ? { anchor_type: 'chapter_end', chapter_id: chapters.at(-1)!.id }
-    : { anchor_type: 'document_end' });
   const [direction, setDirection] = useState('');
-  const [characterIds, setCharacterIds] = useState('');
-  const [materialIds, setMaterialIds] = useState('');
-  const [styleId, setStyleId] = useState('');
   const [run, setRun, clearRun] = usePersistedWorkflowRun(`rusty.plot-run.${projectId}`, getPlotGenerationRun);
-  const [runHistory, setRunHistory] = useState<PlotGenerationRun[]>([]);
   const [error, setError] = useState('');
-  const sourceChapter = chapters.find((item) => item.id === startAnchor.chapter_id) ?? chapters.at(-1);
 
   useEffect(() => {
     void getStoryBranches(projectId).then(setBranches).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : '无法读取分支'));
   }, [projectId]);
 
   useEffect(() => {
-    void getPlotGenerationRuns(projectId).then(setRunHistory).catch(() => undefined);
-  }, [projectId, run?.status]);
-
-  useEffect(() => {
-    if (run?.status === 'completed' && activeRunBranchId) {
-      setSelectedBranchId(activeRunBranchId);
+    if (selectedBranchId == null) {
+      setBranchChapters([]);
+      return;
     }
-  }, [activeRunBranchId, run?.status]);
+    void getBranchChapters(selectedBranchId)
+      .then(setBranchChapters)
+      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : '无法读取续写内容'));
+  }, [selectedBranchId, run?.status]);
 
   async function begin() {
     if (!direction.trim()) return;
     try {
+      let effectiveAnchor = startAnchor;
+      if (mode === 'open_continuation' && selectedBranchId) {
+        const lastChapter = branchChapters.at(-1);
+        const lastScene = lastChapter?.scenes.at(-1);
+        if (!lastChapter) throw new Error('这条路线还没有可继续的正文，请先删除空路线并重新创建。');
+        effectiveAnchor = lastScene
+          ? { anchor_type: 'branch_scene', branch_scene_id: lastScene.id, source_version_id: lastScene.version_id, side: 'after' }
+          : { anchor_type: 'branch_chapter', branch_chapter_id: lastChapter.id, source_version_id: lastChapter.version_id, side: 'after' };
+      } else if (mode === 'open_continuation') {
+        effectiveAnchor = { anchor_type: 'document_end' };
+      }
       const next = await startPlotGeneration({
         project_id: projectId,
         generation_mode: mode,
-        start_anchor: startAnchor,
-        return_anchor: mode === 'fork_and_rejoin' ? returnAnchor : null,
-        parent_branch_id: sourceParentBranchId,
+        start_anchor: effectiveAnchor,
+        branch_id: mode === 'open_continuation' ? selectedBranchId : null,
         user_direction: direction.trim(),
-        selected_character_ids: parseIds(characterIds),
-        selected_material_ids: parseIds(materialIds),
-        style_profile_id: Number(styleId) || null,
-        branch_name: `分支 ${branches.length + 1}`,
+        branch_name: mode === 'open_continuation' ? `我的续写 ${branches.length + 1}` : `另一种发展 ${branches.length + 1}`,
       });
       setRun(next, next.id);
       setBranches(await getStoryBranches(projectId));
-      setActiveRunBranchId(next.branch_id);
+      setSelectedBranchId(next.branch_id);
     } catch (reason) { setError(reason instanceof Error ? reason.message : '启动失败'); }
   }
 
@@ -434,47 +361,38 @@ export function BranchWorkspacePanel({
       await deleteStoryBranch(selectedBranchId);
       setBranches(await getStoryBranches(projectId));
       setSelectedBranchId(null);
-      if (sourceParentBranchId === selectedBranchId) setSourceParentBranchId(null);
     } catch (reason) { setError(reason instanceof Error ? reason.message : '删除失败'); }
   }
 
   return (
     <div className="branch-workspace">
-      <header><div><span>扩写工程</span><h1>{projectName}</h1><p>新路线与原始基线独立保存，可从原文或已有分支继续派生。</p></div></header>
+      <header><div><span>扩写工程</span><h1>{projectName}</h1><p>每条路线独立保存；可以从原文创建新路线，也可以在当前路线中继续写。</p></div></header>
       <div className="branch-action-grid" aria-label="扩写入口">
-        <OperationButton active={mode === 'open_continuation'} icon={<GitBranch size={18} />} label="从原文末尾续写" onClick={() => setMode('open_continuation')} />
-        <OperationButton active={mode === 'fork'} icon={<GitFork size={18} />} label="从指定节点建立分支" onClick={() => setMode('fork')} />
-        <OperationButton active={mode === 'fork_and_rejoin'} icon={<ListTree size={18} />} label="建立分支并接回原文" onClick={() => setMode('fork_and_rejoin')} />
+        <OperationButton active={mode === 'open_continuation'} icon={<GitBranch size={18} />} label="继续写" onClick={() => setMode('open_continuation')} />
+        <OperationButton active={mode === 'fork'} icon={<GitFork size={18} />} label="写另一种发展" onClick={() => setMode('fork')} />
       </div>
       <div className="branch-layout">
-        <aside aria-label="分支树">
-          <h2>分支树</h2>
-          <ul><li><button onClick={() => setSelectedBranchId(null)} type="button">原文</button></li>{branches.map((branch) => <li key={branch.id}><button aria-current={branch.id === selectedBranchId ? 'true' : undefined} onClick={() => setSelectedBranchId(branch.id)} type="button">{branch.parent_branch_id ? '  └─ ' : '├─ '}{branch.name}</button></li>)}</ul>
-          <button onClick={() => { setSourceParentBranchId(null); setStartAnchor({ anchor_type: 'document_end' }); }} type="button">从原文创建新分支</button>
-          {selectedBranchId ? <button onClick={() => setSourceParentBranchId(selectedBranchId)} type="button">从此分支继续派生</button> : null}
+        <aside aria-label="创作路线">
+          <h2>创作路线</h2>
+          <ul><li><button onClick={() => setSelectedBranchId(null)} type="button">原文</button></li>{branches.map((branch) => <li key={branch.id}><button aria-current={branch.id === selectedBranchId ? 'true' : undefined} onClick={() => setSelectedBranchId(branch.id)} type="button">{branch.name}</button></li>)}</ul>
+          <button onClick={() => { setSelectedBranchId(null); setMode('open_continuation'); }} type="button">创建新的续写路线</button>
           {selectedBranchId ? <button className="button ghost" onClick={() => void removeCurrentBranch()} type="button">删除未使用分支</button> : null}
         </aside>
         <main>
           {error ? <p role="alert">{error}</p> : null}
           <div className="operation-fields">
-            <p className="wide">生成来源：{sourceParentBranchId ? `父分支 #${sourceParentBranchId}` : '原始基线'}</p>
-            <StoryAnchorPicker allowDocumentEnd chapters={chapters} label="起点" onChange={setStartAnchor} parentBranchId={sourceParentBranchId} projectId={projectId} value={startAnchor} />
-            {mode === 'fork_and_rejoin' ? <StoryAnchorPicker chapters={chapters} label="回接点" onChange={setReturnAnchor} projectId={projectId} value={returnAnchor} /> : null}
+            <p className="wide">本次来源：{mode === 'open_continuation' && selectedBranchId ? branches.find((branch) => branch.id === selectedBranchId)?.name : '原文'}</p>
+            {mode === 'fork' ? <StoryAnchorPicker chapters={chapters} label="从这里开始" onChange={setStartAnchor} projectId={projectId} value={startAnchor} /> : null}
             <label className="wide">剧情目标<textarea onChange={(event) => setDirection(event.target.value)} value={direction} /></label>
-            <label>人物 ID<input onChange={(event) => setCharacterIds(event.target.value)} placeholder="逗号分隔" value={characterIds} /></label>
-            <label>素材 ID<input onChange={(event) => setMaterialIds(event.target.value)} placeholder="逗号分隔" value={materialIds} /></label>
-            <label>风格 ID<input onChange={(event) => setStyleId(event.target.value)} value={styleId} /></label>
-            {!run ? <button className="button primary" disabled={!direction.trim()} onClick={() => void begin()} type="button">启动分析并创建分支</button> : <RunStatus run={run} />}
+            {!run ? <button className="button primary" disabled={!direction.trim()} onClick={() => void begin()} type="button">开始规划</button> : <RunStatus run={run} />}
             {run?.stage === 'confirm_target_skeleton' ? <ModularSkeletonEditor onConfirm={(skeleton) => void confirmPlotGenerationSkeleton(run.id, skeleton).then((next) => setRun(next, next.id)).catch((reason) => setError(String(reason)))} skeleton={run.target_skeleton} /> : null}
-            {run?.stage === 'confirm_seams' && Array.isArray(run.seams) && sourceChapter ? <SeamReview onConfirm={(seams) => void confirmPlotGenerationSeams(run.id, { reviews: seamReviews(seams) }).then((next) => setRun(next, next.id)).catch((reason) => setError(String(reason)))} seams={run.seams} /> : null}
             {run && ['ready', 'generating'].includes(run.status) ? <><p className="wide">已完成 {run.next_scene_cursor} / {plannedSceneCount(run)} 个场景</p><button onClick={() => void generateNextPlotScene(run.id).then((next) => setRun(next, next.id)).catch((reason) => setError(String(reason)))} type="button">生成下一场景</button><button onClick={() => void executePlotGeneration(run.id, {}).then((next) => setRun(next, next.id)).catch((reason) => setError(String(reason)))} type="button">生成全部剩余场景</button></> : null}
-            {run?.status === 'completed' ? <><p className="wide">本次运行已完成</p><pre className="wide">{JSON.stringify(run.result, null, 2)}</pre><button onClick={clearRun} type="button">开始新的运行</button></> : null}
+            {run?.status === 'completed' ? <><p className="wide">新内容已经保存到这条路线。</p>{Array.isArray(run.issues) && run.issues.length ? <p className="wide">生成结果有连续性提示，请查看正文后决定是否继续调整。</p> : null}<button onClick={clearRun} type="button">继续创作</button></> : null}
             {run?.status === 'cancelled' ? <><p className="wide">本次运行已取消</p><button onClick={clearRun} type="button">开始新的运行</button></> : null}
             {run?.status === 'repair_required' ? <><button onClick={() => void retryPlotGeneration(run.id).then((next) => setRun(next, next.id)).catch((reason) => setError(String(reason)))} type="button">重新生成</button><button onClick={() => void cancelPlotGeneration(run.id).then((next) => setRun(next, next.id)).catch((reason) => setError(String(reason)))} type="button">放弃本次运行</button></> : null}
             {run?.status === 'planning_blocked' ? <button onClick={() => void cancelPlotGeneration(run.id).then((next) => setRun(next, next.id)).catch((reason) => setError(String(reason)))} type="button">放弃本次运行</button> : null}
             {run && ['awaiting_skeleton', 'awaiting_seams', 'ready', 'generating'].includes(run.status) ? <button onClick={() => void cancelPlotGeneration(run.id).then((next) => setRun(next, next.id)).catch((reason) => setError(String(reason)))} type="button">取消运行</button> : null}
-            {run && ['planning_blocked', 'repair_required'].includes(run.status) ? <pre className="wide">{JSON.stringify(run.issues, null, 2)}</pre> : null}
-            <RunHistory label="剧情生成历史" runs={runHistory} onSelect={(selected) => { setRun(selected, selected.id); setActiveRunBranchId(selected.branch_id); }} />
+            {run && Array.isArray(run.issues) && run.issues.length ? <p className="wide">请检查生成结果中的连续性提示。</p> : null}
           </div>
         </main>
       </div>

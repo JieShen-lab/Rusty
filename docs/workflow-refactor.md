@@ -1,4 +1,6 @@
-# Rusty 工程类型与小说工作流
+# Rusty 工程类型与小说工作流（历史设计记录）
+
+> 本文记录 PR #8 的演进过程，并非当前产品能力清单。当前正式边界以 `docs/product-scope.md` 和 `docs/current-implementation.md` 为准；其中的 Canon、自动回接、子分支和强制接缝审查现已退出正式产品路径。
 
 ## 分类与兼容
 

@@ -48,7 +48,6 @@ from rusty.services.scene_service import SceneService
 from rusty.services.scene_rewrite_orchestrator import SceneRewriteOrchestrator
 from rusty.services.scene_boundary_ai_service import SceneBoundaryAIService
 from rusty.services.branch_service import BranchService
-from rusty.services.canon_change_orchestrator import CanonChangeOrchestrator
 from rusty.services.plot_generation_orchestrator import PlotGenerationOrchestrator
 from rusty.services.prose_rewrite_orchestrator import ProseRewriteOrchestrator
 from rusty.services.rewrite_version_map_service import RewriteVersionMapService
@@ -265,9 +264,6 @@ def create_app(
     prose_rewrite_orchestrator = ProseRewriteOrchestrator(
         db_path, ai_client=workflow_ai_client
     )
-    canon_change_orchestrator = CanonChangeOrchestrator(
-        db_path, ai_client=workflow_ai_client
-    )
     chapter_version_service = ChapterVersionService(db_path)
     rewrite_version_map_service = RewriteVersionMapService(db_path)
     anchor_extraction_service = AnchorExtractionService(db_path, ai_client=anchor_ai_client or style_ai_client)
@@ -317,7 +313,6 @@ def create_app(
                 branches=branch_service,
                 plot=plot_generation_orchestrator,
                 prose=prose_rewrite_orchestrator,
-                canon=canon_change_orchestrator,
                 chapters=chapter_version_service,
                 rewrite_maps=rewrite_version_map_service,
                 contexts=context_service,

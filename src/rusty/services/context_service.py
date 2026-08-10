@@ -579,7 +579,7 @@ class ContextService:
         project_id: int,
         start_anchor: dict[str, Any],
         return_anchor: dict[str, Any] | None,
-        parent_branch_id: int | None,
+        branch_id: int | None,
         user_direction: str,
         selected_character_ids: Iterable[int] = (),
         selected_material_ids: Iterable[int] = (),
@@ -589,14 +589,14 @@ class ContextService:
         start = self._resolve_generation_anchor(
             project_id,
             start_anchor,
-            parent_branch_id=parent_branch_id,
+            branch_id=branch_id,
             rewrite_source_snapshot=rewrite_source_snapshot,
         )
         returned = (
             self._resolve_generation_anchor(
                 project_id,
                 return_anchor,
-                parent_branch_id=parent_branch_id,
+                branch_id=branch_id,
                 rewrite_source_snapshot=rewrite_source_snapshot,
             )
             if return_anchor is not None
@@ -650,14 +650,14 @@ class ContextService:
         project_id: int,
         anchor: dict[str, Any],
         *,
-        parent_branch_id: int | None = None,
+        branch_id: int | None = None,
         rewrite_source_snapshot: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Resolve the authoritative current text unit bound to a generation anchor."""
         resolved = self._resolve_generation_anchor(
             project_id,
             anchor,
-            parent_branch_id=parent_branch_id,
+            branch_id=branch_id,
             rewrite_source_snapshot=rewrite_source_snapshot,
         )
         source_text = str(resolved.get("source_text", resolved["text"]))
@@ -690,7 +690,7 @@ class ContextService:
         resolved = self._resolve_generation_anchor(
             project_id,
             anchor,
-            parent_branch_id=None,
+            branch_id=None,
             rewrite_source_snapshot=(
                 snapshot if snapshot["source_kind"] == "rewrite_version" else None
             ),
@@ -725,14 +725,14 @@ class ContextService:
         project_id: int,
         anchor: dict[str, Any],
         *,
-        parent_branch_id: int | None,
+        branch_id: int | None,
         rewrite_source_snapshot: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         anchor_type = str(anchor["anchor_type"])
         if anchor_type in {"branch_chapter", "branch_scene"}:
-            if parent_branch_id is None:
-                raise ValueError("Branch content anchors require parent_branch_id.")
-            chapters = self.branch_service.list_chapters(parent_branch_id)
+            if branch_id is None:
+                raise ValueError("Branch content anchors require branch_id.")
+            chapters = self.branch_service.list_chapters(branch_id)
             selected_chapter = next((chapter for chapter in chapters if (
                 int(chapter["id"]) == int(anchor.get("branch_chapter_id") or -1)
                 or any(int(scene["id"]) == int(anchor.get("branch_scene_id") or -1) for scene in chapter["scenes"])

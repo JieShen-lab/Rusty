@@ -200,45 +200,41 @@ class ProseRewriteOrchestratorTests(unittest.TestCase):
         for mode, issue_type in expectations.items():
             with self.subTest(mode=mode):
                 self.llm.mode = mode
-                blocked = self.service.execute(self.plan()["id"], auto_repair=False)
-                self.assertEqual("blocked", blocked["status"])
-                self.assertIn(issue_type, {item["type"] for item in blocked["issues"]})
+                completed = self.service.execute(self.plan()["id"])
+                self.assertEqual("completed", completed["status"])
+                self.assertIn(issue_type, {item["type"] for item in completed["issues"]})
+                self.assertTrue(all(item["severity"] == "warning" for item in completed["issues"]))
 
     def test_detects_knowledge_and_boundary_state_changes(self) -> None:
         self.llm.mode = "knowledge"
-        blocked = self.service.execute(self.plan()["id"], auto_repair=False)
+        completed = self.service.execute(self.plan()["id"])
         self.assertIn(
             "knowledge_reveal_order_changed",
-            {item["type"] for item in blocked["issues"]},
+            {item["type"] for item in completed["issues"]},
         )
         self.llm.mode = "states"
-        blocked = self.service.execute(self.plan()["id"], auto_repair=False)
-        types = {item["type"] for item in blocked["issues"]}
+        completed = self.service.execute(self.plan()["id"])
+        types = {item["type"] for item in completed["issues"]}
         self.assertIn("required_start_state_changed", types)
         self.assertIn("required_end_state_changed", types)
 
-    def test_auto_repair_passes_before_saving(self) -> None:
+    def test_creative_drift_is_visible_without_hidden_auto_repair(self) -> None:
         self.llm.mode = "missing"
-        completed = self.service.execute(self.plan()["id"], auto_repair=True)
+        completed = self.service.execute(self.plan()["id"])
         self.assertEqual("completed", completed["status"])
-        self.assertTrue(completed["rewritten_text"].startswith("REPAIRED"))
+        self.assertTrue(completed["issues"])
+        self.assertNotIn("prose_rewrite_repair", self.llm.payloads)
 
-    def test_failed_repair_does_not_write_chapter(self) -> None:
-        self.llm.mode = "missing"
-        self.llm.repair_success = False
-        blocked = self.service.execute(self.plan()["id"], auto_repair=True)
-        self.assertEqual("blocked", blocked["status"])
-        self.assertIsNone(self.projects.get_chapter(self.chapter_id).rewritten_text)
-
-    def test_locked_node_cannot_be_removed_by_ai_plan(self) -> None:
+    def test_plan_uses_source_skeleton_without_ai_target_duplication(self) -> None:
         invalid = skeleton()
         invalid["event_nodes"] = invalid["event_nodes"][1:]
         invalid["event_nodes"][0]["order"] = 1
         invalid["event_nodes"][0]["causes"] = []
         invalid["causal_links"] = []
         self.llm.plan_target = invalid
-        with self.assertRaisesRegex(ValueError, "preservation policy"):
-            self.plan()
+        planned = self.plan()
+        self.assertEqual(skeleton(), planned["target_skeleton"])
+        self.assertEqual(skeleton(), self.llm.payloads["prose_rewrite_plan"][-1]["source_skeleton"])
 
     def test_uses_effective_source_and_appends_to_immutable_version_lineage(self) -> None:
         self.projects.save_chapter_rewrite(self.chapter_id, "Plot result containing ambush A.")
@@ -276,7 +272,7 @@ class ProseRewriteOrchestratorTests(unittest.TestCase):
         self.assertEqual(v1["id"], v3["parent_version_id"])
         self.assertEqual("version two", ChapterVersionService(self.database).get_version(v2["id"])["rewritten_text"])
 
-    def test_completed_and_cancelled_runs_cannot_execute_and_failed_can_retry(self) -> None:
+    def test_completed_and_cancelled_runs_cannot_execute(self) -> None:
         completed = self.service.execute(self.plan()["id"])
         with self.assertRaisesRegex(ValueError, "not ready"):
             self.service.execute(completed["id"])
@@ -285,11 +281,6 @@ class ProseRewriteOrchestratorTests(unittest.TestCase):
         self.assertEqual("cancelled", cancelled["status"])
         with self.assertRaisesRegex(ValueError, "not ready"):
             self.service.execute(planned["id"])
-        self.llm.mode = "missing"
-        blocked = self.service.execute(self.plan()["id"], auto_repair=False)
-        retried = self.service.retry(blocked["id"])
-        self.assertEqual("planned", retried["status"])
-        self.assertEqual(1, retried["generation_attempt"])
 
     def test_version_insert_and_run_completion_are_one_transaction(self) -> None:
         run = self.plan()

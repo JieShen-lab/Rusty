@@ -227,7 +227,7 @@ SQLite + OS keyring + 本地文件
 - 流水线阶段状态、摘要、场景分析、情节扩写、改写结果、生成尝试和错误；
 - 导出计划和导出记录；
 - 文档库文档、分类、标签、处理模板、修订版本、卷、章节、草稿和存储设置。
-- 剧情运行状态、草稿生成进度、运行历史、分支血缘、接缝和不可变章节/场景版本快照。
+- 剧情运行状态、草稿生成进度、独立分支路线和不可变章节/场景版本快照。
 
 v14 将旧素材类型 `snippet` 映射为 `scene_reference`，将 `outline` 映射为 `plot_skeleton` 并保留旧类型元数据；旧素材分类和文档分类迁移为标签。角色卡旧固定字段迁移为身份、年龄、设定及有序自定义字段。v19 新增文档卷层级；v20 新增仅适用于公共角色的 `character_categories` / `character_category_links`，并幂等补齐历史工程角色的有效 `project_character_bindings`；v21 新增单例 `character_extraction_settings`；v22 新增素材分类、标签组、工程素材筛选和三任务 `material_ai_settings`。v22 会原地保留历史工程素材 ID，把 `scope` 统一为 `public`、清空 `project_id`，并在来源元数据记录 `legacy_scope` / `legacy_project_id` / `migrated_to_unified_library`；已有标签会转为对应工程的素材筛选，未打标签的旧素材不会生成伪标签。v23 为三个素材 AI 任务分别增加用户提示词模板、JSON 分析维度、通用标签开关和适用场景标签开关；v22 的 `generate_tags` 会迁移到两个新开关。迁移和关系写入均可幂等重放。
 
@@ -237,24 +237,23 @@ SQLite 连接默认启用外键、WAL、`synchronous=NORMAL` 和 5 秒忙等待�
 
 ### 5.1 工作流生命周期与版本一致性
 
-Plot Generation 使用 `awaiting_skeleton`、`planning_blocked`、`awaiting_seams`、`ready`、
-`generating`、`repair_required`、`completed`、`failed`、`cancelled` 九个正式状态。所有状态
-变化通过带来源状态守卫的内部转换接口完成。活动运行可取消；一致性失败必须调用 retry，
-其草稿进度、游标和事实账本恢复到起点后才重新进入 `ready`。终态记录不会被前端“开始
-新的运行”删除，项目级历史 API 是运行状态的权威来源。
+Plot Generation 的新正式路径为 `awaiting_skeleton → ready → generating → completed`，另有
+`failed` 和 `cancelled`。旧状态值仍可读取，以兼容 v40 历史数据，但新工作流不再进入
+`planning_blocked`、`awaiting_seams` 或 `repair_required`。活动运行可取消，技术失败可显式重试；
+创作一致性问题保存为提示，不替用户阻止正式版本。
 
 `generate-next` 推进一个计划场景，`execute` 复用相同核心推进所有剩余场景。生成中的正文
 只保存在 `plot_generation_runs.generated_progress_json`；通过最终一致性检查后才原子提交正式
 改写正文或分支章节。
 
-分支血缘由后端强制：顶级分支只能使用原文锚点，子分支只能使用所属父分支的章节或场景
-锚点，来源版本由锚点唯一确定。v36 的 `branch_chapter_version_scenes` 使每个章节版本同时
+正式产品中的分支是从原文创建的独立平面路线；在分支内继续创作会向同一分支追加章节，
+不再创建子分支。v36 的 `branch_chapter_version_scenes` 使每个章节版本同时
 固定 facts、场景顺序和每个场景的正文版本；v37 增加运行进度、场景游标、生成尝试次数及
 正式状态约束。旧数据回填优先选择不晚于章节版本创建时间的最近场景版本，并保持当前正文
 与 facts 不丢失。
 
 v38 新增 `chapter_rewrite_versions`。原始章节正文保持不可变，所有 Plot、Prose Rewrite、
-Canon Change、人工编辑、迁移和恢复结果都追加为新版本；`chapter_rewrites.current_version_id`
+人工编辑、迁移和恢复结果都追加为新版本；`chapter_rewrites.current_version_id`
 是 current head，`chapters.rewritten_text` 是兼容投影。版本号在章节内单调递增，
 `parent_version_id` 指向真实来源，因此允许从历史版本形成分叉而不改写历史。
 
@@ -268,8 +267,7 @@ CAS；正文版本、current projection、全部分支章节/场景及 run 终�
 版本列表、历史正文查看和“基于此版本创建新操作”。
 
 分支章节快照的 `facts_after` 取最后一个场景版本。修改非末场景但未重算下游时，
-`fact_chain_status=needs_recompute`；Canon Change 会为所有下游场景建立正文+facts 对齐的新版本，
-包括正文未变化但事实发生变化的场景，完成后章节快照标记 `consistent`。
+`fact_chain_status=needs_recompute`；当前产品不提供自动跨章节设定传播。
 
 v40 增加 `chapter_rewrite_version_segments` 与 rewrite-version skeleton 关联。每个 rewrite
 version 现在同时固定正文、章节边界 facts、场景/event-node 的 version-local span、局部状态、

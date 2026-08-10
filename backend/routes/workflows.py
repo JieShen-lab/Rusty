@@ -7,7 +7,6 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from rusty.models import ProjectSummary
 from rusty.services.branch_service import BranchService
-from rusty.services.canon_change_orchestrator import CanonChangeOrchestrator
 from rusty.services.chapter_version_service import ChapterVersionService
 from rusty.services.context_service import ContextService
 from rusty.services.plot_generation_orchestrator import PlotGenerationOrchestrator
@@ -17,14 +16,9 @@ from rusty.services.rewrite_version_map_service import RewriteVersionMapService
 
 from backend.workflow_schemas import (
     BranchCreateRequest,
-    CanonChangeRunResponse,
-    CanonChangeScanRequest,
-    CanonPatchResponse,
-    CanonPatchReviewRequest,
     ChapterRewriteVersionResponse,
     PlotGenerationExecuteRequest,
     PlotGenerationRunResponse,
-    PlotGenerationSeamConfirmRequest,
     PlotGenerationSkeletonConfirmRequest,
     PlotGenerationStartRequest,
     ProseRewriteExecuteRequest,
@@ -43,7 +37,6 @@ class WorkflowRouteServices:
     branches: BranchService
     plot: PlotGenerationOrchestrator
     prose: ProseRewriteOrchestrator
-    canon: CanonChangeOrchestrator
     chapters: ChapterVersionService
     rewrite_maps: RewriteVersionMapService
     contexts: ContextService
@@ -94,10 +87,6 @@ def create_workflow_router(
             name=values["name"],
             branch_mode=values["branch_mode"],
             start_anchor=values["start_anchor"],
-            return_anchor=values["return_anchor"],
-            parent_branch_id=values.get("parent_branch_id"),
-            base_source_version_id=values.get("base_source_version_id"),
-            downstream_strategy=values.get("downstream_strategy"),
         )
 
     @router.post("/api/branches/{branch_id}/delete", dependencies=write_dependencies)
@@ -133,14 +122,6 @@ def create_workflow_router(
     def get_plot_generation_run(run_id: int) -> dict[str, Any]:
         return services.plot.get_run(run_id)
 
-    @router.get(
-        "/api/projects/{project_id}/plot-generation/runs",
-        response_model=list[PlotGenerationRunResponse],
-    )
-    def list_plot_generation_runs(project_id: int) -> list[dict[str, Any]]:
-        require_project(services.projects, project_id)
-        return services.plot.list_runs(project_id)
-
     @router.post(
         "/api/plot-generation/runs/{run_id}/cancel",
         response_model=PlotGenerationRunResponse,
@@ -148,18 +129,6 @@ def create_workflow_router(
     )
     def cancel_plot_generation(run_id: int) -> dict[str, Any]:
         return services.plot.cancel(run_id)
-
-    @router.post(
-        "/api/plot-generation/runs/{run_id}/seams",
-        response_model=PlotGenerationRunResponse,
-        dependencies=write_dependencies,
-    )
-    def confirm_plot_generation_seams(
-        run_id: int, payload: PlotGenerationSeamConfirmRequest
-    ) -> dict[str, Any]:
-        return services.plot.confirm_seams(
-            run_id, [review.model_dump() for review in payload.reviews]
-        )
 
     @router.post(
         "/api/plot-generation/runs/{run_id}/skeleton",
@@ -214,14 +183,6 @@ def create_workflow_router(
     def get_prose_rewrite_run(run_id: int) -> dict[str, Any]:
         return services.prose.get_run(run_id)
 
-    @router.get(
-        "/api/projects/{project_id}/prose-rewrite/runs",
-        response_model=list[ProseRewriteRunResponse],
-    )
-    def list_prose_rewrite_runs(project_id: int) -> list[dict[str, Any]]:
-        require_project(services.projects, project_id)
-        return services.prose.list_runs(project_id)
-
     @router.post(
         "/api/prose-rewrite/runs/{run_id}/execute",
         response_model=ProseRewriteRunResponse,
@@ -247,55 +208,6 @@ def create_workflow_router(
     )
     def retry_prose_rewrite(run_id: int) -> dict[str, Any]:
         return services.prose.retry(run_id)
-
-    @router.post(
-        "/api/canon-change/runs",
-        response_model=CanonChangeRunResponse,
-        dependencies=write_dependencies,
-    )
-    def scan_canon_change(payload: CanonChangeScanRequest) -> dict[str, Any]:
-        return services.canon.scan(**payload.model_dump())
-
-    @router.get(
-        "/api/canon-change/runs/{run_id}",
-        response_model=CanonChangeRunResponse,
-    )
-    def get_canon_change_run(run_id: int) -> dict[str, Any]:
-        return services.canon.get_run(run_id)
-
-    @router.get(
-        "/api/projects/{project_id}/canon-change/runs",
-        response_model=list[CanonChangeRunResponse],
-    )
-    def list_canon_change_runs(project_id: int) -> list[dict[str, Any]]:
-        require_project(services.projects, project_id)
-        return services.canon.list_runs(project_id)
-
-    @router.post(
-        "/api/canon-change/patches/{patch_id}/review",
-        response_model=CanonPatchResponse,
-        dependencies=write_dependencies,
-    )
-    def review_canon_patch(
-        patch_id: int, payload: CanonPatchReviewRequest
-    ) -> dict[str, Any]:
-        return services.canon.review_patch(patch_id, **payload.model_dump())
-
-    @router.post(
-        "/api/canon-change/runs/{run_id}/apply",
-        response_model=CanonChangeRunResponse,
-        dependencies=write_dependencies,
-    )
-    def apply_canon_change(run_id: int) -> dict[str, Any]:
-        return services.canon.apply(run_id)
-
-    @router.post(
-        "/api/canon-change/runs/{run_id}/cancel",
-        response_model=CanonChangeRunResponse,
-        dependencies=write_dependencies,
-    )
-    def cancel_canon_change(run_id: int) -> dict[str, Any]:
-        return services.canon.cancel(run_id)
 
     @router.get(
         "/api/chapters/{chapter_id}/rewrite-versions",
