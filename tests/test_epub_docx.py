@@ -79,7 +79,7 @@ class EpubDocxTests(unittest.TestCase):
         self.assertEqual("Exported", parsed.title)
         self.assertEqual("Rusty", parsed.author)
         self.assertEqual(1, len(parsed.chapters))
-        self.assertEqual("One", parsed.chapters[0].title)
+        self.assertEqual("第一章 One", parsed.chapters[0].title)
         self.assertIn("Alpha", parsed.chapters[0].text)
 
 
@@ -106,4 +106,3 @@ def _write_sample_epub(path: Path) -> None:
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -17,6 +17,32 @@ from rusty.services.document_library_service import DocumentLibraryService, Draf
 
 
 class DocumentLibraryServiceTests(unittest.TestCase):
+    def test_chapter_ordinals_are_derived_and_exports_compose_them_once(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            source = root / "titles.txt"
+            source.write_text("第一章 阿尔法为父亲\n\n正文一。\n", encoding="utf-8")
+            service = DocumentLibraryService(root / "rusty.db", root / "library")
+            document = service.import_document(source).document
+            first = service.list_chapters(document.id)[0]
+
+            created = service.create_chapter(
+                document.id,
+                title="",
+                text="正文二。",
+                position="after",
+                anchor_chapter_id=first.id,
+            )
+            chapters = service.list_chapters(document.id)
+            exported = service.export_document(document.id, "txt", root / "export.txt").read_text(encoding="utf-8")
+
+            self.assertIsNotNone(created.created_chapter_id)
+            self.assertEqual([1, 2], [chapter.index for chapter in chapters])
+            self.assertEqual(["阿尔法为父亲", ""], [chapter.title for chapter in chapters])
+            self.assertEqual(1, exported.count("第一章 阿尔法为父亲"))
+            self.assertEqual(1, exported.count("第二章"))
+            self.assertNotIn("第二章 第二章", exported)
+
     def test_draft_autosave_does_not_create_revision_and_manual_commit_creates_one(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)
@@ -45,7 +71,7 @@ class DocumentLibraryServiceTests(unittest.TestCase):
             self.assertIsNone(service.get_draft(document.id, chapter.id))
             current_chapters = service.list_chapters(document.id)
             renamed = next(item for item in current_chapters if item.index == 1)
-            self.assertEqual("第一章（修订）", renamed.title)
+            self.assertEqual("（修订）", renamed.title)
             self.assertEqual("草稿正文🙂。\n\n", service.get_content(document.id, renamed.id).body_text)
             self.assertEqual(draft.base_revision_id, committed.revision.parent_revision_id)
 
@@ -83,7 +109,7 @@ class DocumentLibraryServiceTests(unittest.TestCase):
             first_content = service.get_content(document.id, first.id)
             old_second_start = second.start_offset
 
-            self.assertEqual("第一章", first_content.title)
+            self.assertEqual("", first_content.title)
             self.assertNotIn("第一章", first_content.body_text)
             self.assertGreater(first_content.body_start_offset, first_content.section_start_offset)
             self.assertEqual(count_text_units(source_text), document.word_count)
@@ -102,7 +128,7 @@ class DocumentLibraryServiceTests(unittest.TestCase):
             stored = Path(service.list_revisions(document.id)[0].storage_path).read_text(encoding="utf-8")
 
             self.assertEqual("新标题", updated_first.title)
-            self.assertTrue(stored[updated_first.start_offset:updated_first.end_offset].lstrip("\n").startswith("新标题\n\n"))
+            self.assertTrue(stored[updated_first.start_offset:updated_first.end_offset].lstrip("\n").startswith("第一章 新标题\n\n"))
             self.assertGreater(updated_second.start_offset, old_second_start)
             self.assertEqual(count_text_units(stored), service.list_documents()[0].word_count)
 
@@ -276,19 +302,21 @@ class DocumentLibraryServiceTests(unittest.TestCase):
 
             self.assertEqual(["参考资料"], assigned.tags)
             self.assertEqual(1, service.list_tags()[0].resource_count)
-            self.assertEqual(["第一章 风起", "第二章 归途"], [item.title for item in chapters])
+            self.assertEqual(["风起", "归途"], [item.title for item in chapters])
             self.assertIn("第一章 风起", full_content.text)
-            self.assertEqual("第二章 归途", chapter_content.title)
+            self.assertEqual("归途", chapter_content.title)
             self.assertIn("第二段。", chapter_content.text)
-            self.assertEqual(["第二章 归途", "第一章 风起"], [item.title for item in reordered])
+            self.assertEqual(["归途", "风起"], [item.title for item in reordered])
             self.assertEqual(migrated_library.resolve(), migrated)
             self.assertEqual(migrated_library.resolve(), restarted.get_library_path().resolve())
             self.assertTrue(all(not path.exists() for path in original_paths))
             self.assertTrue(all(Path(item.storage_path).parent == migrated_library.resolve() for item in service.list_revisions(imported.document.id)))
-            self.assertIn("第一章 风起", txt_output.read_text(encoding="utf-8"))
+            exported_text = txt_output.read_text(encoding="utf-8")
+            self.assertIn("第一章 归途", exported_text)
+            self.assertIn("第二章 风起", exported_text)
             self.assertLess(
-                txt_output.read_text(encoding="utf-8").index("第二章 归途"),
-                txt_output.read_text(encoding="utf-8").index("第一章 风起"),
+                exported_text.index("第一章 归途"),
+                exported_text.index("第二章 风起"),
             )
             self.assertTrue(epub_output.is_file())
             self.assertGreater(epub_output.stat().st_size, 0)
@@ -356,7 +384,7 @@ class DocumentLibraryServiceTests(unittest.TestCase):
             self.assertEqual(1, len(directory_after.volumes))
             self.assertEqual("第七卷 雨夜", directory_after.volumes[0][0].title)
             self.assertEqual(
-                ["第787章 新雨", "第788章 风声"],
+                ["新雨", "风声"],
                 [chapter.title for chapter in directory_after.volumes[0][1]],
             )
             self.assertTrue(all(chapter.volume_id == directory_after.volumes[0][0].id for chapter in directory_after.volumes[0][1]))
@@ -376,7 +404,7 @@ class DocumentLibraryServiceTests(unittest.TestCase):
             service.activate_revision(document.id, original_revision.id)
             restored = service.get_directory(document.id)
             self.assertEqual("第七卷 雨夜", restored.volumes[0][0].title)
-            self.assertEqual("第787章 雨夜", restored.volumes[0][1][0].title)
+            self.assertEqual("雨夜", restored.volumes[0][1][0].title)
             self.assertNotEqual(original_revision.id, edit.revision.id)
             self.assertNotEqual(edit.revision.id, renamed_volume.revision.id)
 
@@ -405,18 +433,18 @@ class DocumentLibraryServiceTests(unittest.TestCase):
             self.assertEqual("merge", merged_revision.revision_type)
             self.assertEqual(["第七卷 雨夜"], [item[0].title for item in directory_result.volumes])
             self.assertEqual(
-                ["第787章 雨夜", "第788章 风声"],
+                ["雨夜", "风声"],
                 [chapter.title for chapter in directory_result.volumes[0][1]],
             )
-            self.assertEqual(["第九章 归途"], [chapter.title for chapter in directory_result.unassigned_chapters])
+            self.assertEqual(["归途"], [chapter.title for chapter in directory_result.unassigned_chapters])
             self.assertEqual(first_revision.id, service.list_revisions(first.id)[0].id)
             self.assertEqual(second_revision.id, service.list_revisions(second.id)[0].id)
 
             exported_text = txt_path.read_text(encoding="utf-8")
-            self.assertLess(exported_text.index("第七卷 雨夜"), exported_text.index("第787章 雨夜"))
-            self.assertLess(exported_text.index("第788章 风声"), exported_text.index("第九章 归途"))
+            self.assertLess(exported_text.index("第七卷 雨夜"), exported_text.index("第一章 雨夜"))
+            self.assertLess(exported_text.index("第二章 风声"), exported_text.index("第三章 归途"))
             self.assertEqual(1, exported_text.count("第七卷 雨夜"))
-            self.assertEqual(1, exported_text.count("第787章 雨夜"))
+            self.assertEqual(1, exported_text.count("第一章 雨夜"))
 
             exported_book = epub.read_epub(str(epub_path))
             self.assertEqual(2, len(exported_book.toc))

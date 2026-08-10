@@ -163,7 +163,7 @@ class ProjectServiceTests(unittest.TestCase):
         self.assertIn("Manual beta rewrite.", txt_export)
         self.assertIn("Renamed Three", txt_export)
         self.assertNotIn("Alpha original.", txt_export)
-        self.assertEqual(["Renamed Two", "Renamed Three"], [chapter.title for chapter in parsed_epub.chapters])
+        self.assertEqual(["第一章 Renamed Two", "第二章 Renamed Three"], [chapter.title for chapter in parsed_epub.chapters])
         self.assertEqual(2, export_records[0].chapter_count)
         self.assertEqual(2, export_records[1].chapter_count)
         self.assertEqual(32, export_records[0].word_count)
