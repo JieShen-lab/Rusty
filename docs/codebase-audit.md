@@ -121,12 +121,24 @@ React/Electron UI
 
 每个提交先运行定向测试；最终保持测试数量不下降，并运行后端、构建、三类 E2E 与 `git diff --check`。
 
+## 已实施的 Cleanup
+
+- 默认数据库路径移动到 `rusty.db.paths`，服务不再为了路径 helper 反向依赖 `ProjectService`；旧导入继续 re-export。
+- Plot 状态、generation mode 和 Story Anchor 集合收口到 `rusty.domain` 的具名模块。
+- UTF-8 正文 hash 与 legacy-tolerant JSON object 解码收口到单一职责模块。
+- Branch/Plot/Prose/Canon/rewrite-version HTTP 路由移动到 `backend.routes.workflows`；对应 Pydantic 模型移动到 `backend.workflow_schemas`。
+- workflow browser client、persisted-run hook 和独立共享 UI 从聚合文件拆出。
+- legacy pipeline 的正式 rewrite 不再旁路写 projection，而是通过 `ChapterVersionService` 产生不可变版本。
+- 当前架构、所有权、写入不变量与历史文档分类已建立明确入口。
+
+本轮没有删除 migration、legacy API、旧 pipeline/scene workflow、PySide UI 或公开 API client method，因为它们仍有运行路径或缺少正式弃用证据。
+
 ## 剩余复杂度热点
 
 ### High
 
 - `ContextService` 同时负责检索、上下文语义、预算和多工作流 source resolution；需要未来在不改变 prompt 的专门重构中处理。
-- `backend/api.py` 的非 workflow 领域（文档、素材、角色）仍有大量 route，cleanup 应分批而非一次性迁移全部 238 条。
+- `backend/api.py` 的非 workflow 领域（文档、素材、角色）仍有大量 route，后续应按独立业务边界分批迁移。
 - `schema.py` 体积大，但它是 migration audit trail；可导航性与历史不可变性存在合理张力。
 
 ### Medium
