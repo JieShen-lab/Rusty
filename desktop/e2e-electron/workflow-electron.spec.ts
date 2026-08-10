@@ -1,4 +1,4 @@
-import { expect, test, type ElectronApplication, type Locator, type Page, _electron as electron } from '@playwright/test';
+import { expect, test, type ElectronApplication, type Page, _electron as electron } from '@playwright/test';
 import path from 'node:path';
 import fs from 'node:fs';
 
@@ -62,27 +62,20 @@ test('Electron 改写工作流完成增加剧情最小闭环', async () => {
   await page.getByRole('button', { name: '启动分析' }).click();
   await expect(page.getByLabel('模块化细纲编辑器')).toBeVisible();
   await page.getByRole('button', { name: '确认目标细纲' }).click();
-  const seams = page.getByLabel('接缝审查');
-  await confirmAllSeams(seams);
-  await seams.getByRole('button', { name: '提交接缝审查' }).click();
   await page.getByRole('button', { name: '生成全部剩余场景' }).click();
-  await expect(page.locator('pre').filter({ hasText: '人物遭遇伏击' })).toBeVisible();
+  await expect(page.getByText('新正文版本已经保存。')).toBeVisible();
 
-  await page.getByRole('button', { name: '开始新的运行' }).click();
+  await page.getByRole('button', { name: '开始新的创作' }).click();
   await page.getByLabel('新增剧情目标').fill('再增加一场雨夜追逐');
   await page.getByRole('button', { name: '启动分析' }).click();
   await expect(page.getByLabel('模块化细纲编辑器')).toBeVisible();
   await page.getByRole('button', { name: '确认目标细纲' }).click();
-  const secondSeams = page.getByLabel('接缝审查');
-  await confirmAllSeams(secondSeams);
-  await secondSeams.getByRole('button', { name: '提交接缝审查' }).click();
   await page.getByRole('button', { name: '生成全部剩余场景' }).click();
-  await expect(page.getByText('本次运行已完成')).toBeVisible();
-  await expect(page.getByLabel('剧情生成历史').locator('button')).toHaveCount(2);
-  const finalResult = page.locator('pre').filter({ hasText: 'rewritten_text' }).last();
-  await expect(finalResult).toContainText('增加一场伏击战');
-  await expect(finalResult).toContainText('再增加一场雨夜追逐');
+  await expect(page.getByText('新正文版本已经保存。')).toBeVisible();
   await expect(page.getByLabel('rewrite versions').locator('li')).toHaveCount(2);
+  await page.getByLabel('rewrite versions').locator('li').first().getByRole('button', { name: '当前稿' }).click();
+  await expect(page.getByLabel('rewrite versions').locator('pre')).toContainText('增加一场伏击战');
+  await expect(page.getByLabel('rewrite versions').locator('pre')).toContainText('再增加一场雨夜追逐');
 });
 
 test('Electron 从当前 Prose 版本预览语义场景锚点并继续 Plot', async () => {
@@ -90,44 +83,36 @@ test('Electron 从当前 Prose 版本预览语义场景锚点并继续 Plot', as
   await page.getByRole('button', { name: '重写正文' }).click();
   await page.getByLabel('源细纲').click();
   await page.getByRole('button', { name: '生成重写计划' }).click();
-  await page.getByRole('button', { name: '生成正文并自动检查' }).click();
-  await expect(page.getByRole('status')).toContainText('completed');
+  await page.getByRole('button', { name: '生成正文并检查' }).click();
+  await expect(page.getByRole('status')).toContainText('本次创作已完成');
   await page.getByRole('button', { name: '开始新的运行' }).click();
   await page.getByRole('button', { name: '增加剧情' }).click();
   await page.getByLabel('插入点节点类型').selectOption('scene_end');
   await expect(page.getByLabel('插入点场景')).not.toHaveValue('');
-  await page.getByRole('button', { name: '预览锚点' }).first().click();
+  await page.getByRole('button', { name: '预览位置' }).first().click();
   await expect(page.getByLabel('插入点锚点预览')).toContainText('人物');
   await page.getByLabel('新增剧情目标').fill('Electron 语义锚点事件');
   await page.getByRole('button', { name: '启动分析' }).click();
   await page.getByRole('button', { name: '确认目标细纲' }).click();
-  const seams = page.getByLabel('接缝审查');
-  await confirmAllSeams(seams);
-  await seams.getByRole('button', { name: '提交接缝审查' }).click();
   await page.getByRole('button', { name: '生成全部剩余场景' }).click();
-  const result = page.locator('pre').filter({ hasText: 'rewritten_text' }).last();
-  await expect(result).toContainText('警觉地观察');
-  await expect(result).toContainText('Electron 语义锚点事件');
   await expect(page.getByLabel('rewrite versions').locator('li')).toHaveCount(2);
   const historicalVersion = page.getByLabel('rewrite versions').locator('li').nth(1);
-  await historicalVersion.getByRole('button', { name: '基于此版本创建新操作' }).click();
+  await historicalVersion.getByRole('button', { name: '基于此版本继续' }).click();
   await expect(page.getByText('本次来源：历史版本 v1')).toBeVisible();
   await page.getByLabel('插入点节点类型').selectOption('scene_end');
   await expect(page.getByLabel('插入点场景')).not.toHaveValue('');
-  await page.getByRole('button', { name: '预览锚点' }).first().click();
+  await page.getByRole('button', { name: '预览位置' }).first().click();
   await expect(page.getByLabel('插入点锚点预览')).toContainText('人物');
 });
 
 test('Electron 扩写工作流生成分支章节和场景', async () => {
   await openSeedProject('真实 E2E 4');
   await page.getByLabel('剧情目标').fill('继续新的路线');
-  await page.getByRole('button', { name: '启动分析并创建分支' }).click();
+  await page.getByRole('button', { name: '开始规划' }).click();
   await page.getByRole('button', { name: '确认目标细纲' }).click();
-  const seams = page.getByLabel('接缝审查');
-  await confirmAllSeams(seams);
-  await seams.getByRole('button', { name: '提交接缝审查' }).click();
   await page.getByRole('button', { name: '生成全部剩余场景' }).click();
-  await expect(page.locator('pre').filter({ hasText: '新章节' })).toBeVisible();
+  await expect(page.getByText('新内容已经保存到这条路线。')).toBeVisible();
+  await expect(page.getByLabel('创作路线').locator('li')).toHaveCount(2);
 });
 
 test('Electron 旧提取工程可下载分析并创建派生工程', async () => {
@@ -139,7 +124,7 @@ test('Electron 旧提取工程可下载分析并创建派生工程', async () =>
   await page.getByRole('button', { name: '基于此项目创建新工程' }).click();
   await page.getByLabel('工程类型').selectOption('branch');
   await page.getByRole('button', { name: '创建并打开' }).click();
-  await expect(page.getByRole('button', { name: '从原文末尾续写' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '继续写' })).toBeVisible();
 });
 
 async function createProject(kind: 'rewrite' | 'branch') {
@@ -160,7 +145,7 @@ async function createProject(kind: 'rewrite' | 'branch') {
   await page.getByRole('button', { name: '下一步' }).click();
   await page.getByRole('button', { name: '下一步' }).click();
   await page.getByRole('button', { name: '开始创建' }).click();
-  await expect(page.getByRole('button', { name: kind === 'rewrite' ? '增加剧情' : '从原文末尾续写' })).toBeVisible();
+  await expect(page.getByRole('button', { name: kind === 'rewrite' ? '增加剧情' : '继续写' })).toBeVisible();
 }
 
 async function goToProjectLibrary() {
@@ -175,17 +160,9 @@ async function openSeedProject(name: string) {
   await page.getByRole('button', { name: '进入工程' }).click();
   if (name.endsWith('8')) await expect(page.getByText('此项目属于旧版分析工程。')).toBeVisible();
   else if (name.endsWith('4')) {
-    await expect(page.getByRole('button', { name: '从原文末尾续写' })).toBeVisible();
-    await expect(page.getByLabel('起点节点类型')).toBeVisible();
+    await expect(page.getByRole('button', { name: '继续写' })).toBeVisible();
   } else {
     await expect(page.getByRole('button', { name: '增加剧情' })).toBeVisible();
     await expect(page.locator('.chapter-row.selected')).toBeVisible();
-  }
-}
-
-async function confirmAllSeams(seams: Locator) {
-  await expect(seams).toBeVisible();
-  for (const article of await seams.locator('article').all()) {
-    await article.getByRole('button', { name: '确认', exact: true }).click();
   }
 }

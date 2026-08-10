@@ -51,7 +51,7 @@ async function mockApi(page: Page) {
   let documentRevisionNumber = 1;
   let documentBody = '林舟推门而入，看见桌上的钥匙。';
   let materialItems = materials.map((item) => ({ ...item, content: structuredClone(item.content) }));
-  let documentChapterTitle = '第一章';
+  let documentChapterTitle = '';
   let volumeTitle = '第七卷 雨夜';
   let extraChapter: { id: number; document_id: number; revision_id: number; index: number; title: string; start_line: number; end_line: number; start_offset: number; end_offset: number; word_count: number; volume_id: number } | null = null;
   await page.route('http://127.0.0.1:8765/api/**', async (route) => {
@@ -165,6 +165,14 @@ async function mockApi(page: Page) {
           categories: selected && category ? [...new Set([...item.categories, category.name])] : item.categories.filter((name) => name !== category?.name),
         };
       });
+      body = documentItems.find((item) => item.id === documentId);
+    }
+    else if (/^\/api\/documents\/\d+$/.test(path) && route.request().method() === 'POST') {
+      const documentId = Number(path.split('/')[3]);
+      const request = route.request().postDataJSON() as { title: string; author: string | null };
+      documentItems = documentItems.map((item) => item.id === documentId
+        ? { ...item, title: request.title, author: request.author, updated_at: '2026-07-30 09:00:00' }
+        : item);
       body = documentItems.find((item) => item.id === documentId);
     }
     else if (path === '/api/document-library/settings') body = { storage_path: 'D:/Rusty', exists: true };
@@ -597,14 +605,20 @@ test('文档库在常用桌面窗口无横向溢出', async ({ page }) => {
   }
 });
 
-test('普通文档与工程文档严格分离并复用同一工作台', async ({ page }) => {
+test('全部文档包含工程文档且切回全集会清除分类筛选', async ({ page }) => {
   await page.goto('/documents');
   await expect(page.getByRole('button', { name: '示例长篇，作者' })).toBeVisible();
   await expect(page.getByRole('button', { name: '普通资料，资料作者' })).toBeVisible();
-  await expect(page.getByRole('button', { name: '工程原稿，工程作者' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '工程原稿，工程作者' })).toBeVisible();
+  await page.locator('.document-tag-panel').getByRole('button', { name: /研究/ }).click();
   await page.locator('.document-tag-panel').getByRole('button', { name: /工程文档/ }).click();
   await expect(page.getByRole('button', { name: '工程原稿，工程作者' })).toBeVisible();
   await expect(page.getByRole('button', { name: '示例长篇，作者' })).toHaveCount(0);
+  await page.locator('.document-tag-panel').getByRole('button', { name: /全部文档/ }).click();
+  await expect(page.getByRole('button', { name: /分类：研究/ })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '示例长篇，作者' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '普通资料，资料作者' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '工程原稿，工程作者' })).toBeVisible();
   await page.getByRole('button', { name: '工程原稿，工程作者' }).dblclick();
   await expect(page.locator('textarea.manuscript-editor')).toBeVisible();
   await expect(page.getByText('工程原稿', { exact: true }).first()).toBeVisible();
@@ -725,10 +739,25 @@ test('章节标题、实时字数及受控撤销重做保持同步', async ({ pa
   await page.getByRole('button', { name: '示例长篇，作者' }).dblclick();
   const editor = page.locator('textarea.manuscript-editor');
   const title = page.locator('.document-editor-title input');
+  await editor.focus();
+  const editorLayout = await editor.evaluate((node) => {
+    const styles = getComputedStyle(node);
+    const editorRect = node.getBoundingClientRect();
+    const contentRect = node.closest('.document-workspace-content')!.getBoundingClientRect();
+    return {
+      boxShadow: styles.boxShadow,
+      bottomGap: Math.round(contentRect.bottom - editorRect.bottom),
+      outlineStyle: styles.outlineStyle,
+    };
+  });
+  expect(editorLayout.outlineStyle).toBe('none');
+  expect(editorLayout.boxShadow).toBe('none');
+  expect(Math.abs(editorLayout.bottomGap)).toBeLessThanOrEqual(1);
+  await expect(page.locator('.document-workspace-text').getByText('正文', { exact: true })).toHaveCount(0);
   await title.fill('即时新标题');
   await expect(page.locator('.chapter-list').getByText('即时新标题')).toBeVisible();
   await editor.fill('中文 A，🙂');
-  await expect(page.locator('.document-workspace-stats').getByText('10', { exact: true })).toBeVisible();
+  await expect(page.locator('.document-workspace-stats').getByText('5', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: '撤销', exact: true }).click();
   await expect(editor).toHaveValue('林舟推门而入，看见桌上的钥匙。');
   await page.getByRole('button', { name: '重做', exact: true }).click();
@@ -751,7 +780,34 @@ test('新增章节按目录序号解析锚点并自动选中新章节', async ({
   await dialog.getByLabel('正文').fill('新增正文');
   await dialog.getByRole('button', { name: '保存为新版本' }).click();
   await expect(page.locator('.chapter-row[aria-current="page"]').getByText('插入的新章')).toBeVisible();
+  await expect(page.locator('.chapter-row[aria-current="page"]').getByText('第二章')).toBeVisible();
   await expect(page.locator('.document-editor-title input')).toHaveValue('插入的新章');
+});
+
+test('工作台右栏直接编辑书名和作者并同步统一元数据', async ({ page }) => {
+  await page.goto('/documents');
+  await page.getByRole('button', { name: '示例长篇，作者' }).dblclick();
+  await page.getByLabel('书名').fill('统一书名');
+  await page.getByLabel('书名').blur();
+  await page.getByLabel('作者').fill('新作者');
+  await page.getByLabel('作者').blur();
+  await expect(page.getByText('书名和作者已同步保存。')).toBeVisible();
+  await page.getByRole('button', { name: /返回文档库/ }).click();
+  await expect(page.getByRole('button', { name: '统一书名，新作者' })).toBeVisible();
+});
+
+test('新增无标题章节仍按目录顺序显示章节序号', async ({ page }) => {
+  await page.goto('/documents');
+  await page.getByRole('button', { name: '示例长篇，作者' }).dblclick();
+  await page.getByRole('button', { name: '新增章节' }).click();
+  const dialog = page.getByRole('dialog').filter({ hasText: '新增章节' });
+  await dialog.getByLabel('插入位置').selectOption('after-index');
+  await dialog.getByLabel('章节序号').fill('1');
+  await dialog.getByRole('button', { name: '保存为新版本' }).click();
+  const selected = page.locator('.chapter-row[aria-current="page"]');
+  await expect(selected.getByText('第二章')).toBeVisible();
+  await expect(selected.getByText('未命名')).toBeVisible();
+  await expect(page.locator('.document-editor-title input')).toHaveValue('');
 });
 
 test('卷目录可折叠、点击章节并独立修改卷标题', async ({ page }) => {

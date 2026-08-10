@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from rusty.db import initialize_database, session
-from rusty.services.project_service import default_database_path
+from rusty.db import default_database_path
 
 CANONICAL_STYLE_SCHEMA = "rusty.style_template"
 CANONICAL_STYLE_VERSION = 1

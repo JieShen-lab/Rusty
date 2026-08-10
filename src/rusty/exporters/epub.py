@@ -5,6 +5,7 @@ from pathlib import Path
 
 from ebooklib import epub
 
+from rusty.chapter_titles import format_chapter_heading
 from rusty.models import ChapterRecord, EffectiveExportChapter
 
 
@@ -36,12 +37,13 @@ def export_epub(
     volume_chapters: dict[int, list[epub.EpubHtml]] = {}
     volume_order: list[int] = []
     for export_index, chapter in enumerate(chapters, start=1):
+        heading = format_chapter_heading(export_index, chapter.title)
         chapter_doc = epub.EpubHtml(
-            title=chapter.title,
+            title=heading,
             file_name=f"chap_{export_index:04d}.xhtml",
             lang=language or "zh-CN",
         )
-        chapter_doc.content = _chapter_html(chapter, use_rewrites=use_rewrites)
+        chapter_doc.content = _chapter_html(chapter, heading, use_rewrites=use_rewrites)
         book.add_item(chapter_doc)
         epub_chapters.append(chapter_doc)
         volume_id = getattr(chapter, "volume_id", None)
@@ -73,15 +75,19 @@ def export_epub(
     return output
 
 
-def _chapter_html(chapter: ChapterRecord | EffectiveExportChapter, use_rewrites: bool) -> str:
+def _chapter_html(
+    chapter: ChapterRecord | EffectiveExportChapter,
+    heading: str,
+    use_rewrites: bool,
+) -> str:
     text = chapter.rewritten_text if use_rewrites and chapter.rewritten_text else chapter.original_text
     paragraphs = [part.strip() for part in text.splitlines() if part.strip()]
     body = "\n".join(f"<p>{html.escape(paragraph)}</p>" for paragraph in paragraphs)
     return (
         "<html><head>"
-        f"<title>{html.escape(chapter.title)}</title>"
+        f"<title>{html.escape(heading)}</title>"
         "</head><body>"
-        f"<h1>{html.escape(chapter.title)}</h1>"
+        f"<h1>{html.escape(heading)}</h1>"
         f"{body}"
         "</body></html>"
     )

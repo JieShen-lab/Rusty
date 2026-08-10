@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import os
 import sys
 from copy import deepcopy
@@ -14,7 +13,6 @@ import uvicorn
 
 from backend.api import create_app
 from rusty.db import session
-from rusty.services.branch_service import BranchService
 from rusty.services.project_service import ProjectService
 from rusty.services.rewrite_workflow_service import RewriteWorkflowService
 from rusty.services.model_service import ModelService
@@ -69,31 +67,6 @@ class RealE2EFakeLLM:
             target["required_start_state"] = dict(payload["context"].get("start_state") or {})
             target["required_end_state"] = dict(payload["context"].get("return_state_constraints") or {})
             return {"target_skeleton": target}
-        if stage == "propose_seams":
-            text = payload["context"]["start_anchor_context"]["text"]
-            digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
-            seams = [{
-                "seam_kind": "entry",
-                "operation": "insert_before",
-                "original_text": "",
-                "proposed_text": "【进入新剧情】",
-                "source_range": {"start": 0, "end": 0},
-                "source_hash": digest,
-                "reason": "连接新增剧情",
-                "status": "draft",
-            }]
-            if payload["generation_mode"] in {"bounded_insert", "fork_and_rejoin"}:
-                seams.append({
-                    "seam_kind": "return",
-                    "operation": "insert_after",
-                    "original_text": "",
-                    "proposed_text": "【返回原路线】",
-                    "source_range": {"start": 0, "end": 0},
-                    "source_hash": digest,
-                    "reason": "连接原路线",
-                    "status": "draft",
-                })
-            return {"seams": seams}
         if stage == "generate_scene_plan":
             self.required_end = dict(payload["target_skeleton"].get("required_end_state") or {})
             return {"chapters": [{"title": "新章节", "summary": "新路线", "scenes": [{"title": "新场景", "direction": "推进冲突"}]}]}
@@ -118,27 +91,6 @@ class RealE2EFakeLLM:
                 node["source_span"] = {"start": 0, "end": len(payload["text"])}
                 node["confidence"] = 0.85
             return {"observed_skeleton": observed}
-        if stage == "prose_rewrite_repair":
-            return {"rewritten_text": payload["rewritten_text"]}
-        if stage == "canon_semantic_impact":
-            text = payload["candidate"]["text"]
-            old = str(payload["old_fact"].get("value", ""))
-            start = text.find(old)
-            if start < 0:
-                return {"impacts": []}
-            return {"impacts": [{
-                "source_range": {"start": start, "end": start + len(old)},
-                "original_text": old,
-                "replacement_text": str(payload["new_fact"].get("value", "")),
-                "impact_type": "direct_fact",
-                "reason": "旧事实直接出现",
-                "confidence": 1,
-                "evidence": [old],
-                "requires_confirmation": True,
-            }]}
-        if stage == "canon_consistency_check":
-            old = str(payload["old_fact"].get("value", ""))
-            return {"issues": [] if all(old not in item["text"] for item in payload["projected_targets"]) else [{"type": "old_fact_remains"}]}
         raise AssertionError(f"Unhandled FakeLLM stage: {stage}")
 
 
@@ -198,28 +150,6 @@ def seed(database: Path) -> None:
                 scope="chapter",
             )
             workflow.confirm_skeleton(version.skeleton_id, version.version)
-        if index == 7:
-            branches = BranchService(database)
-            parent = branches.create_branch(
-                project_id=project_id,
-                name="父分支",
-                branch_mode="fork",
-                start_anchor={
-                    "anchor_type": "chapter_end",
-                    "chapter_id": chapter.id,
-                    "source_hash": branches.source_hash(chapter.original_text),
-                },
-            )
-            parent_chapter = branches.create_chapter(
-                parent["id"], title="父分支章节", facts_after={"parent_secret_known": True, "location": "地下室"}
-            )
-            branches.save_scene(
-                parent["id"],
-                branch_chapter_id=parent_chapter["id"],
-                title="父分支场景",
-                generated_text="父分支在地下室发现秘密。",
-                facts_after={"parent_secret_known": True, "location": "地下室"},
-            )
         if index == 8:
             with session(database) as connection:
                 connection.execute(

@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 
 from rusty.db import initialize_database, session
 from rusty.secrets import SecretStore, default_secret_store
-from rusty.services.project_service import default_database_path
+from rusty.db import default_database_path
 
 
 @dataclass(frozen=True)

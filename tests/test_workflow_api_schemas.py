@@ -83,7 +83,7 @@ class WorkflowAPISchemaTests(unittest.TestCase):
         )
         self.assert_validation_error(response)
 
-    def test_fork_and_rejoin_requires_return_anchor(self) -> None:
+    def test_removed_fork_and_rejoin_mode_is_rejected(self) -> None:
         response = self.client.post(
             "/api/plot-generation/runs",
             headers=self.headers,
@@ -99,32 +99,21 @@ class WorkflowAPISchemaTests(unittest.TestCase):
         )
         self.assert_validation_error(response)
 
-    def test_invalid_patch_decision_is_rejected(self) -> None:
+    def test_removed_canon_endpoint_is_not_exposed(self) -> None:
         response = self.client.post(
             "/api/canon-change/patches/1/review",
             headers=self.headers,
             json={"decision": "apply_everything"},
         )
-        self.assert_validation_error(response)
+        self.assertEqual(404, response.status_code)
 
-    def test_invalid_seam_decision_is_rejected_without_source_text_payload(self) -> None:
+    def test_removed_seam_review_endpoint_is_not_exposed(self) -> None:
         response = self.client.post(
             "/api/plot-generation/runs/1/seams",
             headers=self.headers,
             json={"reviews": [{"seam_id": 1, "decision": "apply"}]},
         )
-        self.assert_validation_error(response)
-
-    def test_legacy_authoritative_source_text_is_rejected(self) -> None:
-        response = self.client.post(
-            "/api/plot-generation/runs/1/seams",
-            headers=self.headers,
-            json={
-                "reviews": [{"seam_id": 1, "decision": "confirmed"}],
-                "current_source_text": "untrusted",
-            },
-        )
-        self.assert_validation_error(response)
+        self.assertEqual(404, response.status_code)
 
     def test_unknown_fields_are_rejected_at_each_nested_boundary(self) -> None:
         response = self.client.post(

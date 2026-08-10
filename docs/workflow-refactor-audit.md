@@ -1,5 +1,7 @@
 # 工程类型与小说工作流重构审计
 
+> **HISTORICAL:** 这是 PR #8 实施期间的仓库审计记录。当前代码归属、不变量和阶段式创作器产品边界请以 `docs/architecture.md`、`docs/current-implementation.md` 和 `docs/product-scope.md` 为准。
+
 审计日期：2026-07-29
 
 ## 1. 基线与仓库状态

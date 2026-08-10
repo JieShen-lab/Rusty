@@ -8,7 +8,8 @@ from typing import Any, Callable
 from rusty.db import initialize_database, session
 from rusty.services.ai_client import AIClient, OpenAICompatibleClient
 from rusty.services.model_service import ModelConfig, ModelService
-from rusty.services.project_service import ProjectService, default_database_path
+from rusty.db import default_database_path
+from rusty.services.project_service import ProjectService
 
 
 Validator = Callable[[dict[str, Any]], dict[str, Any]]

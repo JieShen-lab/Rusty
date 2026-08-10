@@ -7,7 +7,7 @@ from typing import Any
 
 from rusty.db import initialize_database, session
 from rusty.services.extraction_apply_error import CandidateApplyError
-from rusty.services.project_service import default_database_path
+from rusty.db import default_database_path
 from rusty.services.style_service import DETAIL_LEVELS
 
 

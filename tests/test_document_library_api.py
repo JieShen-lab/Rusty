@@ -52,7 +52,7 @@ class DocumentLibraryApiTests(unittest.TestCase):
 
             self.assertEqual(200, directory_before.status_code)
             self.assertEqual("第七卷 雨夜", volume["title"])
-            self.assertEqual(["第787章 雨夜"], [item["title"] for item in volume["chapters"]])
+            self.assertEqual(["雨夜"], [item["title"] for item in volume["chapters"]])
             self.assertEqual([], directory_before.json()["unassigned_chapters"])
             self.assertEqual(200, renamed.status_code)
             self.assertEqual("第七卷 新雨", directory_after.json()["volumes"][0]["title"])

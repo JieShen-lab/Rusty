@@ -7,7 +7,8 @@ from typing import Any
 
 from rusty.services.ai_client import AIClient, OpenAICompatibleClient
 from rusty.services.model_service import ModelService
-from rusty.services.project_service import ProjectService, default_database_path
+from rusty.db import default_database_path
+from rusty.services.project_service import ProjectService
 from rusty.services.prompt_compiler import PromptCompiler
 
 

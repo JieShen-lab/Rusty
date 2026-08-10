@@ -148,7 +148,7 @@ class RewriteVersionSemanticMapRegressionTests(unittest.TestCase):
                 "source_version_id": self._current_snapshot()["source_version_id"],
                 "side": "after",
             },
-            parent_branch_id=None,
+            branch_id=None,
             rewrite_source_snapshot=self._current_snapshot(),
         )
 
@@ -182,7 +182,7 @@ class RewriteVersionSemanticMapRegressionTests(unittest.TestCase):
                 "source_version_id": snapshot["source_version_id"],
                 "side": "after",
             },
-            parent_branch_id=None,
+            branch_id=None,
             rewrite_source_snapshot=snapshot,
         )
 
@@ -209,7 +209,7 @@ class RewriteVersionSemanticMapRegressionTests(unittest.TestCase):
                 "source_version_id": snapshot["source_version_id"],
                 "side": "before",
             },
-            parent_branch_id=None,
+            branch_id=None,
             rewrite_source_snapshot=snapshot,
         )
 
@@ -353,7 +353,7 @@ class RewriteVersionSemanticMapRegressionTests(unittest.TestCase):
                 resolved = self.context._resolve_generation_anchor(
                     self.project_id,
                     {**anchor, "source_version_id": snapshot["source_version_id"]},
-                    parent_branch_id=None,
+                    branch_id=None,
                     rewrite_source_snapshot=snapshot,
                 )
                 self.assertEqual(expected, resolved["state"]["location"])
@@ -376,7 +376,7 @@ class RewriteVersionSemanticMapRegressionTests(unittest.TestCase):
                 "source_version_id": snapshot["source_version_id"],
                 "side": "before",
             },
-            parent_branch_id=None,
+            branch_id=None,
             rewrite_source_snapshot=snapshot,
         )
         self.assertEqual("home", resolved["state"]["location"])

@@ -8,7 +8,7 @@ from rusty.db import initialize_database, session
 from rusty.services.context_service import ContextService
 from rusty.services.anchor_service import AnchorService
 from rusty.services.material_service import MaterialService
-from rusty.services.project_service import default_database_path
+from rusty.db import default_database_path
 from rusty.services.prompt_compiler import PromptCompiler
 from rusty.services.rewrite_workflow_service import (
     CONSISTENCY_KEYS,

@@ -1,6 +1,13 @@
 from .connection import connect, session
+from .paths import default_database_path
 
-__all__ = ["CURRENT_SCHEMA_VERSION", "connect", "initialize_database", "session"]
+__all__ = [
+    "CURRENT_SCHEMA_VERSION",
+    "connect",
+    "default_database_path",
+    "initialize_database",
+    "session",
+]
 
 
 def __getattr__(name: str):

@@ -272,11 +272,6 @@ export type StoryBranch = {
 
 export type WorkflowObject = { [key: string]: unknown };
 
-export type SourceRange = {
-  start: number;
-  end: number;
-};
-
 export type StoryAnchor = {
   anchor_type:
     | 'document_end'
@@ -333,26 +328,8 @@ export type StoryAnchorPreview = {
 
 export type BranchCreateRequest = {
   name: string;
-  branch_mode: 'open_continuation' | 'fork' | 'fork_and_rejoin';
-  parent_branch_id?: number | null;
+  branch_mode: 'open_continuation' | 'fork';
   start_anchor: StoryAnchor;
-  return_anchor?: StoryAnchor | null;
-  base_source_version_id?: number | null;
-  downstream_strategy?: 'replace' | 'reference' | 'rejoin' | null;
-};
-
-export type SeamProposal = {
-  id?: number | null;
-  seam_kind: 'entry' | 'return';
-  operation: 'keep' | 'insert_before' | 'insert_after' | 'replace_range';
-  original_text: string;
-  proposed_text: string;
-  source_range: SourceRange;
-  source_hash: string;
-  reason: string;
-  status: 'draft' | 'confirmed' | 'rejected';
-  source_anchor?: StoryAnchor | null;
-  source_version_id?: number | null;
 };
 
 export type StructuredEventNode = {
@@ -428,25 +405,17 @@ export type RewriteVersionSkeleton = {
 
 export type PlotGenerationStartRequest = {
   project_id: number;
-  generation_mode: 'bounded_insert' | 'open_continuation' | 'fork' | 'fork_and_rejoin';
+  generation_mode: 'bounded_insert' | 'open_continuation' | 'fork';
   start_anchor: StoryAnchor;
   return_anchor?: StoryAnchor | null;
   user_direction: string;
   selected_character_ids?: number[];
   selected_material_ids?: number[];
   style_profile_id?: number | null;
-  parent_branch_id?: number | null;
+  branch_id?: number | null;
   branch_name?: string;
   range_operation?: 'insert_between' | 'replace_range';
   source?: ChapterSourceSelection;
-};
-
-export type PlotGenerationSeamConfirmRequest = {
-  reviews: Array<{
-    seam_id: number;
-    decision: 'confirmed' | 'rejected';
-    proposed_text?: string | null;
-  }>;
 };
 
 export type GeneratedSceneRequest = {
@@ -485,7 +454,7 @@ export type PlotGenerationRun = {
   required_return_state: WorkflowObject;
   target_skeleton: StructuredSkeleton;
   context: WorkflowObject;
-  seams: SeamProposal[] | WorkflowObject;
+  seams: WorkflowObject[] | WorkflowObject;
   issues: WorkflowObject[] | WorkflowObject;
   result: WorkflowObject;
   scene_plan: WorkflowObject;
@@ -522,9 +491,7 @@ export type ProseRewritePlanRequest = {
   source?: ChapterSourceSelection;
 };
 
-export type ProseRewriteExecuteRequest = {
-  auto_repair?: boolean;
-};
+export type ProseRewriteExecuteRequest = Record<string, never>;
 
 export type ProseRewriteRun = {
   id: number;
@@ -546,56 +513,6 @@ export type ProseRewriteRun = {
   expected_source_head_version_id: number | null;
   result_version_id: number | null;
   generation_attempt: number;
-  created_at: string;
-  updated_at: string;
-};
-
-export type CanonChangeScanRequest = {
-  project_id: number;
-  old_fact: WorkflowObject;
-  new_fact: WorkflowObject;
-  effective_order: number;
-  branch_id?: number | null;
-  source?: ChapterSourceSelection;
-};
-
-export type CanonPatchReviewRequest = {
-  decision: 'accepted' | 'rejected' | 'edited' | 'skipped';
-  replacement_text?: string | null;
-};
-
-export type CanonPatch = {
-  id: number;
-  run_id: number;
-  route_kind: string;
-  target_id: number;
-  source_range: SourceRange;
-  source_hash: string;
-  original_text: string;
-  replacement_text: string;
-  impact_type: string;
-  reason: string;
-  confidence: number;
-  evidence: unknown[];
-  requires_confirmation: boolean;
-  status: string;
-  source_base_version_id: number | null;
-  result_version_id: number | null;
-};
-
-export type CanonChangeRun = {
-  id: number;
-  project_id: number;
-  branch_id: number | null;
-  effective_order: number;
-  status: 'scanning' | 'reviewing' | 'blocked' | 'ready_to_apply' | 'applying' | 'applied' | 'failed' | 'cancelled';
-  old_fact: WorkflowObject;
-  new_fact: WorkflowObject;
-  fact_ledger: WorkflowObject;
-  consistency_issues: WorkflowObject[];
-  patches: CanonPatch[];
-  source_snapshots: Record<string, WorkflowObject>;
-  operation_type: 'canon_change';
   created_at: string;
   updated_at: string;
 };

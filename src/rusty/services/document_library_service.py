@@ -6,9 +6,10 @@ import os
 import re
 import shutil
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
+from rusty.chapter_titles import format_chapter_heading, normalize_chapter_title
 from rusty.db import initialize_database, session
 from rusty.exporters import build_txt_export, export_epub
 from rusty.importers import parse_docx, parse_epub, parse_txt, split_document_structure
@@ -718,6 +719,7 @@ class DocumentLibraryService:
 
     def list_chapters(self, document_id: int) -> list[LibraryChapter]:
         revision = self._ensure_initial_revision(document_id)
+        text = Path(revision.storage_path).read_text(encoding="utf-8")
         with session(self.database_path) as connection:
             rows = connection.execute(
                 """
@@ -728,12 +730,12 @@ class DocumentLibraryService:
                 """,
                 (revision.id,),
             ).fetchall()
-        return [
+        chapters = [
             LibraryChapter(
                 id=int(row["id"]),
                 revision_id=int(row["revision_id"]),
                 index=int(row["chapter_index"]),
-                title=str(row["title"]),
+                title=normalize_chapter_title(str(row["title"])),
                 start_line=int(row["start_line"]) if row["start_line"] is not None else None,
                 end_line=int(row["end_line"]) if row["end_line"] is not None else None,
                 start_offset=int(row["start_offset"]) if row["start_offset"] is not None else None,
@@ -743,6 +745,12 @@ class DocumentLibraryService:
             )
             for row in rows
         ]
+        result: list[LibraryChapter] = []
+        for chapter in chapters:
+            start, end = self._chapter_offsets(text, chapter)
+            body_start = self._chapter_body_start(text, chapter, start, end)
+            result.append(replace(chapter, word_count=count_text_units(text[body_start:end])))
+        return result
 
     def list_volumes(self, document_id: int) -> list[LibraryVolume]:
         revision = self._ensure_initial_revision(document_id)
@@ -1101,9 +1109,7 @@ class DocumentLibraryService:
             chapter_boundaries = None
             volume_boundaries = None
         else:
-            normalized_title = title.strip()
-            if not normalized_title:
-                raise ValueError("章节标题不能为空。")
+            normalized_title = normalize_chapter_title(title)
             source_text = Path(current_revision.storage_path).read_text(encoding="utf-8")
             chapters = self.list_chapters(document_id)
             volumes = self.list_volumes(document_id)
@@ -1118,7 +1124,8 @@ class DocumentLibraryService:
                 segment = source_text[start:end]
                 leading_prefix = segment[: len(segment) - len(segment.lstrip("\n"))]
                 trailing_separator = "\n" if end == len(source_text) else "\n\n"
-                replacement = f"{leading_prefix}{normalized_title}\n\n{normalized_body}{trailing_separator}"
+                heading = format_chapter_heading(target.index, normalized_title)
+                replacement = f"{leading_prefix}{heading}\n\n{normalized_body}{trailing_separator}"
             else:
                 replacement = self._normalize_text(text)
             new_text = source_text[:start] + replacement + source_text[end:]
@@ -1321,7 +1328,7 @@ class DocumentLibraryService:
                             document_id,
                             revision_id,
                             chapter_index,
-                            str(boundary["title"]),
+                            normalize_chapter_title(str(boundary["title"])),
                             merged_text.count("\n", 0, start) + 1,
                             merged_text.count("\n", 0, end) + 1,
                             start,
@@ -1355,9 +1362,7 @@ class DocumentLibraryService:
         chapters = self.list_chapters(document_id)
         volumes = self.list_volumes(document_id)
         volume_index_by_id = {volume.id: volume.index for volume in volumes}
-        chapter_text = self._normalize_text(f"{title.strip()}\n\n{text.strip()}")
-        if not title.strip():
-            raise ValueError("章节标题不能为空。")
+        normalized_title = normalize_chapter_title(title)
         if anchor_chapter_id is None:
             anchor_chapter_id = current_chapter_id
         legacy_end = position == "end"
@@ -1374,6 +1379,14 @@ class DocumentLibraryService:
                 raise FileNotFoundError(f"找不到锚点章节：{anchor_chapter_id}")
             start, end = self._chapter_offsets(source_text, target)
             insert_at = start if position == "before" else end
+        insertion_index = (
+            (target.index if position == "before" else target.index + 1)
+            if target is not None
+            else len(chapters) + 1
+        )
+        chapter_text = self._normalize_text(
+            f"{format_chapter_heading(insertion_index, normalized_title)}\n\n{text.strip()}"
+        )
         leading_separator = "\n\n" if insert_at > 0 and not source_text[:insert_at].endswith("\n\n") else ""
         trailing_separator = "" if chapter_text.endswith("\n") else "\n"
         inserted_text = leading_separator + chapter_text + trailing_separator
@@ -1397,7 +1410,7 @@ class DocumentLibraryService:
             )
         chapter_boundaries.append(
             {
-                "title": title.strip(),
+                "title": normalized_title,
                 "start_offset": inserted_start,
                 "end_offset": inserted_end,
                 "volume_index": volume_index_by_id.get(target.volume_id) if target else None,
@@ -1422,7 +1435,7 @@ class DocumentLibraryService:
             (
                 chapter
                 for chapter in self.list_chapters(document_id)
-                if chapter.start_offset == inserted_start and chapter.title == title.strip()
+                if chapter.start_offset == inserted_start and chapter.title == normalized_title
             ),
             None,
         )
@@ -1554,7 +1567,7 @@ class DocumentLibraryService:
                         document_id,
                         revision.id,
                         index,
-                        boundary["title"],
+                        normalize_chapter_title(str(boundary["title"])),
                         text.count("\n", 0, start) + 1,
                         text.count("\n", 0, end) + 1,
                         start,
@@ -1574,7 +1587,7 @@ class DocumentLibraryService:
         return revision, self.list_chapters(document_id)
 
     def mark_chapter(self, document_id: int, revision_id: int, title: str, start_offset: int, end_offset: int) -> list[LibraryChapter]:
-        normalized_title = title.strip()
+        normalized_title = normalize_chapter_title(title)
         if not normalized_title:
             raise ValueError("Chapter title is required.")
         revision = self._ensure_initial_revision(document_id)
@@ -1919,7 +1932,7 @@ class DocumentLibraryService:
                                 document.id,
                                 revision_id,
                                 index,
-                                str(boundary["title"]),
+                                normalize_chapter_title(str(boundary["title"])),
                                 normalized_text.count("\n", 0, start) + 1,
                                 normalized_text.count("\n", 0, end) + 1,
                                 start,
@@ -2008,7 +2021,10 @@ class DocumentLibraryService:
         leading = len(segment) - len(segment.lstrip("\n"))
         title_segment = segment[leading:]
         first_newline = title_segment.find("\n")
-        if first_newline < 0 or title_segment[:first_newline].strip() != chapter.title.strip():
+        if (
+            first_newline < 0
+            or normalize_chapter_title(title_segment[:first_newline]) != chapter.title.strip()
+        ):
             return section_start
         relative = leading + first_newline + 1
         if relative < len(segment) and segment[relative] == "\n":
@@ -2364,7 +2380,7 @@ class DocumentLibraryService:
                     document_id,
                     revision_id,
                     chapter.index,
-                    chapter.title,
+                    normalize_chapter_title(chapter.title),
                     chapter.start_line,
                     chapter.end_line,
                     start_offset,

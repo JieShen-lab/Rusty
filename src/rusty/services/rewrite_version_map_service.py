@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 import json
 import re
 import sqlite3
@@ -9,8 +8,9 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-from rusty.db import session
-from rusty.services.project_service import default_database_path
+from rusty.content_hash import hash_text
+from rusty.db import default_database_path, session
+from rusty.serialization import json_object
 
 
 @dataclass(frozen=True)
@@ -481,12 +481,12 @@ class RewriteVersionMapService:
                     item["end_offset"] - item["start_offset"],
                 ),
             )[0]
-            return _json_object(
+            return json_object(
                 row["state_before_json"] if side == "before" else row["state_after_json"]
             )
         previous = [row for row in rows if row["end_offset"] <= offset]
         if previous:
-            return _json_object(previous[-1]["state_after_json"])
+            return json_object(previous[-1]["state_after_json"])
         raise StateUnresolved("state_unresolved: no local state segment covers this offset")
 
     def list_segments(
@@ -530,7 +530,7 @@ class RewriteVersionMapService:
             sort_keys=True,
             separators=(",", ":"),
         )
-        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        return hash_text(payload)
 
     def validate_map_hash(self, rewrite_version_id: int, expected_hash: str) -> None:
         if self.map_hash(rewrite_version_id) != expected_hash:
@@ -553,7 +553,7 @@ class RewriteVersionMapService:
                 (rewrite_version_id,),
             ).fetchone()
             if row is not None:
-                value = _json_object(row["skeleton_json"])
+                value = json_object(row["skeleton_json"])
                 if value:
                     return value
         row = connection.execute(
@@ -566,7 +566,7 @@ class RewriteVersionMapService:
             """,
             (chapter_id,),
         ).fetchone()
-        value = _json_object(row["skeleton_json"]) if row is not None else {}
+        value = json_object(row["skeleton_json"]) if row is not None else {}
         return value or None
 
     def get_rewrite_structure(
@@ -605,7 +605,7 @@ class RewriteVersionMapService:
             "rewrite_version_id": int(row["rewrite_version_id"]),
             "skeleton_id": int(row["skeleton_id"]),
             "skeleton_version_id": int(row["skeleton_version_id"]),
-            "structured": _json_object(row["skeleton_json"]),
+            "structured": json_object(row["skeleton_json"]),
             "source_kind": str(row["source_kind"]),
             "status": str(row["status"]),
         }
@@ -638,7 +638,7 @@ class RewriteVersionMapService:
         if version is None:
             raise FileNotFoundError(f"Rewrite version not found: {rewrite_version_id}")
         text = str(version["rewritten_text"])
-        if hashlib.sha256(text.encode("utf-8")).hexdigest() != str(version["content_hash"]):
+        if hash_text(text) != str(version["content_hash"]):
             raise ValueError("Rewrite version content hash is invalid.")
         if str(version["fact_chain_status"]) not in {"consistent", "needs_recompute"}:
             raise ValueError("Rewrite version fact chain status is invalid.")
@@ -676,7 +676,7 @@ class RewriteVersionMapService:
                     raise ValueError("Rewrite semantic skeleton belongs to another rewrite version.")
                 node_ids = {
                     str(node.get("id"))
-                    for node in _json_object(skeleton["skeleton_json"]).get("event_nodes", [])
+                    for node in json_object(skeleton["skeleton_json"]).get("event_nodes", [])
                     if isinstance(node, dict)
                 }
                 if str(segment["node_id"]) not in node_ids:
@@ -777,7 +777,7 @@ class RewriteVersionMapService:
         return {
             "skeleton_id": int(row["skeleton_id"]),
             "skeleton_version_id": int(row["skeleton_version_id"]),
-            "structured": _json_object(row["skeleton_json"]),
+            "structured": json_object(row["skeleton_json"]),
             "status": str(row["status"]),
         }
 
@@ -811,7 +811,7 @@ class RewriteVersionMapService:
         result: list[dict[str, Any]] = []
         previous: dict[str, Any] = {}
         for index, row in enumerate(rows):
-            facts = _json_object(row["facts_json"])
+            facts = json_object(row["facts_json"])
             start_state = previous or (
                 facts.get("required_start_state")
                 if isinstance(facts.get("required_start_state"), dict)
@@ -916,7 +916,7 @@ class RewriteVersionMapService:
             (chapter_id,),
         ).fetchall()
         for row in rows:
-            value = _json_object(row["skeleton_json"])
+            value = json_object(row["skeleton_json"])
             if {str(item.get("id")) for item in value.get("event_nodes", [])} == ids:
                 return int(row["id"])
         return None
@@ -1020,7 +1020,7 @@ class RewriteVersionMapService:
         ).fetchone()
         if row is None:
             raise FileNotFoundError(f"Rewrite version not found: {rewrite_version_id}")
-        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        digest = hash_text(text)
         if digest != row["content_hash"]:
             raise ValueError("Semantic map text does not match rewrite version content hash.")
 
@@ -1042,19 +1042,11 @@ def _span(row: sqlite3.Row) -> VersionSpan:
         confidence=float(row["confidence"]),
         needs_remap=bool(row["needs_remap"]),
         state_method=str(row["state_method"]),
-        state_before=_json_object(row["state_before_json"]),
-        state_after=_json_object(row["state_after_json"]),
-        facts_before=_json_object(row["facts_before_json"]),
-        facts_after=_json_object(row["facts_after_json"]),
+        state_before=json_object(row["state_before_json"]),
+        state_after=json_object(row["state_after_json"]),
+        facts_before=json_object(row["facts_before_json"]),
+        facts_after=json_object(row["facts_after_json"]),
     )
-
-
-def _json_object(value: Any) -> dict[str, Any]:
-    try:
-        result = json.loads(str(value or "{}"))
-    except (TypeError, ValueError):
-        return {}
-    return result if isinstance(result, dict) else {}
 
 
 def _valid_span(value: Any, text_length: int) -> tuple[int, int] | None:

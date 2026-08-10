@@ -20,7 +20,8 @@ from rusty.services.material_service import (
     normalize_material_content,
 )
 from rusty.services.model_service import ModelConfig, ModelService
-from rusty.services.project_service import ProjectService, default_database_path
+from rusty.db import default_database_path
+from rusty.services.project_service import ProjectService
 
 MAX_ANCHOR_SAMPLE_CHARS = 16000
 MAX_CHARACTER_EXTRACTION_TEXT_CHARS = 50000

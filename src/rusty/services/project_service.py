@@ -3,10 +3,10 @@ from __future__ import annotations
 import hashlib
 import difflib
 import json
-import os
 from pathlib import Path
 
-from rusty.db import initialize_database, session
+from rusty.content_hash import hash_text
+from rusty.db import default_database_path, initialize_database, session
 from rusty.exporters import build_txt_export, export_epub
 from rusty.importers import parse_docx, parse_epub, parse_txt
 from rusty.models import (
@@ -20,11 +20,6 @@ from rusty.models import (
     count_text_units,
 )
 from rusty.services.chapter_version_service import ChapterVersionService
-
-
-def default_database_path() -> Path:
-    base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
-    return base / "Rusty" / "rusty.db"
 
 
 def _text_changes(source: str, target: str) -> list[dict[str, int]]:
@@ -243,7 +238,7 @@ class ProjectService:
                         source_offset,
                         end_offset,
                         original_text,
-                        hashlib.sha256(original_text.encode("utf-8")).hexdigest(),
+                        hash_text(original_text),
                     ),
                 )
                 source_offset = end_offset

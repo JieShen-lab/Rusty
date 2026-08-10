@@ -5,7 +5,7 @@ from typing import Any
 
 from rusty.services.analysis_service import AnalysisService
 from rusty.services.pipeline_service import PipelineService
-from rusty.services.project_service import default_database_path
+from rusty.db import default_database_path
 from rusty.services.rewrite_workflow_service import RewriteWorkflowService, SkeletonVersion
 from rusty.services.scene_service import SceneService
 from rusty.services.structured_skeleton import validate_structured_skeleton

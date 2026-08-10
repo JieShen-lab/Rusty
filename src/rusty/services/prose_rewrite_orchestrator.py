@@ -7,7 +7,8 @@ from typing import Any
 from rusty.db import initialize_database, session
 from rusty.services.context_service import ContextService
 from rusty.services.chapter_version_service import ChapterVersionService, SourceVersionConflict
-from rusty.services.project_service import ProjectService, default_database_path
+from rusty.db import default_database_path
+from rusty.services.project_service import ProjectService
 from rusty.services.shared_analysis_service import SkeletonExtractionService
 from rusty.services.structured_skeleton import validate_structured_skeleton
 from rusty.services.workflow_ai import WorkflowAI
@@ -17,13 +18,15 @@ from rusty.services.rewrite_version_map_service import RewriteVersionMapService
 PRESERVATION_FIELDS = {
     "events",
     "event_order",
+    "required_start_state",
+    "required_end_state",
+}
+SOFT_GUIDANCE_FIELDS = {
     "character_motivations",
     "behavior_results",
     "knowledge_reveal_order",
     "causal_links",
     "foreshadowing",
-    "required_start_state",
-    "required_end_state",
 }
 
 
@@ -90,7 +93,7 @@ class ProseRewriteOrchestrator:
             else chapter_source.content_hash
         )
         unknown = set(preservation_policy).difference(
-            PRESERVATION_FIELDS | {"locked_node_ids"}
+            PRESERVATION_FIELDS | SOFT_GUIDANCE_FIELDS | {"locked_node_ids"}
         )
         if unknown:
             raise ValueError(f"Unknown preservation policy fields: {sorted(unknown)}")
@@ -104,15 +107,15 @@ class ProseRewriteOrchestrator:
                 "style_profile_id": style_profile_id,
                 "user_direction": user_direction,
             },
-            output_contract='{"target_skeleton":StructuredSkeleton,"rewrite_plan":object}',
+            output_contract='{"rewrite_plan":object}',
         )
-        target = validate_structured_skeleton(proposed.get("target_skeleton"))
         rewrite_plan = proposed.get("rewrite_plan")
         if not isinstance(rewrite_plan, dict):
             raise ValueError("AI rewrite plan must be an object.")
-        issues = compare_skeletons(source, target, preservation_policy)
-        if issues:
-            raise ValueError(f"Target skeleton violates preservation policy: {issues}")
+        # Prose rewrite keeps the confirmed source skeleton as its structural
+        # reference. Asking the model to duplicate it created a second, ambiguous
+        # structure without adding user value.
+        target = source
         with session(self.database_path) as connection:
             cursor = connection.execute(
                 """
@@ -150,7 +153,7 @@ class ProseRewriteOrchestrator:
             )
         return self.get_run(int(cursor.lastrowid))
 
-    def execute(self, run_id: int, *, auto_repair: bool = True) -> dict[str, Any]:
+    def execute(self, run_id: int) -> dict[str, Any]:
         run = self.get_run(run_id)
         if run["status"] != "planned":
             raise ValueError("Prose rewrite run is not ready to execute.")
@@ -170,7 +173,7 @@ class ProseRewriteOrchestrator:
                 stage="prose_rewrite_generate",
                 payload={
                     "source_text": run["source_text_snapshot"],
-                    "target_skeleton": run["target_skeleton"],
+                    "source_skeleton": run["source_skeleton"],
                     "preservation_policy": run["preservation_policy"],
                     "rewrite_plan": run["rewrite_plan"],
                 },
@@ -189,59 +192,18 @@ class ProseRewriteOrchestrator:
                 project_id=int(run["project_id"]),
                 text=rewritten_text,
                 workflow_ai=self.ai,
-                expected_skeleton=run["target_skeleton"],
+                expected_skeleton=run["source_skeleton"],
             )
             observed = self.rewrite_maps.normalize_observed_skeleton_ids(
-                run["target_skeleton"], observed, 0
+                run["source_skeleton"], observed, 0
             )
         except Exception as exc:
             self._mark_failed(run_id, exc)
             raise
         issues = compare_skeletons(
-            run["target_skeleton"], observed, run["preservation_policy"]
+            run["source_skeleton"], observed, run["preservation_policy"]
         )
-        if issues and auto_repair:
-            try:
-                repaired = self.ai.generate_json(
-                    project_id=int(run["project_id"]),
-                    stage="prose_rewrite_repair",
-                    payload={
-                        "rewritten_text": rewritten_text,
-                        "target_skeleton": run["target_skeleton"],
-                        "issues": issues,
-                    },
-                    output_contract='{"rewritten_text":str}',
-                )
-                candidate = repaired.get("rewritten_text")
-                if isinstance(candidate, str) and candidate.strip():
-                    rewritten_text = candidate
-                    observed = self.skeletons.extract_from_text(
-                        project_id=int(run["project_id"]),
-                        text=rewritten_text,
-                        workflow_ai=self.ai,
-                        expected_skeleton=run["target_skeleton"],
-                    )
-                    observed = self.rewrite_maps.normalize_observed_skeleton_ids(
-                        run["target_skeleton"], observed, 0
-                    )
-                    issues = compare_skeletons(
-                        run["target_skeleton"], observed, run["preservation_policy"]
-                    )
-            except Exception as exc:
-                self._mark_failed(run_id, exc)
-                raise
-        if issues:
-            with session(self.database_path) as connection:
-                connection.execute(
-                    """
-                    UPDATE prose_rewrite_runs
-                    SET rewritten_text = ?, issues_json = ?, status = 'blocked',
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE id = ? AND status = 'generating'
-                    """,
-                    (rewritten_text, json.dumps(issues, ensure_ascii=False), run_id),
-                )
-            return self.get_run(run_id)
+        issues = [{**issue, "severity": "warning"} for issue in issues]
         try:
             with session(self.database_path) as connection:
                 locked = connection.execute(
@@ -279,7 +241,7 @@ class ProseRewriteOrchestrator:
                     expected_head_version_id=run.get(
                         "expected_source_head_version_id"
                     ),
-                    fact_chain_status="consistent",
+                    fact_chain_status=("needs_recompute" if issues else "consistent"),
                     mapping_strategy="structural",
                     source_skeleton=run["source_skeleton"],
                     observed_skeleton=observed,
@@ -287,11 +249,11 @@ class ProseRewriteOrchestrator:
                 connection.execute(
                     """
                     UPDATE prose_rewrite_runs
-                    SET rewritten_text = ?, issues_json = '[]', status = 'completed',
+                    SET rewritten_text = ?, issues_json = ?, status = 'completed',
                         result_version_id = ?, updated_at = CURRENT_TIMESTAMP
                     WHERE id = ? AND status = 'generating'
                     """,
-                    (rewritten_text, version["id"], run_id),
+                    (rewritten_text, json.dumps(issues, ensure_ascii=False), version["id"], run_id),
                 )
         except SourceVersionConflict as conflict:
             with session(self.database_path) as connection:
@@ -376,15 +338,6 @@ class ProseRewriteOrchestrator:
             "source_skeleton_version_id"
         )
         return result
-
-    def list_runs(self, project_id: int) -> list[dict[str, Any]]:
-        with session(self.database_path) as connection:
-            rows = connection.execute(
-                "SELECT id FROM prose_rewrite_runs WHERE project_id = ? ORDER BY created_at DESC, id DESC",
-                (project_id,),
-            ).fetchall()
-        return [self.get_run(int(row["id"])) for row in rows]
-
 
 def compare_skeletons(
     expected: dict[str, Any],

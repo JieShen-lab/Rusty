@@ -1,5 +1,7 @@
 # Rusty 第二阶段整改最终报告
 
+> **HISTORICAL:** 本文是阶段性验收记录，不是当前实现说明。请参阅 `docs/architecture.md`。
+
 基线：`c43e4766debfdd131ae5356c325dce33fcb50557`
 分支：`codex/phase2-remediation`
 

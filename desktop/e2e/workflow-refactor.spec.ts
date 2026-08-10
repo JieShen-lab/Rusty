@@ -106,19 +106,6 @@ async function mockWorkspace(page: Page, projectKind: 'rewrite' | 'branch' | 'le
         downstream_strategy: 'replace',
         status: 'draft',
       }];
-    } else if (path === '/api/canon-change/runs' && route.request().method() === 'POST') {
-      body = {
-        id: 41, project_id: 99, branch_id: null, effective_order: 1, status: 'review',
-        old_fact: { value: '旧设定' }, new_fact: { value: '新设定' }, fact_ledger: {},
-        consistency_issues: [],
-        patches: [{
-          id: 51, run_id: 41, route_kind: 'chapter', target_id: 901,
-          source_range: { start: 0, end: 2 }, source_hash: 'hash',
-          original_text: '旧设定', replacement_text: '新设定',
-          impact_type: 'direct_fact', reason: '事实变化', confidence: 0.99,
-          evidence: ['旧设定'], requires_confirmation: true, status: 'draft',
-        }],
-      };
     }
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
   });
@@ -141,16 +128,12 @@ test('新建页只显示改写工程和扩写工程', async ({ page }) => {
   await expect(page.getByText('提取工程')).toHaveCount(0);
 });
 
-test('改写工程提供三种操作、模块化细纲、接缝与补丁选择', async ({ page }) => {
+test('改写工程提供阶段式剧情与正文重写', async ({ page }) => {
   await mockWorkspace(page, 'rewrite');
   await page.goto('/workspace/99');
   await expect(page.getByRole('button', { name: '增加剧情' })).toBeVisible();
   await expect(page.getByRole('button', { name: '重写正文' })).toBeVisible();
-  await page.getByRole('button', { name: '修改设定' }).click();
-  await page.getByLabel('旧设定').fill('旧设定');
-  await page.getByLabel('新设定').fill('新设定');
-  await page.getByRole('button', { name: '扫描下游影响' }).click();
-  await expect(page.getByLabel('设定变更影响列表')).toBeVisible();
+  await expect(page.getByRole('button', { name: '修改设定' })).toHaveCount(0);
   await page.getByRole('button', { name: '增加剧情' }).click();
   await page.getByLabel('新增剧情目标').fill('增加一场冲突');
   await page.getByRole('button', { name: '启动分析' }).click();
@@ -163,37 +146,37 @@ test('正文版本可查看并作为新工作流的显式来源', async ({ page 
   const state = await mockWorkspace(page, 'rewrite');
   await page.goto('/workspace/99');
   const versions = page.getByLabel('rewrite versions');
-  await expect(versions).toContainText('v1');
-  await versions.getByRole('button', { name: '基于此版本创建新操作' }).click();
+  await expect(versions).toContainText('当前稿');
+  await versions.getByRole('button', { name: '基于此版本继续' }).click();
   await page.getByLabel('插入点节点类型').selectOption('scene_end');
-  await page.getByRole('button', { name: '预览锚点' }).first().click();
+  await page.getByRole('button', { name: '预览位置' }).first().click();
   await expect(page.getByLabel('插入点锚点预览')).toContainText('人物进入院子');
-  await expect(page.getByLabel('插入点锚点预览')).toContainText('建议确认');
+  await expect(page.getByLabel('插入点锚点预览')).toContainText('位置识别不确定');
   await page.getByLabel('新增剧情目标').fill('从历史版本派生');
   await page.getByRole('button', { name: '启动分析' }).click();
   expect(state.getLastPlotPayload()?.source).toEqual({ kind: 'rewrite_version', version_id: 1001 });
 });
 
-test('扩写工程显示三种入口并可创建分支树节点', async ({ page }) => {
+test('扩写工程提供续写和另一种发展两种入口', async ({ page }) => {
   await mockWorkspace(page, 'branch');
   await page.goto('/workspace/99');
-  await expect(page.getByRole('button', { name: '从原文末尾续写' })).toBeVisible();
-  await expect(page.getByRole('button', { name: '从指定节点建立分支' })).toBeVisible();
-  await expect(page.getByRole('button', { name: '建立分支并接回原文' })).toBeVisible();
-  await expect(page.getByLabel('分支树')).toContainText('原文');
+  await expect(page.getByRole('button', { name: '继续写' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '写另一种发展' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '建立分支并接回原文' })).toHaveCount(0);
+  await expect(page.getByLabel('创作路线')).toContainText('原文');
   await page.getByLabel('剧情目标').fill('继续新的路线');
-  await page.getByRole('button', { name: '启动分析并创建分支' }).click();
-  await expect(page.getByLabel('分支树')).toContainText('分支 A');
+  await page.getByRole('button', { name: '开始规划' }).click();
+  await expect(page.getByLabel('创作路线')).toContainText('分支 A');
 });
 
 test('统一锚点选择器提交真实场景和细纲节点', async ({ page }) => {
   const state = await mockWorkspace(page, 'branch');
   await page.goto('/workspace/99');
-  await page.getByRole('button', { name: '从指定节点建立分支' }).click();
-  await page.getByLabel('起点节点类型').selectOption('scene_end');
-  await expect(page.getByLabel('起点场景')).toContainText('院门场景');
+  await page.getByRole('button', { name: '写另一种发展' }).click();
+  await page.getByLabel('从这里开始节点类型').selectOption('scene_end');
+  await expect(page.getByLabel('从这里开始场景')).toContainText('院门场景');
   await page.getByLabel('剧情目标').fill('从院门场景建立新路线');
-  await page.getByRole('button', { name: '启动分析并创建分支' }).click();
+  await page.getByRole('button', { name: '开始规划' }).click();
   expect(state.getLastPlotPayload()?.start_anchor).toEqual({ anchor_type: 'scene_end', scene_id: 801 });
 });
 

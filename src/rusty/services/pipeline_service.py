@@ -10,8 +10,10 @@ from rusty.db import initialize_database, session
 from rusty.models import ChapterAIOutputs, ChapterError, ChapterRecord, StageStatus, count_text_units
 from rusty.services.ai_client import AIClient, AIResponse, OpenAICompatibleClient
 from rusty.services.anchor_service import AnchorService, CharacterCard, OutlineTemplate
+from rusty.services.chapter_version_service import ChapterVersionService
 from rusty.services.model_service import ModelConfig, ModelService
-from rusty.services.project_service import ProjectService, default_database_path
+from rusty.db import default_database_path
+from rusty.services.project_service import ProjectService
 from rusty.services.prompt_compiler import CompiledRequest, PromptCompiler
 from rusty.services.prompt_service import PromptService, PromptTemplate
 from rusty.services.style_service import StyleTemplate, StyleTemplateService
@@ -33,6 +35,7 @@ class PipelineService:
     ) -> None:
         self.database_path = Path(database_path) if database_path is not None else default_database_path()
         self.project_service = ProjectService(self.database_path)
+        self.chapter_versions = ChapterVersionService(self.database_path)
         self.model_service = ModelService(self.database_path)
         self.prompt_service = PromptService(self.database_path)
         self.style_service = StyleTemplateService(self.database_path)
@@ -909,73 +912,22 @@ class PipelineService:
     ) -> None:
         settings = self.project_service.get_project_settings(chapter.project_id)
         target_word_count = settings.target_word_count if settings else None
-        word_count = count_text_units(rewritten_text)
-        ratio = word_count / chapter.word_count if chapter.word_count else None
         with session(self.database_path) as connection:
             anchor_snapshot = self._anchor_snapshot_for_chapter(chapter)
-            connection.execute(
-                """
-                INSERT INTO chapter_rewrites (
-                    chapter_id,
-                    rewritten_text,
-                    rewrite_source,
-                    target_word_count,
-                    actual_word_count,
-                    expansion_ratio,
-                    model_id,
-                    prompt_template_id,
-                    prompt_snapshot_json,
-                    anchor_snapshot_json,
-                    rewrite_mode,
-                    anchor_text,
-                    expanded_text,
-                    token_usage_json,
-                    elapsed_ms,
-                    updated_at
-                ) VALUES (?, ?, 'ai', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(chapter_id)
-                DO UPDATE SET
-                    rewritten_text = excluded.rewritten_text,
-                    rewrite_source = excluded.rewrite_source,
-                    target_word_count = excluded.target_word_count,
-                    actual_word_count = excluded.actual_word_count,
-                    expansion_ratio = excluded.expansion_ratio,
-                    model_id = excluded.model_id,
-                    prompt_template_id = excluded.prompt_template_id,
-                    prompt_snapshot_json = excluded.prompt_snapshot_json,
-                    anchor_snapshot_json = excluded.anchor_snapshot_json,
-                    rewrite_mode = excluded.rewrite_mode,
-                    anchor_text = excluded.anchor_text,
-                    expanded_text = excluded.expanded_text,
-                    token_usage_json = excluded.token_usage_json,
-                    elapsed_ms = excluded.elapsed_ms,
-                    confirmed_at = NULL,
-                    updated_at = CURRENT_TIMESTAMP
-                """,
-                (
-                    chapter.id,
-                    rewritten_text,
-                    target_word_count,
-                    word_count,
-                    ratio,
-                    model.id,
-                    template.id,
-                    json.dumps(prompt_snapshot, ensure_ascii=False),
-                    json.dumps(anchor_snapshot, ensure_ascii=False),
-                    rewrite_mode,
-                    anchor,
-                    expanded,
-                    json.dumps(response.token_usage),
-                    response.elapsed_ms,
-                ),
-            )
-            connection.execute(
-                """
-                UPDATE chapters
-                SET rewritten_text = ?, status = 'rewritten', updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-                """,
-                (rewritten_text, chapter.id),
+            self.chapter_versions.append_pipeline_rewrite_version(
+                connection,
+                chapter_id=chapter.id,
+                rewritten_text=rewritten_text,
+                target_word_count=target_word_count,
+                model_id=model.id,
+                prompt_template_id=template.id,
+                prompt_snapshot=prompt_snapshot,
+                anchor_snapshot=anchor_snapshot,
+                rewrite_mode=rewrite_mode,
+                anchor_text=anchor,
+                expanded_text=expanded,
+                token_usage=response.token_usage,
+                elapsed_ms=response.elapsed_ms,
             )
         self.project_service.refresh_project_progress(chapter.project_id)
 
@@ -1180,6 +1132,9 @@ class PipelineService:
         chapter = self.project_service.get_chapter(chapter_id)
         if chapter is None:
             raise ValueError(f"Chapter not found: {chapter_id}")
+        # This legacy pipeline outcome selects the immutable original for export; it
+        # does not create formal rewritten content, so the compatibility projection
+        # intentionally remains NULL.
         with session(self.database_path) as connection:
             connection.execute(
                 """

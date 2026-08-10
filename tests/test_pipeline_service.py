@@ -209,11 +209,20 @@ class PipelineServiceTests(unittest.TestCase):
                 ).fetchall()
                 rewrite_row = connection.execute(
                     """
-                    SELECT rewrite_source, prompt_snapshot_json, anchor_snapshot_json
+                    SELECT rewrite_source, prompt_snapshot_json, anchor_snapshot_json,
+                           current_version_id
                     FROM chapter_rewrites
                     WHERE chapter_id = ?
                     """,
                     (chapter_id,),
+                ).fetchone()
+                version_row = connection.execute(
+                    """
+                    SELECT source_operation, rewritten_text
+                    FROM chapter_rewrite_versions
+                    WHERE id = ?
+                    """,
+                    (rewrite_row[3],),
                 ).fetchone()
                 errors = connection.execute("SELECT COUNT(*) FROM chapter_errors").fetchone()[0]
             finally:
@@ -238,6 +247,8 @@ class PipelineServiceTests(unittest.TestCase):
             {"style_template": None, "outline_template": None, "character_cards": []},
             json.loads(rewrite_row[2]),
         )
+        self.assertIsNotNone(rewrite_row[3])
+        self.assertEqual(("prose_rewrite", "Rewritten chapter text."), version_row)
         self.assertEqual(0, errors)
         self.assertEqual(
             [("rewrite", "completed"), ("scene_detection", "completed"), ("summary", "completed")],

@@ -288,6 +288,24 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
     }, false);
   }
 
+  async function saveWorkspaceMetadata(title: string, author: string) {
+    if (!selectedDocument || !title.trim()) {
+      setError('文档名称不能为空。');
+      return;
+    }
+    await runBusy(async () => {
+      const saved = await updateLibraryDocument(
+        selectedDocument.id,
+        title.trim(),
+        author.trim() || null,
+      );
+      setDocuments((current) => current.map((item) => item.id === saved.id ? saved : item));
+      setMetadataTitle(saved.title);
+      setMetadataAuthor(saved.author ?? '');
+      setMessage('书名和作者已同步保存。');
+    }, false);
+  }
+
   async function openProcessing(
     tab: ProcessingTab = 'chapters',
     targetDocument: LibraryDocument | null = selectedDocument,
@@ -474,7 +492,7 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
             start_offset: startOffset,
             end_offset: endOffset,
             document_title: selectedDocument?.title ?? '',
-            chapter_title: chapter?.title ?? '',
+            chapter_title: chapter ? chapterDisplayTitle(chapter) : '',
           },
         },
       });
@@ -498,7 +516,7 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
           end_offset: endOffset,
           document_title: selectedDocument?.title ?? '',
           volume_title: volume?.title ?? '',
-          chapter_title: chapter?.title ?? '',
+          chapter_title: chapter ? chapterDisplayTitle(chapter) : '',
         },
       },
     });
@@ -676,11 +694,6 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
           <div className="chapter-heading">
             <div>
               <strong>{selectedDocument.title}</strong>
-              <span className="chapter-meta">
-                <span>{formatNumber(selectedDocument.word_count)} 字</span>
-                <span>共 {selectedDocument.chapter_count} 章</span>
-                <span>本地保存<i className="status-dot" /></span>
-              </span>
             </div>
           </div>
           <div className="toolbar-actions">
@@ -703,6 +716,7 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
           onDocumentAction={(action) => void handleDocumentAction(action)}
           onOpenCleanup={() => { void flushEditorDraft('文字整理').then((saved) => { if (saved) setCleanupOpen(true); }); }}
           onOpenRevisions={() => { void flushEditorDraft('版本记录').then((saved) => { if (saved) setRevisionsOpen(true); }); }}
+          onUpdateMetadata={saveWorkspaceMetadata}
           onSaveDraft={saveCurrentDraft}
           onCommitDraft={commitCurrentDraft}
           onDirtyChange={setEditorDirty}
@@ -844,7 +858,10 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
           </header>
           <nav aria-label="文档筛选">
             {systemFilters.map(({ icon: Icon, key, label }) => (
-              <TagFilterButton active={systemFilter === key} count={filterCount(key)} icon={<Icon size={16} />} key={key} label={label} onClick={() => setSystemFilter(key)} />
+              <TagFilterButton active={systemFilter === key} count={filterCount(key)} icon={<Icon size={16} />} key={key} label={label} onClick={() => {
+                setSystemFilter(key);
+                if (key === 'all') setActiveCategoryId(null);
+              }} />
             ))}
             <div className="document-tag-heading">
               <span>我的分类</span>
@@ -1037,6 +1054,7 @@ type DocumentWorkspaceProps = {
   onDocumentAction: (action: DocumentAction) => void;
   onOpenCleanup: () => void;
   onOpenRevisions: () => void;
+  onUpdateMetadata: (title: string, author: string) => Promise<void>;
   onSaveDraft: (title: string, text: string) => Promise<LibraryDocumentDraft>;
   onCommitDraft: () => Promise<boolean>;
   onDraftSaved: (draft: LibraryDocumentDraft) => void;
@@ -1060,10 +1078,23 @@ const DocumentWorkspace = forwardRef<DocumentEditorController, DocumentWorkspace
   const editorRef = useRef<DocumentEditorController | null>(null);
   const selectedChapter = props.chapters.find((chapter) => chapter.id === props.selectedChapterId) ?? null;
   const [liveCount, setLiveCount] = useState(selectedChapter?.word_count ?? document.word_count);
+  const [saveInfo, setSaveInfo] = useState<{ status: SaveStatus; savedAt: string }>({ status: 'clean', savedAt: '' });
+  const [metadataTitle, setMetadataTitle] = useState(document.title);
+  const [metadataAuthor, setMetadataAuthor] = useState(document.author ?? '');
+  const handleSaveStatusChange = useCallback((status: SaveStatus, savedAt: string) => {
+    setSaveInfo((current) => current.status === status && current.savedAt === savedAt
+      ? current
+      : { status, savedAt });
+  }, []);
 
   useEffect(() => {
     setLiveCount(selectedChapter?.word_count ?? document.word_count);
   }, [document.word_count, selectedChapter?.id, selectedChapter?.word_count]);
+
+  useEffect(() => {
+    setMetadataTitle(document.title);
+    setMetadataAuthor(document.author ?? '');
+  }, [document.author, document.title]);
 
   useImperativeHandle(ref, () => ({
     flushDraft: () => editorRef.current?.flushDraft() ?? Promise.resolve(true),
@@ -1093,6 +1124,7 @@ const DocumentWorkspace = forwardRef<DocumentEditorController, DocumentWorkspace
           <EditableTextPreview
             content={props.content}
             draft={props.draft}
+            chapterIndex={selectedChapter?.index ?? null}
             loading={processingBusy}
             onCommit={props.onCommitDraft}
             onDirtyChange={props.onDirtyChange}
@@ -1100,6 +1132,7 @@ const DocumentWorkspace = forwardRef<DocumentEditorController, DocumentWorkspace
             onLiveCountChange={setLiveCount}
             onManualMark={props.onManualMark}
             onSaveDraft={props.onSaveDraft}
+            onSaveStatusChange={handleSaveStatusChange}
             onSelectionResource={props.onSelectionResource}
             onTitlePreview={props.onTitlePreview}
             ref={editorRef}
@@ -1109,13 +1142,15 @@ const DocumentWorkspace = forwardRef<DocumentEditorController, DocumentWorkspace
       <aside className="workbench-inspector document-workspace-inspector">
         <div className="document-workspace-info">
           <section>
-            <h3>{document.title}</h3>
-            <p>{document.author || '未知作者'}</p>
+            <label className="document-workspace-metadata"><span>书名</span><input aria-label="书名" onBlur={() => void props.onUpdateMetadata(metadataTitle, metadataAuthor)} onChange={(event) => setMetadataTitle(event.target.value)} value={metadataTitle} /></label>
+            <label className="document-workspace-metadata"><span>作者</span><input aria-label="作者" onBlur={() => void props.onUpdateMetadata(metadataTitle, metadataAuthor)} onChange={(event) => setMetadataAuthor(event.target.value)} placeholder="未知作者" value={metadataAuthor} /></label>
           </section>
           <section className="document-workspace-stats">
             <div><strong>{formatNumber(liveTotal)}</strong><span>全文字数</span></div>
             <div><strong>{formatNumber(liveCount)}</strong><span>{selectedChapter ? '当前章节' : '当前正文'}</span></div>
             <div><strong>{document.chapter_count}</strong><span>章节数</span></div>
+            <div><strong>{formatDateTime(document.updated_at)}</strong><span>修改时间</span></div>
+            <div><strong>{saveStatusLabel(saveInfo.status, saveInfo.savedAt)}</strong><span>保存状态</span></div>
           </section>
         </div>
         <div className="document-workspace-actions">
@@ -1206,8 +1241,8 @@ function WorkspaceChapterNav({
       onDrop={(event) => dropChapter(event, chapter.id, chapter.volume_id)}
       type="button"
     >
-      <span className="chapter-number">{chapter.index}</span>
-      <span className="chapter-name" title={chapter.title}>{chapter.title}</span>
+      <span className="chapter-number">{chapterOrdinal(chapter.index)}</span>
+      <span className="chapter-name" title={chapter.title || '未命名'}>{chapter.title || '未命名'}</span>
       <span className="chapter-state">{formatNumber(chapter.id === liveChapterId ? liveWordCount : chapter.word_count)} 字</span>
     </button>
   );
@@ -1267,6 +1302,7 @@ function WorkspaceChapterNav({
 }
 
 const EditableTextPreview = forwardRef<DocumentEditorController, {
+  chapterIndex: number | null;
   content: LibraryDocumentContent | null;
   draft: LibraryDocumentDraft | null;
   loading: boolean;
@@ -1276,9 +1312,11 @@ const EditableTextPreview = forwardRef<DocumentEditorController, {
   onLiveCountChange: (count: number) => void;
   onManualMark: (startOffset: number, endOffset: number, title: string) => void;
   onSaveDraft: (title: string, text: string) => Promise<LibraryDocumentDraft>;
+  onSaveStatusChange: (status: SaveStatus, savedAt: string) => void;
   onSelectionResource: (kind: 'scene' | 'plot' | 'character', text: string, startOffset: number, endOffset: number) => void;
   onTitlePreview: (title: string) => void;
 }>(function EditableTextPreview({
+  chapterIndex,
   content,
   draft,
   loading,
@@ -1288,6 +1326,7 @@ const EditableTextPreview = forwardRef<DocumentEditorController, {
   onLiveCountChange,
   onManualMark,
   onSaveDraft,
+  onSaveStatusChange,
   onSelectionResource,
   onTitlePreview,
 }, ref) {
@@ -1333,11 +1372,15 @@ const EditableTextPreview = forwardRef<DocumentEditorController, {
     historyRef.current = [{ text: nextText, selectionStart: 0, selectionEnd: 0 }];
     historyIndexRef.current = 0;
     onDirtyChange(false);
-    onLiveCountChange(countTextUnits(nextText) + (content?.chapter_id == null ? 0 : countTextUnits(nextTitle)));
+    onLiveCountChange(countTextUnits(nextText));
     setMarkStart(null);
     setMarkEnd(null);
     setMenu(null);
   }, [content?.revision_id, content?.chapter_id, draft?.id]);
+
+  useEffect(() => {
+    onSaveStatusChange(saveStatus, savedAt);
+  }, [onSaveStatusChange, saveStatus, savedAt]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -1433,7 +1476,7 @@ const EditableTextPreview = forwardRef<DocumentEditorController, {
     setText(snapshot.text);
     markDirty();
     callbacksRef.current.onLiveCountChange(
-      countTextUnits(snapshot.text) + (content?.chapter_id == null ? 0 : countTextUnits(titleRef.current)),
+      countTextUnits(snapshot.text),
     );
     window.requestAnimationFrame(() => editorRef.current?.setSelectionRange(snapshot.selectionStart, snapshot.selectionEnd));
   }
@@ -1495,14 +1538,27 @@ const EditableTextPreview = forwardRef<DocumentEditorController, {
 
   return (
     <section aria-busy={loading} className="manuscript-pane document-workspace-text editable-manuscript">
-      <header>
-        <div>
-          <h2>正文</h2>
-          <span>{saveStatusLabel(saveStatus, savedAt)} · {formatNumber(countTextUnits(text) + (content?.chapter_id == null ? 0 : countTextUnits(title)))} 字</span>
-        </div>
+      <header className="document-editor-heading">
+        <label className="document-editor-title">
+          {chapterIndex != null ? <strong>{chapterOrdinal(chapterIndex)}</strong> : null}
+          <input
+            aria-label={content?.chapter_id == null ? '文档标题' : '章节标题'}
+            disabled={loading || !content}
+            onChange={(event) => {
+              setTitle(event.target.value);
+              callbacksRef.current.onTitlePreview(event.target.value);
+              callbacksRef.current.onLiveCountChange(
+                countTextUnits(textRef.current),
+              );
+              markDirty();
+            }}
+            placeholder={content?.chapter_id == null ? '文档标题' : '未命名'}
+            value={title}
+          />
+        </label>
         <button
           className="button secondary"
-          disabled={saveStatus === 'clean' || saveStatus === 'saving' || loading || !content || !title.trim()}
+          disabled={saveStatus === 'clean' || saveStatus === 'saving' || loading || !content || (content.chapter_id == null && !title.trim())}
           onClick={() => {
             void flushDraft().then(async (saved) => {
               if (!saved) return;
@@ -1512,21 +1568,6 @@ const EditableTextPreview = forwardRef<DocumentEditorController, {
           type="button"
         ><Save size={15} />保存</button>
       </header>
-      <label className="document-editor-title">
-        <span>{content?.chapter_id == null ? '文档标题' : '章节标题'}</span>
-        <input
-          disabled={loading || !content}
-          onChange={(event) => {
-            setTitle(event.target.value);
-            callbacksRef.current.onTitlePreview(event.target.value);
-            callbacksRef.current.onLiveCountChange(
-              countTextUnits(textRef.current) + (content?.chapter_id == null ? 0 : countTextUnits(event.target.value)),
-            );
-            markDirty();
-          }}
-          value={title}
-        />
-      </label>
       <textarea
         className="manuscript-editor"
         disabled={loading || !content}
@@ -1535,7 +1576,7 @@ const EditableTextPreview = forwardRef<DocumentEditorController, {
           recordText(nextText, event.target.selectionStart, event.target.selectionEnd);
           setText(nextText);
           callbacksRef.current.onLiveCountChange(
-            countTextUnits(nextText) + (content?.chapter_id == null ? 0 : countTextUnits(titleRef.current)),
+            countTextUnits(nextText),
           );
           markDirty();
         }}
@@ -1742,9 +1783,9 @@ function DocumentActionDialog(props: {
           <>
             <label><span className="form-label">章节标题</span><input className="form-input" value={title} onChange={(event) => setTitle(event.target.value)} /></label>
             <label><span className="form-label">插入位置</span><select value={positionMode} onChange={(event) => setPositionMode(event.target.value as typeof positionMode)}><option value="before-current">本章之前</option><option value="after-current">本章之后</option><option value="after-index">插入到第几章之后</option></select></label>
-            {positionMode === 'after-index' ? <label><span className="form-label">章节序号</span><input min={1} max={Math.max(1, props.chapters.length)} type="number" value={anchorIndex} onChange={(event) => setAnchorIndex(Number(event.target.value))} /><small>{indexedAnchor ? `匹配：${indexedAnchor.title}` : '没有匹配该章节序号'}</small></label> : <p className="document-action-anchor">锚点：{currentChapter?.title ?? '当前文档暂无章节'}</p>}
+            {positionMode === 'after-index' ? <label><span className="form-label">章节序号</span><input min={1} max={Math.max(1, props.chapters.length)} type="number" value={anchorIndex} onChange={(event) => setAnchorIndex(Number(event.target.value))} /><small>{indexedAnchor ? `匹配：${chapterDisplayTitle(indexedAnchor)}` : '没有匹配该章节序号'}</small></label> : <p className="document-action-anchor">锚点：{currentChapter ? chapterDisplayTitle(currentChapter) : '当前文档暂无章节'}</p>}
             <label><span className="form-label">正文</span><textarea value={text} onChange={(event) => setText(event.target.value)} /></label>
-            <footer><SecondaryButton onClick={props.onClose}>取消</SecondaryButton><PrimaryButton disabled={props.busy || !title.trim() || (props.chapters.length > 0 && !createAnchor)} onClick={() => props.onCreateChapter(title.trim(), text, createPosition, createAnchor?.id ?? null)}>保存为新版本</PrimaryButton></footer>
+            <footer><SecondaryButton onClick={props.onClose}>取消</SecondaryButton><PrimaryButton disabled={props.busy || (props.chapters.length > 0 && !createAnchor)} onClick={() => props.onCreateChapter(title.trim(), text, createPosition, createAnchor?.id ?? null)}>保存为新版本</PrimaryButton></footer>
           </>
         ) : null}
         {props.action === 'split' ? (
@@ -1924,16 +1965,33 @@ function documentsForSystemFilter(
   filter: SystemFilter,
 ): LibraryDocument[] {
   if (filter === 'project') return documents.filter((document) => document.is_project_document);
-  const ordinaryDocuments = documents.filter((document) => !document.is_project_document);
   if (filter === 'recent') {
-    return [...ordinaryDocuments]
+    return [...documents]
       .sort((left, right) => right.created_at.localeCompare(left.created_at) || right.id - left.id)
       .slice(0, 5);
   }
   if (filter === 'untagged') {
-    return ordinaryDocuments.filter((document) => document.tags.length === 0);
+    return documents.filter((document) => document.tags.length === 0);
   }
-  return ordinaryDocuments;
+  return documents;
+}
+
+function chapterOrdinal(index: number): string {
+  const digits = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九'];
+  if (index < 10) return `第${digits[index]}章`;
+  if (index < 20) return `第十${index === 10 ? '' : digits[index % 10]}章`;
+  if (index < 100) return `第${digits[Math.floor(index / 10)]}十${index % 10 ? digits[index % 10] : ''}章`;
+  return `第${index}章`;
+}
+
+function chapterDisplayTitle(chapter: Pick<LibraryDocumentChapter, 'index' | 'title'>): string {
+  return `${chapterOrdinal(chapter.index)}${chapter.title ? ` ${chapter.title}` : ''}`;
+}
+
+function formatDateTime(value: string): string {
+  if (!value) return '—';
+  const parsed = new Date(value.includes('T') ? value : `${value.replace(' ', 'T')}Z`);
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString('zh-CN', { hour12: false });
 }
 
 function revisionLabel(revisionType: string) {
