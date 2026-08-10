@@ -392,6 +392,17 @@ export type PlotGenerationExecuteRequest = {
   max_scenes?: number | null;
 };
 
+export type PlotGenerationStatus =
+  | 'awaiting_skeleton'
+  | 'planning_blocked'
+  | 'awaiting_seams'
+  | 'ready'
+  | 'generating'
+  | 'repair_required'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
+
 export type PlotGenerationRun = {
   id: number;
   project_id: number;
@@ -399,7 +410,7 @@ export type PlotGenerationRun = {
   generation_mode: PlotGenerationStartRequest['generation_mode'];
   range_operation: 'insert_between' | 'replace_range';
   output_topology: 'in_place' | 'branch';
-  status: string;
+  status: PlotGenerationStatus;
   stage: string;
   start_anchor: StoryAnchor;
   return_anchor: StoryAnchor | null;
@@ -412,6 +423,16 @@ export type PlotGenerationRun = {
   result: WorkflowObject;
   scene_plan: WorkflowObject;
   fact_ledger: WorkflowObject;
+  generated_progress: {
+    chapters: Array<WorkflowObject & { scenes?: WorkflowObject[] }>;
+    scenes: WorkflowObject[];
+  };
+  next_scene_cursor: number;
+  generation_attempt: number;
+  operation_type: 'plot_generation';
+  user_direction: string;
+  created_at: string;
+  updated_at: string;
 };
 
 export type ProseRewritePlanRequest = {
@@ -438,6 +459,9 @@ export type ProseRewriteRun = {
   rewrite_plan: WorkflowObject;
   rewritten_text: string | null;
   issues: WorkflowObject[];
+  operation_type: 'prose_rewrite';
+  created_at: string;
+  updated_at: string;
 };
 
 export type CanonChangeScanRequest = {
@@ -481,6 +505,9 @@ export type CanonChangeRun = {
   fact_ledger: WorkflowObject;
   consistency_issues: WorkflowObject[];
   patches: CanonPatch[];
+  operation_type: 'canon_change';
+  created_at: string;
+  updated_at: string;
 };
 
 export type LegacyAnalysisExport = {

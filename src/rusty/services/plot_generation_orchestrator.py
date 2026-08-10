@@ -19,6 +19,30 @@ GENERATION_MODES = {
     "fork_and_rejoin": ("branch", "branch", True),
 }
 
+PLOT_STATUS_AWAITING_SKELETON = "awaiting_skeleton"
+PLOT_STATUS_PLANNING_BLOCKED = "planning_blocked"
+PLOT_STATUS_AWAITING_SEAMS = "awaiting_seams"
+PLOT_STATUS_READY = "ready"
+PLOT_STATUS_GENERATING = "generating"
+PLOT_STATUS_REPAIR_REQUIRED = "repair_required"
+PLOT_STATUS_COMPLETED = "completed"
+PLOT_STATUS_FAILED = "failed"
+PLOT_STATUS_CANCELLED = "cancelled"
+
+PLOT_ACTIVE_STATUSES = {
+    PLOT_STATUS_AWAITING_SKELETON,
+    PLOT_STATUS_PLANNING_BLOCKED,
+    PLOT_STATUS_AWAITING_SEAMS,
+    PLOT_STATUS_READY,
+    PLOT_STATUS_GENERATING,
+    PLOT_STATUS_REPAIR_REQUIRED,
+}
+PLOT_TERMINAL_STATUSES = {
+    PLOT_STATUS_COMPLETED,
+    PLOT_STATUS_FAILED,
+    PLOT_STATUS_CANCELLED,
+}
+
 
 class PlotGenerationOrchestrator:
     """Persisted, AI-driven orchestration shared by all plot topologies."""
@@ -189,7 +213,9 @@ class PlotGenerationOrchestrator:
                     json.dumps(skeleton, ensure_ascii=False),
                     json.dumps(context, ensure_ascii=False),
                     json.dumps(planning_issues, ensure_ascii=False),
-                    "blocked" if planning_issues else "awaiting_skeleton",
+                    PLOT_STATUS_PLANNING_BLOCKED
+                    if planning_issues
+                    else PLOT_STATUS_AWAITING_SKELETON,
                     "confirm_target_skeleton",
                     user_direction,
                     json.dumps(selected_character_ids or []),
@@ -204,20 +230,29 @@ class PlotGenerationOrchestrator:
         self, run_id: int, target_skeleton: dict[str, Any]
     ) -> dict[str, Any]:
         run = self.get_run(run_id)
-        if run["status"] == "blocked":
-            raise ValueError("Blocked plot planning must be revised before confirmation.")
+        if run["status"] not in {
+            PLOT_STATUS_AWAITING_SKELETON,
+            PLOT_STATUS_PLANNING_BLOCKED,
+        }:
+            raise ValueError("Target skeleton cannot be changed in the current run state.")
         skeleton = validate_structured_skeleton(target_skeleton)
         if run["generation_mode"] == "fork_and_rejoin":
             issues = _state_issues(
                 run["required_return_state"], skeleton["required_end_state"]
             )
             if issues:
-                self._update_run(
+                self._transition(
                     run_id,
-                    status="blocked",
+                    allowed_from={
+                        PLOT_STATUS_AWAITING_SKELETON,
+                        PLOT_STATUS_PLANNING_BLOCKED,
+                    },
+                    to_status=PLOT_STATUS_PLANNING_BLOCKED,
                     stage="confirm_target_skeleton",
-                    issues_json=issues,
-                    target_skeleton_json=skeleton,
+                    updates={
+                        "issues_json": issues,
+                        "target_skeleton_json": skeleton,
+                    },
                 )
                 return self.get_run(run_id)
         proposed = self.ai.generate_json(
@@ -244,13 +279,19 @@ class PlotGenerationOrchestrator:
             }:
                 raise ValueError("AI returned an invalid seam proposal.")
         seams = self._replace_seam_records(run, seams)
-        self._update_run(
+        self._transition(
             run_id,
-            status="awaiting_seams",
+            allowed_from={
+                PLOT_STATUS_AWAITING_SKELETON,
+                PLOT_STATUS_PLANNING_BLOCKED,
+            },
+            to_status=PLOT_STATUS_AWAITING_SEAMS,
             stage="confirm_seams",
-            target_skeleton_json=skeleton,
-            seams_json=seams,
-            issues_json=[],
+            updates={
+                "target_skeleton_json": skeleton,
+                "seams_json": seams,
+                "issues_json": [],
+            },
         )
         return self.get_run(run_id)
 
@@ -260,8 +301,14 @@ class PlotGenerationOrchestrator:
         reviews: list[dict[str, Any]],
     ) -> dict[str, Any]:
         run = self.get_run(run_id)
-        reviewed = []
+        if run["status"] != PLOT_STATUS_AWAITING_SEAMS:
+            raise ValueError("Generation seams cannot be reviewed in the current run state.")
         stored_by_id = {int(item["id"]): item for item in self._stored_seams(run)}
+        review_ids = [int(review.get("seam_id") or 0) for review in reviews]
+        if len(review_ids) != len(set(review_ids)):
+            raise ValueError("Duplicate seam reviews are not allowed.")
+        if set(review_ids) != set(stored_by_id):
+            raise ValueError("Every generation seam must be explicitly reviewed.")
         validated: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]] = []
         for review in reviews:
             decision = str(review.get("decision") or "")
@@ -271,27 +318,21 @@ class PlotGenerationOrchestrator:
             if seam_id not in stored_by_id:
                 raise ValueError("Generation seam does not belong to this run.")
             current_source = self._resolve_seam_source(run, stored_by_id[seam_id])
-            if (
-                decision == "confirmed"
-                and current_source["source_hash"] != stored_by_id[seam_id]["source_hash"]
-            ):
+            if current_source["source_hash"] != stored_by_id[seam_id]["source_hash"]:
                 raise ValueError("Generation seam source hash mismatch.")
             validated.append((review, stored_by_id[seam_id], current_source))
-        for review, stored, current_source in validated:
-            decision = str(review["decision"])
-            reviewed.append(
-                self._review_stored_seam(
-                    run,
-                    int(stored["id"]),
-                    decision=decision,
-                    current_source_text=current_source["text"],
-                    proposed_text=(
-                        str(review["proposed_text"])
-                        if review.get("proposed_text") is not None
-                        else str(stored.get("proposed_text") or "")
-                    ),
-                )
-            )
+        reviewed = [
+            {
+                **stored,
+                "status": str(review["decision"]),
+                "proposed_text": (
+                    str(review["proposed_text"])
+                    if review.get("proposed_text") is not None
+                    else str(stored.get("proposed_text") or "")
+                ),
+            }
+            for review, stored, _current_source in validated
+        ]
         scene_plan = self.ai.generate_json(
             project_id=int(run["project_id"]),
             stage="generate_scene_plan",
@@ -303,123 +344,204 @@ class PlotGenerationOrchestrator:
             output_contract='{"chapters":[{"title":str,"summary":str,"scenes":[{"title":str,"direction":str}]}]}',
         )
         _validate_scene_plan(scene_plan)
-        self._update_run(
-            run_id,
-            status="ready",
-            stage="generate_next_scene",
-            seams_json=reviewed,
-            scene_plan_json=scene_plan,
-        )
+        self._commit_seam_reviews_and_ready(run, reviewed, scene_plan)
         return self.get_run(run_id)
 
     def execute(self, run_id: int, *, max_scenes: int | None = None) -> dict[str, Any]:
         run = self.get_run(run_id)
-        if run["status"] not in {"ready", "blocked"}:
+        if run["status"] not in {PLOT_STATUS_READY, PLOT_STATUS_GENERATING}:
             raise ValueError("Target skeleton and seams must be confirmed before generation.")
-        generated: list[dict[str, Any]] = []
-        generated_chapters: list[dict[str, Any]] = []
-        ledger = dict(run["start_state"])
-        count = 0
-        for chapter in run["scene_plan"]["chapters"]:
-            chapter_result = {
-                "title": chapter["title"],
-                "summary": chapter.get("summary", ""),
-                "facts_before": dict(ledger),
-                "scenes": [],
-            }
-            for scene in chapter["scenes"]:
-                if max_scenes is not None and count >= max_scenes:
-                    break
-                prose = self.ai.generate_json(
-                    project_id=int(run["project_id"]),
-                    stage="generate_next_scene",
-                    payload={
-                        "scene": scene,
-                        "chapter": chapter,
-                        "target_skeleton": run["target_skeleton"],
-                        "context": run["context"],
-                        "fact_ledger": ledger,
-                        "previous_generated_scene": (
-                            generated[-1]["text"] if generated else ""
-                        ),
-                    },
-                    output_contract='{"text":str}',
-                )
-                text = prose.get("text")
-                if not isinstance(text, str) or not text.strip():
-                    raise ValueError("AI scene generation returned empty text.")
-                facts = self.ai.generate_json(
-                    project_id=int(run["project_id"]),
-                    stage="update_fact_ledger",
-                    payload={"text": text, "facts_before": ledger},
-                    output_contract='{"facts_after":object}',
-                )
-                facts_after = facts.get("facts_after")
-                if not isinstance(facts_after, dict):
-                    raise ValueError("AI fact extraction must return facts_after.")
-                ledger = facts_after
-                scene_result = {
-                    "title": str(scene.get("title") or ""),
-                    "text": text,
-                    "facts_after": facts_after,
-                }
-                generated.append(scene_result)
-                chapter_result["scenes"].append(scene_result)
-                count += 1
-            chapter_result["facts_after"] = dict(ledger)
-            if chapter_result["scenes"]:
-                generated_chapters.append(chapter_result)
-        chapters = generated_chapters
-        if not generated:
-            raise ValueError("Plot generation must produce at least one scene.")
-        consistency = self.ai.generate_json(
-            project_id=int(run["project_id"]),
-            stage="consistency_check",
-            payload={
-                "target_skeleton": run["target_skeleton"],
-                "generated_scenes": generated,
-                "final_state": ledger,
-                "required_return_state": run["required_return_state"],
+        remaining = self._planned_scene_count(run) - int(run["next_scene_cursor"])
+        limit = remaining if max_scenes is None else min(max_scenes, remaining)
+        if limit <= 0:
+            raise ValueError("Plot generation has no remaining scenes.")
+        current = run
+        for _ in range(limit):
+            current = self._generate_next_scene(run_id)
+            if current["status"] in {
+                PLOT_STATUS_COMPLETED,
+                PLOT_STATUS_REPAIR_REQUIRED,
+                PLOT_STATUS_FAILED,
+            }:
+                break
+        return current
+
+    def generate_next(self, run_id: int) -> dict[str, Any]:
+        run = self.get_run(run_id)
+        if run["status"] not in {PLOT_STATUS_READY, PLOT_STATUS_GENERATING}:
+            raise ValueError("Run is not ready to generate the next scene.")
+        return self._generate_next_scene(run_id)
+
+    def retry(self, run_id: int) -> dict[str, Any]:
+        run = self.get_run(run_id)
+        self._transition(
+            run_id,
+            allowed_from={PLOT_STATUS_REPAIR_REQUIRED, PLOT_STATUS_FAILED},
+            to_status=PLOT_STATUS_READY,
+            stage="generate_next_scene",
+            updates={
+                "generated_progress_json": {"chapters": [], "scenes": []},
+                "next_scene_cursor": 0,
+                "generation_attempt": int(run.get("generation_attempt") or 0) + 1,
+                "fact_ledger_json": run["start_state"],
+                "issues_json": [],
+                "result_json": {},
             },
-            output_contract='{"issues":array,"final_state":object}',
         )
-        issues = consistency.get("issues")
-        final_state = consistency.get("final_state", ledger)
-        if not isinstance(issues, list) or not isinstance(final_state, dict):
-            raise ValueError("AI consistency check returned an invalid result.")
+        return self.get_run(run_id)
+
+    def _generate_next_scene(self, run_id: int) -> dict[str, Any]:
+        run = self.get_run(run_id)
+        if run["status"] not in {PLOT_STATUS_READY, PLOT_STATUS_GENERATING}:
+            raise ValueError("Run is not ready to generate the next scene.")
+        targets = self._flatten_scene_plan(run)
+        cursor = int(run["next_scene_cursor"])
+        if cursor >= len(targets):
+            raise ValueError("Plot generation has no remaining scenes.")
+        chapter_index, chapter, scene = targets[cursor]
+        progress = json.loads(json.dumps(run["generated_progress"], ensure_ascii=False))
+        progress.setdefault("chapters", [])
+        progress.setdefault("scenes", [])
+        ledger = (
+            dict(run["fact_ledger"])
+            if cursor > 0 and run["fact_ledger"]
+            else dict(run["start_state"])
+        )
+        try:
+            prose = self.ai.generate_json(
+                project_id=int(run["project_id"]),
+                stage="generate_next_scene",
+                payload={
+                    "scene": scene,
+                    "chapter": chapter,
+                    "target_skeleton": run["target_skeleton"],
+                    "context": run["context"],
+                    "fact_ledger": ledger,
+                    "previous_generated_scene": (
+                        progress["scenes"][-1]["text"] if progress["scenes"] else ""
+                    ),
+                },
+                output_contract='{"text":str}',
+            )
+            text = prose.get("text")
+            if not isinstance(text, str) or not text.strip():
+                raise ValueError("AI scene generation returned empty text.")
+            facts = self.ai.generate_json(
+                project_id=int(run["project_id"]),
+                stage="update_fact_ledger",
+                payload={"text": text, "facts_before": ledger},
+                output_contract='{"facts_after":object}',
+            )
+            facts_after = facts.get("facts_after")
+            if not isinstance(facts_after, dict):
+                raise ValueError("AI fact extraction must return facts_after.")
+        except Exception as exc:
+            self._transition(
+                run_id,
+                allowed_from={PLOT_STATUS_READY, PLOT_STATUS_GENERATING},
+                to_status=PLOT_STATUS_FAILED,
+                stage="generate_next_scene",
+                updates={"issues_json": [{"type": "technical_failure", "message": str(exc)}]},
+            )
+            raise
+        scene_result = {
+            "title": str(scene.get("title") or ""),
+            "text": text,
+            "facts_after": facts_after,
+        }
+        while len(progress["chapters"]) <= chapter_index:
+            planned = run["scene_plan"]["chapters"][len(progress["chapters"])]
+            progress["chapters"].append(
+                {
+                    "title": planned["title"],
+                    "summary": planned.get("summary", ""),
+                    "facts_before": dict(ledger),
+                    "facts_after": dict(ledger),
+                    "scenes": [],
+                }
+            )
+        progress["chapters"][chapter_index]["scenes"].append(scene_result)
+        progress["chapters"][chapter_index]["facts_after"] = dict(facts_after)
+        progress["scenes"].append(scene_result)
+        next_cursor = cursor + 1
+        self._transition(
+            run_id,
+            allowed_from={PLOT_STATUS_READY, PLOT_STATUS_GENERATING},
+            to_status=PLOT_STATUS_GENERATING,
+            stage="generate_next_scene",
+            updates={
+                "generated_progress_json": progress,
+                "next_scene_cursor": next_cursor,
+                "fact_ledger_json": facts_after,
+            },
+        )
+        if next_cursor < len(targets):
+            return self.get_run(run_id)
+        return self._consistency_check_and_commit(run_id)
+
+    def _consistency_check_and_commit(self, run_id: int) -> dict[str, Any]:
+        run = self.get_run(run_id)
+        generated = list(run["generated_progress"]["scenes"])
+        ledger = dict(run["fact_ledger"])
+        try:
+            consistency = self.ai.generate_json(
+                project_id=int(run["project_id"]),
+                stage="consistency_check",
+                payload={
+                    "target_skeleton": run["target_skeleton"],
+                    "generated_scenes": generated,
+                    "final_state": ledger,
+                    "required_return_state": run["required_return_state"],
+                },
+                output_contract='{"issues":array,"final_state":object}',
+            )
+            issues = consistency.get("issues")
+            final_state = consistency.get("final_state", ledger)
+            if not isinstance(issues, list) or not isinstance(final_state, dict):
+                raise ValueError("AI consistency check returned an invalid result.")
+        except Exception as exc:
+            self._transition(
+                run_id,
+                allowed_from={PLOT_STATUS_GENERATING},
+                to_status=PLOT_STATUS_FAILED,
+                stage="consistency_check",
+                updates={"issues_json": [{"type": "technical_failure", "message": str(exc)}]},
+            )
+            raise
         issues.extend(_state_issues(run["required_return_state"], final_state))
         if issues:
-            self._update_run(
+            self._transition(
                 run_id,
-                status="blocked",
+                allowed_from={PLOT_STATUS_GENERATING},
+                to_status=PLOT_STATUS_REPAIR_REQUIRED,
                 stage="consistency_check",
-                issues_json=issues,
-                fact_ledger_json=ledger,
+                updates={"issues_json": issues, "fact_ledger_json": ledger},
             )
             return self.get_run(run_id)
 
-        generated = _apply_branch_seam_text(generated, run["seams"])
+        generated = _apply_branch_seam_text(
+            json.loads(json.dumps(generated, ensure_ascii=False)), run["seams"]
+        )
+        chapters = json.loads(
+            json.dumps(run["generated_progress"]["chapters"], ensure_ascii=False)
+        )
+        scene_cursor = 0
+        for chapter in chapters:
+            for scene_index in range(len(chapter["scenes"])):
+                chapter["scenes"][scene_index] = generated[scene_cursor]
+                scene_cursor += 1
         if run["output_topology"] == "branch":
             saved_chapters = []
             for chapter in chapters:
-                saved_chapter = self.branches.create_chapter(
+                saved_chapter = self.branches.create_generated_chapter(
                     int(run["branch_id"]),
                     title=chapter["title"],
                     summary=chapter["summary"],
                     facts_before=chapter["facts_before"],
                     facts_after=chapter["facts_after"],
+                    scenes=chapter["scenes"],
                 )
-                saved_scenes = [
-                    self.branches.save_scene(
-                        int(run["branch_id"]),
-                        branch_chapter_id=int(saved_chapter["id"]),
-                        title=scene["title"],
-                        generated_text=scene["text"],
-                        facts_after=scene["facts_after"],
-                    )
-                    for scene in chapter["scenes"]
-                ]
-                saved_chapters.append({**saved_chapter, "scenes": saved_scenes})
+                saved_chapters.append(saved_chapter)
             result = {"branch_id": run["branch_id"], "chapters": saved_chapters}
         else:
             start = run["start_anchor"]
@@ -447,15 +569,50 @@ class PlotGenerationOrchestrator:
                 )
             self.projects.save_chapter_rewrite(chapter.id, rewritten)
             result = {"chapter_id": chapter.id, "rewritten_text": rewritten}
-        self._update_run(
+        self._transition(
             run_id,
-            status="completed",
+            allowed_from={PLOT_STATUS_GENERATING},
+            to_status=PLOT_STATUS_COMPLETED,
             stage="complete",
-            result_json=result,
-            issues_json=[],
-            fact_ledger_json=ledger,
+            updates={
+                "result_json": result,
+                "issues_json": [],
+                "fact_ledger_json": ledger,
+            },
         )
         return self.get_run(run_id)
+
+    @staticmethod
+    def _flatten_scene_plan(run: dict[str, Any]) -> list[tuple[int, dict[str, Any], dict[str, Any]]]:
+        return [
+            (chapter_index, chapter, scene)
+            for chapter_index, chapter in enumerate(run["scene_plan"]["chapters"])
+            for scene in chapter["scenes"]
+        ]
+
+    def _planned_scene_count(self, run: dict[str, Any]) -> int:
+        return len(self._flatten_scene_plan(run))
+
+    def cancel(self, run_id: int) -> dict[str, Any]:
+        run = self.get_run(run_id)
+        self._transition(
+            run_id,
+            allowed_from=PLOT_ACTIVE_STATUSES | {PLOT_STATUS_FAILED},
+            to_status=PLOT_STATUS_CANCELLED,
+            stage="cancelled",
+        )
+        return self.get_run(run_id)
+
+    def list_runs(self, project_id: int) -> list[dict[str, Any]]:
+        with session(self.database_path) as connection:
+            rows = connection.execute(
+                """
+                SELECT id FROM plot_generation_runs
+                WHERE project_id = ? ORDER BY created_at DESC, id DESC
+                """,
+                (project_id,),
+            ).fetchall()
+        return [self.get_run(int(row["id"])) for row in rows]
 
     def get_run(self, run_id: int) -> dict[str, Any]:
         with session(self.database_path) as connection:
@@ -477,6 +634,7 @@ class PlotGenerationOrchestrator:
             "result": {},
             "scene_plan": {},
             "fact_ledger": {},
+            "generated_progress": {"chapters": [], "scenes": []},
             "selected_character_ids": [],
             "selected_material_ids": [],
         }
@@ -662,9 +820,40 @@ class PlotGenerationOrchestrator:
             )
         return required_kind, topology, needs_return
 
-    def _update_run(self, run_id: int, **values: Any) -> None:
+    def _transition(
+        self,
+        run_id: int,
+        *,
+        allowed_from: set[str],
+        to_status: str,
+        stage: str,
+        updates: dict[str, Any] | None = None,
+    ) -> None:
+        with session(self.database_path) as connection:
+            self._transition_in_connection(
+                connection,
+                run_id,
+                allowed_from=allowed_from,
+                to_status=to_status,
+                stage=stage,
+                updates=updates,
+            )
+
+    def _transition_in_connection(
+        self,
+        connection: Any,
+        run_id: int,
+        *,
+        allowed_from: set[str],
+        to_status: str,
+        stage: str,
+        updates: dict[str, Any] | None = None,
+    ) -> None:
+        if to_status not in PLOT_ACTIVE_STATUSES | PLOT_TERMINAL_STATUSES:
+            raise ValueError(f"Unsupported plot generation status: {to_status}")
+        values = {"status": to_status, "stage": stage, **(updates or {})}
         assignments = []
-        parameters = []
+        parameters: list[Any] = []
         for key, value in values.items():
             assignments.append(f"{key} = ?")
             parameters.append(
@@ -672,12 +861,56 @@ class PlotGenerationOrchestrator:
                 if key.endswith("_json")
                 else value
             )
-        parameters.append(run_id)
+        allowed = sorted(allowed_from)
+        parameters.extend([run_id, *allowed])
+        placeholders = ", ".join("?" for _ in allowed)
+        cursor = connection.execute(
+            f"UPDATE plot_generation_runs SET {', '.join(assignments)}, "
+            "updated_at = CURRENT_TIMESTAMP WHERE id = ? "
+            f"AND status IN ({placeholders})",
+            parameters,
+        )
+        if cursor.rowcount == 0:
+            row = connection.execute(
+                "SELECT status FROM plot_generation_runs WHERE id = ?", (run_id,)
+            ).fetchone()
+            if row is None:
+                raise FileNotFoundError(f"Plot generation run not found: {run_id}")
+            raise ValueError(
+                f"Illegal plot generation transition: {row['status']} -> {to_status}."
+            )
+
+    def _commit_seam_reviews_and_ready(
+        self,
+        run: dict[str, Any],
+        reviewed: list[dict[str, Any]],
+        scene_plan: dict[str, Any],
+    ) -> None:
+        table = "branch_seams" if run["branch_id"] is not None else "rewrite_seams"
         with session(self.database_path) as connection:
-            connection.execute(
-                f"UPDATE plot_generation_runs SET {', '.join(assignments)}, "
-                "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                parameters,
+            current = connection.execute(
+                "SELECT status FROM plot_generation_runs WHERE id = ?", (run["id"],)
+            ).fetchone()
+            if current is None or current["status"] != PLOT_STATUS_AWAITING_SEAMS:
+                raise ValueError("Generation seams cannot be reviewed in the current run state.")
+            for seam in reviewed:
+                cursor = connection.execute(
+                    f"""
+                    UPDATE {table}
+                    SET status = ?, proposed_text = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (seam["status"], seam["proposed_text"], seam["id"]),
+                )
+                if cursor.rowcount != 1:
+                    raise ValueError("Generation seam disappeared during review.")
+            self._transition_in_connection(
+                connection,
+                int(run["id"]),
+                allowed_from={PLOT_STATUS_AWAITING_SEAMS},
+                to_status=PLOT_STATUS_READY,
+                stage="generate_next_scene",
+                updates={"seams_json": reviewed, "scene_plan_json": scene_plan},
             )
 
 

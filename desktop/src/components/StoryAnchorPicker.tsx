@@ -88,7 +88,7 @@ export function StoryAnchorPicker({
       const lastScene = lastChapter?.scenes.at(-1);
       const target = lastScene ? `scene:${lastScene.id}` : lastChapter ? `chapter:${lastChapter.id}` : '';
       setBranchTarget(target);
-      if (target) setSourceKind('branch');
+      setSourceKind('branch');
     }).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : '无法读取父分支内容'));
     return () => { active = false; };
   }, [parentBranchId]);
@@ -143,7 +143,7 @@ export function StoryAnchorPicker({
   return (
     <fieldset className="story-anchor-picker">
       <legend>{label}</legend>
-      {parentBranchId ? <label>来源<select aria-label={`${label}来源`} onChange={(event) => setSourceKind(event.target.value as typeof sourceKind)} value={sourceKind}><option value="original">原文</option><option disabled={!branchOptions.length} value="branch">当前分支</option></select></label> : null}
+      {parentBranchId ? <p>来源：父分支内容</p> : null}
       {sourceKind === 'branch' ? <>
         <label>父分支节点<select aria-label={`${label}父分支节点`} onChange={(event) => setBranchTarget(event.target.value)} value={branchTarget}>{branchOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
         <label>位置<select aria-label={`${label}位置`} onChange={(event) => setSide(event.target.value as typeof side)} value={side}><option value="before">之前</option><option value="after">之后</option></select></label>

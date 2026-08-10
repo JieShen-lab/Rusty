@@ -15,7 +15,7 @@ from rusty.services.branch_service import BranchService
 from rusty.services.project_service import ProjectService
 from rusty.services.rewrite_workflow_service import RewriteWorkflowService
 from rusty.services.scene_service import SceneService
-from rusty.db.schema import _migrate_to_v30
+from rusty.db.schema import _migrate_to_v30, _migrate_to_v36
 
 
 class BranchServiceTests(unittest.TestCase):
@@ -99,10 +99,14 @@ class BranchServiceTests(unittest.TestCase):
         child = self.service.create_branch(
             project_id=self.project_id,
             parent_branch_id=parent["id"],
-            base_source_version_id=parent_scene["version_id"],
             name="child",
             branch_mode="fork",
-            start_anchor=self.anchor("text_offset", text_offset=4, side="at"),
+            start_anchor=self.anchor(
+                "branch_scene",
+                branch_scene_id=parent_scene["id"],
+                source_version_id=parent_scene["version_id"],
+                side="after",
+            ),
         )
         self.assertEqual("rejoin", parent["downstream_strategy"])
         self.assertEqual(parent["id"], child["parent_branch_id"])
@@ -192,8 +196,8 @@ class BranchServiceTests(unittest.TestCase):
             facts_after={"location": "bridge"},
         )
         restored = self.service.restore_chapter_version(first["id"], first["version_id"])
-        self.assertEqual(2, revised["version"])
-        self.assertEqual(3, restored["version"])
+        self.assertEqual(4, revised["version"])
+        self.assertEqual(5, restored["version"])
         self.assertEqual("First expansion chapter", restored["summary"])
         self.assertEqual("restore", restored["source_kind"])
 
@@ -217,13 +221,14 @@ class BranchServiceTests(unittest.TestCase):
             name="chapter child",
             branch_mode="fork",
             start_anchor=self.anchor(
-                "branch_chapter", branch_chapter_id=chapter["id"]
+                "branch_chapter",
+                branch_chapter_id=chapter["id"],
+                source_version_id=chapter["version_id"],
             ),
         )
         child_from_scene = self.service.create_branch(
             project_id=self.project_id,
             parent_branch_id=parent["id"],
-            base_source_version_id=scene["version_id"],
             name="scene child",
             branch_mode="fork",
             start_anchor=self.anchor(
@@ -284,6 +289,34 @@ class BranchServiceTests(unittest.TestCase):
         self.assertEqual(
             {"legacy_fact": "preserved"}, json.loads(migrated["facts_after_json"])
         )
+
+    def test_v36_backfills_snapshot_without_losing_current_text_or_facts(self) -> None:
+        branch = self.service.create_branch(
+            project_id=self.project_id,
+            name="v35 legacy",
+            branch_mode="fork",
+            start_anchor=self.anchor("document_end"),
+        )
+        chapter = self.service.create_chapter(branch["id"], title="legacy chapter")
+        scene = self.service.save_scene(
+            branch["id"],
+            branch_chapter_id=chapter["id"],
+            title="legacy scene",
+            generated_text="legacy body",
+            facts_after={"scene": "kept"},
+        )
+        connection = sqlite3.connect(self.database)
+        connection.row_factory = sqlite3.Row
+        try:
+            connection.execute("PRAGMA foreign_keys = OFF")
+            connection.execute("DROP TABLE branch_chapter_version_scenes")
+            _migrate_to_v36(connection)
+            connection.commit()
+        finally:
+            connection.close()
+        restored = self.service.get_chapter(chapter["id"])
+        self.assertEqual("legacy body", restored["scenes"][0]["generated_text"])
+        self.assertEqual({"scene": "kept"}, restored["scenes"][0]["facts_after"])
 
     def test_seam_requires_matching_source_hash_and_explicit_review(self) -> None:
         branch = self.service.create_branch(
@@ -511,15 +544,15 @@ class BranchServiceTests(unittest.TestCase):
         second_scene = self.service.save_scene(
             second["id"], title="second", generated_text="second route"
         )
-        with self.assertRaisesRegex(ValueError, "specified parent branch"):
+        with self.assertRaisesRegex(FileNotFoundError, "specified parent branch"):
             self.service.create_branch(
                 project_id=self.project_id,
                 parent_branch_id=first["id"],
                 name="invalid child",
                 branch_mode="fork",
                 start_anchor=self.anchor(
-                    "text_offset",
-                    text_offset=0,
+                    "branch_scene",
+                    branch_scene_id=second_scene["id"],
                     source_version_id=second_scene["version_id"],
                 ),
             )
@@ -531,15 +564,163 @@ class BranchServiceTests(unittest.TestCase):
             branch_mode="fork",
             start_anchor=self.anchor("document_end"),
         )
-        with self.assertRaisesRegex(FileNotFoundError, "Base source version"):
+        scene = self.service.save_scene(
+            parent["id"], title="parent", generated_text="parent route"
+        )
+        with self.assertRaisesRegex(ValueError, "must match"):
             self.service.create_branch(
                 project_id=self.project_id,
                 parent_branch_id=parent["id"],
                 base_source_version_id=999999,
                 name="invalid base",
                 branch_mode="fork",
-                start_anchor=self.anchor("document_end"),
+                start_anchor=self.anchor(
+                    "branch_scene",
+                    branch_scene_id=scene["id"],
+                    source_version_id=scene["version_id"],
+                ),
             )
+
+    def test_branch_lineage_rejects_original_child_and_branch_root_anchors(self) -> None:
+        parent = self.service.create_branch(
+            project_id=self.project_id,
+            name="parent",
+            branch_mode="fork",
+            start_anchor=self.anchor("document_end"),
+        )
+        chapter = self.service.create_chapter(parent["id"], title="parent")
+        scene = self.service.save_scene(
+            parent["id"],
+            branch_chapter_id=chapter["id"],
+            title="scene",
+            generated_text="parent",
+        )
+        structured = {
+            "metadata": {"schema_version": 1},
+            "event_nodes": [{
+                "id": "node-1", "order": 1, "event_type": "event",
+                "summary": "node", "participants": [], "location": "",
+                "time_state": {}, "causes": [], "effects": [], "locked": False,
+                "source_span": {"start": 0, "end": 1}, "confidence": 1.0,
+            }],
+            "causal_links": [], "character_state_changes": [],
+            "location_changes": [], "time_changes": [], "object_changes": [],
+            "knowledge_changes": [], "relationship_changes": [],
+            "foreshadowing": [], "open_threads": [], "resolved_threads": [],
+            "required_start_state": {}, "required_end_state": {},
+            "editable_points": [], "source_references": [],
+        }
+        skeleton_version = RewriteWorkflowService(self.database).create_structured_skeleton(
+            project_id=self.project_id,
+            chapter_id=self.chapter.id,
+            scene_id=None,
+            scope="chapter",
+            source_kind="test",
+            skeleton=structured,
+        )
+        original_anchors = [
+            self.anchor("chapter_end", chapter_id=self.chapter.id),
+            self.anchor("scene_end", scene_id=self.scenes[0].id),
+            self.anchor("text_offset", chapter_id=self.chapter.id, text_offset=0),
+            self.anchor(
+                "skeleton_node",
+                skeleton_version_id=skeleton_version.version_id,
+                node_id="node-1",
+                side="after",
+            ),
+        ]
+        for index, anchor in enumerate(original_anchors):
+            with self.subTest(anchor=anchor["anchor_type"]):
+                with self.assertRaisesRegex(ValueError, "parent branch content"):
+                    self.service.create_branch(
+                        project_id=self.project_id,
+                        parent_branch_id=parent["id"],
+                        name=f"invalid-{index}",
+                        branch_mode="fork",
+                        start_anchor=anchor,
+                    )
+        for anchor in (
+            self.anchor(
+                "branch_scene",
+                branch_scene_id=scene["id"],
+                source_version_id=scene["version_id"],
+            ),
+            self.anchor(
+                "branch_chapter",
+                branch_chapter_id=chapter["id"],
+                source_version_id=self.service.get_chapter(chapter["id"])["version_id"],
+            ),
+        ):
+            with self.subTest(root_anchor=anchor["anchor_type"]):
+                with self.assertRaisesRegex(ValueError, "original content"):
+                    self.service.create_branch(
+                        project_id=self.project_id,
+                        name="invalid-root",
+                        branch_mode="fork",
+                        start_anchor=anchor,
+                    )
+
+    def test_chapter_versions_pin_scene_text_facts_and_child_hashes(self) -> None:
+        parent = self.service.create_branch(
+            project_id=self.project_id,
+            name="snapshot parent",
+            branch_mode="fork",
+            start_anchor=self.anchor("document_end"),
+        )
+        chapter = self.service.create_chapter(
+            parent["id"],
+            title="snapshot",
+            facts_after={"location": "v0"},
+        )
+        scene_v1 = self.service.save_scene(
+            parent["id"],
+            branch_chapter_id=chapter["id"],
+            title="scene",
+            generated_text="scene version one",
+            facts_after={"location": "v1"},
+        )
+        chapter_v1 = self.service.get_chapter(chapter["id"])
+        scene_v2 = self.service.save_scene_version(
+            scene_v1["id"],
+            generated_text="scene version two",
+            facts_after={"location": "v2"},
+        )
+        chapter_v2 = self.service.get_chapter(chapter["id"])
+        old = self.service.get_chapter(chapter["id"], version_id=chapter_v1["version_id"])
+        new = self.service.get_chapter(chapter["id"], version_id=chapter_v2["version_id"])
+        self.assertEqual("scene version one", old["scenes"][0]["generated_text"])
+        self.assertEqual({"location": "v1"}, old["facts_after"])
+        self.assertEqual("scene version two", new["scenes"][0]["generated_text"])
+        self.assertEqual({"location": "v2"}, new["facts_after"])
+        self.assertEqual(scene_v2["version_id"], new["scenes"][0]["version_id"])
+
+        child_v1 = self.service.create_branch(
+            project_id=self.project_id,
+            parent_branch_id=parent["id"],
+            name="child v1",
+            branch_mode="fork",
+            start_anchor=self.anchor(
+                "branch_chapter",
+                branch_chapter_id=chapter["id"],
+                source_version_id=chapter_v1["version_id"],
+            ),
+        )
+        child_v2 = self.service.create_branch(
+            project_id=self.project_id,
+            parent_branch_id=parent["id"],
+            name="child v2",
+            branch_mode="fork",
+            start_anchor=self.anchor(
+                "branch_chapter",
+                branch_chapter_id=chapter["id"],
+                source_version_id=chapter_v2["version_id"],
+            ),
+        )
+        self.assertNotEqual(
+            child_v1["start_anchor"]["source_hash"],
+            child_v2["start_anchor"]["source_hash"],
+        )
+        self.assertEqual("scene version two", self.service.get_scene(scene_v1["id"])["generated_text"])
 
     def _create_other_project(self):
         other_root = self.root / "other"

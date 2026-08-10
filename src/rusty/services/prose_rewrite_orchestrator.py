@@ -198,6 +198,14 @@ class ProseRewriteOrchestrator:
             result[key] = json.loads(row[f"{key}_json"])
         return result
 
+    def list_runs(self, project_id: int) -> list[dict[str, Any]]:
+        with session(self.database_path) as connection:
+            rows = connection.execute(
+                "SELECT id FROM prose_rewrite_runs WHERE project_id = ? ORDER BY created_at DESC, id DESC",
+                (project_id,),
+            ).fetchall()
+        return [self.get_run(int(row["id"])) for row in rows]
+
 
 def compare_skeletons(
     expected: dict[str, Any],

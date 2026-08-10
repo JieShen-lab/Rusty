@@ -7,6 +7,7 @@ from typing import Any
 
 from rusty.db import initialize_database, session
 from rusty.models import count_text_units
+from rusty.services.branch_service import BranchService
 from rusty.services.project_service import ProjectService, default_database_path
 from rusty.services.workflow_ai import WorkflowAI
 
@@ -288,6 +289,14 @@ class CanonChangeOrchestrator:
         result["patches"] = [self._patch(patch) for patch in patches]
         return result
 
+    def list_runs(self, project_id: int) -> list[dict[str, Any]]:
+        with session(self.database_path) as connection:
+            rows = connection.execute(
+                "SELECT id FROM canon_change_runs WHERE project_id = ? ORDER BY created_at DESC, id DESC",
+                (project_id,),
+            ).fetchall()
+        return [self.get_run(int(row["id"])) for row in rows]
+
     @staticmethod
     def _segments(connection, project_id: int, branch_id: int | None, effective_order: int):
         if branch_id is not None:
@@ -424,7 +433,8 @@ class CanonChangeOrchestrator:
             return
         row = connection.execute(
             """
-            SELECT s.current_version, v.id AS parent_id, v.facts_after_json
+            SELECT s.current_version, s.branch_chapter_id, s.scene_index,
+                   v.id AS parent_id, v.facts_after_json
             FROM branch_scenes s
             JOIN branch_scene_versions v
               ON v.branch_scene_id = s.id AND v.version = s.current_version
@@ -437,7 +447,7 @@ class CanonChangeOrchestrator:
         facts = json.loads(row["facts_after_json"])
         facts[attribute] = new_fact
         version = int(row["current_version"]) + 1
-        connection.execute(
+        version_cursor = connection.execute(
             """
             INSERT INTO branch_scene_versions(
                 branch_scene_id, version, generated_text, facts_after_json,
@@ -455,6 +465,15 @@ class CanonChangeOrchestrator:
         connection.execute(
             "UPDATE branch_scenes SET current_version = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
             (version, target_id),
+        )
+        BranchService._snapshot_chapter_after_scene_change(
+            connection,
+            int(row["branch_chapter_id"]),
+            scene_id=target_id,
+            scene_version_id=int(version_cursor.lastrowid),
+            scene_index=int(row["scene_index"]),
+            facts_after=facts,
+            source_kind="manual",
         )
 
     @staticmethod

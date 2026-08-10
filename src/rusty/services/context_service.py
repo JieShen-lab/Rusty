@@ -689,11 +689,10 @@ class ContextService:
                     int(anchor["branch_chapter_id"]),
                     version_id=(int(anchor["source_version_id"]) if anchor.get("source_version_id") else None),
                 )
-                current_scenes = self.branch_service.list_scenes(
-                    parent_branch_id,
-                    branch_chapter_id=int(selected_chapter["id"]),
+                text = "\n\n".join(
+                    str(scene["generated_text"])
+                    for scene in selected_chapter["scenes"]
                 )
-                text = "\n\n".join(str(scene["generated_text"]) for scene in current_scenes)
                 facts = selected_chapter["facts_after"]
                 source_version_id = int(selected_chapter["version_id"])
             history: list[str] = []

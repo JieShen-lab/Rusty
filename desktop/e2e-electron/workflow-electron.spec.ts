@@ -65,8 +65,20 @@ test('Electron 改写工作流完成增加剧情最小闭环', async () => {
   const seams = page.getByLabel('接缝审查');
   await confirmAllSeams(seams);
   await seams.getByRole('button', { name: '提交接缝审查' }).click();
-  await page.getByRole('button', { name: '逐场景生成并检查' }).click();
+  await page.getByRole('button', { name: '生成全部剩余场景' }).click();
   await expect(page.locator('pre').filter({ hasText: '人物遭遇伏击' })).toBeVisible();
+
+  await page.getByRole('button', { name: '开始新的运行' }).click();
+  await page.getByLabel('新增剧情目标').fill('再增加一场雨夜追逐');
+  await page.getByRole('button', { name: '启动分析' }).click();
+  await expect(page.getByLabel('模块化细纲编辑器')).toBeVisible();
+  await page.getByRole('button', { name: '确认目标细纲' }).click();
+  const secondSeams = page.getByLabel('接缝审查');
+  await confirmAllSeams(secondSeams);
+  await secondSeams.getByRole('button', { name: '提交接缝审查' }).click();
+  await page.getByRole('button', { name: '生成全部剩余场景' }).click();
+  await expect(page.getByText('本次运行已完成')).toBeVisible();
+  await expect(page.getByLabel('剧情生成历史').locator('button')).toHaveCount(2);
 });
 
 test('Electron 扩写工作流生成分支章节和场景', async () => {
@@ -77,7 +89,7 @@ test('Electron 扩写工作流生成分支章节和场景', async () => {
   const seams = page.getByLabel('接缝审查');
   await confirmAllSeams(seams);
   await seams.getByRole('button', { name: '提交接缝审查' }).click();
-  await page.getByRole('button', { name: '逐场景生成并检查' }).click();
+  await page.getByRole('button', { name: '生成全部剩余场景' }).click();
   await expect(page.locator('pre').filter({ hasText: '新章节' })).toBeVisible();
 });
 

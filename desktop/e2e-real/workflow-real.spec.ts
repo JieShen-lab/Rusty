@@ -23,7 +23,7 @@ async function finishPlot(page: Page) {
   await seams.getByRole('button', { name: '提交接缝审查' }).click();
   const [executeResponse] = await Promise.all([
     page.waitForResponse((response) => response.url().endsWith('/execute') && response.request().method() === 'POST'),
-    page.getByRole('button', { name: '逐场景生成并检查' }).click(),
+    page.getByRole('button', { name: '生成全部剩余场景' }).click(),
   ]);
   await expect(page.locator('pre').filter({ hasText: /"rewritten_text"|"chapters"/ })).toBeVisible();
   return executeResponse.json();
@@ -44,6 +44,18 @@ test('1. 改写工程增加剧情并应用双接缝', async ({ page, request }) 
   expect(chapter.chapter.rewritten_text).toContain('人物遭遇伏击');
   expect(chapter.chapter.rewritten_text).toContain('【进入新剧情】');
   expect(chapter.chapter.rewritten_text).toContain('【返回原路线】');
+
+  await page.getByRole('button', { name: '开始新的运行' }).click();
+  await page.getByLabel('新增剧情目标').fill('再增加一场雨夜追逐');
+  await page.getByRole('button', { name: '启动分析' }).click();
+  await finishPlot(page);
+  const histories = await (await request.get(`${backend}/api/projects/1/plot-generation/runs`)).json();
+  expect(histories).toHaveLength(2);
+  expect(histories.map((run: { status: string }) => run.status)).toEqual(['completed', 'completed']);
+  const afterSecondRun = await (await request.get(`${backend}/api/chapters/1`)).json();
+  expect(afterSecondRun.chapter.original_text).toBe(chapter.chapter.original_text);
+  expect(afterSecondRun.chapter.rewritten_text).toContain('人物进入院子。');
+  expect(afterSecondRun.chapter.rewritten_text).toContain('人物返回客栈。');
 });
 
 test('2. 根据细纲重写正文并自动结构检查', async ({ page, request }) => {
@@ -110,6 +122,15 @@ test('4. 从原文末尾续写并生成分支章节场景', async ({ page, reque
   expect(branches).toHaveLength(1);
   const content = await (await request.get(`${backend}/api/branches/${branches[0].id}/chapters`)).json();
   expect(content[0].scenes[0].facts_after.ambush_resolved).toBe(true);
+
+  await page.getByRole('button', { name: '开始新的运行' }).click();
+  await page.getByRole('button', { name: '从原文创建新分支' }).click();
+  await page.getByLabel('剧情目标').fill('从原文再创建另一条顶级路线');
+  await page.getByRole('button', { name: '启动分析并创建分支' }).click();
+  await finishPlot(page);
+  const roots = await (await request.get(`${backend}/api/projects/4/branches`)).json();
+  expect(roots).toHaveLength(2);
+  expect(roots.every((branch: { parent_branch_id: number | null }) => branch.parent_branch_id === null)).toBe(true);
 });
 
 test('5. 从中途建立分支且保留原路线', async ({ page, request }) => {
@@ -170,6 +191,7 @@ test('6. 分支满足回接状态后生成回接接缝', async ({ page, request 
 test('7. 从已有分支建立子分支', async ({ page, request }) => {
   await openProject(page, 7);
   await page.getByLabel('分支树').getByRole('button', { name: /父分支/ }).click();
+  await page.getByRole('button', { name: '从此分支继续派生' }).click();
   await page.getByRole('button', { name: '从指定节点建立分支' }).click();
   await expect(page.getByLabel('起点父分支节点').locator('option:checked')).toContainText('场景：');
   await page.getByLabel('剧情目标').fill('从父分支派生子路线');

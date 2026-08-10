@@ -580,6 +580,16 @@ export function getPlotGenerationRun(runId: number) {
   return request<PlotGenerationRun>(`/api/plot-generation/runs/${runId}`);
 }
 
+export function getPlotGenerationRuns(projectId: number) {
+  return request<PlotGenerationRun[]>(`/api/projects/${projectId}/plot-generation/runs`);
+}
+
+export function cancelPlotGeneration(runId: number) {
+  return request<PlotGenerationRun>(`/api/plot-generation/runs/${runId}/cancel`, {
+    method: 'POST',
+  });
+}
+
 export function confirmPlotGenerationSeams(runId: number, payload: PlotGenerationSeamConfirmRequest) {
   return request<PlotGenerationRun>(`/api/plot-generation/runs/${runId}/seams`, {
     method: 'POST',
@@ -601,6 +611,18 @@ export function executePlotGeneration(runId: number, payload: PlotGenerationExec
   });
 }
 
+export function generateNextPlotScene(runId: number) {
+  return request<PlotGenerationRun>(`/api/plot-generation/runs/${runId}/generate-next`, {
+    method: 'POST',
+  });
+}
+
+export function retryPlotGeneration(runId: number) {
+  return request<PlotGenerationRun>(`/api/plot-generation/runs/${runId}/retry`, {
+    method: 'POST',
+  });
+}
+
 export function planProseRewrite(payload: ProseRewritePlanRequest) {
   return request<ProseRewriteRun>('/api/prose-rewrite/runs', {
     method: 'POST',
@@ -610,6 +632,10 @@ export function planProseRewrite(payload: ProseRewritePlanRequest) {
 
 export function getProseRewriteRun(runId: number) {
   return request<ProseRewriteRun>(`/api/prose-rewrite/runs/${runId}`);
+}
+
+export function getProseRewriteRuns(projectId: number) {
+  return request<ProseRewriteRun[]>(`/api/projects/${projectId}/prose-rewrite/runs`);
 }
 
 export function executeProseRewrite(runId: number, payload: ProseRewriteExecuteRequest) {
@@ -628,6 +654,10 @@ export function scanCanonChange(payload: CanonChangeScanRequest) {
 
 export function getCanonChangeRun(runId: number) {
   return request<CanonChangeRun>(`/api/canon-change/runs/${runId}`);
+}
+
+export function getCanonChangeRuns(projectId: number) {
+  return request<CanonChangeRun[]>(`/api/projects/${projectId}/canon-change/runs`);
 }
 
 export function reviewCanonPatch(patchId: number, payload: CanonPatchReviewRequest) {

@@ -18,6 +18,7 @@ from rusty.db.schema import (
     _migrate_to_v19,
     _migrate_to_v20,
     _migrate_to_v21,
+    _migrate_to_v37,
 )
 
 
@@ -131,6 +132,63 @@ class SchemaTests(unittest.TestCase):
 
         self.assertEqual(CURRENT_SCHEMA_VERSION, version)
         self.assertEqual(1, split_rule_count)
+
+    def test_v35_plot_runs_migrate_to_v37_state_and_progress_without_loss(self) -> None:
+        connection = sqlite3.connect(":memory:")
+        connection.row_factory = sqlite3.Row
+        connection.executescript(
+            """
+            CREATE TABLE projects(id INTEGER PRIMARY KEY);
+            CREATE TABLE story_branches(id INTEGER PRIMARY KEY);
+            CREATE TABLE plot_generation_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id INTEGER NOT NULL,
+                branch_id INTEGER,
+                operation_type TEXT NOT NULL DEFAULT 'plot_generation',
+                generation_mode TEXT NOT NULL,
+                output_topology TEXT NOT NULL,
+                start_anchor_json TEXT NOT NULL,
+                return_anchor_json TEXT,
+                start_state_json TEXT NOT NULL DEFAULT '{}',
+                required_return_state_json TEXT NOT NULL DEFAULT '{}',
+                target_skeleton_json TEXT NOT NULL,
+                context_json TEXT NOT NULL DEFAULT '{}',
+                seams_json TEXT NOT NULL DEFAULT '[]',
+                issues_json TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL,
+                stage TEXT NOT NULL DEFAULT 'start',
+                user_direction TEXT NOT NULL DEFAULT '',
+                selected_character_ids_json TEXT NOT NULL DEFAULT '[]',
+                selected_material_ids_json TEXT NOT NULL DEFAULT '[]',
+                style_profile_id INTEGER,
+                scene_plan_json TEXT NOT NULL DEFAULT '{}',
+                fact_ledger_json TEXT NOT NULL DEFAULT '{}',
+                result_json TEXT NOT NULL DEFAULT '{}',
+                range_operation TEXT NOT NULL DEFAULT 'insert_between',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            INSERT INTO projects(id) VALUES (1);
+            INSERT INTO plot_generation_runs(
+                id, project_id, generation_mode, output_topology,
+                start_anchor_json, target_skeleton_json, status, stage,
+                user_direction, fact_ledger_json
+            ) VALUES (
+                7, 1, 'fork', 'branch', '{"anchor_type":"chapter_end"}',
+                '{"event_nodes":[{"id":"legacy"}]}', 'blocked',
+                'consistency_check', 'legacy direction', '{"legacy_fact":true}'
+            );
+            """
+        )
+        _migrate_to_v37(connection)
+        row = connection.execute(
+            "SELECT * FROM plot_generation_runs WHERE id = 7"
+        ).fetchone()
+        self.assertEqual("repair_required", row["status"])
+        self.assertEqual("legacy direction", row["user_direction"])
+        self.assertEqual('{"legacy_fact":true}', row["fact_ledger_json"])
+        self.assertEqual(0, row["next_scene_cursor"])
+        self.assertEqual(0, row["generation_attempt"])
 
     def test_v20_to_v21_character_extraction_settings_migration_is_idempotent(self) -> None:
         connection = sqlite3.connect(":memory:")

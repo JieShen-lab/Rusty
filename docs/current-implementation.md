@@ -216,7 +216,7 @@ SQLite + OS keyring + 本地文件
 
 ## 5. 数据实现
 
-数据库当前架构版本为 35。主要数据域包括：
+数据库当前架构版本为 37。主要数据域包括：
 
 - 项目、书籍元数据、导入来源、分章规则和章节；
 - AI 模型、提示词模板、项目提示词和项目设置；
@@ -225,12 +225,31 @@ SQLite + OS keyring + 本地文件
 - 流水线阶段状态、摘要、场景分析、情节扩写、改写结果、生成尝试和错误；
 - 导出计划和导出记录；
 - 文档库文档、分类、标签、处理模板、修订版本、卷、章节、草稿和存储设置。
+- 剧情运行状态、草稿生成进度、运行历史、分支血缘、接缝和不可变章节/场景版本快照。
 
 v14 将旧素材类型 `snippet` 映射为 `scene_reference`，将 `outline` 映射为 `plot_skeleton` 并保留旧类型元数据；旧素材分类和文档分类迁移为标签。角色卡旧固定字段迁移为身份、年龄、设定及有序自定义字段。v19 新增文档卷层级；v20 新增仅适用于公共角色的 `character_categories` / `character_category_links`，并幂等补齐历史工程角色的有效 `project_character_bindings`；v21 新增单例 `character_extraction_settings`；v22 新增素材分类、标签组、工程素材筛选和三任务 `material_ai_settings`。v22 会原地保留历史工程素材 ID，把 `scope` 统一为 `public`、清空 `project_id`，并在来源元数据记录 `legacy_scope` / `legacy_project_id` / `migrated_to_unified_library`；已有标签会转为对应工程的素材筛选，未打标签的旧素材不会生成伪标签。v23 为三个素材 AI 任务分别增加用户提示词模板、JSON 分析维度、通用标签开关和适用场景标签开关；v22 的 `generate_tags` 会迁移到两个新开关。迁移和关系写入均可幂等重放。
 
 兼容性：旧的 `POST /api/characters/extract`、`POST /api/characters/{card_id}/analyze` 和 `POST /api/characters/{card_id}/analyze/confirm` 暂时仅作为后端 legacy 接口保留；对应前端调用已清理，新角色页不再调用这些单阶段接口。素材的 `POST /api/material-extractions`、`POST /api/materials/{id}/copy`、`POST /api/materials/{id}/analyze` 与分析 apply 接口也仅作为后端 legacy 接口保留；对应前端调用与废弃的旧素材管理页已清理，新的素材页只调用 `/api/material-extractions/preview` 与 `/api/material-extractions/apply`。旧的选区直接创建素材接口已删除，文档和工程选区必须进入候选确认流程。
 
 SQLite 连接默认启用外键、WAL、`synchronous=NORMAL` 和 5 秒忙等待。迁移由 `schema_migrations` 记录，初始化时按版本顺序执行。
+
+### 5.1 工作流生命周期与版本一致性
+
+Plot Generation 使用 `awaiting_skeleton`、`planning_blocked`、`awaiting_seams`、`ready`、
+`generating`、`repair_required`、`completed`、`failed`、`cancelled` 九个正式状态。所有状态
+变化通过带来源状态守卫的内部转换接口完成。活动运行可取消；一致性失败必须调用 retry，
+其草稿进度、游标和事实账本恢复到起点后才重新进入 `ready`。终态记录不会被前端“开始
+新的运行”删除，项目级历史 API 是运行状态的权威来源。
+
+`generate-next` 推进一个计划场景，`execute` 复用相同核心推进所有剩余场景。生成中的正文
+只保存在 `plot_generation_runs.generated_progress_json`；通过最终一致性检查后才原子提交正式
+改写正文或分支章节。
+
+分支血缘由后端强制：顶级分支只能使用原文锚点，子分支只能使用所属父分支的章节或场景
+锚点，来源版本由锚点唯一确定。v36 的 `branch_chapter_version_scenes` 使每个章节版本同时
+固定 facts、场景顺序和每个场景的正文版本；v37 增加运行进度、场景游标、生成尝试次数及
+正式状态约束。旧数据回填优先选择不晚于章节版本创建时间的最近场景版本，并保持当前正文
+与 facts 不丢失。
 
 ## 6. 桌面端与安全边界
 

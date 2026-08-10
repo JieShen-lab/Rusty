@@ -917,6 +917,22 @@ def create_app(
     def get_plot_generation_run(run_id: int) -> dict[str, Any]:
         return plot_generation_orchestrator.get_run(run_id)
 
+    @app.get(
+        "/api/projects/{project_id}/plot-generation/runs",
+        response_model=list[PlotGenerationRunResponse],
+    )
+    def list_plot_generation_runs(project_id: int) -> list[dict[str, Any]]:
+        _require_project(project_service, project_id)
+        return plot_generation_orchestrator.list_runs(project_id)
+
+    @app.post(
+        "/api/plot-generation/runs/{run_id}/cancel",
+        response_model=PlotGenerationRunResponse,
+        dependencies=[Depends(_require_token)],
+    )
+    def cancel_plot_generation(run_id: int) -> dict[str, Any]:
+        return plot_generation_orchestrator.cancel(run_id)
+
     @app.post("/api/plot-generation/runs/{run_id}/seams", response_model=PlotGenerationRunResponse, dependencies=[Depends(_require_token)])
     def confirm_plot_generation_seams(run_id: int, payload: PlotGenerationSeamConfirmRequest) -> dict[str, Any]:
         return plot_generation_orchestrator.confirm_seams(
@@ -939,6 +955,22 @@ def create_app(
             max_scenes=payload.max_scenes,
         )
 
+    @app.post(
+        "/api/plot-generation/runs/{run_id}/generate-next",
+        response_model=PlotGenerationRunResponse,
+        dependencies=[Depends(_require_token)],
+    )
+    def generate_next_plot_scene(run_id: int) -> dict[str, Any]:
+        return plot_generation_orchestrator.generate_next(run_id)
+
+    @app.post(
+        "/api/plot-generation/runs/{run_id}/retry",
+        response_model=PlotGenerationRunResponse,
+        dependencies=[Depends(_require_token)],
+    )
+    def retry_plot_generation(run_id: int) -> dict[str, Any]:
+        return plot_generation_orchestrator.retry(run_id)
+
     @app.post("/api/prose-rewrite/runs", response_model=ProseRewriteRunResponse, dependencies=[Depends(_require_token)])
     def plan_prose_rewrite(payload: ProseRewritePlanRequest) -> dict[str, Any]:
         return prose_rewrite_orchestrator.plan(**payload.model_dump())
@@ -949,6 +981,14 @@ def create_app(
     )
     def get_prose_rewrite_run(run_id: int) -> dict[str, Any]:
         return prose_rewrite_orchestrator.get_run(run_id)
+
+    @app.get(
+        "/api/projects/{project_id}/prose-rewrite/runs",
+        response_model=list[ProseRewriteRunResponse],
+    )
+    def list_prose_rewrite_runs(project_id: int) -> list[dict[str, Any]]:
+        _require_project(project_service, project_id)
+        return prose_rewrite_orchestrator.list_runs(project_id)
 
     @app.post("/api/prose-rewrite/runs/{run_id}/execute", response_model=ProseRewriteRunResponse, dependencies=[Depends(_require_token)])
     def execute_prose_rewrite(run_id: int, payload: ProseRewriteExecuteRequest) -> dict[str, Any]:
@@ -964,6 +1004,14 @@ def create_app(
     )
     def get_canon_change_run(run_id: int) -> dict[str, Any]:
         return canon_change_orchestrator.get_run(run_id)
+
+    @app.get(
+        "/api/projects/{project_id}/canon-change/runs",
+        response_model=list[CanonChangeRunResponse],
+    )
+    def list_canon_change_runs(project_id: int) -> list[dict[str, Any]]:
+        _require_project(project_service, project_id)
+        return canon_change_orchestrator.list_runs(project_id)
 
     @app.post("/api/canon-change/patches/{patch_id}/review", response_model=CanonPatchResponse, dependencies=[Depends(_require_token)])
     def review_canon_patch(patch_id: int, payload: CanonPatchReviewRequest) -> dict[str, Any]:

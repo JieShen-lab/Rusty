@@ -594,6 +594,19 @@ class PlotGenerationExecuteRequest(StrictWorkflowModel):
     max_scenes: int | None = Field(default=None, ge=1)
 
 
+PlotGenerationStatus = Literal[
+    "awaiting_skeleton",
+    "planning_blocked",
+    "awaiting_seams",
+    "ready",
+    "generating",
+    "repair_required",
+    "completed",
+    "failed",
+    "cancelled",
+]
+
+
 class PlotGenerationRunResponse(BaseModel):
     id: int
     project_id: int
@@ -601,7 +614,7 @@ class PlotGenerationRunResponse(BaseModel):
     generation_mode: str
     range_operation: str = "insert_between"
     output_topology: str
-    status: str
+    status: PlotGenerationStatus
     stage: str
     start_anchor: dict[str, Any]
     return_anchor: dict[str, Any] | None
@@ -614,6 +627,13 @@ class PlotGenerationRunResponse(BaseModel):
     result: dict[str, Any]
     scene_plan: dict[str, Any]
     fact_ledger: dict[str, Any]
+    generated_progress: dict[str, Any]
+    next_scene_cursor: int
+    generation_attempt: int
+    operation_type: Literal["plot_generation"] = "plot_generation"
+    user_direction: str
+    created_at: str
+    updated_at: str
 
 
 class ProseRewritePlanRequest(StrictWorkflowModel):
@@ -640,6 +660,9 @@ class ProseRewriteRunResponse(BaseModel):
     rewrite_plan: dict[str, Any]
     rewritten_text: str | None
     issues: list[dict[str, Any]]
+    operation_type: Literal["prose_rewrite"] = "prose_rewrite"
+    created_at: str
+    updated_at: str
 
 
 class CanonChangeScanRequest(StrictWorkflowModel):
@@ -689,6 +712,9 @@ class CanonChangeRunResponse(BaseModel):
     fact_ledger: dict[str, Any]
     consistency_issues: list[dict[str, Any]]
     patches: list[CanonPatchResponse]
+    operation_type: Literal["canon_change"] = "canon_change"
+    created_at: str
+    updated_at: str
 
 
 class ExportResponse(BaseModel):

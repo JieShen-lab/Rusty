@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .connection import session
 
-CURRENT_SCHEMA_VERSION = 35
+CURRENT_SCHEMA_VERSION = 37
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -3194,6 +3194,168 @@ def _migrate_to_v35(connection: sqlite3.Connection) -> None:
         )
 
 
+def _migrate_to_v36(connection: sqlite3.Connection) -> None:
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS branch_chapter_version_scenes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            branch_chapter_version_id INTEGER NOT NULL,
+            branch_scene_id INTEGER NOT NULL,
+            branch_scene_version_id INTEGER NOT NULL,
+            scene_index INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (branch_chapter_version_id, branch_scene_id),
+            UNIQUE (branch_chapter_version_id, scene_index),
+            FOREIGN KEY (branch_chapter_version_id)
+                REFERENCES branch_chapter_versions(id) ON DELETE CASCADE,
+            FOREIGN KEY (branch_scene_id)
+                REFERENCES branch_scenes(id) ON DELETE CASCADE,
+            FOREIGN KEY (branch_scene_version_id)
+                REFERENCES branch_scene_versions(id) ON DELETE RESTRICT
+        );
+        CREATE INDEX IF NOT EXISTS idx_branch_chapter_snapshot_version
+            ON branch_chapter_version_scenes(branch_chapter_version_id, scene_index);
+        """
+    )
+    chapter_versions = connection.execute(
+        """
+        SELECT v.id, v.branch_chapter_id, v.created_at, c.current_version, v.version
+        FROM branch_chapter_versions v
+        JOIN branch_chapters c ON c.id = v.branch_chapter_id
+        ORDER BY v.id
+        """
+    ).fetchall()
+    for chapter_version in chapter_versions:
+        scenes = connection.execute(
+            """
+            SELECT id, scene_index, current_version
+            FROM branch_scenes
+            WHERE branch_chapter_id = ? AND deleted_at IS NULL
+            ORDER BY scene_index, id
+            """,
+            (chapter_version["branch_chapter_id"],),
+        ).fetchall()
+        for fallback_index, scene in enumerate(scenes, start=1):
+            selected = connection.execute(
+                """
+                SELECT id FROM branch_scene_versions
+                WHERE branch_scene_id = ? AND created_at <= ?
+                ORDER BY created_at DESC, version DESC LIMIT 1
+                """,
+                (scene["id"], chapter_version["created_at"]),
+            ).fetchone()
+            if selected is None:
+                selected = connection.execute(
+                    """
+                    SELECT id FROM branch_scene_versions
+                    WHERE branch_scene_id = ? AND version = ?
+                    """,
+                    (scene["id"], scene["current_version"]),
+                ).fetchone()
+            if selected is None:
+                continue
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO branch_chapter_version_scenes(
+                    branch_chapter_version_id, branch_scene_id,
+                    branch_scene_version_id, scene_index
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (
+                    chapter_version["id"],
+                    scene["id"],
+                    selected["id"],
+                    scene["scene_index"] or fallback_index,
+                ),
+            )
+
+
+def _migrate_to_v37(connection: sqlite3.Connection) -> None:
+    connection.commit()
+    connection.execute("PRAGMA foreign_keys = OFF")
+    try:
+        connection.executescript(
+            """
+            DROP TABLE IF EXISTS plot_generation_runs_v37;
+            CREATE TABLE plot_generation_runs_v37 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id INTEGER NOT NULL,
+                branch_id INTEGER,
+                operation_type TEXT NOT NULL DEFAULT 'plot_generation'
+                    CHECK (operation_type = 'plot_generation'),
+                generation_mode TEXT NOT NULL CHECK (generation_mode IN (
+                    'bounded_insert', 'open_continuation', 'fork', 'fork_and_rejoin'
+                )),
+                output_topology TEXT NOT NULL CHECK (output_topology IN ('in_place', 'branch')),
+                start_anchor_json TEXT NOT NULL,
+                return_anchor_json TEXT,
+                start_state_json TEXT NOT NULL DEFAULT '{}',
+                required_return_state_json TEXT NOT NULL DEFAULT '{}',
+                target_skeleton_json TEXT NOT NULL,
+                context_json TEXT NOT NULL DEFAULT '{}',
+                seams_json TEXT NOT NULL DEFAULT '[]',
+                issues_json TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL DEFAULT 'awaiting_skeleton' CHECK (status IN (
+                    'awaiting_skeleton', 'planning_blocked', 'awaiting_seams',
+                    'ready', 'generating', 'repair_required', 'completed',
+                    'failed', 'cancelled'
+                )),
+                stage TEXT NOT NULL DEFAULT 'start',
+                user_direction TEXT NOT NULL DEFAULT '',
+                selected_character_ids_json TEXT NOT NULL DEFAULT '[]',
+                selected_material_ids_json TEXT NOT NULL DEFAULT '[]',
+                style_profile_id INTEGER,
+                scene_plan_json TEXT NOT NULL DEFAULT '{}',
+                fact_ledger_json TEXT NOT NULL DEFAULT '{}',
+                result_json TEXT NOT NULL DEFAULT '{}',
+                range_operation TEXT NOT NULL DEFAULT 'insert_between'
+                    CHECK (range_operation IN ('insert_between', 'replace_range')),
+                generated_progress_json TEXT NOT NULL DEFAULT '{"chapters":[],"scenes":[]}',
+                next_scene_cursor INTEGER NOT NULL DEFAULT 0,
+                generation_attempt INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+                FOREIGN KEY (branch_id) REFERENCES story_branches(id) ON DELETE SET NULL
+            );
+
+            INSERT INTO plot_generation_runs_v37 (
+                id, project_id, branch_id, operation_type, generation_mode,
+                output_topology, start_anchor_json, return_anchor_json,
+                start_state_json, required_return_state_json, target_skeleton_json,
+                context_json, seams_json, issues_json, status, stage,
+                user_direction, selected_character_ids_json,
+                selected_material_ids_json, style_profile_id, scene_plan_json,
+                fact_ledger_json, result_json, range_operation, created_at, updated_at
+            )
+            SELECT
+                id, project_id, branch_id, operation_type, generation_mode,
+                output_topology, start_anchor_json, return_anchor_json,
+                start_state_json, required_return_state_json, target_skeleton_json,
+                context_json, seams_json, issues_json,
+                CASE
+                    WHEN status = 'blocked' AND stage = 'confirm_target_skeleton'
+                        THEN 'planning_blocked'
+                    WHEN status = 'blocked' AND stage = 'consistency_check'
+                        THEN 'repair_required'
+                    WHEN status = 'blocked' THEN 'failed'
+                    ELSE status
+                END,
+                stage, user_direction, selected_character_ids_json,
+                selected_material_ids_json, style_profile_id, scene_plan_json,
+                fact_ledger_json, result_json, range_operation, created_at, updated_at
+            FROM plot_generation_runs;
+
+            DROP TABLE plot_generation_runs;
+            ALTER TABLE plot_generation_runs_v37 RENAME TO plot_generation_runs;
+            CREATE INDEX IF NOT EXISTS idx_plot_generation_project_status
+                ON plot_generation_runs(project_id, status);
+            """
+        )
+    finally:
+        connection.execute("PRAGMA foreign_keys = ON")
+
+
 def _safe_json_list(value: object) -> list[dict[str, object]]:
     try:
         parsed = json.loads(str(value or "[]"))
@@ -3579,6 +3741,8 @@ MIGRATIONS = {
     33: _migrate_to_v33,
     34: _migrate_to_v34,
     35: _migrate_to_v35,
+    36: _migrate_to_v36,
+    37: _migrate_to_v37,
 }
 
 

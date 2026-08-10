@@ -54,6 +54,7 @@ def skeleton(summary: str, start: dict, end: dict) -> dict:
 class FakePlotLLM:
     def __init__(self) -> None:
         self.force_bad_return = False
+        self.scene_count = 1
         self.stages: list[str] = []
         self.required_end: dict = {}
 
@@ -101,12 +102,15 @@ class FakePlotLLM:
                     {
                         "title": "新路线",
                         "summary": "按用户方向展开",
-                        "scenes": [{"title": "新场景", "direction": "执行目标细纲"}],
+                        "scenes": [
+                            {"title": f"新场景 {index}", "direction": "执行目标细纲"}
+                            for index in range(1, self.scene_count + 1)
+                        ],
                     }
                 ]
             }
         if stage == "generate_next_scene":
-            return {"text": f"生成正文：{payload['target_skeleton']['event_nodes'][0]['summary']}"}
+            return {"text": f"生成正文：{payload['target_skeleton']['event_nodes'][0]['summary']}（{payload['scene']['title']}）"}
         if stage == "update_fact_ledger":
             facts = dict(payload["facts_before"])
             facts.update({"route": "fork", "location": "城外"})
@@ -463,12 +467,17 @@ class PlotGenerationOrchestratorTests(unittest.TestCase):
         self.assertEqual({"location": "客栈", "alive": True}, run["required_return_state"])
         self.confirm(run)
         self.llm.force_bad_return = True
-        blocked = self.orchestrator.execute(run["id"])
-        self.assertEqual("blocked", blocked["status"])
-        self.assertEqual("return_state_mismatch", blocked["issues"][0]["type"])
-        self.assertEqual([], BranchService(self.database).list_chapters(blocked["branch_id"]))
-
+        repair = self.orchestrator.execute(run["id"])
+        self.assertEqual("repair_required", repair["status"])
+        self.assertEqual("return_state_mismatch", repair["issues"][0]["type"])
+        self.assertEqual([], BranchService(self.database).list_chapters(repair["branch_id"]))
+        with self.assertRaisesRegex(ValueError, "confirmed before generation"):
+            self.orchestrator.execute(run["id"])
         self.llm.force_bad_return = False
+        ready = self.orchestrator.retry(run["id"])
+        self.assertEqual("ready", ready["status"])
+        self.assertEqual(1, ready["generation_attempt"])
+        self.assertEqual(0, ready["next_scene_cursor"])
         completed = self.orchestrator.execute(run["id"])
         self.assertEqual("completed", completed["status"])
         self.assertEqual(self.original, self.projects.get_chapter(chapter_id).original_text)
@@ -615,6 +624,168 @@ class PlotGenerationOrchestratorTests(unittest.TestCase):
         self.assertIsNotNone(next_version.lastrowid)
         with self.assertRaisesRegex(ValueError, "source version changed"):
             self.orchestrator.confirm_seams(run["id"], [{"seam_id": seam["id"], "decision": "confirmed"}])
+
+    def test_plot_state_machine_allows_planning_revision_and_rejects_execute(self) -> None:
+        project_id, chapter_id = self.create_project("branch")
+        run = self.orchestrator.start(
+            project_id=project_id,
+            generation_mode="fork_and_rejoin",
+            start_anchor={"anchor_type": "chapter_start", "chapter_id": chapter_id},
+            return_anchor={"anchor_type": "chapter_end", "chapter_id": chapter_id},
+            user_direction="绕路后回接",
+        )
+        invalid = {**run["target_skeleton"], "required_end_state": {"location": "荒野"}}
+        blocked = self.orchestrator.confirm_target_skeleton(run["id"], invalid)
+        self.assertEqual("planning_blocked", blocked["status"])
+        with self.assertRaisesRegex(ValueError, "confirmed before generation"):
+            self.orchestrator.execute(run["id"])
+        revised = {**invalid, "required_end_state": dict(run["required_return_state"])}
+        awaiting = self.orchestrator.confirm_target_skeleton(run["id"], revised)
+        self.assertEqual("awaiting_seams", awaiting["status"])
+
+    def test_completed_and_cancelled_runs_are_terminal_and_history_is_preserved(self) -> None:
+        project_id, _chapter_id = self.create_project("branch")
+        first = self.orchestrator.start(
+            project_id=project_id,
+            generation_mode="open_continuation",
+            start_anchor={"anchor_type": "document_end"},
+            user_direction="第一次",
+        )
+        self.confirm(first)
+        completed = self.orchestrator.execute(first["id"])
+        self.assertEqual("completed", completed["status"])
+        with self.assertRaisesRegex(ValueError, "confirmed before generation"):
+            self.orchestrator.execute(first["id"])
+        second = self.orchestrator.start(
+            project_id=project_id,
+            generation_mode="open_continuation",
+            start_anchor={"anchor_type": "document_end"},
+            user_direction="第二次",
+        )
+        cancelled = self.orchestrator.cancel(second["id"])
+        self.assertEqual("cancelled", cancelled["status"])
+        with self.assertRaisesRegex(ValueError, "confirmed before generation"):
+            self.orchestrator.execute(second["id"])
+        history = self.orchestrator.list_runs(project_id)
+        self.assertEqual([second["id"], first["id"]], [item["id"] for item in history])
+
+    def test_seam_reviews_require_complete_unique_atomic_set(self) -> None:
+        project_id, chapter_id = self.create_project("rewrite")
+        run = self.orchestrator.start(
+            project_id=project_id,
+            generation_mode="bounded_insert",
+            start_anchor={"anchor_type": "chapter_start", "chapter_id": chapter_id},
+            return_anchor={"anchor_type": "chapter_end", "chapter_id": chapter_id},
+            user_direction="双接缝",
+        )
+        proposed = self.orchestrator.confirm_target_skeleton(run["id"], run["target_skeleton"])
+        entry, returned = proposed["seams"]
+        with self.assertRaisesRegex(ValueError, "Every generation seam"):
+            self.orchestrator.confirm_seams(
+                run["id"], [{"seam_id": entry["id"], "decision": "confirmed"}]
+            )
+        with self.assertRaisesRegex(ValueError, "Duplicate"):
+            self.orchestrator.confirm_seams(
+                run["id"],
+                [
+                    {"seam_id": entry["id"], "decision": "confirmed"},
+                    {"seam_id": entry["id"], "decision": "rejected"},
+                ],
+            )
+        self.assertTrue(
+            all(item["status"] == "draft" for item in self.orchestrator.get_run(run["id"])["seams"])
+        )
+        ready = self.orchestrator.confirm_seams(
+            run["id"],
+            [
+                {"seam_id": entry["id"], "decision": "confirmed"},
+                {"seam_id": returned["id"], "decision": "rejected"},
+            ],
+        )
+        self.assertEqual("ready", ready["status"])
+        self.assertEqual({"confirmed", "rejected"}, {item["status"] for item in ready["seams"]})
+
+    def test_incremental_generation_pauses_resumes_and_commits_only_after_consistency(self) -> None:
+        self.llm.scene_count = 3
+        project_id, _chapter_id = self.create_project("branch")
+        run = self.orchestrator.start(
+            project_id=project_id,
+            generation_mode="open_continuation",
+            start_anchor={"anchor_type": "document_end"},
+            user_direction="三场景计划",
+        )
+        self.confirm(run)
+        first = self.orchestrator.generate_next(run["id"])
+        self.assertEqual("generating", first["status"])
+        self.assertEqual(1, first["next_scene_cursor"])
+        self.assertEqual(1, len(first["generated_progress"]["scenes"]))
+        self.assertEqual([], BranchService(self.database).list_chapters(first["branch_id"]))
+
+        second = self.orchestrator.execute(run["id"], max_scenes=1)
+        self.assertEqual("generating", second["status"])
+        self.assertEqual(2, second["next_scene_cursor"])
+        self.assertEqual([], BranchService(self.database).list_chapters(second["branch_id"]))
+
+        completed = self.orchestrator.execute(run["id"])
+        self.assertEqual("completed", completed["status"])
+        self.assertEqual(3, completed["next_scene_cursor"])
+        chapters = BranchService(self.database).list_chapters(completed["branch_id"])
+        self.assertEqual(3, len(chapters[0]["scenes"]))
+        self.assertEqual(
+            ["新场景 1", "新场景 2", "新场景 3"],
+            [scene["title"] for scene in chapters[0]["scenes"]],
+        )
+
+    def test_child_from_historical_chapter_snapshot_keeps_text_and_facts_aligned(self) -> None:
+        project_id, _chapter_id = self.create_project("branch")
+        branches = BranchService(self.database)
+        parent = branches.create_branch(
+            project_id=project_id,
+            name="parent",
+            branch_mode="fork",
+            start_anchor={"anchor_type": "document_end"},
+        )
+        chapter = branches.create_chapter(
+            parent["id"], title="history", facts_after={"location": "initial"}
+        )
+        scene = branches.save_scene(
+            parent["id"],
+            branch_chapter_id=chapter["id"],
+            title="history scene",
+            generated_text="historical text v1",
+            facts_after={"location": "v1", "secret": "old"},
+        )
+        chapter_v1 = branches.get_chapter(chapter["id"])
+        branches.save_scene_version(
+            scene["id"],
+            generated_text="historical text v2",
+            facts_after={"location": "v2", "secret": "new"},
+        )
+        chapter_v2 = branches.get_chapter(chapter["id"])
+
+        runs = []
+        for version in (chapter_v1, chapter_v2):
+            runs.append(
+                self.orchestrator.start(
+                    project_id=project_id,
+                    generation_mode="fork",
+                    parent_branch_id=parent["id"],
+                    start_anchor={
+                        "anchor_type": "branch_chapter",
+                        "branch_chapter_id": chapter["id"],
+                        "source_version_id": version["version_id"],
+                        "side": "after",
+                    },
+                    user_direction="从历史章节派生",
+                )
+            )
+        self.assertIn("historical text v1", runs[0]["context"]["previous_generated_scene"])
+        self.assertEqual("v1", runs[0]["start_state"]["location"])
+        self.assertIn("historical text v2", runs[1]["context"]["previous_generated_scene"])
+        self.assertEqual("v2", runs[1]["start_state"]["location"])
+        self.assertNotEqual(
+            runs[0]["start_anchor"]["source_hash"], runs[1]["start_anchor"]["source_hash"]
+        )
 
 
 if __name__ == "__main__":
