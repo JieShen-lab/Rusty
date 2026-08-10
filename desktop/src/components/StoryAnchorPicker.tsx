@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  getBranchChapters,
   getChapterScenes,
   getChapterStorySkeleton,
+} from '../api/client';
+import {
+  getBranchChapters,
   getRewriteVersionAnchors,
   getRewriteVersionSkeleton,
   previewStoryAnchor,
-} from '../api/client';
+} from '../api/workflowClient';
 import type {
   BranchChapterRecord,
   Chapter,
