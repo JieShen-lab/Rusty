@@ -14,6 +14,7 @@ from rusty.services.context_service import ContextService
 from rusty.services.project_service import ProjectService, default_database_path
 from rusty.services.structured_skeleton import validate_structured_skeleton
 from rusty.services.workflow_ai import WorkflowAI
+from rusty.services.rewrite_version_map_service import RewriteVersionMapService
 
 
 GENERATION_MODES = {
@@ -64,6 +65,7 @@ class PlotGenerationOrchestrator:
         self.branches = BranchService(self.database_path)
         self.chapter_versions = ChapterVersionService(self.database_path)
         self.contexts = ContextService(self.database_path)
+        self.rewrite_maps = RewriteVersionMapService(self.database_path)
         self.ai = WorkflowAI(self.database_path, ai_client=ai_client)
         with session(self.database_path) as connection:
             initialize_database(connection)
@@ -111,6 +113,13 @@ class PlotGenerationOrchestrator:
             style_profile_id=style_profile_id,
             rewrite_source_snapshot=rewrite_source,
         )
+        source_map_hash = None
+        if rewrite_source is not None:
+            source_map_hash = (
+                self.rewrite_maps.map_hash(int(rewrite_source["source_version_id"]))
+                if rewrite_source.get("source_version_id") is not None
+                else str(rewrite_source["content_hash"])
+            )
         source_text = str(context["start_anchor_context"].get("text") or "")
         start_anchor = {**start_anchor}
         if start_anchor.get("chapter_id") is None and context["start_anchor_context"].get("chapter_id") is not None:
@@ -208,6 +217,16 @@ class PlotGenerationOrchestrator:
             )
             branch_id = int(branch["id"])
         with session(self.database_path) as connection:
+            resolved_start = _resolved_anchor_snapshot(
+                start_anchor, context["start_anchor_context"]
+            )
+            resolved_return = (
+                _resolved_anchor_snapshot(
+                    return_anchor, context["return_anchor_context"]
+                )
+                if return_anchor is not None and context.get("return_anchor_context")
+                else None
+            )
             cursor = connection.execute(
                 """
                 INSERT INTO plot_generation_runs (
@@ -219,8 +238,9 @@ class PlotGenerationOrchestrator:
                     style_profile_id, range_operation, source_chapter_id,
                     source_base_kind, source_base_version_id, source_hash,
                     source_text_snapshot, require_source_head_match,
-                    expected_source_head_version_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    expected_source_head_version_id, source_map_hash,
+                    resolved_start_anchor_json, resolved_return_anchor_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     project_id,
@@ -252,6 +272,11 @@ class PlotGenerationOrchestrator:
                     rewrite_source["text"] if rewrite_source else None,
                     1 if rewrite_source and rewrite_source["require_head_match"] else 0,
                     rewrite_source["expected_head_version_id"] if rewrite_source else None,
+                    source_map_hash,
+                    json.dumps(resolved_start, ensure_ascii=False),
+                    json.dumps(resolved_return, ensure_ascii=False)
+                    if resolved_return is not None
+                    else None,
                 ),
             )
         return self.get_run(int(cursor.lastrowid))
@@ -587,7 +612,13 @@ class PlotGenerationOrchestrator:
                     source_text = str(run.get("source_text_snapshot") or "")
                     if not source_text:
                         raise ValueError("Bounded insert run has no frozen source text.")
+                    if run.get("source_base_version_id") is not None:
+                        self.rewrite_maps.validate_map_hash(
+                            int(run["source_base_version_id"]),
+                            str(run["source_map_hash"]),
+                        )
                     inserted = "\n\n".join(scene["text"] for scene in generated)
+                    entry_text, return_text = _bounded_seam_text(run["seams"])
                     if run["range_operation"] == "replace_range":
                         rewritten = _compose_replace_range(
                             source_text,
@@ -596,6 +627,11 @@ class PlotGenerationOrchestrator:
                             inserted,
                             run["seams"],
                         )
+                        map_change = {
+                            "start": int(start["text_offset"]),
+                            "end": int(end["text_offset"]),
+                            "replacement_length": len(entry_text + inserted + return_text),
+                        }
                     else:
                         rewritten = _compose_insert_between(
                             source_text,
@@ -603,6 +639,24 @@ class PlotGenerationOrchestrator:
                             inserted,
                             run["seams"],
                         )
+                        map_change = {
+                            "start": int(start["text_offset"]),
+                            "end": int(start["text_offset"]),
+                            "replacement_length": len(entry_text + inserted + return_text),
+                        }
+                    source = self.chapter_versions.resolve_chapter_source(
+                        int(run["source_chapter_id"]),
+                        (
+                            {
+                                "kind": "rewrite_version",
+                                "version_id": int(run["source_base_version_id"]),
+                            }
+                            if run.get("source_base_version_id") is not None
+                            else {"kind": "original"}
+                        ),
+                        connection=connection,
+                    )
+                    generated_start = int(start["text_offset"]) + len(entry_text)
                     version = self.chapter_versions.append_chapter_rewrite_version(
                         connection,
                         chapter_id=int(run["source_chapter_id"]),
@@ -612,12 +666,27 @@ class PlotGenerationOrchestrator:
                         source_base_kind=str(run["source_base_kind"]),
                         source_base_version_id=run.get("source_base_version_id"),
                         source_hash=str(run["source_hash"]),
-                        facts_before=run["start_state"],
-                        facts_after=ledger,
+                        facts_before=source.facts_before,
+                        facts_after=source.facts_after,
                         require_head_match=bool(run["require_source_head_match"]),
                         expected_head_version_id=run.get(
                             "expected_source_head_version_id"
                         ),
+                        fact_chain_status="consistent",
+                        mapping_strategy="transformed",
+                        source_skeleton=run["target_skeleton"],
+                        map_changes=[map_change],
+                        generated_segment={
+                            "node_id": (
+                                run["target_skeleton"]["event_nodes"][0]["id"]
+                                if run["target_skeleton"].get("event_nodes")
+                                else "generated"
+                            ),
+                            "start_offset": generated_start,
+                            "end_offset": generated_start + len(inserted),
+                            "state_before": run["start_state"],
+                            "state_after": ledger,
+                        },
                     )
                     result_version_id = int(version["id"])
                     result = {
@@ -728,6 +797,8 @@ class PlotGenerationOrchestrator:
             "generated_progress": {"chapters": [], "scenes": []},
             "selected_character_ids": [],
             "selected_material_ids": [],
+            "resolved_start_anchor": {},
+            "resolved_return_anchor": None,
         }
         for key, default in defaults.items():
             raw = row[f"{key}_json"] if f"{key}_json" in row.keys() else None
@@ -1041,6 +1112,36 @@ def _state_issues(required: dict[str, Any], actual: dict[str, Any]) -> list[dict
         for key, expected in required.items()
         if actual.get(key) != expected
     ]
+
+
+def _resolved_anchor_snapshot(
+    anchor: dict[str, Any], resolved: dict[str, Any]
+) -> dict[str, Any]:
+    span = dict(
+        resolved.get("resolved_span")
+        or {
+            "start": int(resolved.get("offset", 0)),
+            "end": int(resolved.get("offset", 0)),
+        }
+    )
+    return {
+        "anchor_type": anchor.get("anchor_type"),
+        "chapter_id": resolved.get("chapter_id", anchor.get("chapter_id")),
+        "scene_id": anchor.get("scene_id"),
+        "skeleton_version_id": anchor.get("skeleton_version_id"),
+        "node_id": anchor.get("node_id"),
+        "side": anchor.get("side"),
+        "source_version_id": resolved.get("source_version_id"),
+        "actual_start": int(span["start"]),
+        "actual_end": int(span["end"]),
+        "offset": int(resolved.get("offset", span["start"])),
+        "state": dict(resolved.get("state") or {}),
+        "mapping_method": resolved.get("mapping_method", "identity"),
+        "state_method": resolved.get("state_method", "scene_ledger"),
+        "confidence": float(resolved.get("confidence", 1.0)),
+        "source_hash": resolved.get("source_hash"),
+        "semantic_map_hash": resolved.get("semantic_map_hash"),
+    }
 
 
 def _seam_contribution(seam: dict[str, Any]) -> str:

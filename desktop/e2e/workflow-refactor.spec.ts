@@ -51,6 +51,24 @@ async function mockWorkspace(page: Page, projectKind: 'rewrite' | 'branch' | 'le
         content_hash: 'content-hash', facts_before: {}, facts_after: {},
         created_at: '2026-08-10T00:00:00', is_current: true,
       }];
+    } else if (path === '/api/chapter-rewrite-versions/1001/anchors') {
+      body = [{
+        id: 1101, rewrite_version_id: 1001, segment_kind: 'scene',
+        source_scene_id: 801, skeleton_version_id: null, node_id: null,
+        segment_index: 0, start_offset: 0, end_offset: 16,
+        mapping_method: 'semantic', confidence: 0.72, needs_remap: false,
+        state_method: 'inherited_scene_chain', state_before: { location: '院门' },
+        state_after: { location: '院子' }, facts_before: { location: '院门' },
+        facts_after: { location: '院子' },
+      }];
+    } else if (path === '/api/story-anchors/preview' && route.request().method() === 'POST') {
+      body = {
+        resolved_version_id: 1001, resolved_start: 0, resolved_end: 16,
+        text_excerpt: '人物进入院子。伏击结束。',
+        state_before: { location: '院门' }, state_after: { location: '院子' },
+        mapping_method: 'semantic', state_method: 'inherited_scene_chain',
+        confidence: 0.72, semantic_map_hash: 'map-hash',
+      };
     } else if (path === '/api/projects/99/style-synthesis') {
       body = null;
     } else if (path === '/api/projects/99/branches') {
@@ -138,6 +156,10 @@ test('正文版本可查看并作为新工作流的显式来源', async ({ page 
   const versions = page.getByLabel('rewrite versions');
   await expect(versions).toContainText('v1');
   await versions.getByRole('button', { name: '基于此版本创建新操作' }).click();
+  await page.getByLabel('插入点节点类型').selectOption('scene_end');
+  await page.getByRole('button', { name: '预览锚点' }).first().click();
+  await expect(page.getByLabel('插入点锚点预览')).toContainText('人物进入院子');
+  await expect(page.getByLabel('插入点锚点预览')).toContainText('建议确认');
   await page.getByLabel('新增剧情目标').fill('从历史版本派生');
   await page.getByRole('button', { name: '启动分析' }).click();
   expect(state.getLastPlotPayload()?.source).toEqual({ kind: 'rewrite_version', version_id: 1001 });

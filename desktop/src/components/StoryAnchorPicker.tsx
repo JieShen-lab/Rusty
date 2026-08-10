@@ -1,11 +1,20 @@
 import { useEffect, useMemo, useState } from 'react';
-import { getBranchChapters, getChapterScenes, getChapterStorySkeleton } from '../api/client';
+import {
+  getBranchChapters,
+  getChapterScenes,
+  getChapterStorySkeleton,
+  getRewriteVersionAnchors,
+  previewStoryAnchor,
+} from '../api/client';
 import type {
   BranchChapterRecord,
   Chapter,
   PreferredStorySkeleton,
   SceneRecord,
   StoryAnchor,
+  StoryAnchorPreview,
+  ChapterSourceSelection,
+  RewriteSemanticSegment,
 } from '../api/types';
 
 type OriginalAnchorType =
@@ -23,6 +32,10 @@ export function StoryAnchorPicker({
   label,
   onChange,
   parentBranchId = null,
+  projectId,
+  source = { kind: 'original' },
+  sourceTextLength,
+  sourceVersionId = null,
   value,
 }: {
   allowDocumentEnd?: boolean;
@@ -30,6 +43,10 @@ export function StoryAnchorPicker({
   label: string;
   onChange: (anchor: StoryAnchor) => void;
   parentBranchId?: number | null;
+  projectId: number;
+  source?: ChapterSourceSelection;
+  sourceTextLength?: number;
+  sourceVersionId?: number | null;
   value: StoryAnchor;
 }) {
   const [sourceKind, setSourceKind] = useState<'original' | 'branch'>(
@@ -50,6 +67,8 @@ export function StoryAnchorPicker({
   const [branchChapters, setBranchChapters] = useState<BranchChapterRecord[]>([]);
   const [branchTarget, setBranchTarget] = useState('');
   const [error, setError] = useState('');
+  const [segments, setSegments] = useState<RewriteSemanticSegment[]>([]);
+  const [preview, setPreview] = useState<StoryAnchorPreview | null>(null);
 
   useEffect(() => {
     if (!allowDocumentEnd && value.anchor_type === 'document_end') setAnchorType('chapter_end');
@@ -61,18 +80,32 @@ export function StoryAnchorPicker({
     Promise.all([
       getChapterScenes(chapterId),
       getChapterStorySkeleton(chapterId).catch(() => null),
-    ]).then(([loadedScenes, loadedSkeleton]) => {
+      sourceVersionId ? getRewriteVersionAnchors(sourceVersionId) : Promise.resolve([]),
+    ]).then(([loadedScenes, loadedSkeleton, loadedSegments]) => {
       if (!active) return;
-      setScenes(loadedScenes);
+      const mappedSceneIds = new Set(loadedSegments
+        .filter((item) => item.segment_kind === 'scene' && !item.needs_remap)
+        .map((item) => item.source_scene_id));
+      const availableScenes = sourceVersionId
+        ? loadedScenes.filter((item) => mappedSceneIds.has(item.id))
+        : loadedScenes;
+      setSegments(loadedSegments);
+      setScenes(availableScenes);
       setSkeleton(loadedSkeleton);
-      setSceneId((current) => current && loadedScenes.some((item) => item.id === current)
+      setSceneId((current) => current && availableScenes.some((item) => item.id === current)
         ? current
-        : loadedScenes[0]?.id ?? null);
-      const firstNode = loadedSkeleton?.structured?.event_nodes[0]?.id ?? '';
+        : availableScenes[0]?.id ?? null);
+      const mappedNodes = new Set(loadedSegments
+        .filter((item) => item.segment_kind === 'event_node'
+          && item.skeleton_version_id === loadedSkeleton?.version_id
+          && !item.needs_remap)
+        .map((item) => item.node_id));
+      const firstNode = loadedSkeleton?.structured?.event_nodes
+        .find((item) => !sourceVersionId || mappedNodes.has(item.id))?.id ?? '';
       setNodeId((current) => current || firstNode);
     }).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : '无法读取锚点数据'));
     return () => { active = false; };
-  }, [chapterId, sourceKind]);
+  }, [chapterId, sourceKind, sourceVersionId]);
 
   useEffect(() => {
     if (!parentBranchId) {
@@ -102,6 +135,9 @@ export function StoryAnchorPicker({
   ]), [branchChapters]);
 
   useEffect(() => {
+    const versionFields = sourceVersionId == null
+      ? {}
+      : { source_version_id: sourceVersionId };
     if (sourceKind === 'branch' && branchTarget) {
       const [kind, rawId] = branchTarget.split(':');
       const id = Number(rawId);
@@ -126,18 +162,40 @@ export function StoryAnchorPicker({
     }
     if (anchorType === 'document_end') onChange({ anchor_type: 'document_end' });
     else if (anchorType === 'scene_start' || anchorType === 'scene_end') {
-      if (sceneId) onChange({ anchor_type: anchorType, scene_id: sceneId });
+      if (sceneId) onChange({ anchor_type: anchorType, scene_id: sceneId, ...versionFields });
     } else if (anchorType === 'skeleton_node') {
       if (skeleton?.version_id && nodeId) onChange({
         anchor_type: 'skeleton_node',
         skeleton_version_id: skeleton.version_id,
         node_id: nodeId,
         side,
+        ...versionFields,
       });
     } else if (anchorType === 'text_offset') {
-      if (chapterId) onChange({ anchor_type: 'text_offset', chapter_id: chapterId, text_offset: textOffset, side });
-    } else if (chapterId) onChange({ anchor_type: anchorType, chapter_id: chapterId });
-  }, [anchorType, branchChapters, branchTarget, chapterId, nodeId, onChange, sceneId, side, skeleton, sourceKind, textOffset]);
+      if (chapterId) onChange({ anchor_type: 'text_offset', chapter_id: chapterId, text_offset: textOffset, side, ...versionFields });
+    } else if (chapterId) onChange({ anchor_type: anchorType, chapter_id: chapterId, ...versionFields });
+  }, [anchorType, branchChapters, branchTarget, chapterId, nodeId, onChange, sceneId, side, skeleton, sourceKind, sourceVersionId, textOffset]);
+
+  const visibleNodes = useMemo(() => {
+    const nodes = skeleton?.structured?.event_nodes ?? [];
+    if (!sourceVersionId) return nodes;
+    const ids = new Set(segments
+      .filter((item) => item.segment_kind === 'event_node'
+        && item.skeleton_version_id === skeleton?.version_id
+        && !item.needs_remap)
+      .map((item) => item.node_id));
+    return nodes.filter((node) => ids.has(node.id));
+  }, [segments, skeleton, sourceVersionId]);
+
+  async function loadPreview() {
+    setError('');
+    try {
+      setPreview(await previewStoryAnchor({ project_id: projectId, source, anchor: value }));
+    } catch (reason) {
+      setPreview(null);
+      setError(reason instanceof Error ? reason.message : '无法预览锚点');
+    }
+  }
 
   const selectedChapter = chapters.find((chapter) => chapter.id === chapterId);
   return (
@@ -151,9 +209,11 @@ export function StoryAnchorPicker({
         <label>章节<select aria-label={`${label}章节`} onChange={(event) => setChapterId(Number(event.target.value))} value={chapterId ?? ''}>{chapters.map((chapter) => <option key={chapter.id} value={chapter.id}>{chapter.title}</option>)}</select></label>
         <label>节点类型<select aria-label={`${label}节点类型`} onChange={(event) => setAnchorType(event.target.value as OriginalAnchorType)} value={anchorType}>{allowDocumentEnd ? <option value="document_end">原文末尾</option> : null}<option value="chapter_start">章节开始</option><option value="chapter_end">章节结束</option><option value="scene_start">场景开始</option><option value="scene_end">场景结束</option><option value="skeleton_node">细纲事件</option><option value="text_offset">正文文本位置</option></select></label>
         {anchorType === 'scene_start' || anchorType === 'scene_end' ? <label>场景<select aria-label={`${label}场景`} onChange={(event) => setSceneId(Number(event.target.value))} value={sceneId ?? ''}>{scenes.map((scene) => <option key={scene.id} value={scene.id}>{scene.title || `场景 ${scene.scene_index}`}</option>)}</select></label> : null}
-        {anchorType === 'skeleton_node' ? <><label>事件<select aria-label={`${label}细纲事件`} onChange={(event) => setNodeId(event.target.value)} value={nodeId}>{skeleton?.structured?.event_nodes.map((node) => <option key={node.id} value={node.id}>{node.summary}</option>)}</select></label><label>位置<select onChange={(event) => setSide(event.target.value as typeof side)} value={side}><option value="before">事件之前</option><option value="after">事件之后</option></select></label></> : null}
-        {anchorType === 'text_offset' ? <><label>字符位置<input max={selectedChapter?.original_text.length ?? 0} min={0} onChange={(event) => setTextOffset(Number(event.target.value))} type="number" value={textOffset} /></label><label>位置<select onChange={(event) => setSide(event.target.value as typeof side)} value={side}><option value="before">位置之前</option><option value="after">位置之后</option></select></label></> : null}
+        {anchorType === 'skeleton_node' ? <><label>事件<select aria-label={`${label}细纲事件`} onChange={(event) => setNodeId(event.target.value)} value={nodeId}>{visibleNodes.map((node) => <option key={node.id} value={node.id}>{node.summary}</option>)}</select></label><label>位置<select onChange={(event) => setSide(event.target.value as typeof side)} value={side}><option value="before">事件之前</option><option value="after">事件之后</option></select></label></> : null}
+        {anchorType === 'text_offset' ? <><label>字符位置<input max={sourceTextLength ?? selectedChapter?.original_text.length ?? 0} min={0} onChange={(event) => setTextOffset(Number(event.target.value))} type="number" value={textOffset} /></label><label>位置<select onChange={(event) => setSide(event.target.value as typeof side)} value={side}><option value="before">位置之前</option><option value="after">位置之后</option></select></label></> : null}
       </>}
+      {sourceKind === 'original' ? <button onClick={() => void loadPreview()} type="button">预览锚点</button> : null}
+      {preview ? <aside aria-label={`${label}锚点预览`}><p>位置：{preview.resolved_start}–{preview.resolved_end}</p><blockquote>{preview.text_excerpt}</blockquote><small>映射：{preview.mapping_method} / {Math.round(preview.confidence * 100)}%</small>{preview.mapping_method === 'semantic' && preview.confidence < 0.8 ? <p>此锚点位置由语义映射得到，建议确认。</p> : null}</aside> : null}
       {error ? <p role="alert">{error}</p> : null}
     </fieldset>
   );

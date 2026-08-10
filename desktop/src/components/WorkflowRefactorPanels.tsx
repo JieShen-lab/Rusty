@@ -111,6 +111,11 @@ export function RewriteOperationPanel({
   const [rewriteVersions, setRewriteVersions] = useState<ChapterRewriteVersion[]>([]);
   const [workflowSource, setWorkflowSource] = useState<ChapterSourceSelection>({ kind: 'current' });
   const [viewedVersion, setViewedVersion] = useState<ChapterRewriteVersion | null>(null);
+  const selectedRewriteVersion = workflowSource.kind === 'rewrite_version'
+    ? rewriteVersions.find((item) => item.id === workflowSource.version_id) ?? null
+    : workflowSource.kind === 'current'
+      ? rewriteVersions.find((item) => item.is_current) ?? null
+      : null;
 
   useEffect(() => {
     let active = true;
@@ -267,8 +272,8 @@ export function RewriteOperationPanel({
       {operation === 'plot_generation' ? (
         <div className="operation-fields">
           <label>插入方式<select aria-label="插入方式" onChange={(event) => setRangeOperation(event.target.value as typeof rangeOperation)} value={rangeOperation}><option value="insert_between">在节点后插入</option><option value="replace_range">替换选定范围</option></select></label>
-          {chapter ? <StoryAnchorPicker chapters={[chapter]} label="插入点" onChange={setStartAnchor} value={startAnchor} /> : null}
-          {rangeOperation === 'replace_range' && chapter ? <StoryAnchorPicker chapters={[chapter]} label="范围终点" onChange={setReturnAnchor} value={returnAnchor} /> : <label>回接点<input readOnly value="插入点后原文" /></label>}
+          {chapter ? <StoryAnchorPicker chapters={[chapter]} label="插入点" onChange={setStartAnchor} projectId={projectId} source={workflowSource} sourceTextLength={selectedRewriteVersion?.rewritten_text.length ?? chapter.original_text.length} sourceVersionId={selectedRewriteVersion?.id ?? null} value={startAnchor} /> : null}
+          {rangeOperation === 'replace_range' && chapter ? <StoryAnchorPicker chapters={[chapter]} label="范围终点" onChange={setReturnAnchor} projectId={projectId} source={workflowSource} sourceTextLength={selectedRewriteVersion?.rewritten_text.length ?? chapter.original_text.length} sourceVersionId={selectedRewriteVersion?.id ?? null} value={returnAnchor} /> : <label>回接点<input readOnly value="插入点后原文" /></label>}
           <label className="wide">新增剧情目标<textarea onChange={(event) => setDirection(event.target.value)} value={direction} /></label>
           <p className="wide">本次运行明确以不可变原始基线为来源；历史改写结果可查看，但不会被隐式串入新任务。</p>
           {!plotRun ? <button disabled={busy || !chapter || !direction.trim()} onClick={() => void perform(beginPlot)} type="button">启动分析</button> : <RunStatus run={plotRun} />}
@@ -422,8 +427,8 @@ export function BranchWorkspacePanel({
           {error ? <p role="alert">{error}</p> : null}
           <div className="operation-fields">
             <p className="wide">生成来源：{sourceParentBranchId ? `父分支 #${sourceParentBranchId}` : '原始基线'}</p>
-            <StoryAnchorPicker allowDocumentEnd chapters={chapters} label="起点" onChange={setStartAnchor} parentBranchId={sourceParentBranchId} value={startAnchor} />
-            {mode === 'fork_and_rejoin' ? <StoryAnchorPicker chapters={chapters} label="回接点" onChange={setReturnAnchor} value={returnAnchor} /> : null}
+            <StoryAnchorPicker allowDocumentEnd chapters={chapters} label="起点" onChange={setStartAnchor} parentBranchId={sourceParentBranchId} projectId={projectId} value={startAnchor} />
+            {mode === 'fork_and_rejoin' ? <StoryAnchorPicker chapters={chapters} label="回接点" onChange={setReturnAnchor} projectId={projectId} value={returnAnchor} /> : null}
             <label className="wide">剧情目标<textarea onChange={(event) => setDirection(event.target.value)} value={direction} /></label>
             <label>人物 ID<input onChange={(event) => setCharacterIds(event.target.value)} placeholder="逗号分隔" value={characterIds} /></label>
             <label>素材 ID<input onChange={(event) => setMaterialIds(event.target.value)} placeholder="逗号分隔" value={materialIds} /></label>

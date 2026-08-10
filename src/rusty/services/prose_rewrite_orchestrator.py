@@ -11,6 +11,7 @@ from rusty.services.project_service import ProjectService, default_database_path
 from rusty.services.shared_analysis_service import SkeletonExtractionService
 from rusty.services.structured_skeleton import validate_structured_skeleton
 from rusty.services.workflow_ai import WorkflowAI
+from rusty.services.rewrite_version_map_service import RewriteVersionMapService
 
 
 PRESERVATION_FIELDS = {
@@ -40,6 +41,7 @@ class ProseRewriteOrchestrator:
         self.chapter_versions = ChapterVersionService(self.database_path)
         self.contexts = ContextService(self.database_path)
         self.skeletons = SkeletonExtractionService(self.database_path)
+        self.rewrite_maps = RewriteVersionMapService(self.database_path)
         self.ai = WorkflowAI(self.database_path, ai_client=ai_client)
         with session(self.database_path) as connection:
             initialize_database(connection)
@@ -64,6 +66,11 @@ class ProseRewriteOrchestrator:
         source = validate_structured_skeleton(source_skeleton)
         chapter_source = self.chapter_versions.resolve_chapter_source(
             chapter_id, source_selection
+        )
+        source_map_hash = (
+            self.rewrite_maps.map_hash(chapter_source.source_version_id)
+            if chapter_source.source_version_id is not None
+            else chapter_source.content_hash
         )
         unknown = set(preservation_policy).difference(
             PRESERVATION_FIELDS | {"locked_node_ids"}
@@ -97,8 +104,8 @@ class ProseRewriteOrchestrator:
                     preservation_policy_json, target_skeleton_json, rewrite_plan_json,
                     source_base_kind, source_base_version_id, source_hash,
                     source_text_snapshot, require_source_head_match,
-                    expected_source_head_version_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    expected_source_head_version_id, source_map_hash
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     project_id,
@@ -120,6 +127,7 @@ class ProseRewriteOrchestrator:
                     chapter_source.text,
                     1 if chapter_source.require_head_match else 0,
                     chapter_source.expected_head_version_id,
+                    source_map_hash,
                 ),
             )
         return self.get_run(int(cursor.lastrowid))
@@ -218,6 +226,11 @@ class ProseRewriteOrchestrator:
                 )
                 if locked.rowcount != 1:
                     raise ValueError("Prose rewrite run is no longer generating.")
+                if run.get("source_base_version_id") is not None:
+                    self.rewrite_maps.validate_map_hash(
+                        int(run["source_base_version_id"]),
+                        str(run["source_map_hash"]),
+                    )
                 source = self.chapter_versions.resolve_chapter_source(
                     int(run["chapter_id"]),
                     (
@@ -242,6 +255,10 @@ class ProseRewriteOrchestrator:
                     expected_head_version_id=run.get(
                         "expected_source_head_version_id"
                     ),
+                    fact_chain_status="consistent",
+                    mapping_strategy="structural",
+                    source_skeleton=run["source_skeleton"],
+                    observed_skeleton=observed,
                 )
                 connection.execute(
                     """

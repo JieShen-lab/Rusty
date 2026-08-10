@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .connection import session
 
-CURRENT_SCHEMA_VERSION = 39
+CURRENT_SCHEMA_VERSION = 40
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -3580,6 +3580,196 @@ def _migrate_to_v39(connection: sqlite3.Connection) -> None:
         connection.execute("PRAGMA foreign_keys = ON")
 
 
+def _migrate_to_v40(connection: sqlite3.Connection) -> None:
+    """Add immutable rewrite-local semantic spans and repair legacy facts."""
+    if not _table_exists(connection, "chapter_rewrite_versions"):
+        return
+    _add_column_if_missing(
+        connection,
+        "chapter_rewrite_versions",
+        "fact_chain_status",
+        "fact_chain_status TEXT NOT NULL DEFAULT 'needs_recompute' "
+        "CHECK (fact_chain_status IN ('consistent', 'needs_recompute'))",
+    )
+    if _table_exists(connection, "story_skeletons"):
+        _add_column_if_missing(
+            connection,
+            "story_skeletons",
+            "source_rewrite_version_id",
+            "source_rewrite_version_id INTEGER",
+        )
+    for table_name in ("plot_generation_runs", "prose_rewrite_runs"):
+        if _table_exists(connection, table_name):
+            _add_column_if_missing(
+                connection, table_name, "source_map_hash", "source_map_hash TEXT"
+            )
+    for name, definition in (
+        ("resolved_start_anchor_json", "resolved_start_anchor_json TEXT"),
+        ("resolved_return_anchor_json", "resolved_return_anchor_json TEXT"),
+    ):
+        if _table_exists(connection, "plot_generation_runs"):
+            _add_column_if_missing(connection, "plot_generation_runs", name, definition)
+    if _table_exists(connection, "canon_change_runs"):
+        _add_column_if_missing(
+            connection,
+            "canon_change_runs",
+            "source_map_hashes_json",
+            "source_map_hashes_json TEXT NOT NULL DEFAULT '{}'",
+        )
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS chapter_rewrite_version_segments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rewrite_version_id INTEGER NOT NULL,
+            segment_kind TEXT NOT NULL CHECK (
+                segment_kind IN ('scene', 'event_node', 'generated_event')
+            ),
+            source_scene_id INTEGER,
+            skeleton_version_id INTEGER,
+            node_id TEXT,
+            segment_index INTEGER NOT NULL,
+            start_offset INTEGER NOT NULL CHECK (start_offset >= 0),
+            end_offset INTEGER NOT NULL CHECK (end_offset >= start_offset),
+            mapping_method TEXT NOT NULL CHECK (
+                mapping_method IN ('identity', 'shifted', 'structural', 'semantic')
+            ),
+            confidence REAL NOT NULL DEFAULT 1.0 CHECK (
+                confidence >= 0.0 AND confidence <= 1.0
+            ),
+            needs_remap INTEGER NOT NULL DEFAULT 0 CHECK (needs_remap IN (0, 1)),
+            state_method TEXT NOT NULL DEFAULT 'explicit',
+            state_before_json TEXT NOT NULL DEFAULT '{}',
+            state_after_json TEXT NOT NULL DEFAULT '{}',
+            facts_before_json TEXT NOT NULL DEFAULT '{}',
+            facts_after_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (rewrite_version_id, segment_kind, segment_index),
+            FOREIGN KEY (rewrite_version_id) REFERENCES chapter_rewrite_versions(id) ON DELETE CASCADE,
+            FOREIGN KEY (source_scene_id) REFERENCES scenes(id) ON DELETE SET NULL,
+            FOREIGN KEY (skeleton_version_id) REFERENCES story_skeleton_versions(id) ON DELETE SET NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_rewrite_segments_version
+            ON chapter_rewrite_version_segments(rewrite_version_id);
+        CREATE INDEX IF NOT EXISTS idx_rewrite_segments_version_kind
+            ON chapter_rewrite_version_segments(rewrite_version_id, segment_kind, segment_index);
+        CREATE INDEX IF NOT EXISTS idx_rewrite_segments_scene
+            ON chapter_rewrite_version_segments(source_scene_id, rewrite_version_id);
+        CREATE INDEX IF NOT EXISTS idx_rewrite_segments_node
+            ON chapter_rewrite_version_segments(skeleton_version_id, node_id, rewrite_version_id);
+
+        CREATE TABLE IF NOT EXISTS rewrite_version_skeletons (
+            rewrite_version_id INTEGER NOT NULL,
+            skeleton_version_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (rewrite_version_id, skeleton_version_id),
+            FOREIGN KEY (rewrite_version_id) REFERENCES chapter_rewrite_versions(id) ON DELETE CASCADE,
+            FOREIGN KEY (skeleton_version_id) REFERENCES story_skeleton_versions(id) ON DELETE CASCADE
+        );
+        """
+    )
+
+    # v38 intentionally stored empty fact snapshots.  v40 performs a
+    # best-effort compensation before immutability triggers are installed.
+    versions = connection.execute(
+        """
+        SELECT v.id, v.chapter_id, v.rewritten_text, v.source_operation,
+               v.facts_before_json, v.facts_after_json, c.original_text
+        FROM chapter_rewrite_versions v
+        JOIN chapters c ON c.id = v.chapter_id
+        ORDER BY v.id
+        """
+    ).fetchall()
+    for version in versions:
+        scene_rows = connection.execute(
+            """
+            SELECT s.id, s.scene_index, s.original_start_offset,
+                   s.original_end_offset, l.facts_json
+            FROM scenes s
+            LEFT JOIN scene_fact_ledgers l ON l.id = (
+                SELECT l2.id FROM scene_fact_ledgers l2
+                WHERE l2.scene_id = s.id ORDER BY l2.ledger_version DESC LIMIT 1
+            )
+            WHERE s.chapter_id = ? AND s.deleted_at IS NULL
+            ORDER BY s.scene_index, s.id
+            """,
+            (version["chapter_id"],),
+        ).fetchall()
+        ledgers = [_safe_json_object(row["facts_json"]) for row in scene_rows]
+        before = _safe_json_object(version["facts_before_json"])
+        after = _safe_json_object(version["facts_after_json"])
+        reliable_before = bool(before)
+        if not before and ledgers:
+            required = ledgers[0].get("required_start_state")
+            if isinstance(required, dict) and required:
+                before = required
+                reliable_before = True
+        if not after and ledgers:
+            after = ledgers[-1]
+        status = "consistent" if reliable_before and bool(after) else "needs_recompute"
+        connection.execute(
+            """
+            UPDATE chapter_rewrite_versions
+            SET facts_before_json = ?, facts_after_json = ?, fact_chain_status = ?
+            WHERE id = ?
+            """,
+            (
+                json.dumps(before, ensure_ascii=False),
+                json.dumps(after, ensure_ascii=False),
+                status,
+                version["id"],
+            ),
+        )
+        if str(version["rewritten_text"]) != str(version["original_text"]):
+            continue
+        previous: dict[str, object] = before
+        for index, row in enumerate(scene_rows):
+            current = ledgers[index] if index < len(ledgers) else {}
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO chapter_rewrite_version_segments(
+                    rewrite_version_id, segment_kind, source_scene_id,
+                    segment_index, start_offset, end_offset, mapping_method,
+                    confidence, state_before_json, state_after_json,
+                    facts_before_json, facts_after_json
+                ) VALUES (?, 'scene', ?, ?, ?, ?, 'identity', 1.0, ?, ?, ?, ?)
+                """,
+                (
+                    version["id"], row["id"], index,
+                    row["original_start_offset"], row["original_end_offset"],
+                    json.dumps(previous, ensure_ascii=False),
+                    json.dumps(current, ensure_ascii=False),
+                    json.dumps(previous, ensure_ascii=False),
+                    json.dumps(current, ensure_ascii=False),
+                ),
+            )
+            previous = current
+
+    connection.executescript(
+        """
+        CREATE TRIGGER IF NOT EXISTS prevent_chapter_rewrite_version_update
+        BEFORE UPDATE ON chapter_rewrite_versions
+        BEGIN
+            SELECT RAISE(ABORT, 'chapter rewrite versions are immutable');
+        END;
+        CREATE TRIGGER IF NOT EXISTS prevent_chapter_rewrite_version_delete
+        BEFORE DELETE ON chapter_rewrite_versions
+        BEGIN
+            SELECT RAISE(ABORT, 'chapter rewrite versions are immutable');
+        END;
+        CREATE TRIGGER IF NOT EXISTS prevent_rewrite_segment_update
+        BEFORE UPDATE ON chapter_rewrite_version_segments
+        BEGIN
+            SELECT RAISE(ABORT, 'rewrite version semantic maps are immutable');
+        END;
+        CREATE TRIGGER IF NOT EXISTS prevent_rewrite_segment_delete
+        BEFORE DELETE ON chapter_rewrite_version_segments
+        BEGIN
+            SELECT RAISE(ABORT, 'rewrite version semantic maps are immutable');
+        END;
+        """
+    )
+
+
 def _safe_json_list(value: object) -> list[dict[str, object]]:
     try:
         parsed = json.loads(str(value or "[]"))
@@ -3969,6 +4159,7 @@ MIGRATIONS = {
     37: _migrate_to_v37,
     38: _migrate_to_v38,
     39: _migrate_to_v39,
+    40: _migrate_to_v40,
 }
 
 

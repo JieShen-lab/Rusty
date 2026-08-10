@@ -300,6 +300,37 @@ export type StoryAnchor = {
   source_hash?: string | null;
 };
 
+export type RewriteSemanticSegment = {
+  id: number;
+  rewrite_version_id: number;
+  segment_kind: 'scene' | 'event_node' | 'generated_event';
+  source_scene_id: number | null;
+  skeleton_version_id: number | null;
+  node_id: string | null;
+  segment_index: number;
+  start_offset: number;
+  end_offset: number;
+  mapping_method: 'identity' | 'shifted' | 'structural' | 'semantic';
+  confidence: number;
+  needs_remap: boolean;
+  state_method: string;
+  state_before: WorkflowObject;
+  state_after: WorkflowObject;
+};
+
+export type StoryAnchorPreview = {
+  resolved_version_id: number | null;
+  resolved_start: number;
+  resolved_end: number;
+  text_excerpt: string;
+  state_before: WorkflowObject;
+  state_after: WorkflowObject;
+  mapping_method: 'identity' | 'shifted' | 'structural' | 'semantic';
+  state_method: string;
+  confidence: number;
+  semantic_map_hash: string | null;
+};
+
 export type BranchCreateRequest = {
   name: string;
   branch_mode: 'open_continuation' | 'fork' | 'fork_and_rejoin';
@@ -381,6 +412,7 @@ export type ChapterRewriteVersion = {
   content_hash: string;
   facts_before: WorkflowObject;
   facts_after: WorkflowObject;
+  fact_chain_status: 'consistent' | 'needs_recompute';
   created_at: string;
   is_current: boolean;
 };
@@ -463,6 +495,9 @@ export type PlotGenerationRun = {
   source_base_kind: 'original' | 'rewrite_version' | null;
   source_base_version_id: number | null;
   source_hash: string | null;
+  source_map_hash: string | null;
+  resolved_start_anchor: WorkflowObject;
+  resolved_return_anchor: WorkflowObject | null;
   expected_source_head_version_id: number | null;
   result_version_id: number | null;
 };
@@ -496,6 +531,7 @@ export type ProseRewriteRun = {
   source_base_kind: 'original' | 'rewrite_version' | null;
   source_base_version_id: number | null;
   source_hash: string | null;
+  source_map_hash: string | null;
   expected_source_head_version_id: number | null;
   result_version_id: number | null;
   generation_attempt: number;

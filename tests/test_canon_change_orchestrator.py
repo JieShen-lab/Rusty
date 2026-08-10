@@ -332,11 +332,46 @@ class CanonChangeOrchestratorTests(unittest.TestCase):
         applied = self.service.apply(run["id"])
         with self.assertRaisesRegex(ValueError, "not ready"):
             self.service.apply(applied["id"])
-        pending = self.scan_injury(project_id)
+        applied_patch = applied["patches"][0]
+        applied_result_version = applied_patch.get("result_version_id")
+        with self.assertRaisesRegex(ValueError, "terminal"):
+            self.service.review_patch(applied_patch["id"], decision="rejected")
+        unchanged = self.service.get_run(applied["id"])
+        self.assertEqual("applied", unchanged["status"])
+        self.assertEqual("applied", unchanged["patches"][0]["status"])
+        self.assertEqual(
+            applied_result_version, unchanged["patches"][0].get("result_version_id")
+        )
+        cancelled_project_id, _ = self.project(
+            [("Cancelled", next(iter(FakeCanonLLM.REWRITES)))]
+        )
+        pending = self.scan_injury(cancelled_project_id)
         cancelled = self.service.cancel(pending["id"])
         self.assertEqual("cancelled", cancelled["status"])
         with self.assertRaisesRegex(ValueError, "not ready"):
             self.service.apply(cancelled["id"])
+        cancelled_patch = cancelled["patches"][0]
+        with self.assertRaisesRegex(ValueError, "terminal"):
+            self.service.review_patch(cancelled_patch["id"], decision="accepted")
+        self.assertEqual(
+            "draft", self.service.get_run(cancelled["id"])["patches"][0]["status"]
+        )
+
+    def test_ready_to_apply_patch_review_remains_editable_until_apply(self) -> None:
+        project_id, _chapters = self.project(
+            [("One", next(iter(FakeCanonLLM.REWRITES)))]
+        )
+        run = self.scan_injury(project_id)
+        patch_ids = [patch["id"] for patch in run["patches"]]
+        for patch_id in patch_ids:
+            self.service.review_patch(patch_id, decision="accepted")
+        self.assertEqual("ready_to_apply", self.service.get_run(run["id"])["status"])
+        changed = self.service.review_patch(patch_ids[0], decision="rejected")
+        self.assertEqual("rejected", changed["status"])
+        self.assertEqual("ready_to_apply", self.service.get_run(run["id"])["status"])
+        changed = self.service.review_patch(patch_ids[0], decision="accepted")
+        self.assertEqual("accepted", changed["status"])
+        self.assertEqual("ready_to_apply", self.service.get_run(run["id"])["status"])
 
 
 if __name__ == "__main__":

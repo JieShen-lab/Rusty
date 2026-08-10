@@ -194,3 +194,13 @@ v24–v29 和基础表之上迭代，不能把这些原型描述为完整闭环�
 
 边界校验同时覆盖文本偏移、锚点先后顺序、服务端生成/验证 `source_hash`、活动运行期间
 禁止删除分支、软删除后隐藏分支内容且不影响原文。数据库当前版本为 v35。
+
+## 合并前最终数据语义收口（v40）
+
+- rewrite version 的 Scene / skeleton-node anchor 已改由可查询的 version-local semantic map 解析，不再依赖原文字符串匹配或 original source span。
+- segment 同时保存局部前后状态；章节 facts 保持章节边界语义，Plot 插入状态单独保存在 generated-event segment。
+- Prose observed skeleton、Plot target structure 与 Canon 继承结构均关联到结果 rewrite version；运行冻结 resolved anchor 与 semantic-map hash。
+- v40 对 legacy migration 空 facts 做保守回填，并以 `needs_recompute` 表达无法证明的起始状态。
+- rewrite versions 与 semantic segments 已有数据库不可变触发器；manual clear 追加 restore version。
+- Canon patch 仅可在 reviewing / ready_to_apply 阶段修改，applied 与 cancelled 均为不可审查终态。
+- 浏览器真实后端测试覆盖 Plot → Prose → Plot(scene anchor) → Canon；Electron 测试覆盖当前 Prose version 的 scene-anchor 预览与生成。

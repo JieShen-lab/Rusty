@@ -37,7 +37,7 @@ SKELETON = {
             "causes": [],
             "effects": [],
             "locked": True,
-            "source_span": None,
+            "source_span": {"start": 0, "end": 1},
             "confidence": 1,
         }
     ],
@@ -107,9 +107,17 @@ class RealE2EFakeLLM:
         if stage == "prose_rewrite_plan":
             return {"target_skeleton": payload["source_skeleton"], "rewrite_plan": {"style": "简洁"}}
         if stage == "prose_rewrite_generate":
-            return {"rewritten_text": "人物踏入院中，警觉地观察四周。"}
+            return {
+                "rewritten_text": (
+                    f"{payload['source_text']}\n\n人物踏入院中，警觉地观察四周。"
+                )
+            }
         if stage == "extract_observed_skeleton":
-            return {"observed_skeleton": payload["expected_skeleton"]}
+            observed = deepcopy(payload["expected_skeleton"])
+            for node in observed.get("event_nodes", []):
+                node["source_span"] = {"start": 0, "end": len(payload["text"])}
+                node["confidence"] = 0.85
+            return {"observed_skeleton": observed}
         if stage == "prose_rewrite_repair":
             return {"rewritten_text": payload["rewritten_text"]}
         if stage == "canon_semantic_impact":

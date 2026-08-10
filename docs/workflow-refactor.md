@@ -53,7 +53,7 @@ AI 输出在持久化前统一校验。桌面编辑器调用创建、读取、�
 
 ## 数据库迁移
 
-当前数据库版本为 v39：
+当前数据库版本为 v40：
 
 - v24：`project_kind`
 - v25：结构化细纲字段
@@ -69,6 +69,7 @@ AI 输出在持久化前统一校验。桌面编辑器调用创建、读取、�
 - v38：`chapter_rewrite_versions`，为章节改写正文建立不可变版本链、真实父版本和来源哈希
 - v39：章节改写 current head、Plot/Prose 冻结来源快照与期望 head、分支事实链状态，
   并统一 Prose/Canon 的取消和终态约束
+- v40：`chapter_rewrite_version_segments` 保存 rewrite version-local 场景/事件 span、局部状态、映射方法与置信度；补偿回填 legacy rewrite facts，并为 rewrite versions 与 semantic maps 增加数据库级不可变触发器
 
 迁移不删除旧表、项目、原文、摘要、分析、场景、事实账本或历史版本；全新数据库和
 v29 历史数据库均走同一迁移链。
@@ -134,6 +135,26 @@ Prose Rewrite 和 Canon Change 都通过 `ChapterVersionService` 解析 effectiv
 分支章节 `facts_after` 始终来自该 snapshot 的最后一个场景版本。修改中间场景但未重算
 下游事实时，新章节快照标记为 `needs_recompute`；Canon Change 会从生效点向后为所有受
 影响场景创建新版本（即使正文不变但 facts 变化），并提交 `consistent` 的完整场景/事实链。
+
+## Rewrite version-local 语义锚点与局部状态
+
+v40 将稳定语义身份与文本位置分开：`scene_id` / `node_id` 继续表示身份，
+`chapter_rewrite_version_segments` 记录该身份在特定 rewrite version 中的 span、局部
+`state_before` / `state_after`、映射方法和置信度。Scene 与 skeleton-node 锚点只通过该表解析；
+缺少映射时返回 `anchor_unmapped`，不再搜索 original scene 文本，也不再复用 original
+`source_span`。`text_offset` 使用目标位置最近的 segment state；无法解析时返回
+`state_unresolved`，不会回退到章节末尾状态。
+
+Plot insert 与 Canon patch 使用确定性 span transformation；replace overlap 会标记需要重新映射。
+Prose 复用 drift check 已提取的 observed skeleton source spans，持久化 rewrite-version structure
+和 scene/event map。运行启动时冻结 resolved anchor、source version、source/map hash 和局部状态，
+后续阶段不再重新解释锚点。`POST /api/story-anchors/preview` 在启动前返回版本、实际 span、
+正文摘录、前后状态、映射方法与置信度；桌面端只展示当前所选版本中可解析的语义锚点。
+
+`chapter_rewrite_versions.facts_before/facts_after` 始终表示章节边界状态，插入剧情的局部
+状态保存在 generated-event segment。v40 对 v38 migration 产生的空 facts 做 best-effort
+scene-ledger 回填；证据不足时保留空起点并标记 `needs_recompute`。rewrite versions 与对应
+semantic segments 由 SQLite trigger 禁止 UPDATE/DELETE；恢复原文会追加 `restore` 版本。
 
 ## 验证
 

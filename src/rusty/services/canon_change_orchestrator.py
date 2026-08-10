@@ -10,6 +10,7 @@ from rusty.services.branch_service import BranchService
 from rusty.services.chapter_version_service import ChapterVersionService, SourceVersionConflict
 from rusty.services.project_service import ProjectService, default_database_path
 from rusty.services.workflow_ai import WorkflowAI
+from rusty.services.rewrite_version_map_service import RewriteVersionMapService
 
 
 IMPACT_TYPES = {
@@ -43,6 +44,7 @@ class CanonChangeOrchestrator:
         self.projects = ProjectService(self.database_path)
         self.chapter_versions = ChapterVersionService(self.database_path)
         self.ai = WorkflowAI(self.database_path, ai_client=ai_client)
+        self.rewrite_maps = RewriteVersionMapService(self.database_path)
         with session(self.database_path) as connection:
             initialize_database(connection)
 
@@ -115,6 +117,14 @@ class CanonChangeOrchestrator:
                                 "text": segment["text"],
                                 "facts": segment.get("facts", {}),
                                 "require_head_match": bool(segment.get("require_head_match", True)),
+                                "source_map_hash": (
+                                    self.rewrite_maps.map_hash(
+                                        int(segment["source_base_version_id"])
+                                    )
+                                    if segment["route_kind"] == "chapter"
+                                    and segment.get("source_base_version_id") is not None
+                                    else _hash(str(segment["text"]))
+                                ),
                             }
                             for segment in segments
                         },
@@ -163,6 +173,19 @@ class CanonChangeOrchestrator:
         if decision == "edited" and not replacement_text:
             raise ValueError("Edited patches require replacement text.")
         with session(self.database_path) as connection:
+            current = connection.execute(
+                """
+                SELECT p.*, r.status AS run_status
+                FROM canon_change_patches p
+                JOIN canon_change_runs r ON r.id = p.run_id
+                WHERE p.id = ?
+                """,
+                (patch_id,),
+            ).fetchone()
+            if current is None:
+                raise FileNotFoundError(f"Canon patch not found: {patch_id}")
+            if current["run_status"] not in {"reviewing", "ready_to_apply"}:
+                raise ValueError("Canon patches cannot be reviewed after the run is terminal.")
             cursor = connection.execute(
                 """
                 UPDATE canon_change_patches
@@ -172,8 +195,6 @@ class CanonChangeOrchestrator:
                 """,
                 (decision, replacement_text, patch_id),
             )
-            if cursor.rowcount == 0:
-                raise FileNotFoundError(f"Canon patch not found: {patch_id}")
             row = connection.execute(
                 "SELECT * FROM canon_change_patches WHERE id = ?", (patch_id,)
             ).fetchone()
@@ -181,14 +202,17 @@ class CanonChangeOrchestrator:
                 "SELECT COUNT(*) FROM canon_change_patches WHERE run_id = (SELECT run_id FROM canon_change_patches WHERE id = ?) AND status = 'draft'",
                 (patch_id,),
             ).fetchone()[0]
-            if int(remaining) == 0:
-                connection.execute(
-                    """
-                    UPDATE canon_change_runs SET status = 'ready_to_apply', updated_at = CURRENT_TIMESTAMP
-                    WHERE id = ? AND status = 'reviewing'
-                    """,
-                    (row["run_id"],),
-                )
+            connection.execute(
+                """
+                UPDATE canon_change_runs
+                SET status = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND status IN ('reviewing', 'ready_to_apply')
+                """,
+                (
+                    "ready_to_apply" if int(remaining) == 0 else "reviewing",
+                    row["run_id"],
+                ),
+            )
         return self._patch(row)
 
     def apply(self, run_id: int) -> dict[str, Any]:
@@ -223,6 +247,24 @@ class CanonChangeOrchestrator:
                 current_version_id = self._current_version_id(
                     connection, route_kind, target_id
                 )
+                if (
+                    route_kind == "chapter"
+                    and snapshot.get("source_base_version_id") is not None
+                ):
+                    try:
+                        self.rewrite_maps.validate_map_hash(
+                            int(snapshot["source_base_version_id"]),
+                            str(snapshot["source_map_hash"]),
+                        )
+                    except ValueError:
+                        conflicts.append(
+                            {
+                                "type": "source_map_conflict",
+                                "route_kind": route_kind,
+                                "target_id": target_id,
+                            }
+                        )
+                        continue
                 if (
                     _hash(current) != snapshot["source_hash"]
                     or current_version_id
@@ -342,6 +384,29 @@ class CanonChangeOrchestrator:
                             ),
                             expected_head_version_id=snapshot.get(
                                 "expected_source_head_version_id"
+                            ),
+                            fact_chain_status="consistent",
+                            mapping_strategy="transformed",
+                            map_changes=[
+                                {
+                                    "start": int(patch["source_range"]["start"]),
+                                    "end": int(patch["source_range"]["end"]),
+                                    "replacement_length": len(
+                                        str(patch["replacement_text"])
+                                    ),
+                                    # Reviewed Canon patches change a fact's
+                                    # wording while retaining the mapped scene
+                                    # or event identity.
+                                    "preserve_semantic_identity": True,
+                                }
+                                for patch in grouped.get((route_kind, target_id), [])
+                            ],
+                            source_skeleton=self.rewrite_maps.resolve_structure(
+                                connection,
+                                chapter_id=target_id,
+                                rewrite_version_id=snapshot.get(
+                                    "source_base_version_id"
+                                ),
                             ),
                         )
                         result_versions[(route_kind, target_id)] = int(version["id"])

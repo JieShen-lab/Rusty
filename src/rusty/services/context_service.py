@@ -15,6 +15,8 @@ from rusty.services.prompt_service import PromptService
 from rusty.services.scene_service import SceneRecord, SceneService
 from rusty.services.style_service import StyleTemplateService
 from rusty.services.branch_service import BranchService
+from rusty.services.rewrite_version_map_service import RewriteVersionMapService
+from rusty.services.chapter_version_service import ChapterVersionService
 
 
 DEFAULT_PRIORITIES = {
@@ -159,6 +161,8 @@ class ContextService:
         self.prompt_service = PromptService(self.database_path)
         self.style_service = StyleTemplateService(self.database_path)
         self.branch_service = BranchService(self.database_path)
+        self.rewrite_maps = RewriteVersionMapService(self.database_path)
+        self.chapter_versions = ChapterVersionService(self.database_path)
         self.budgeter = PromptBudgeter()
         with session(self.database_path) as connection:
             initialize_database(connection)
@@ -668,6 +672,54 @@ class ContextService:
             "offset": int(resolved.get("local_offset", resolved.get("offset", 0))),
         }
 
+    def preview_story_anchor(
+        self,
+        *,
+        project_id: int,
+        anchor: dict[str, Any],
+        source: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if anchor.get("anchor_type") in {"branch_chapter", "branch_scene"}:
+            raise ValueError("Branch anchor preview requires branch workspace context.")
+        chapter_id = self.chapter_versions.resolve_anchor_chapter_id(
+            project_id, anchor
+        )
+        snapshot = self.chapter_versions.resolve_chapter_source(
+            chapter_id, source
+        ).to_dict()
+        resolved = self._resolve_generation_anchor(
+            project_id,
+            anchor,
+            parent_branch_id=None,
+            rewrite_source_snapshot=(
+                snapshot if snapshot["source_kind"] == "rewrite_version" else None
+            ),
+        )
+        start = int(
+            (resolved.get("resolved_span") or {}).get(
+                "start", resolved.get("offset", 0)
+            )
+        )
+        end = int(
+            (resolved.get("resolved_span") or {}).get(
+                "end", resolved.get("offset", 0)
+            )
+        )
+        excerpt_start = max(0, start - 80)
+        excerpt_end = min(len(snapshot["text"]), max(end, start) + 80)
+        return {
+            "resolved_version_id": snapshot.get("source_version_id"),
+            "resolved_start": start,
+            "resolved_end": end,
+            "text_excerpt": str(snapshot["text"])[excerpt_start:excerpt_end],
+            "state_before": dict(resolved.get("state_before") or {}),
+            "state_after": dict(resolved.get("state_after") or {}),
+            "mapping_method": resolved.get("mapping_method", "identity"),
+            "state_method": resolved.get("state_method", "scene_ledger"),
+            "confidence": float(resolved.get("confidence", 1.0)),
+            "semantic_map_hash": resolved.get("semantic_map_hash"),
+        }
+
     def _resolve_generation_anchor(
         self,
         project_id: int,
@@ -759,24 +811,43 @@ class ContextService:
             and int(rewrite_source_snapshot["chapter_id"]) == int(chapter.id)
             else chapter.original_text
         )
+        rewrite_version_id = (
+            int(rewrite_source_snapshot["source_version_id"])
+            if rewrite_source_snapshot is not None
+            and rewrite_source_snapshot.get("source_version_id") is not None
+            else None
+        )
+        if rewrite_version_id is not None and anchor.get("source_version_id") not in (
+            None,
+            rewrite_version_id,
+        ):
+            raise ValueError("Anchor source version does not match the frozen rewrite source.")
         offset = len(effective_text)
-        effective_scene_start = None
-        if scene is not None and rewrite_source_snapshot is not None:
-            effective_scene_start = effective_text.find(scene.original_text)
-            if effective_scene_start < 0:
-                raise ValueError(
-                    "The selected scene can no longer be resolved in the frozen rewrite source."
-                )
+        mapped_span = None
+        mapped_state_before: dict[str, Any] | None = None
+        mapped_state_after: dict[str, Any] | None = None
+        mapping_method = "identity"
+        confidence = 1.0
+        state_method = "scene_ledger"
+        if scene is not None and rewrite_version_id is not None:
+            mapped_span = self.rewrite_maps.resolve_scene_span(
+                rewrite_version_id, scene.id
+            )
+            mapped_state_before = mapped_span.state_before
+            mapped_state_after = mapped_span.state_after
+            mapping_method = mapped_span.mapping_method
+            confidence = mapped_span.confidence
+            state_method = mapped_span.state_method
         if anchor_type in {"chapter_start", "scene_start"}:
             offset = (
-                effective_scene_start
-                if effective_scene_start is not None
+                mapped_span.start_offset
+                if mapped_span is not None
                 else (scene.original_start_offset if scene is not None else 0)
             )
         elif anchor_type in {"scene_end"} and scene is not None:
             offset = (
-                effective_scene_start + len(scene.original_text)
-                if effective_scene_start is not None
+                mapped_span.end_offset
+                if mapped_span is not None
                 else scene.original_end_offset
             )
         elif anchor_type == "text_offset":
@@ -803,15 +874,32 @@ class ContextService:
             node = next((item for item in structured.get("event_nodes", []) if str(item.get("id")) == str(anchor["node_id"])), None)
             if node is None:
                 raise ValueError("Skeleton node could not be resolved.")
-            span = node.get("source_span") if isinstance(node.get("source_span"), dict) else {}
-            start_value = span.get("start", span.get("start_offset"))
-            end_value = span.get("end", span.get("end_offset"))
-            if start_value is not None and end_value is not None:
-                offset = int(start_value if anchor.get("side") == "before" else end_value)
-            elif scene is not None:
-                offset = scene.original_start_offset if anchor.get("side") == "before" else scene.original_end_offset
+            if rewrite_version_id is not None:
+                mapped_span = self.rewrite_maps.resolve_node_span(
+                    rewrite_version_id,
+                    int(anchor["skeleton_version_id"]),
+                    str(anchor["node_id"]),
+                )
+                offset = int(
+                    mapped_span.start_offset
+                    if anchor.get("side") == "before"
+                    else mapped_span.end_offset
+                )
+                mapped_state_before = mapped_span.state_before
+                mapped_state_after = mapped_span.state_after
+                mapping_method = mapped_span.mapping_method
+                confidence = mapped_span.confidence
+                state_method = mapped_span.state_method
             else:
-                offset = 0 if anchor.get("side") == "before" else len(effective_text)
+                span = node.get("source_span") if isinstance(node.get("source_span"), dict) else {}
+                start_value = span.get("start", span.get("start_offset"))
+                end_value = span.get("end", span.get("end_offset"))
+                if start_value is not None and end_value is not None:
+                    offset = int(start_value if anchor.get("side") == "before" else end_value)
+                elif scene is not None:
+                    offset = scene.original_start_offset if anchor.get("side") == "before" else scene.original_end_offset
+                else:
+                    offset = 0 if anchor.get("side") == "before" else len(effective_text)
         if offset < 0 or offset > len(effective_text):
             raise ValueError("Anchor text_offset is outside the chapter text.")
         if rewrite_source_snapshot is None and scene is not None and anchor.get("text_offset") is not None and not (
@@ -826,14 +914,49 @@ class ContextService:
                 item for item in siblings if item.original_end_offset <= offset
             ]
             scene = eligible[-1] if eligible else siblings[0]
-        facts = (
-            dict(rewrite_source_snapshot.get("facts_after") or {})
-            if rewrite_source_snapshot is not None
-            else (self.scene_service.get_fact_ledger(scene.id) if scene is not None else {})
-        )
+        if rewrite_version_id is not None:
+            if anchor_type == "chapter_start":
+                mapped_state_before = dict(
+                    rewrite_source_snapshot.get("facts_before") or {}
+                )
+                mapped_state_after = mapped_state_before
+                state_method = "chapter_boundary"
+            elif anchor_type in {"chapter_end", "document_end"}:
+                mapped_state_before = dict(
+                    rewrite_source_snapshot.get("facts_after") or {}
+                )
+                mapped_state_after = mapped_state_before
+                state_method = "chapter_boundary"
+            elif anchor_type == "text_offset":
+                if offset == 0:
+                    local = dict(rewrite_source_snapshot.get("facts_before") or {})
+                    state_method = "chapter_boundary"
+                elif offset == len(effective_text):
+                    local = dict(rewrite_source_snapshot.get("facts_after") or {})
+                    state_method = "chapter_boundary"
+                else:
+                    local = self.rewrite_maps.resolve_state_at_offset(
+                        rewrite_version_id, offset, str(anchor.get("side") or "after")
+                    )
+                    state_method = "nearest_segment"
+                mapped_state_before = local
+                mapped_state_after = local
+                mapping_method = "semantic"
+                confidence = 1.0
+            facts = dict(
+                mapped_state_before
+                if anchor_type in {"scene_start"} or anchor.get("side") == "before"
+                else mapped_state_after
+                or {}
+            )
+        else:
+            facts = self.scene_service.get_fact_ledger(scene.id) if scene is not None else {}
         states = self.scene_service.list_character_states(scene.id) if scene is not None else []
         at_start = anchor_type in {"chapter_start", "scene_start"} or anchor.get("side") == "before"
-        state = facts.get("required_start_state", facts) if at_start else facts.get("required_end_state", facts)
+        if rewrite_version_id is not None:
+            state = dict(mapped_state_before or {}) if at_start else dict(mapped_state_after or {})
+        else:
+            state = facts.get("required_start_state", facts) if at_start else facts.get("required_end_state", facts)
         source_text = source_scene.original_text if source_scene is not None else chapter_text
         local_offset = (
             max(0, min(len(source_text), offset - source_scene.original_start_offset))
@@ -861,8 +984,26 @@ class ContextService:
             "source_range": {"start": 0, "end": len(source_text)},
             "previous_text_tail": chapter_text[:offset][-1200:],
             "state": state,
+            "state_before": dict(mapped_state_before or state),
+            "state_after": dict(mapped_state_after or state),
             "fact_ledger": facts,
             "character_states": states,
+            "mapping_method": mapping_method,
+            "confidence": confidence,
+            "state_method": state_method,
+            "semantic_map_hash": (
+                self.rewrite_maps.map_hash(rewrite_version_id)
+                if rewrite_version_id is not None
+                else None
+            ),
+            "resolved_span": (
+                {
+                    "start": mapped_span.start_offset,
+                    "end": mapped_span.end_offset,
+                }
+                if mapped_span is not None
+                else {"start": offset, "end": offset}
+            ),
         }
 
     def compile_scene_context(

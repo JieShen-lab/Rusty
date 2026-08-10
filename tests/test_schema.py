@@ -210,6 +210,22 @@ class SchemaTests(unittest.TestCase):
                     "UPDATE chapters SET rewritten_text = 'legacy current text', status = 'rewritten' WHERE id = ?",
                     (chapter.id,),
                 )
+                scene_id = connection.execute(
+                    """
+                    INSERT INTO scenes(
+                        project_id, chapter_id, scene_index, title,
+                        original_start_offset, original_end_offset, original_text
+                    ) VALUES (?, ?, 1, 'Legacy scene', 0, 18, 'immutable original')
+                    """,
+                    (project_id, chapter.id),
+                ).lastrowid
+                connection.execute(
+                    """
+                    INSERT INTO scene_fact_ledgers(scene_id, ledger_version, facts_json)
+                    VALUES (?, 1, '{"required_start_state":{"location":"before"},"location":"after"}')
+                    """,
+                    (scene_id,),
+                )
                 connection.execute(
                     """
                     INSERT INTO chapter_rewrites(
@@ -267,6 +283,11 @@ class SchemaTests(unittest.TestCase):
             self.assertEqual("migration", version["source_operation"])
             self.assertEqual("original", version["source_base_kind"])
             self.assertEqual("legacy current text", version["rewritten_text"])
+            self.assertEqual(
+                {"location": "before"}, json.loads(version["facts_before_json"])
+            )
+            self.assertEqual("after", json.loads(version["facts_after_json"])["location"])
+            self.assertEqual("consistent", version["fact_chain_status"])
             self.assertEqual(version["id"], head["current_version_id"])
             self.assertEqual(1, head["current_version"])
             self.assertEqual("immutable original", original["original_text"])
@@ -277,6 +298,75 @@ class SchemaTests(unittest.TestCase):
             self.assertEqual("reviewing", canon_run["status"])
             self.assertIn("old", canon_run["old_fact_json"])
             self.assertIn("legacy_fact", canon_run["fact_ledger_json"])
+
+    def test_v39_database_upgrades_to_v40_without_changing_rewrite_head_or_text(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "v39.txt"
+            database = root / "v39.db"
+            source.write_text("1. One\nimmutable original", encoding="utf-8")
+            with mock.patch("rusty.db.schema.CURRENT_SCHEMA_VERSION", 39):
+                projects = ProjectService(database)
+                project_id = projects.create_project(
+                    projects.preview_book(source), root, project_kind="rewrite"
+                )
+            chapter = projects.list_chapters(project_id)[0]
+            connection = connect(database)
+            try:
+                version_id = connection.execute(
+                    """
+                    INSERT INTO chapter_rewrite_versions(
+                        project_id, chapter_id, version, source_kind,
+                        source_operation, source_base_kind, source_hash,
+                        rewritten_text, content_hash, facts_before_json,
+                        facts_after_json
+                    ) VALUES (?, ?, 1, 'ai', 'manual', 'original',
+                              'source-hash', 'v39 rewrite', 'content-hash',
+                              '{"location":"before"}', '{"location":"after"}')
+                    """,
+                    (project_id, chapter.id),
+                ).lastrowid
+                connection.execute(
+                    """
+                    INSERT INTO chapter_rewrites(
+                        chapter_id, rewritten_text, rewrite_source,
+                        prompt_snapshot_json, anchor_snapshot_json,
+                        rewrite_mode, anchor_text, expanded_text,
+                        current_version_id, current_version
+                    ) VALUES (?, 'v39 rewrite', 'manual', '{}', '{}',
+                              'full_rewrite', '', 'v39 rewrite', ?, 1)
+                    """,
+                    (chapter.id, version_id),
+                )
+                connection.execute(
+                    "UPDATE chapters SET rewritten_text = 'v39 rewrite' WHERE id = ?",
+                    (chapter.id,),
+                )
+                initialize_database(connection)
+                migrated = connection.execute(
+                    "SELECT * FROM chapter_rewrite_versions WHERE id = ?",
+                    (version_id,),
+                ).fetchone()
+                head = connection.execute(
+                    "SELECT current_version_id FROM chapter_rewrites WHERE chapter_id = ?",
+                    (chapter.id,),
+                ).fetchone()
+                original = connection.execute(
+                    "SELECT original_text, rewritten_text FROM chapters WHERE id = ?",
+                    (chapter.id,),
+                ).fetchone()
+                schema_version = connection.execute(
+                    "SELECT MAX(version) FROM schema_migrations"
+                ).fetchone()[0]
+            finally:
+                connection.close()
+            self.assertEqual(CURRENT_SCHEMA_VERSION, schema_version)
+            self.assertEqual(version_id, head["current_version_id"])
+            self.assertEqual("v39 rewrite", migrated["rewritten_text"])
+            self.assertEqual({"location": "before"}, json.loads(migrated["facts_before_json"]))
+            self.assertEqual({"location": "after"}, json.loads(migrated["facts_after_json"]))
+            self.assertEqual("immutable original", original["original_text"])
+            self.assertEqual("v39 rewrite", original["rewritten_text"])
 
     def test_v20_to_v21_character_extraction_settings_migration_is_idempotent(self) -> None:
         connection = sqlite3.connect(":memory:")

@@ -62,6 +62,10 @@ import type {
   ProjectMaterialFilter,
   ProjectKind,
   StoryBranch,
+  StoryAnchor,
+  StoryAnchorPreview,
+  ChapterSourceSelection,
+  RewriteSemanticSegment,
   ProjectSettingsWrite,
   ProjectStyleBinding,
   PromptTemplate,
@@ -557,6 +561,21 @@ export function getChapterRewriteVersions(chapterId: number) {
 
 export function getChapterRewriteVersion(versionId: number) {
   return request<ChapterRewriteVersion>(`/api/chapter-rewrite-versions/${versionId}`);
+}
+
+export function getRewriteVersionAnchors(versionId: number) {
+  return request<RewriteSemanticSegment[]>(`/api/chapter-rewrite-versions/${versionId}/anchors`);
+}
+
+export function previewStoryAnchor(payload: {
+  project_id: number;
+  source: ChapterSourceSelection;
+  anchor: StoryAnchor;
+}) {
+  return request<StoryAnchorPreview>('/api/story-anchors/preview', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
 }
 
 export function restoreChapterRewriteVersion(versionId: number) {

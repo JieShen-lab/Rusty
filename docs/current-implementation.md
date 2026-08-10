@@ -216,7 +216,7 @@ SQLite + OS keyring + 本地文件
 
 ## 5. 数据实现
 
-数据库当前架构版本为 39。主要数据域包括：
+数据库当前架构版本为 40。主要数据域包括：
 
 - 项目、书籍元数据、导入来源、分章规则和章节；
 - AI 模型、提示词模板、项目提示词和项目设置；
@@ -268,6 +268,14 @@ CAS；正文版本、current projection、全部分支章节/场景及 run 终�
 分支章节快照的 `facts_after` 取最后一个场景版本。修改非末场景但未重算下游时，
 `fact_chain_status=needs_recompute`；Canon Change 会为所有下游场景建立正文+facts 对齐的新版本，
 包括正文未变化但事实发生变化的场景，完成后章节快照标记 `consistent`。
+
+v40 增加 `chapter_rewrite_version_segments` 与 rewrite-version skeleton 关联。每个 rewrite
+version 现在同时固定正文、章节边界 facts、场景/event-node 的 version-local span、局部状态、
+映射方法和置信度。`ContextService` 不再用 `find(original_scene_text)` 或 original skeleton
+offset 解析 rewrite 锚点；任意 text offset 也只使用相邻 segment state。Plot/Prose run 冻结
+semantic-map hash 与 resolved anchor snapshot，最终 CAS 同时验证正文版本和 map 归属。
+SQLite trigger 禁止业务 UPDATE/DELETE rewrite version 及其 semantic map。锚点预览 API 和
+`StoryAnchorPicker` 会展示实际 rewrite excerpt、局部状态与低置信度提示。
 
 ## 6. 桌面端与安全边界
 

@@ -432,14 +432,25 @@ class ProjectService:
         text = rewritten_text.strip()
         with session(self.database_path) as connection:
             if not text:
-                connection.execute("DELETE FROM chapter_rewrites WHERE chapter_id = ?", (chapter_id,))
-                connection.execute(
-                    """
-                    UPDATE chapters
-                    SET rewritten_text = NULL, status = 'imported', updated_at = CURRENT_TIMESTAMP
-                    WHERE id = ?
-                    """,
-                    (chapter_id,),
+                versions = ChapterVersionService(self.database_path)
+                original = versions.resolve_chapter_source(
+                    chapter_id, {"kind": "original"}, connection=connection
+                )
+                versions.append_chapter_rewrite_version(
+                    connection,
+                    chapter_id=chapter_id,
+                    rewritten_text=original.text,
+                    source_operation="restore",
+                    source_run_id=None,
+                    source_base_kind="original",
+                    source_base_version_id=None,
+                    source_hash=original.content_hash,
+                    facts_before=original.facts_before,
+                    facts_after=original.facts_after,
+                    require_head_match=True,
+                    expected_head_version_id=original.expected_head_version_id,
+                    source_kind="manual",
+                    prompt_snapshot={"source": "restore_original"},
                 )
             else:
                 versions = ChapterVersionService(self.database_path)

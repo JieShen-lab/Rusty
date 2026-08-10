@@ -50,6 +50,7 @@ from rusty.services.branch_service import BranchService
 from rusty.services.canon_change_orchestrator import CanonChangeOrchestrator
 from rusty.services.plot_generation_orchestrator import PlotGenerationOrchestrator
 from rusty.services.prose_rewrite_orchestrator import ProseRewriteOrchestrator
+from rusty.services.rewrite_version_map_service import RewriteVersionMapService
 from rusty.services.style_extraction_service import StyleExtractionService
 from rusty.services.style_service import StyleTemplate, StyleTemplateService
 
@@ -174,6 +175,8 @@ from .schemas import (
     PlotGenerationSeamConfirmRequest,
     PlotGenerationSkeletonConfirmRequest,
     PlotGenerationStartRequest,
+    StoryAnchorPreviewRequest,
+    StoryAnchorPreviewResponse,
     ProseRewriteExecuteRequest,
     ProseRewritePlanRequest,
     ProseRewriteRunResponse,
@@ -281,6 +284,7 @@ def create_app(
         db_path, ai_client=workflow_ai_client
     )
     chapter_version_service = ChapterVersionService(db_path)
+    rewrite_version_map_service = RewriteVersionMapService(db_path)
     anchor_extraction_service = AnchorExtractionService(db_path, ai_client=anchor_ai_client or style_ai_client)
 
     app = FastAPI(
@@ -913,6 +917,21 @@ def create_app(
     def start_plot_generation(payload: PlotGenerationStartRequest) -> dict[str, Any]:
         return plot_generation_orchestrator.start(**payload.model_dump())
 
+    @app.post(
+        "/api/story-anchors/preview",
+        response_model=StoryAnchorPreviewResponse,
+        dependencies=[Depends(_require_token)],
+    )
+    def preview_story_anchor(
+        payload: StoryAnchorPreviewRequest,
+    ) -> dict[str, Any]:
+        values = payload.model_dump()
+        return context_service.preview_story_anchor(
+            project_id=values["project_id"],
+            source=values["source"],
+            anchor=values["anchor"],
+        )
+
     @app.get(
         "/api/plot-generation/runs/{run_id}",
         response_model=PlotGenerationRunResponse,
@@ -1053,6 +1072,11 @@ def create_app(
     )
     def get_chapter_rewrite_version(version_id: int) -> dict[str, Any]:
         return chapter_version_service.get_version(version_id)
+
+    @app.get("/api/chapter-rewrite-versions/{version_id}/anchors")
+    def list_rewrite_version_anchors(version_id: int) -> list[dict[str, Any]]:
+        chapter_version_service.get_version(version_id)
+        return rewrite_version_map_service.list_segments(version_id)
 
     @app.post(
         "/api/chapter-rewrite-versions/{version_id}/restore",

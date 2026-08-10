@@ -177,6 +177,12 @@ class ChapterVersionService:
         source_kind: str = "ai",
         prompt_snapshot: dict[str, Any] | None = None,
         anchor_snapshot: dict[str, Any] | None = None,
+        fact_chain_status: str = "consistent",
+        mapping_strategy: str = "structural",
+        source_skeleton: dict[str, Any] | None = None,
+        observed_skeleton: dict[str, Any] | None = None,
+        map_changes: list[dict[str, Any]] | None = None,
+        generated_segment: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if source_operation not in SOURCE_OPERATIONS:
             raise ValueError("Unsupported chapter rewrite source operation.")
@@ -186,6 +192,10 @@ class ChapterVersionService:
             raise ValueError("Original chapter source cannot have a rewrite version id.")
         if source_base_kind == "rewrite_version" and source_base_version_id is None:
             raise ValueError("Rewrite chapter source requires a version id.")
+        if fact_chain_status not in {"consistent", "needs_recompute"}:
+            raise ValueError("Unsupported rewrite fact chain status.")
+        if mapping_strategy not in {"structural", "transformed"}:
+            raise ValueError("Unsupported rewrite semantic mapping strategy.")
         chapter = connection.execute(
             "SELECT project_id, word_count FROM chapters WHERE id = ?",
             (chapter_id,),
@@ -230,8 +240,9 @@ class ChapterVersionService:
                 project_id, chapter_id, version, parent_version_id,
                 source_kind, source_operation, source_run_id,
                 source_base_kind, source_base_version_id, source_hash,
-                rewritten_text, content_hash, facts_before_json, facts_after_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                rewritten_text, content_hash, facts_before_json, facts_after_json,
+                fact_chain_status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 int(chapter["project_id"]),
@@ -248,9 +259,34 @@ class ChapterVersionService:
                 _hash(text),
                 json.dumps(facts_before or {}, ensure_ascii=False),
                 json.dumps(facts_after or {}, ensure_ascii=False),
+                fact_chain_status,
             ),
         )
         version_id = int(cursor.lastrowid)
+        from rusty.services.rewrite_version_map_service import RewriteVersionMapService
+
+        maps = RewriteVersionMapService(self.database_path)
+        if mapping_strategy == "transformed":
+            map_result = maps.create_transformed_map(
+                connection,
+                rewrite_version_id=version_id,
+                chapter_id=chapter_id,
+                rewritten_text=text,
+                source_base_version_id=source_base_version_id,
+                changes=map_changes or [],
+                generated_segment=generated_segment,
+                source_skeleton=source_skeleton,
+            )
+        else:
+            map_result = maps.create_structural_map(
+                connection,
+                rewrite_version_id=version_id,
+                chapter_id=chapter_id,
+                rewritten_text=text,
+                source_base_version_id=source_base_version_id,
+                source_skeleton=source_skeleton,
+                observed_skeleton=observed_skeleton,
+            )
         word_count = count_text_units(text)
         ratio = word_count / int(chapter["word_count"]) if chapter["word_count"] else None
         connection.execute(
@@ -296,7 +332,10 @@ class ChapterVersionService:
             """,
             (text, chapter_id),
         )
-        return self.get_version(version_id, connection=connection)
+        result = self.get_version(version_id, connection=connection)
+        result["semantic_map_hash"] = map_result["map_hash"]
+        result["skeleton_version_id"] = map_result.get("skeleton_version_id")
+        return result
 
     def list_versions(self, chapter_id: int) -> list[dict[str, Any]]:
         with session(self.database_path) as connection:
@@ -382,6 +421,9 @@ class ChapterVersionService:
         result = dict(row)
         result["facts_before"] = _json_object(row["facts_before_json"])
         result["facts_after"] = _json_object(row["facts_after_json"])
+        result["fact_chain_status"] = str(
+            result.get("fact_chain_status") or "needs_recompute"
+        )
         result["is_current"] = bool(result.get("is_current"))
         return result
 

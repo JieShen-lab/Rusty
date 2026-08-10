@@ -569,6 +569,25 @@ ChapterSourceSelection = (
 )
 
 
+class StoryAnchorPreviewRequest(StrictWorkflowModel):
+    project_id: int = Field(ge=1)
+    source: ChapterSourceSelection = Field(default_factory=CurrentChapterSource)
+    anchor: StoryAnchorRequest
+
+
+class StoryAnchorPreviewResponse(BaseModel):
+    resolved_version_id: int | None
+    resolved_start: int
+    resolved_end: int
+    text_excerpt: str
+    state_before: dict[str, Any]
+    state_after: dict[str, Any]
+    mapping_method: Literal["identity", "shifted", "structural", "semantic"]
+    state_method: str
+    confidence: float
+    semantic_map_hash: str | None = None
+
+
 class PlotGenerationStartRequest(StrictWorkflowModel):
     project_id: int = Field(ge=1)
     generation_mode: Literal[
@@ -654,6 +673,9 @@ class PlotGenerationRunResponse(BaseModel):
     source_base_version_id: int | None = None
     source_hash: str | None = None
     expected_source_head_version_id: int | None = None
+    source_map_hash: str | None = None
+    resolved_start_anchor: dict[str, Any] = Field(default_factory=dict)
+    resolved_return_anchor: dict[str, Any] | None = None
     result_version_id: int | None = None
     operation_type: Literal["plot_generation"] = "plot_generation"
     user_direction: str
@@ -690,6 +712,7 @@ class ProseRewriteRunResponse(BaseModel):
     source_base_version_id: int | None = None
     source_hash: str | None = None
     expected_source_head_version_id: int | None = None
+    source_map_hash: str | None = None
     result_version_id: int | None = None
     generation_attempt: int = 0
     operation_type: Literal["prose_rewrite"] = "prose_rewrite"
@@ -775,6 +798,7 @@ class ChapterRewriteVersionResponse(BaseModel):
     content_hash: str
     facts_before: dict[str, Any]
     facts_after: dict[str, Any]
+    fact_chain_status: Literal["consistent", "needs_recompute"] = "needs_recompute"
     is_current: bool
     created_at: str
 

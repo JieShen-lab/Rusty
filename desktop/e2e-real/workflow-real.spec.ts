@@ -66,6 +66,13 @@ test('1. 改写工程增加剧情并应用双接缝', async ({ page, request }) 
 
 test('2. 根据细纲重写正文并自动结构检查', async ({ page, request }) => {
   await openProject(page, 2);
+  const scenes = await (await request.get(`${backend}/api/chapters/2/scenes`)).json();
+  await page.getByLabel('插入点节点类型').selectOption('scene_end');
+  await page.getByLabel('插入点场景').selectOption(String(scenes[0].id));
+  await page.getByLabel('新增剧情目标').fill('语义链事件 A');
+  await page.getByRole('button', { name: '启动分析' }).click();
+  await finishPlot(page);
+  await page.getByRole('button', { name: '开始新的运行' }).click();
   await page.getByRole('button', { name: '重写正文' }).click();
   await page.getByLabel('源细纲').click();
   const editor = page.getByLabel('模块化细纲编辑器');
@@ -76,25 +83,59 @@ test('2. 根据细纲重写正文并自动结构检查', async ({ page, request 
   await editor.getByLabel('人物状态变化 1 变化后').fill('提高');
   const endState = editor.getByLabel('结束状态 / 回接条件编辑器');
   await endState.getByRole('button', { name: '增加字段' }).click();
-  await endState.getByLabel('结束状态 / 回接条件 字段1', { exact: true }).fill('安全');
-  await page.getByRole('button', { name: '保存并确认细纲版本' }).click();
+  await endState.locator('article').last().locator('label').filter({ hasText: '值' }).locator('input').fill('安全');
+  const [savedSkeletonResponse] = await Promise.all([
+    page.waitForResponse((response) => response.url().includes('/api/story-skeletons/') && response.url().endsWith('/versions') && response.request().method() === 'POST'),
+    page.getByRole('button', { name: '保存并确认细纲版本' }).click(),
+  ]);
   await expect(editor.getByLabel('细纲版本信息')).toContainText('已确认');
-  await page.reload();
-  await expect(page.getByRole('button', { name: '重写正文' })).toBeVisible();
-  await expect(page.locator('.chapter-row.selected')).toBeVisible();
-  await page.getByRole('button', { name: '重写正文' }).click();
-  await page.getByLabel('源细纲').click();
-  await expect(page.getByLabel('人物状态变化 1 变化后')).toHaveValue('提高');
-  await expect(page.getByLabel('结束状态 / 回接条件 字段1', { exact: true })).toHaveValue('安全');
+  const savedSkeleton = await savedSkeletonResponse.json();
+  expect(savedSkeleton.structured.character_state_changes[0].after).toBe('提高');
+  expect(Object.values(savedSkeleton.structured.required_end_state)).toContain('安全');
   await page.getByRole('button', { name: '生成重写计划' }).click();
   await page.getByRole('button', { name: '生成正文并自动检查' }).click();
   await expect(page.getByRole('status')).toContainText('completed');
+  const proseVersions = await (await request.get(`${backend}/api/chapters/2/rewrite-versions`)).json();
+  const proseVersion = proseVersions[0];
+  expect(proseVersion.source_operation).toBe('prose_rewrite');
+  expect(proseVersion.rewritten_text).toContain('语义链事件 A');
+  await page.getByRole('button', { name: '开始新的运行' }).click();
+  await page.getByRole('button', { name: '增加剧情' }).click();
+  await page.getByLabel('插入点节点类型').selectOption('scene_end');
+  await page.getByLabel('插入点场景').selectOption(String(scenes[0].id));
+  await page.getByRole('button', { name: '预览锚点' }).first().click();
+  const preview = page.getByLabel('插入点锚点预览');
+  await expect(preview).toBeVisible();
+  await expect(preview).toContainText('人物');
+  await page.getByLabel('新增剧情目标').fill('语义链事件 B');
+  const [startResponse] = await Promise.all([
+    page.waitForResponse((response) => response.url().endsWith('/api/plot-generation/runs') && response.request().method() === 'POST'),
+    page.getByRole('button', { name: '启动分析' }).click(),
+  ]);
+  const sceneAnchorRun = await startResponse.json();
+  expect(sceneAnchorRun.source_base_version_id).toBe(proseVersion.id);
+  expect(sceneAnchorRun.resolved_start_anchor.source_version_id).toBe(proseVersion.id);
+  await finishPlot(page);
+  await page.getByRole('button', { name: '开始新的运行' }).click();
+  await page.getByRole('button', { name: '修改设定' }).click();
+  await page.getByLabel('旧设定').fill('警觉地观察');
+  await page.getByLabel('新设定').fill('冷静地观察');
+  await page.getByRole('button', { name: '扫描下游影响' }).click();
+  const patches = page.getByLabel('设定变更影响列表');
+  await expect(patches).toBeVisible();
+  await patches.getByRole('button', { name: '接受' }).click();
+  await page.getByRole('button', { name: '原子应用已接受补丁' }).click();
+  await expect(patches).toContainText('applied');
   const chapter = await (await request.get(`${backend}/api/chapters/2`)).json();
-  expect(chapter.chapter.rewritten_text).toContain('警觉地观察');
+  expect(chapter.chapter.rewritten_text).toContain('语义链事件 A');
+  expect(chapter.chapter.rewritten_text).toContain('语义链事件 B');
+  expect(chapter.chapter.rewritten_text).toContain('冷静地观察');
+  expect(chapter.chapter.rewritten_text).not.toContain('警觉地观察');
   expect(chapter.chapter.original_text).toContain('旧设定仍有效');
-  const persisted = await (await request.get(`${backend}/api/chapters/2/story-skeleton`)).json();
-  expect(persisted.structured.character_state_changes[0].after).toBe('提高');
-  expect(persisted.structured.required_end_state['字段1']).toBe('安全');
+  const finalVersions = await (await request.get(`${backend}/api/chapters/2/rewrite-versions`)).json();
+  expect(finalVersions).toHaveLength(4);
+  expect(finalVersions.map((version: { source_operation: string }) => version.source_operation))
+    .toEqual(['canon_change', 'plot_generation', 'prose_rewrite', 'plot_generation']);
 });
 
 test('3. 修改设定、审查补丁并原子应用', async ({ page, request }) => {

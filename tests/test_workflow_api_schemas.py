@@ -12,6 +12,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from fastapi.testclient import TestClient
 
 from backend.api import create_app
+from rusty.services.chapter_version_service import ChapterVersionService
+from rusty.services.project_service import ProjectService
+from rusty.services.scene_service import SceneService
 
 
 class WorkflowAPISchemaTests(unittest.TestCase):
@@ -121,6 +124,61 @@ class WorkflowAPISchemaTests(unittest.TestCase):
                     "untrusted_offset": 3,
                 },
                 "unexpected": True,
+            },
+        )
+        self.assert_validation_error(response)
+
+    def test_anchor_preview_resolves_current_rewrite_version_semantic_span(self) -> None:
+        root = Path(self.tempdir.name)
+        source = root / "anchor-preview.txt"
+        source.write_text(
+            "1. One\n张三进入大厅。\n\n张三与李四争吵。\n\n张三离开大厅。",
+            encoding="utf-8",
+        )
+        projects = ProjectService(self.database)
+        project_id = projects.create_project(
+            projects.preview_book(source), root, project_kind="rewrite"
+        )
+        chapter = projects.list_chapters(project_id)[0]
+        scenes = SceneService(self.database).split_chapter(
+            chapter.id,
+            proposed_boundaries=[9, 19],
+        )
+        rewritten = "张三推门进入大厅。\n\n他与李四激烈争吵。\n\n最终张三离去。"
+        projects.save_chapter_rewrite(chapter.id, rewritten)
+        version_id = ChapterVersionService(self.database).resolve_chapter_source(
+            chapter.id, {"kind": "current"}
+        ).source_version_id
+        self.assertIsNotNone(version_id)
+        response = self.client.post(
+            "/api/story-anchors/preview",
+            headers=self.headers,
+            json={
+                "project_id": project_id,
+                "source": {"kind": "current"},
+                "anchor": {
+                    "anchor_type": "scene_end",
+                    "scene_id": scenes[1].id,
+                    "source_version_id": version_id,
+                    "side": "after",
+                },
+            },
+        )
+        self.assertEqual(200, response.status_code, response.text)
+        preview = response.json()
+        self.assertEqual(version_id, preview["resolved_version_id"])
+        self.assertIn("李四", preview["text_excerpt"])
+        self.assertGreater(preview["resolved_end"], preview["resolved_start"])
+        self.assertIn(preview["mapping_method"], {"structural", "semantic"})
+
+    def test_anchor_preview_rejects_unknown_nested_fields(self) -> None:
+        response = self.client.post(
+            "/api/story-anchors/preview",
+            headers=self.headers,
+            json={
+                "project_id": 1,
+                "source": {"kind": "current", "trusted": True},
+                "anchor": {"anchor_type": "document_end"},
             },
         )
         self.assert_validation_error(response)
