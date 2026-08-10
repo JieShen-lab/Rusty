@@ -3,7 +3,9 @@ import type { ReactNode } from 'react';
 import { GitBranch, GitFork, ListTree, Plus, RefreshCw, Settings2 } from 'lucide-react';
 import {
   applyCanonChange,
+  cancelCanonChange,
   cancelPlotGeneration,
+  cancelProseRewrite,
   confirmPlotGenerationSeams,
   confirmPlotGenerationSkeleton,
   confirmStorySkeleton,
@@ -15,6 +17,7 @@ import {
   generateNextPlotScene,
   getCanonChangeRun,
   getChapterStorySkeleton,
+  getChapterRewriteVersions,
   getLegacyAnalysisExport,
   getPlotGenerationRun,
   getPlotGenerationRuns,
@@ -25,6 +28,7 @@ import {
   planProseRewrite,
   reviewCanonPatch,
   retryPlotGeneration,
+  retryProseRewrite,
   reviseStorySkeleton,
   scanCanonChange,
   startPlotGeneration,
@@ -32,6 +36,8 @@ import {
 import type {
   CanonChangeRun,
   Chapter,
+  ChapterRewriteVersion,
+  ChapterSourceSelection,
   PlotGenerationRun,
   ProseRewriteRun,
   SeamProposal,
@@ -102,6 +108,9 @@ export function RewriteOperationPanel({
   const [plotHistory, setPlotHistory] = useState<PlotGenerationRun[]>([]);
   const [proseHistory, setProseHistory] = useState<ProseRewriteRun[]>([]);
   const [canonHistory, setCanonHistory] = useState<CanonChangeRun[]>([]);
+  const [rewriteVersions, setRewriteVersions] = useState<ChapterRewriteVersion[]>([]);
+  const [workflowSource, setWorkflowSource] = useState<ChapterSourceSelection>({ kind: 'current' });
+  const [viewedVersion, setViewedVersion] = useState<ChapterRewriteVersion | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -117,6 +126,20 @@ export function RewriteOperationPanel({
     }).catch(() => undefined);
     return () => { active = false; };
   }, [canonRun?.status, plotRun?.status, proseRun?.status, projectId]);
+
+  useEffect(() => {
+    let active = true;
+    setWorkflowSource({ kind: 'current' });
+    setViewedVersion(null);
+    if (!chapter) {
+      setRewriteVersions([]);
+      return () => { active = false; };
+    }
+    void getChapterRewriteVersions(chapter.id)
+      .then((versions) => { if (active) setRewriteVersions(versions); })
+      .catch(() => { if (active) setRewriteVersions([]); });
+    return () => { active = false; };
+  }, [chapter?.id, canonRun?.status, plotRun?.status, proseRun?.status]);
 
   useEffect(() => {
     if (!chapter) return;
@@ -147,6 +170,7 @@ export function RewriteOperationPanel({
         ? returnAnchor
         : startAnchor,
       user_direction: direction.trim(),
+      source: workflowSource,
     });
     setPlotRun(run, run.id);
   }
@@ -170,6 +194,7 @@ export function RewriteOperationPanel({
         locked_node_ids: sourceSkeleton.event_nodes.filter((node) => node.locked).map((node) => node.id),
       },
       user_direction: direction,
+      source: workflowSource,
     });
     setProseRun(run, run.id);
   }
@@ -214,6 +239,7 @@ export function RewriteOperationPanel({
       old_fact: { attribute: 'user_fact', value: oldFact.trim() },
       new_fact: { attribute: 'user_fact', value: newFact.trim() },
       effective_order: chapter.index,
+      source: workflowSource,
     });
     setCanonRun(run, run.id);
   }
@@ -226,6 +252,17 @@ export function RewriteOperationPanel({
         <OperationButton active={operation === 'prose_rewrite'} icon={<RefreshCw size={18} />} label="重写正文" onClick={() => setOperation('prose_rewrite')} />
         <OperationButton active={operation === 'canon_change'} icon={<Settings2 size={18} />} label="修改设定" onClick={() => setOperation('canon_change')} />
       </div>
+      {chapter ? (
+        <RewriteVersionHistory
+          onSelectSource={(version) => setWorkflowSource({ kind: 'rewrite_version', version_id: version.id })}
+          onUseCurrent={() => setWorkflowSource({ kind: 'current' })}
+          onUseOriginal={() => setWorkflowSource({ kind: 'original' })}
+          onView={setViewedVersion}
+          selectedSource={workflowSource}
+          versions={rewriteVersions}
+          viewedVersion={viewedVersion}
+        />
+      ) : null}
       {error ? <p role="alert">{error}</p> : null}
       {operation === 'plot_generation' ? (
         <div className="operation-fields">
@@ -269,6 +306,9 @@ export function RewriteOperationPanel({
           {proseRun?.status === 'planned' ? <button disabled={busy} onClick={() => void perform(async () => setProseRun(await executeProseRewrite(proseRun.id, { auto_repair: true }), proseRun.id))} type="button">生成正文并自动检查</button> : null}
           {proseRun ? <pre className="wide">{JSON.stringify(proseRun.issues, null, 2)}</pre> : null}
           {proseRun?.status === 'completed' ? <button onClick={clearProseRun} type="button">开始新的运行</button> : null}
+          {proseRun && ['planned', 'generating', 'blocked', 'failed'].includes(proseRun.status) ? <button disabled={busy} onClick={() => void perform(async () => setProseRun(await cancelProseRewrite(proseRun.id), proseRun.id))} type="button">Cancel run</button> : null}
+          {proseRun && ['blocked', 'failed'].includes(proseRun.status) ? <button disabled={busy} onClick={() => void perform(async () => setProseRun(await retryProseRewrite(proseRun.id), proseRun.id))} type="button">Retry run</button> : null}
+          {proseRun?.status === 'cancelled' ? <button onClick={clearProseRun} type="button">Start new run</button> : null}
           <RunHistory label="正文重写历史" runs={proseHistory} onSelect={(selected) => setProseRun(selected, selected.id)} />
         </div>
       ) : null}
@@ -281,6 +321,8 @@ export function RewriteOperationPanel({
           {canonRun ? <CanonPatchReview onChange={(run) => setCanonRun(run, run.id)} run={canonRun} /> : null}
           {canonRun?.patches.some((patch) => ['accepted', 'edited'].includes(patch.status)) ? <button disabled={busy} onClick={() => void perform(async () => setCanonRun(await applyCanonChange(canonRun.id), canonRun.id))} type="button">原子应用已接受补丁</button> : null}
           {canonRun?.status === 'applied' ? <button onClick={clearCanonRun} type="button">开始新的运行</button> : null}
+          {canonRun && ['scanning', 'reviewing', 'blocked', 'ready_to_apply', 'failed'].includes(canonRun.status) ? <button disabled={busy} onClick={() => void perform(async () => setCanonRun(await cancelCanonChange(canonRun.id), canonRun.id))} type="button">Cancel run</button> : null}
+          {canonRun?.status === 'cancelled' ? <button onClick={clearCanonRun} type="button">Start new run</button> : null}
           <RunHistory label="设定变更历史" runs={canonHistory} onSelect={(selected) => setCanonRun(selected, selected.id)} />
         </div>
       ) : null}
@@ -461,6 +503,50 @@ export function SeamReview({
       <h3>接缝审查</h3>
       {items.length === 0 ? <p>尚未生成接缝提议。</p> : items.map((seam, index) => <article key={seam.id ?? index}><strong>{seam.seam_kind === 'entry' ? '进入接缝' : '回接接缝'}</strong><p>原文：{seam.original_text}</p><label>建议修改<textarea onChange={(event) => setItems((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, proposed_text: event.target.value } : item))} value={seam.proposed_text} /></label><p>{seam.reason}</p><button onClick={() => setItems((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, status: 'confirmed' } : item))} type="button">确认</button><button onClick={() => setItems((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, status: 'rejected' } : item))} type="button">拒绝</button><span>{seam.status}</span></article>)}
       {items.length ? <button disabled={items.some((item) => item.status === 'draft')} onClick={() => onConfirm?.(items)} type="button">提交接缝审查</button> : null}
+    </section>
+  );
+}
+
+function RewriteVersionHistory({
+  onSelectSource,
+  onUseCurrent,
+  onUseOriginal,
+  onView,
+  selectedSource,
+  versions,
+  viewedVersion,
+}: {
+  onSelectSource: (version: ChapterRewriteVersion) => void;
+  onUseCurrent: () => void;
+  onUseOriginal: () => void;
+  onView: (version: ChapterRewriteVersion) => void;
+  selectedSource: ChapterSourceSelection;
+  versions: ChapterRewriteVersion[];
+  viewedVersion: ChapterRewriteVersion | null;
+}) {
+  return (
+    <section className="rewrite-version-history" aria-label="rewrite versions">
+      <h3>&#27491;&#25991;&#29256;&#26412;</h3>
+      <p>Source: {selectedSource.kind === 'rewrite_version' ? `v${selectedSource.version_id}` : selectedSource.kind}</p>
+      <button onClick={onUseCurrent} type="button">&#24403;&#21069;&#29256;&#26412;</button>
+      <button onClick={onUseOriginal} type="button">&#21407;&#22987;&#22522;&#32447;</button>
+      {versions.length === 0 ? <p>No rewrite versions.</p> : (
+        <ul>
+          {versions.map((version) => (
+            <li key={version.id}>
+              <button onClick={() => onView(version)} type="button">
+                v{version.version} · {version.source_operation} · parent {version.parent_version_id ?? 'original'}
+                {version.is_current ? ' · current' : ''}
+              </button>
+              <button onClick={() => onSelectSource(version)} type="button">
+                &#22522;&#20110;&#27492;&#29256;&#26412;&#21019;&#24314;&#26032;&#25805;&#20316;
+              </button>
+              <time>{version.created_at}</time>
+            </li>
+          ))}
+        </ul>
+      )}
+      {viewedVersion ? <pre>{viewedVersion.rewritten_text}</pre> : null}
     </section>
   );
 }

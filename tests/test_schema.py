@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 import sys
 import unittest
+from unittest import mock
 import json
 import tempfile
 from pathlib import Path
@@ -20,6 +21,7 @@ from rusty.db.schema import (
     _migrate_to_v21,
     _migrate_to_v37,
 )
+from rusty.services.project_service import ProjectService
 
 
 class SchemaTests(unittest.TestCase):
@@ -189,6 +191,92 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual('{"legacy_fact":true}', row["fact_ledger_json"])
         self.assertEqual(0, row["next_scene_cursor"])
         self.assertEqual(0, row["generation_attempt"])
+
+    def test_v37_rewrite_projection_backfills_v38_version_and_v39_head_without_loss(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            source = root / "legacy-rewrite.txt"
+            database = root / "legacy.db"
+            source.write_text("1. One\nimmutable original", encoding="utf-8")
+            with mock.patch("rusty.db.schema.CURRENT_SCHEMA_VERSION", 37):
+                projects = ProjectService(database)
+                project_id = projects.create_project(
+                    projects.preview_book(source), root, project_kind="rewrite"
+                )
+            chapter = projects.list_chapters(project_id)[0]
+            connection = connect(database)
+            try:
+                connection.execute(
+                    "UPDATE chapters SET rewritten_text = 'legacy current text', status = 'rewritten' WHERE id = ?",
+                    (chapter.id,),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO chapter_rewrites(
+                        chapter_id, rewritten_text, rewrite_source,
+                        prompt_snapshot_json, anchor_snapshot_json,
+                        rewrite_mode, anchor_text, expanded_text
+                    ) VALUES (?, 'legacy current text', 'ai', '{}', '{}',
+                              'full_rewrite', '', 'legacy current text')
+                    """,
+                    (chapter.id,),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO prose_rewrite_runs(
+                        project_id, chapter_id, source_skeleton_json,
+                        preservation_policy_json, target_skeleton_json,
+                        rewrite_plan_json, rewritten_text, status
+                    ) VALUES (?, ?, '{"event_nodes":[]}', '{}',
+                              '{"event_nodes":[]}', '{"legacy":true}',
+                              'legacy prose draft', 'completed')
+                    """,
+                    (project_id, chapter.id),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO canon_change_runs(
+                        project_id, old_fact_json, new_fact_json,
+                        effective_order, fact_ledger_json, status
+                    ) VALUES (?, '{"old":true}', '{"new":true}', 1,
+                              '{"legacy_fact":true}', 'scanned')
+                    """,
+                    (project_id,),
+                )
+                initialize_database(connection)
+                version = connection.execute(
+                    "SELECT * FROM chapter_rewrite_versions WHERE chapter_id = ?",
+                    (chapter.id,),
+                ).fetchone()
+                head = connection.execute(
+                    "SELECT current_version_id, current_version FROM chapter_rewrites WHERE chapter_id = ?",
+                    (chapter.id,),
+                ).fetchone()
+                original = connection.execute(
+                    "SELECT original_text, rewritten_text FROM chapters WHERE id = ?",
+                    (chapter.id,),
+                ).fetchone()
+                prose_run = connection.execute(
+                    "SELECT status, rewritten_text, rewrite_plan_json FROM prose_rewrite_runs"
+                ).fetchone()
+                canon_run = connection.execute(
+                    "SELECT status, old_fact_json, fact_ledger_json FROM canon_change_runs"
+                ).fetchone()
+            finally:
+                connection.close()
+            self.assertEqual("migration", version["source_operation"])
+            self.assertEqual("original", version["source_base_kind"])
+            self.assertEqual("legacy current text", version["rewritten_text"])
+            self.assertEqual(version["id"], head["current_version_id"])
+            self.assertEqual(1, head["current_version"])
+            self.assertEqual("immutable original", original["original_text"])
+            self.assertEqual("legacy current text", original["rewritten_text"])
+            self.assertEqual("completed", prose_run["status"])
+            self.assertEqual("legacy prose draft", prose_run["rewritten_text"])
+            self.assertIn("legacy", prose_run["rewrite_plan_json"])
+            self.assertEqual("reviewing", canon_run["status"])
+            self.assertIn("old", canon_run["old_fact_json"])
+            self.assertIn("legacy_fact", canon_run["fact_ledger_json"])
 
     def test_v20_to_v21_character_extraction_settings_migration_is_idempotent(self) -> None:
         connection = sqlite3.connect(":memory:")

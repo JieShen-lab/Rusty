@@ -360,6 +360,31 @@ export type StructuredSkeleton = {
   source_references: WorkflowObject[];
 };
 
+export type ChapterSourceSelection =
+  | { kind: 'current' }
+  | { kind: 'original' }
+  | { kind: 'rewrite_version'; version_id: number };
+
+export type ChapterRewriteVersion = {
+  id: number;
+  project_id: number;
+  chapter_id: number;
+  version: number;
+  parent_version_id: number | null;
+  source_kind: string;
+  source_operation: 'plot_generation' | 'prose_rewrite' | 'canon_change' | 'manual' | 'migration' | 'restore';
+  source_run_id: number | null;
+  source_base_kind: 'original' | 'rewrite_version';
+  source_base_version_id: number | null;
+  source_hash: string;
+  rewritten_text: string;
+  content_hash: string;
+  facts_before: WorkflowObject;
+  facts_after: WorkflowObject;
+  created_at: string;
+  is_current: boolean;
+};
+
 export type PlotGenerationStartRequest = {
   project_id: number;
   generation_mode: 'bounded_insert' | 'open_continuation' | 'fork' | 'fork_and_rejoin';
@@ -372,6 +397,7 @@ export type PlotGenerationStartRequest = {
   parent_branch_id?: number | null;
   branch_name?: string;
   range_operation?: 'insert_between' | 'replace_range';
+  source?: ChapterSourceSelection;
 };
 
 export type PlotGenerationSeamConfirmRequest = {
@@ -433,6 +459,12 @@ export type PlotGenerationRun = {
   user_direction: string;
   created_at: string;
   updated_at: string;
+  source_chapter_id: number | null;
+  source_base_kind: 'original' | 'rewrite_version' | null;
+  source_base_version_id: number | null;
+  source_hash: string | null;
+  expected_source_head_version_id: number | null;
+  result_version_id: number | null;
 };
 
 export type ProseRewritePlanRequest = {
@@ -442,6 +474,7 @@ export type ProseRewritePlanRequest = {
   preservation_policy: WorkflowObject;
   style_profile_id?: number | null;
   user_direction?: string;
+  source?: ChapterSourceSelection;
 };
 
 export type ProseRewriteExecuteRequest = {
@@ -452,7 +485,7 @@ export type ProseRewriteRun = {
   id: number;
   project_id: number;
   chapter_id: number;
-  status: string;
+  status: 'planned' | 'generating' | 'blocked' | 'completed' | 'failed' | 'cancelled';
   source_skeleton: StructuredSkeleton;
   preservation_policy: WorkflowObject;
   target_skeleton: StructuredSkeleton;
@@ -460,6 +493,12 @@ export type ProseRewriteRun = {
   rewritten_text: string | null;
   issues: WorkflowObject[];
   operation_type: 'prose_rewrite';
+  source_base_kind: 'original' | 'rewrite_version' | null;
+  source_base_version_id: number | null;
+  source_hash: string | null;
+  expected_source_head_version_id: number | null;
+  result_version_id: number | null;
+  generation_attempt: number;
   created_at: string;
   updated_at: string;
 };
@@ -470,6 +509,7 @@ export type CanonChangeScanRequest = {
   new_fact: WorkflowObject;
   effective_order: number;
   branch_id?: number | null;
+  source?: ChapterSourceSelection;
 };
 
 export type CanonPatchReviewRequest = {
@@ -492,6 +532,8 @@ export type CanonPatch = {
   evidence: unknown[];
   requires_confirmation: boolean;
   status: string;
+  source_base_version_id: number | null;
+  result_version_id: number | null;
 };
 
 export type CanonChangeRun = {
@@ -499,12 +541,13 @@ export type CanonChangeRun = {
   project_id: number;
   branch_id: number | null;
   effective_order: number;
-  status: string;
+  status: 'scanning' | 'reviewing' | 'blocked' | 'ready_to_apply' | 'applying' | 'applied' | 'failed' | 'cancelled';
   old_fact: WorkflowObject;
   new_fact: WorkflowObject;
   fact_ledger: WorkflowObject;
   consistency_issues: WorkflowObject[];
   patches: CanonPatch[];
+  source_snapshots: Record<string, WorkflowObject>;
   operation_type: 'canon_change';
   created_at: string;
   updated_at: string;

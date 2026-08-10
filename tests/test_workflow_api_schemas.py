@@ -125,6 +125,23 @@ class WorkflowAPISchemaTests(unittest.TestCase):
         )
         self.assert_validation_error(response)
 
+    def test_source_selection_is_a_strict_discriminated_union(self) -> None:
+        for source in (
+            {"kind": "rewrite_version"},
+            {"kind": "current", "version_id": 3},
+            {"kind": "unknown"},
+            {"kind": "original", "unexpected": True},
+        ):
+            with self.subTest(source=source):
+                payload = self.plot_payload("open_continuation")
+                payload["source"] = source
+                response = self.client.post(
+                    "/api/plot-generation/runs",
+                    headers=self.headers,
+                    json=payload,
+                )
+                self.assert_validation_error(response)
+
 
 if __name__ == "__main__":
     unittest.main()

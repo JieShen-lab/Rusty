@@ -56,6 +56,12 @@ test('1. 改写工程增加剧情并应用双接缝', async ({ page, request }) 
   expect(afterSecondRun.chapter.original_text).toBe(chapter.chapter.original_text);
   expect(afterSecondRun.chapter.rewritten_text).toContain('人物进入院子。');
   expect(afterSecondRun.chapter.rewritten_text).toContain('人物返回客栈。');
+  expect(afterSecondRun.chapter.rewritten_text).toContain('增加一场伏击战');
+  expect(afterSecondRun.chapter.rewritten_text).toContain('再增加一场雨夜追逐');
+  const versions = await (await request.get(`${backend}/api/chapters/1/rewrite-versions`)).json();
+  expect(versions).toHaveLength(2);
+  expect(versions[0].parent_version_id).toBe(versions[1].id);
+  expect(versions[0].is_current).toBe(true);
 });
 
 test('2. 根据细纲重写正文并自动结构检查', async ({ page, request }) => {

@@ -6,6 +6,7 @@ from typing import Any
 
 from rusty.db import initialize_database, session
 from rusty.services.context_service import ContextService
+from rusty.services.chapter_version_service import ChapterVersionService, SourceVersionConflict
 from rusty.services.project_service import ProjectService, default_database_path
 from rusty.services.shared_analysis_service import SkeletonExtractionService
 from rusty.services.structured_skeleton import validate_structured_skeleton
@@ -36,6 +37,7 @@ class ProseRewriteOrchestrator:
             Path(database_path) if database_path is not None else default_database_path()
         )
         self.projects = ProjectService(self.database_path)
+        self.chapter_versions = ChapterVersionService(self.database_path)
         self.contexts = ContextService(self.database_path)
         self.skeletons = SkeletonExtractionService(self.database_path)
         self.ai = WorkflowAI(self.database_path, ai_client=ai_client)
@@ -51,6 +53,7 @@ class ProseRewriteOrchestrator:
         preservation_policy: dict[str, Any],
         style_profile_id: int | None = None,
         user_direction: str = "",
+        source_selection: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         project = self.projects.get_project(project_id)
         chapter = self.projects.get_chapter(chapter_id)
@@ -59,6 +62,9 @@ class ProseRewriteOrchestrator:
         if chapter is None or chapter.project_id != project_id:
             raise FileNotFoundError(f"Chapter not found in project: {chapter_id}")
         source = validate_structured_skeleton(source_skeleton)
+        chapter_source = self.chapter_versions.resolve_chapter_source(
+            chapter_id, source_selection
+        )
         unknown = set(preservation_policy).difference(
             PRESERVATION_FIELDS | {"locked_node_ids"}
         )
@@ -68,7 +74,7 @@ class ProseRewriteOrchestrator:
             project_id=project_id,
             stage="prose_rewrite_plan",
             payload={
-                "source_text": chapter.original_text,
+                "source_text": chapter_source.text,
                 "source_skeleton": source,
                 "preservation_policy": preservation_policy,
                 "style_profile_id": style_profile_id,
@@ -88,8 +94,11 @@ class ProseRewriteOrchestrator:
                 """
                 INSERT INTO prose_rewrite_runs (
                     project_id, chapter_id, source_skeleton_json,
-                    preservation_policy_json, target_skeleton_json, rewrite_plan_json
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    preservation_policy_json, target_skeleton_json, rewrite_plan_json,
+                    source_base_kind, source_base_version_id, source_hash,
+                    source_text_snapshot, require_source_head_match,
+                    expected_source_head_version_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     project_id,
@@ -105,80 +114,206 @@ class ProseRewriteOrchestrator:
                         },
                         ensure_ascii=False,
                     ),
+                    chapter_source.source_kind,
+                    chapter_source.source_version_id,
+                    chapter_source.content_hash,
+                    chapter_source.text,
+                    1 if chapter_source.require_head_match else 0,
+                    chapter_source.expected_head_version_id,
                 ),
             )
         return self.get_run(int(cursor.lastrowid))
 
     def execute(self, run_id: int, *, auto_repair: bool = True) -> dict[str, Any]:
         run = self.get_run(run_id)
-        chapter = self.projects.get_chapter(int(run["chapter_id"]))
-        if chapter is None:
-            raise FileNotFoundError("Rewrite source chapter not found.")
-        generated = self.ai.generate_json(
-            project_id=int(run["project_id"]),
-            stage="prose_rewrite_generate",
-            payload={
-                "source_text": chapter.original_text,
-                "target_skeleton": run["target_skeleton"],
-                "preservation_policy": run["preservation_policy"],
-                "rewrite_plan": run["rewrite_plan"],
-            },
-            output_contract='{"rewritten_text":str}',
-        )
+        if run["status"] != "planned":
+            raise ValueError("Prose rewrite run is not ready to execute.")
+        with session(self.database_path) as connection:
+            cursor = connection.execute(
+                """
+                UPDATE prose_rewrite_runs SET status = 'generating', updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND status = 'planned'
+                """,
+                (run_id,),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("Prose rewrite run is not ready to execute.")
+        try:
+            generated = self.ai.generate_json(
+                project_id=int(run["project_id"]),
+                stage="prose_rewrite_generate",
+                payload={
+                    "source_text": run["source_text_snapshot"],
+                    "target_skeleton": run["target_skeleton"],
+                    "preservation_policy": run["preservation_policy"],
+                    "rewrite_plan": run["rewrite_plan"],
+                },
+                output_contract='{"rewritten_text":str}',
+            )
+        except Exception as exc:
+            self._mark_failed(run_id, exc)
+            raise
         rewritten_text = generated.get("rewritten_text")
         if not isinstance(rewritten_text, str) or not rewritten_text.strip():
-            raise ValueError("AI prose rewrite returned empty text.")
-        observed = self.skeletons.extract_from_text(
-            project_id=int(run["project_id"]),
-            text=rewritten_text,
-            workflow_ai=self.ai,
-            expected_skeleton=run["target_skeleton"],
-        )
+            exc = ValueError("AI prose rewrite returned empty text.")
+            self._mark_failed(run_id, exc)
+            raise exc
+        try:
+            observed = self.skeletons.extract_from_text(
+                project_id=int(run["project_id"]),
+                text=rewritten_text,
+                workflow_ai=self.ai,
+                expected_skeleton=run["target_skeleton"],
+            )
+        except Exception as exc:
+            self._mark_failed(run_id, exc)
+            raise
         issues = compare_skeletons(
             run["target_skeleton"], observed, run["preservation_policy"]
         )
         if issues and auto_repair:
-            repaired = self.ai.generate_json(
-                project_id=int(run["project_id"]),
-                stage="prose_rewrite_repair",
-                payload={
-                    "rewritten_text": rewritten_text,
-                    "target_skeleton": run["target_skeleton"],
-                    "issues": issues,
-                },
-                output_contract='{"rewritten_text":str}',
-            )
-            candidate = repaired.get("rewritten_text")
-            if isinstance(candidate, str) and candidate.strip():
-                rewritten_text = candidate
-                observed = self.skeletons.extract_from_text(
+            try:
+                repaired = self.ai.generate_json(
                     project_id=int(run["project_id"]),
-                    text=rewritten_text,
-                    workflow_ai=self.ai,
-                    expected_skeleton=run["target_skeleton"],
+                    stage="prose_rewrite_repair",
+                    payload={
+                        "rewritten_text": rewritten_text,
+                        "target_skeleton": run["target_skeleton"],
+                        "issues": issues,
+                    },
+                    output_contract='{"rewritten_text":str}',
                 )
-                issues = compare_skeletons(
-                    run["target_skeleton"], observed, run["preservation_policy"]
+                candidate = repaired.get("rewritten_text")
+                if isinstance(candidate, str) and candidate.strip():
+                    rewritten_text = candidate
+                    observed = self.skeletons.extract_from_text(
+                        project_id=int(run["project_id"]),
+                        text=rewritten_text,
+                        workflow_ai=self.ai,
+                        expected_skeleton=run["target_skeleton"],
+                    )
+                    issues = compare_skeletons(
+                        run["target_skeleton"], observed, run["preservation_policy"]
+                    )
+            except Exception as exc:
+                self._mark_failed(run_id, exc)
+                raise
+        if issues:
+            with session(self.database_path) as connection:
+                connection.execute(
+                    """
+                    UPDATE prose_rewrite_runs
+                    SET rewritten_text = ?, issues_json = ?, status = 'blocked',
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ? AND status = 'generating'
+                    """,
+                    (rewritten_text, json.dumps(issues, ensure_ascii=False), run_id),
                 )
-        status = "blocked" if issues else "completed"
-        if not issues:
-            self.projects.save_chapter_rewrite(int(run["chapter_id"]), rewritten_text)
+            return self.get_run(run_id)
+        try:
+            with session(self.database_path) as connection:
+                locked = connection.execute(
+                    "UPDATE prose_rewrite_runs SET updated_at = updated_at WHERE id = ? AND status = 'generating'",
+                    (run_id,),
+                )
+                if locked.rowcount != 1:
+                    raise ValueError("Prose rewrite run is no longer generating.")
+                source = self.chapter_versions.resolve_chapter_source(
+                    int(run["chapter_id"]),
+                    (
+                        {"kind": "rewrite_version", "version_id": int(run["source_base_version_id"])}
+                        if run.get("source_base_version_id") is not None
+                        else {"kind": "original"}
+                    ),
+                    connection=connection,
+                )
+                version = self.chapter_versions.append_chapter_rewrite_version(
+                    connection,
+                    chapter_id=int(run["chapter_id"]),
+                    rewritten_text=rewritten_text,
+                    source_operation="prose_rewrite",
+                    source_run_id=run_id,
+                    source_base_kind=str(run["source_base_kind"]),
+                    source_base_version_id=run.get("source_base_version_id"),
+                    source_hash=str(run["source_hash"]),
+                    facts_before=source.facts_before,
+                    facts_after=source.facts_after,
+                    require_head_match=bool(run["require_source_head_match"]),
+                    expected_head_version_id=run.get(
+                        "expected_source_head_version_id"
+                    ),
+                )
+                connection.execute(
+                    """
+                    UPDATE prose_rewrite_runs
+                    SET rewritten_text = ?, issues_json = '[]', status = 'completed',
+                        result_version_id = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ? AND status = 'generating'
+                    """,
+                    (rewritten_text, version["id"], run_id),
+                )
+        except SourceVersionConflict as conflict:
+            with session(self.database_path) as connection:
+                connection.execute(
+                    """
+                    UPDATE prose_rewrite_runs
+                    SET status = 'failed', issues_json = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ? AND status = 'generating'
+                    """,
+                    (
+                        json.dumps([{
+                            "type": "source_version_conflict",
+                            "expected_version_id": conflict.expected_version_id,
+                            "current_version_id": conflict.current_version_id,
+                        }], ensure_ascii=False),
+                        run_id,
+                    ),
+                )
+        except Exception as exc:
+            self._mark_failed(run_id, exc)
+            raise
+        return self.get_run(run_id)
+
+    def cancel(self, run_id: int) -> dict[str, Any]:
+        with session(self.database_path) as connection:
+            cursor = connection.execute(
+                """
+                UPDATE prose_rewrite_runs
+                SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND status IN ('planned', 'generating', 'blocked', 'failed')
+                """,
+                (run_id,),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("Prose rewrite run cannot be cancelled in its current state.")
+        return self.get_run(run_id)
+
+    def retry(self, run_id: int) -> dict[str, Any]:
+        with session(self.database_path) as connection:
+            cursor = connection.execute(
+                """
+                UPDATE prose_rewrite_runs
+                SET status = 'planned', issues_json = '[]', rewritten_text = NULL,
+                    generation_attempt = generation_attempt + 1,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND status IN ('blocked', 'failed')
+                """,
+                (run_id,),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("Prose rewrite run cannot be retried in its current state.")
+        return self.get_run(run_id)
+
+    def _mark_failed(self, run_id: int, exc: Exception) -> None:
         with session(self.database_path) as connection:
             connection.execute(
                 """
                 UPDATE prose_rewrite_runs
-                SET rewritten_text = ?, issues_json = ?, status = ?,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
+                SET status = 'failed', issues_json = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND status = 'generating'
                 """,
-                (
-                    rewritten_text,
-                    json.dumps(issues, ensure_ascii=False),
-                    status,
-                    run_id,
-                ),
+                (json.dumps([{"type": "technical_failure", "message": str(exc)}]), run_id),
             )
-        return self.get_run(run_id)
 
     def get_run(self, run_id: int) -> dict[str, Any]:
         with session(self.database_path) as connection:

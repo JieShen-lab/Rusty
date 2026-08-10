@@ -6,8 +6,8 @@ from pathlib import Path
 from typing import Any
 
 from rusty.db import initialize_database, session
-from rusty.models import count_text_units
 from rusty.services.branch_service import BranchService
+from rusty.services.chapter_version_service import ChapterVersionService, SourceVersionConflict
 from rusty.services.project_service import ProjectService, default_database_path
 from rusty.services.workflow_ai import WorkflowAI
 
@@ -41,6 +41,7 @@ class CanonChangeOrchestrator:
             Path(database_path) if database_path is not None else default_database_path()
         )
         self.projects = ProjectService(self.database_path)
+        self.chapter_versions = ChapterVersionService(self.database_path)
         self.ai = WorkflowAI(self.database_path, ai_client=ai_client)
         with session(self.database_path) as connection:
             initialize_database(connection)
@@ -53,6 +54,7 @@ class CanonChangeOrchestrator:
         new_fact: dict[str, Any],
         effective_order: int,
         branch_id: int | None = None,
+        source: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         project = self.projects.get_project(project_id)
         if project is None:
@@ -60,7 +62,9 @@ class CanonChangeOrchestrator:
         if project.project_kind == "branch" and branch_id is None:
             raise ValueError("Canon changes in branch projects require a target branch.")
         with session(self.database_path) as connection:
-            segments = self._segments(connection, project_id, branch_id, effective_order)
+            segments = self._segments(
+                connection, project_id, branch_id, effective_order, source=source
+            )
         candidates = _candidate_segments(segments, old_fact)
         analyzed: list[dict[str, Any]] = []
         for segment in candidates:
@@ -89,8 +93,9 @@ class CanonChangeOrchestrator:
             cursor = connection.execute(
                 """
                 INSERT INTO canon_change_runs (
-                    project_id, branch_id, old_fact_json, new_fact_json, effective_order
-                ) VALUES (?, ?, ?, ?, ?)
+                    project_id, branch_id, old_fact_json, new_fact_json,
+                    effective_order, status, source_snapshots_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     project_id,
@@ -98,6 +103,23 @@ class CanonChangeOrchestrator:
                     json.dumps(old_fact, ensure_ascii=False),
                     json.dumps(new_fact, ensure_ascii=False),
                     effective_order,
+                    "ready_to_apply" if not analyzed else "reviewing",
+                    json.dumps(
+                        {
+                            f"{segment['route_kind']}:{segment['target_id']}": {
+                                "source_base_version_id": segment.get("source_base_version_id"),
+                                "expected_source_head_version_id": segment.get(
+                                    "expected_source_head_version_id"
+                                ),
+                                "source_hash": _hash(str(segment["text"])),
+                                "text": segment["text"],
+                                "facts": segment.get("facts", {}),
+                                "require_head_match": bool(segment.get("require_head_match", True)),
+                            }
+                            for segment in segments
+                        },
+                        ensure_ascii=False,
+                    ),
                 ),
             )
             run_id = int(cursor.lastrowid)
@@ -108,8 +130,8 @@ class CanonChangeOrchestrator:
                         run_id, route_kind, target_id, source_range_json,
                         source_hash, original_text, replacement_text,
                         impact_type, reason, confidence, evidence_json,
-                        requires_confirmation
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        requires_confirmation, source_base_version_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         run_id,
@@ -124,6 +146,7 @@ class CanonChangeOrchestrator:
                         impact["confidence"],
                         json.dumps(impact["evidence"], ensure_ascii=False),
                         1 if impact["requires_confirmation"] else 0,
+                        impact.get("source_base_version_id"),
                     ),
                 )
         return self.get_run(run_id)
@@ -154,9 +177,34 @@ class CanonChangeOrchestrator:
             row = connection.execute(
                 "SELECT * FROM canon_change_patches WHERE id = ?", (patch_id,)
             ).fetchone()
+            remaining = connection.execute(
+                "SELECT COUNT(*) FROM canon_change_patches WHERE run_id = (SELECT run_id FROM canon_change_patches WHERE id = ?) AND status = 'draft'",
+                (patch_id,),
+            ).fetchone()[0]
+            if int(remaining) == 0:
+                connection.execute(
+                    """
+                    UPDATE canon_change_runs SET status = 'ready_to_apply', updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ? AND status = 'reviewing'
+                    """,
+                    (row["run_id"],),
+                )
         return self._patch(row)
 
     def apply(self, run_id: int) -> dict[str, Any]:
+        run = self.get_run(run_id)
+        if run["status"] != "ready_to_apply":
+            raise ValueError("Canon change run is not ready to apply.")
+        with session(self.database_path) as connection:
+            cursor = connection.execute(
+                """
+                UPDATE canon_change_runs SET status = 'applying', updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND status = 'ready_to_apply'
+                """,
+                (run_id,),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("Canon change run is not ready to apply.")
         run = self.get_run(run_id)
         selected = [
             patch for patch in run["patches"] if patch["status"] in {"accepted", "edited"}
@@ -168,6 +216,26 @@ class CanonChangeOrchestrator:
         projected: dict[tuple[str, int], str] = {}
         conflicts: list[dict[str, Any]] = []
         with session(self.database_path) as connection:
+            for key, snapshot in run["source_snapshots"].items():
+                route_kind, raw_target_id = key.split(":", 1)
+                target_id = int(raw_target_id)
+                current = self._current_text(connection, route_kind, target_id)
+                current_version_id = self._current_version_id(
+                    connection, route_kind, target_id
+                )
+                if (
+                    _hash(current) != snapshot["source_hash"]
+                    or current_version_id
+                    != snapshot.get("expected_source_head_version_id")
+                ):
+                    conflicts.append(
+                        {
+                            "type": "source_version_conflict",
+                            "route_kind": route_kind,
+                            "target_id": target_id,
+                            "source_base_version_id": snapshot.get("source_base_version_id"),
+                        }
+                    )
             for target, patches in grouped.items():
                 current = self._current_text(connection, *target)
                 ordered = sorted(patches, key=lambda item: item["source_range"]["start"])
@@ -204,22 +272,28 @@ class CanonChangeOrchestrator:
             self._mark_blocked(run_id, conflicts)
             return self.get_run(run_id)
 
-        consistency = self.ai.generate_json(
-            project_id=int(run["project_id"]),
-            stage="canon_consistency_check",
-            payload={
-                "old_fact": run["old_fact"],
-                "new_fact": run["new_fact"],
-                "projected_targets": [
-                    {"route_kind": key[0], "target_id": key[1], "text": text}
-                    for key, text in projected.items()
-                ],
-            },
-            output_contract='{"issues":array}',
-        )
+        try:
+            consistency = self.ai.generate_json(
+                project_id=int(run["project_id"]),
+                stage="canon_consistency_check",
+                payload={
+                    "old_fact": run["old_fact"],
+                    "new_fact": run["new_fact"],
+                    "projected_targets": [
+                        {"route_kind": key[0], "target_id": key[1], "text": text}
+                        for key, text in projected.items()
+                    ],
+                },
+                output_contract='{"issues":array}',
+            )
+        except Exception as exc:
+            self._mark_failed(run_id, exc)
+            raise
         issues = consistency.get("issues")
         if not isinstance(issues, list):
-            raise ValueError("Canon consistency check must return issues.")
+            exc = ValueError("Canon consistency check must return issues.")
+            self._mark_failed(run_id, exc)
+            raise exc
         if issues:
             self._mark_blocked(run_id, issues)
             return self.get_run(run_id)
@@ -228,33 +302,129 @@ class CanonChangeOrchestrator:
             **run["fact_ledger"],
             str(run["old_fact"].get("attribute") or "fact"): run["new_fact"],
         }
-        with session(self.database_path) as connection:
-            for (route_kind, target_id), text in projected.items():
-                self._save_route_text(
-                    connection,
-                    route_kind,
-                    target_id,
-                    text,
-                    old_fact=run["old_fact"],
-                    new_fact=run["new_fact"],
+        try:
+            with session(self.database_path) as connection:
+                locked = connection.execute(
+                    "UPDATE canon_change_runs SET updated_at = updated_at WHERE id = ? AND status = 'applying'",
+                    (run_id,),
                 )
-            connection.executemany(
-                """
-                UPDATE canon_change_patches
-                SET status = 'applied', updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-                """,
-                [(patch["id"],) for patch in selected],
+                if locked.rowcount != 1:
+                    raise ValueError("Canon change run is no longer applying.")
+                attribute = str(run["old_fact"].get("attribute") or "fact")
+                result_versions: dict[tuple[str, int], int] = {}
+                if run["branch_id"] is None:
+                    for key, snapshot in run["source_snapshots"].items():
+                        route_kind, raw_target_id = key.split(":", 1)
+                        if route_kind != "chapter":
+                            continue
+                        target_id = int(raw_target_id)
+                        facts = dict(snapshot.get("facts") or {})
+                        facts[attribute] = run["new_fact"]
+                        version = self.chapter_versions.append_chapter_rewrite_version(
+                            connection,
+                            chapter_id=target_id,
+                            rewritten_text=projected.get(
+                                (route_kind, target_id), str(snapshot["text"])
+                            ),
+                            source_operation="canon_change",
+                            source_run_id=run_id,
+                            source_base_kind=(
+                                "rewrite_version"
+                                if snapshot.get("source_base_version_id") is not None
+                                else "original"
+                            ),
+                            source_base_version_id=snapshot.get("source_base_version_id"),
+                            source_hash=str(snapshot["source_hash"]),
+                            facts_before=dict(snapshot.get("facts") or {}),
+                            facts_after=facts,
+                            require_head_match=bool(
+                                snapshot.get("require_head_match", True)
+                            ),
+                            expected_head_version_id=snapshot.get(
+                                "expected_source_head_version_id"
+                            ),
+                        )
+                        result_versions[(route_kind, target_id)] = int(version["id"])
+                else:
+                    updates = []
+                    for key, snapshot in run["source_snapshots"].items():
+                        route_kind, raw_target_id = key.split(":", 1)
+                        if route_kind != "branch_scene":
+                            continue
+                        target_id = int(raw_target_id)
+                        facts = dict(snapshot.get("facts") or {})
+                        facts[attribute] = run["new_fact"]
+                        updates.append(
+                            {
+                                "scene_id": target_id,
+                                "text": projected.get(
+                                    (route_kind, target_id), str(snapshot["text"])
+                                ),
+                                "facts_after": facts,
+                            }
+                        )
+                    chain = BranchService.apply_canon_fact_chain(
+                        connection,
+                        branch_id=int(run["branch_id"]),
+                        scene_updates=updates,
+                    )
+                    result_versions.update(
+                        {
+                            ("branch_scene", int(scene_id)): int(version_id)
+                            for scene_id, version_id in chain["scene_version_ids"].items()
+                        }
+                    )
+                connection.executemany(
+                    """
+                    UPDATE canon_change_patches
+                    SET status = 'applied', result_version_id = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    [
+                        (
+                            result_versions.get(
+                                (patch["route_kind"], int(patch["target_id"]))
+                            ),
+                            patch["id"],
+                        )
+                        for patch in selected
+                    ],
+                )
+                connection.execute(
+                    """
+                    UPDATE canon_change_runs
+                    SET fact_ledger_json = ?, consistency_issues_json = '[]',
+                        status = 'applied', updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (json.dumps(ledger, ensure_ascii=False), run_id),
+                )
+        except SourceVersionConflict as conflict:
+            self._mark_blocked(
+                run_id,
+                [{
+                    "type": "source_version_conflict",
+                    "expected_version_id": conflict.expected_version_id,
+                    "current_version_id": conflict.current_version_id,
+                }],
             )
-            connection.execute(
+            return self.get_run(run_id)
+        except Exception as exc:
+            self._mark_failed(run_id, exc)
+            raise
+        return self.get_run(run_id)
+
+    def cancel(self, run_id: int) -> dict[str, Any]:
+        with session(self.database_path) as connection:
+            cursor = connection.execute(
                 """
-                UPDATE canon_change_runs
-                SET fact_ledger_json = ?, consistency_issues_json = '[]',
-                    status = 'applied', updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
+                UPDATE canon_change_runs SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND status IN ('scanning', 'reviewing', 'blocked', 'ready_to_apply', 'failed')
                 """,
-                (json.dumps(ledger, ensure_ascii=False), run_id),
+                (run_id,),
             )
+            if cursor.rowcount != 1:
+                raise ValueError("Canon change run cannot be cancelled in its current state.")
         return self.get_run(run_id)
 
     def _mark_blocked(self, run_id: int, issues: list[dict[str, Any]]) -> None:
@@ -264,9 +434,27 @@ class CanonChangeOrchestrator:
                 UPDATE canon_change_runs
                 SET consistency_issues_json = ?, status = 'blocked',
                     updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
+                WHERE id = ? AND status IN ('reviewing', 'ready_to_apply', 'applying')
                 """,
                 (json.dumps(issues, ensure_ascii=False), run_id),
+            )
+
+    def _mark_failed(self, run_id: int, exc: Exception) -> None:
+        with session(self.database_path) as connection:
+            connection.execute(
+                """
+                UPDATE canon_change_runs
+                SET consistency_issues_json = ?, status = 'failed',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND status = 'applying'
+                """,
+                (
+                    json.dumps(
+                        [{"type": "technical_failure", "message": str(exc)}],
+                        ensure_ascii=False,
+                    ),
+                    run_id,
+                ),
             )
 
     def get_run(self, run_id: int) -> dict[str, Any]:
@@ -286,6 +474,7 @@ class CanonChangeOrchestrator:
         result = dict(row)
         for key in ("old_fact", "new_fact", "fact_ledger", "consistency_issues"):
             result[key] = json.loads(row[f"{key}_json"])
+        result["source_snapshots"] = json.loads(row["source_snapshots_json"] or "{}")
         result["patches"] = [self._patch(patch) for patch in patches]
         return result
 
@@ -297,12 +486,20 @@ class CanonChangeOrchestrator:
             ).fetchall()
         return [self.get_run(int(row["id"])) for row in rows]
 
-    @staticmethod
-    def _segments(connection, project_id: int, branch_id: int | None, effective_order: int):
+    def _segments(
+        self,
+        connection,
+        project_id: int,
+        branch_id: int | None,
+        effective_order: int,
+        *,
+        source: dict[str, Any] | None,
+    ):
         if branch_id is not None:
             rows = connection.execute(
                 """
-                SELECT s.id, s.sequence_index, v.generated_text, v.facts_after_json
+                SELECT s.id, s.sequence_index, v.id AS source_base_version_id,
+                       v.generated_text, v.facts_after_json
                 FROM branch_scenes s
                 JOIN branch_scene_versions v
                   ON v.branch_scene_id = s.id AND v.version = s.current_version
@@ -319,35 +516,50 @@ class CanonChangeOrchestrator:
                     "target_id": int(row["id"]),
                     "text": row["generated_text"],
                     "facts": json.loads(row["facts_after_json"]),
+                    "source_base_version_id": int(row["source_base_version_id"]),
+                    "expected_source_head_version_id": int(
+                        row["source_base_version_id"]
+                    ),
+                    "require_head_match": True,
                 }
                 for row in rows
             ]
         rows = connection.execute(
             """
-            SELECT id, COALESCE(rewritten_text, original_text) AS text
+            SELECT id
             FROM chapters
             WHERE project_id = ? AND chapter_index >= ?
             ORDER BY chapter_index
             """,
             (project_id, effective_order),
         ).fetchall()
-        return [
-            {
-                "route_kind": "chapter",
-                "target_id": int(row["id"]),
-                "text": row["text"],
-                "facts": {},
-            }
-            for row in rows
-        ]
+        segments = []
+        for row in rows:
+            selection = source
+            if source and source.get("kind") == "rewrite_version":
+                version = self.chapter_versions.get_version(int(source["version_id"]), connection=connection)
+                selection = source if int(version["chapter_id"]) == int(row["id"]) else {"kind": "current"}
+            snapshot = self.chapter_versions.resolve_chapter_source(
+                int(row["id"]), selection, connection=connection
+            )
+            segments.append(
+                {
+                    "route_kind": "chapter",
+                    "target_id": int(row["id"]),
+                    "text": snapshot.text,
+                    "facts": snapshot.facts_after,
+                    "source_base_version_id": snapshot.source_version_id,
+                    "expected_source_head_version_id": snapshot.expected_head_version_id,
+                    "require_head_match": snapshot.require_head_match,
+                }
+            )
+        return segments
 
-    @staticmethod
-    def _current_text(connection, route_kind: str, target_id: int) -> str:
+    def _current_text(self, connection, route_kind: str, target_id: int) -> str:
         if route_kind == "chapter":
-            row = connection.execute(
-                "SELECT COALESCE(rewritten_text, original_text) FROM chapters WHERE id = ?",
-                (target_id,),
-            ).fetchone()
+            return self.chapter_versions.resolve_chapter_source(
+                target_id, {"kind": "current"}, connection=connection
+            ).text
         else:
             row = connection.execute(
                 """
@@ -363,118 +575,26 @@ class CanonChangeOrchestrator:
             raise FileNotFoundError(f"Patch target not found: {route_kind}:{target_id}")
         return str(row[0])
 
-    @staticmethod
-    def _save_route_text(
-        connection,
-        route_kind: str,
-        target_id: int,
-        text: str,
-        *,
-        old_fact: dict[str, Any],
-        new_fact: dict[str, Any],
-    ) -> None:
-        attribute = str(old_fact.get("attribute") or "fact")
+    def _current_version_id(
+        self, connection, route_kind: str, target_id: int
+    ) -> int | None:
         if route_kind == "chapter":
-            chapter = connection.execute(
-                "SELECT word_count FROM chapters WHERE id = ?", (target_id,)
-            ).fetchone()
-            word_count = count_text_units(text)
-            ratio = word_count / int(chapter["word_count"]) if chapter["word_count"] else None
-            connection.execute(
-                """
-                INSERT INTO chapter_rewrites(
-                    chapter_id, rewritten_text, rewrite_source, actual_word_count,
-                    expansion_ratio, prompt_snapshot_json, anchor_snapshot_json,
-                    rewrite_mode, anchor_text, expanded_text
-                ) VALUES (?, ?, 'ai', ?, ?, '{}', '{}', 'full_rewrite', '', ?)
-                ON CONFLICT(chapter_id) DO UPDATE SET
-                    rewritten_text=excluded.rewritten_text,
-                    rewrite_source='ai',
-                    actual_word_count=excluded.actual_word_count,
-                    expansion_ratio=excluded.expansion_ratio,
-                    expanded_text=excluded.expanded_text,
-                    updated_at=CURRENT_TIMESTAMP
-                """,
-                (target_id, text, word_count, ratio, text),
+            return self.chapter_versions.get_current_head_id(
+                target_id, connection=connection
             )
-            connection.execute(
-                "UPDATE chapters SET rewritten_text = ?, status = 'rewritten', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (text, target_id),
-            )
-            scenes = connection.execute(
-                "SELECT id FROM scenes WHERE chapter_id = ? AND deleted_at IS NULL",
-                (target_id,),
-            ).fetchall()
-            for scene in scenes:
-                latest = connection.execute(
-                    """
-                    SELECT ledger_version, facts_json
-                    FROM scene_fact_ledgers
-                    WHERE scene_id = ? ORDER BY ledger_version DESC LIMIT 1
-                    """,
-                    (scene["id"],),
-                ).fetchone()
-                if latest is None:
-                    continue
-                facts = json.loads(latest["facts_json"])
-                facts[attribute] = new_fact
-                connection.execute(
-                    """
-                    INSERT INTO scene_fact_ledgers(
-                        scene_id, ledger_version, facts_json, source_kind
-                    ) VALUES (?, ?, ?, 'manual')
-                    """,
-                    (
-                        scene["id"],
-                        int(latest["ledger_version"]) + 1,
-                        json.dumps(facts, ensure_ascii=False),
-                    ),
-                )
-            return
         row = connection.execute(
             """
-            SELECT s.current_version, s.branch_chapter_id, s.scene_index,
-                   v.id AS parent_id, v.facts_after_json
+            SELECT v.id
             FROM branch_scenes s
             JOIN branch_scene_versions v
               ON v.branch_scene_id = s.id AND v.version = s.current_version
-            WHERE s.id = ?
+            WHERE s.id = ? AND s.deleted_at IS NULL
             """,
             (target_id,),
         ).fetchone()
         if row is None:
-            raise FileNotFoundError(f"Branch scene not found: {target_id}")
-        facts = json.loads(row["facts_after_json"])
-        facts[attribute] = new_fact
-        version = int(row["current_version"]) + 1
-        version_cursor = connection.execute(
-            """
-            INSERT INTO branch_scene_versions(
-                branch_scene_id, version, generated_text, facts_after_json,
-                source_kind, parent_version_id
-            ) VALUES (?, ?, ?, ?, 'manual', ?)
-            """,
-            (
-                target_id,
-                version,
-                text,
-                json.dumps(facts, ensure_ascii=False),
-                int(row["parent_id"]),
-            ),
-        )
-        connection.execute(
-            "UPDATE branch_scenes SET current_version = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (version, target_id),
-        )
-        BranchService._snapshot_chapter_after_scene_change(
-            connection,
-            int(row["branch_chapter_id"]),
-            scene_id=target_id,
-            scene_version_id=int(version_cursor.lastrowid),
-            scene_index=int(row["scene_index"]),
-            facts_after=facts,
-            source_kind="manual",
-        )
+            raise FileNotFoundError(f"Patch target not found: {route_kind}:{target_id}")
+        return int(row["id"])
 
     @staticmethod
     def _patch(row) -> dict[str, Any]:
@@ -535,6 +655,7 @@ def _validate_impact(segment: dict[str, Any], impact: Any) -> dict[str, Any]:
     return {
         "route_kind": segment["route_kind"],
         "target_id": segment["target_id"],
+        "source_base_version_id": segment.get("source_base_version_id"),
         "source_range": {"start": start, "end": end},
         "original_text": original,
         "replacement_text": replacement,

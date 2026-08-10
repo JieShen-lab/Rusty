@@ -216,7 +216,7 @@ SQLite + OS keyring + 本地文件
 
 ## 5. 数据实现
 
-数据库当前架构版本为 37。主要数据域包括：
+数据库当前架构版本为 39。主要数据域包括：
 
 - 项目、书籍元数据、导入来源、分章规则和章节；
 - AI 模型、提示词模板、项目提示词和项目设置；
@@ -250,6 +250,24 @@ Plot Generation 使用 `awaiting_skeleton`、`planning_blocked`、`awaiting_seam
 固定 facts、场景顺序和每个场景的正文版本；v37 增加运行进度、场景游标、生成尝试次数及
 正式状态约束。旧数据回填优先选择不晚于章节版本创建时间的最近场景版本，并保持当前正文
 与 facts 不丢失。
+
+v38 新增 `chapter_rewrite_versions`。原始章节正文保持不可变，所有 Plot、Prose Rewrite、
+Canon Change、人工编辑、迁移和恢复结果都追加为新版本；`chapter_rewrites.current_version_id`
+是 current head，`chapters.rewritten_text` 是兼容投影。版本号在章节内单调递增，
+`parent_version_id` 指向真实来源，因此允许从历史版本形成分叉而不改写历史。
+
+v39 为 Plot/Prose run 保存来源正文快照、来源版本/hash 和独立的
+`expected_source_head_version_id`。最终提交先用状态守卫获取 SQLite 写锁，再执行 source-head
+CAS；正文版本、current projection、全部分支章节/场景及 run 终态在单一事务中提交。运行期间
+正文 head 改变时，旧运行进入结构化 source conflict，不会覆盖新版本。
+
+章节 effective source 统一由 `ChapterVersionService` 解析。默认继续当前版本，也可显式选择
+原始基线或历史 rewrite version；恢复历史正文会创建新的 `restore` 版本。桌面工作区提供轻量
+版本列表、历史正文查看和“基于此版本创建新操作”。
+
+分支章节快照的 `facts_after` 取最后一个场景版本。修改非末场景但未重算下游时，
+`fact_chain_status=needs_recompute`；Canon Change 会为所有下游场景建立正文+facts 对齐的新版本，
+包括正文未变化但事实发生变化的场景，完成后章节快照标记 `consistent`。
 
 ## 6. 桌面端与安全边界
 

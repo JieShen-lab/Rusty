@@ -580,13 +580,20 @@ class ContextService:
         selected_character_ids: Iterable[int] = (),
         selected_material_ids: Iterable[int] = (),
         style_profile_id: int | None = None,
+        rewrite_source_snapshot: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         start = self._resolve_generation_anchor(
-            project_id, start_anchor, parent_branch_id=parent_branch_id
+            project_id,
+            start_anchor,
+            parent_branch_id=parent_branch_id,
+            rewrite_source_snapshot=rewrite_source_snapshot,
         )
         returned = (
             self._resolve_generation_anchor(
-                project_id, return_anchor, parent_branch_id=parent_branch_id
+                project_id,
+                return_anchor,
+                parent_branch_id=parent_branch_id,
+                rewrite_source_snapshot=rewrite_source_snapshot,
             )
             if return_anchor is not None
             else None
@@ -640,10 +647,14 @@ class ContextService:
         anchor: dict[str, Any],
         *,
         parent_branch_id: int | None = None,
+        rewrite_source_snapshot: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Resolve the authoritative current text unit bound to a generation anchor."""
         resolved = self._resolve_generation_anchor(
-            project_id, anchor, parent_branch_id=parent_branch_id
+            project_id,
+            anchor,
+            parent_branch_id=parent_branch_id,
+            rewrite_source_snapshot=rewrite_source_snapshot,
         )
         source_text = str(resolved.get("source_text", resolved["text"]))
         return {
@@ -663,6 +674,7 @@ class ContextService:
         anchor: dict[str, Any],
         *,
         parent_branch_id: int | None,
+        rewrite_source_snapshot: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         anchor_type = str(anchor["anchor_type"])
         if anchor_type in {"branch_chapter", "branch_scene"}:
@@ -741,11 +753,32 @@ class ContextService:
             if scene is None or scene.project_id != project_id:
                 raise ValueError("Anchor scene does not belong to project.")
             chapter = self.scene_service.project_service.get_chapter(scene.chapter_id)
-        offset = len(chapter.original_text)
+        effective_text = (
+            str(rewrite_source_snapshot["text"])
+            if rewrite_source_snapshot is not None
+            and int(rewrite_source_snapshot["chapter_id"]) == int(chapter.id)
+            else chapter.original_text
+        )
+        offset = len(effective_text)
+        effective_scene_start = None
+        if scene is not None and rewrite_source_snapshot is not None:
+            effective_scene_start = effective_text.find(scene.original_text)
+            if effective_scene_start < 0:
+                raise ValueError(
+                    "The selected scene can no longer be resolved in the frozen rewrite source."
+                )
         if anchor_type in {"chapter_start", "scene_start"}:
-            offset = scene.original_start_offset if scene is not None else 0
+            offset = (
+                effective_scene_start
+                if effective_scene_start is not None
+                else (scene.original_start_offset if scene is not None else 0)
+            )
         elif anchor_type in {"scene_end"} and scene is not None:
-            offset = scene.original_end_offset
+            offset = (
+                effective_scene_start + len(scene.original_text)
+                if effective_scene_start is not None
+                else scene.original_end_offset
+            )
         elif anchor_type == "text_offset":
             offset = int(anchor["text_offset"])
         elif anchor_type == "skeleton_node":
@@ -778,22 +811,26 @@ class ContextService:
             elif scene is not None:
                 offset = scene.original_start_offset if anchor.get("side") == "before" else scene.original_end_offset
             else:
-                offset = 0 if anchor.get("side") == "before" else len(chapter.original_text)
-        if offset < 0 or offset > len(chapter.original_text):
+                offset = 0 if anchor.get("side") == "before" else len(effective_text)
+        if offset < 0 or offset > len(effective_text):
             raise ValueError("Anchor text_offset is outside the chapter text.")
-        if scene is not None and anchor.get("text_offset") is not None and not (
+        if rewrite_source_snapshot is None and scene is not None and anchor.get("text_offset") is not None and not (
             scene.original_start_offset <= offset <= scene.original_end_offset
         ):
             raise ValueError("Anchor text_offset is outside the selected scene.")
-        chapter_text = chapter.original_text
-        source_scene = scene
+        chapter_text = effective_text
+        source_scene = scene if rewrite_source_snapshot is None else None
         siblings = self.scene_service.list_scenes(chapter.id)
         if scene is None and siblings:
             eligible = [
                 item for item in siblings if item.original_end_offset <= offset
             ]
             scene = eligible[-1] if eligible else siblings[0]
-        facts = self.scene_service.get_fact_ledger(scene.id) if scene is not None else {}
+        facts = (
+            dict(rewrite_source_snapshot.get("facts_after") or {})
+            if rewrite_source_snapshot is not None
+            else (self.scene_service.get_fact_ledger(scene.id) if scene is not None else {})
+        )
         states = self.scene_service.list_character_states(scene.id) if scene is not None else []
         at_start = anchor_type in {"chapter_start", "scene_start"} or anchor.get("side") == "before"
         state = facts.get("required_start_state", facts) if at_start else facts.get("required_end_state", facts)
@@ -804,7 +841,11 @@ class ContextService:
             else offset
         )
         return {
-            "source_kind": "original",
+            "source_kind": (
+                str(rewrite_source_snapshot["source_kind"])
+                if rewrite_source_snapshot is not None
+                else "original"
+            ),
             "chapter_id": chapter.id,
             "scene_id": scene.id if scene is not None else None,
             "text": chapter_text,
@@ -812,6 +853,11 @@ class ContextService:
             "offset": offset,
             "local_offset": local_offset,
             "source_hash": self.branch_service.source_hash(source_text),
+            "source_version_id": (
+                rewrite_source_snapshot.get("source_version_id")
+                if rewrite_source_snapshot is not None
+                else None
+            ),
             "source_range": {"start": 0, "end": len(source_text)},
             "previous_text_tail": chapter_text[:offset][-1200:],
             "state": state,

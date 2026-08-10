@@ -24,6 +24,7 @@ from rusty.services.anchor_service import AnchorService, CharacterCard, OutlineT
 from rusty.services.material_service import Material, MaterialService
 from rusty.services.analysis_service import AnalysisService
 from rusty.services.chapter_split_service import ChapterSplitService
+from rusty.services.chapter_version_service import ChapterVersionService
 from rusty.services.document_library_service import (
     DocumentLibraryService,
     DocumentRevision,
@@ -80,6 +81,7 @@ from .schemas import (
     CharacterProjectSummaryOut,
     CharacterSourceSummaryOut,
     ChapterDetailOut,
+    ChapterRewriteVersionResponse,
     ChapterErrorOut,
     ChapterOut,
     BranchCreateRequest,
@@ -278,6 +280,7 @@ def create_app(
     canon_change_orchestrator = CanonChangeOrchestrator(
         db_path, ai_client=workflow_ai_client
     )
+    chapter_version_service = ChapterVersionService(db_path)
     anchor_extraction_service = AnchorExtractionService(db_path, ai_client=anchor_ai_client or style_ai_client)
 
     app = FastAPI(
@@ -973,7 +976,9 @@ def create_app(
 
     @app.post("/api/prose-rewrite/runs", response_model=ProseRewriteRunResponse, dependencies=[Depends(_require_token)])
     def plan_prose_rewrite(payload: ProseRewritePlanRequest) -> dict[str, Any]:
-        return prose_rewrite_orchestrator.plan(**payload.model_dump())
+        values = payload.model_dump()
+        values["source_selection"] = values.pop("source")
+        return prose_rewrite_orchestrator.plan(**values)
 
     @app.get(
         "/api/prose-rewrite/runs/{run_id}",
@@ -993,6 +998,14 @@ def create_app(
     @app.post("/api/prose-rewrite/runs/{run_id}/execute", response_model=ProseRewriteRunResponse, dependencies=[Depends(_require_token)])
     def execute_prose_rewrite(run_id: int, payload: ProseRewriteExecuteRequest) -> dict[str, Any]:
         return prose_rewrite_orchestrator.execute(run_id, **payload.model_dump())
+
+    @app.post("/api/prose-rewrite/runs/{run_id}/cancel", response_model=ProseRewriteRunResponse, dependencies=[Depends(_require_token)])
+    def cancel_prose_rewrite(run_id: int) -> dict[str, Any]:
+        return prose_rewrite_orchestrator.cancel(run_id)
+
+    @app.post("/api/prose-rewrite/runs/{run_id}/retry", response_model=ProseRewriteRunResponse, dependencies=[Depends(_require_token)])
+    def retry_prose_rewrite(run_id: int) -> dict[str, Any]:
+        return prose_rewrite_orchestrator.retry(run_id)
 
     @app.post("/api/canon-change/runs", response_model=CanonChangeRunResponse, dependencies=[Depends(_require_token)])
     def scan_canon_change(payload: CanonChangeScanRequest) -> dict[str, Any]:
@@ -1020,6 +1033,34 @@ def create_app(
     @app.post("/api/canon-change/runs/{run_id}/apply", response_model=CanonChangeRunResponse, dependencies=[Depends(_require_token)])
     def apply_canon_change(run_id: int) -> dict[str, Any]:
         return canon_change_orchestrator.apply(run_id)
+
+    @app.post("/api/canon-change/runs/{run_id}/cancel", response_model=CanonChangeRunResponse, dependencies=[Depends(_require_token)])
+    def cancel_canon_change(run_id: int) -> dict[str, Any]:
+        return canon_change_orchestrator.cancel(run_id)
+
+    @app.get(
+        "/api/chapters/{chapter_id}/rewrite-versions",
+        response_model=list[ChapterRewriteVersionResponse],
+    )
+    def list_chapter_rewrite_versions(chapter_id: int) -> list[dict[str, Any]]:
+        if project_service.get_chapter(chapter_id) is None:
+            raise _http_error(404, "chapter_not_found", "Chapter not found.")
+        return chapter_version_service.list_versions(chapter_id)
+
+    @app.get(
+        "/api/chapter-rewrite-versions/{version_id}",
+        response_model=ChapterRewriteVersionResponse,
+    )
+    def get_chapter_rewrite_version(version_id: int) -> dict[str, Any]:
+        return chapter_version_service.get_version(version_id)
+
+    @app.post(
+        "/api/chapter-rewrite-versions/{version_id}/restore",
+        response_model=ChapterRewriteVersionResponse,
+        dependencies=[Depends(_require_token)],
+    )
+    def restore_chapter_rewrite_version(version_id: int) -> dict[str, Any]:
+        return chapter_version_service.restore_version(version_id)
 
     @app.get("/api/projects/{project_id}/chapters", response_model=list[ChapterOut])
     def list_chapters(project_id: int) -> list[ChapterOut]:

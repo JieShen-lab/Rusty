@@ -18,6 +18,7 @@ from rusty.models import (
     ProjectSummary,
     count_text_units,
 )
+from rusty.services.chapter_version_service import ChapterVersionService
 
 
 def default_database_path() -> Path:
@@ -441,53 +442,25 @@ class ProjectService:
                     (chapter_id,),
                 )
             else:
-                word_count = count_text_units(text)
-                ratio = word_count / chapter.word_count if chapter.word_count else None
-                connection.execute(
-                    """
-                    INSERT INTO chapter_rewrites (
-                        chapter_id,
-                        rewritten_text,
-                        rewrite_source,
-                        actual_word_count,
-                        expansion_ratio,
-                        prompt_snapshot_json,
-                        anchor_snapshot_json,
-                        rewrite_mode,
-                        anchor_text,
-                        expanded_text,
-                        updated_at
-                    ) VALUES (?, ?, 'manual', ?, ?, ?, '{}', 'full_rewrite', '', ?, CURRENT_TIMESTAMP)
-                    ON CONFLICT(chapter_id)
-                    DO UPDATE SET
-                        rewritten_text = excluded.rewritten_text,
-                        rewrite_source = excluded.rewrite_source,
-                        actual_word_count = excluded.actual_word_count,
-                        expansion_ratio = excluded.expansion_ratio,
-                        prompt_snapshot_json = excluded.prompt_snapshot_json,
-                        anchor_snapshot_json = excluded.anchor_snapshot_json,
-                        rewrite_mode = excluded.rewrite_mode,
-                        anchor_text = excluded.anchor_text,
-                        expanded_text = excluded.expanded_text,
-                        confirmed_at = NULL,
-                        updated_at = CURRENT_TIMESTAMP
-                    """,
-                    (
-                        chapter_id,
-                        text,
-                        word_count,
-                        ratio,
-                        json.dumps({"source": "manual_edit"}, ensure_ascii=False),
-                        text,
-                    ),
+                versions = ChapterVersionService(self.database_path)
+                source = versions.resolve_chapter_source(
+                    chapter_id, {"kind": "current"}, connection=connection
                 )
-                connection.execute(
-                    """
-                    UPDATE chapters
-                    SET rewritten_text = ?, status = 'rewritten', updated_at = CURRENT_TIMESTAMP
-                    WHERE id = ?
-                    """,
-                    (text, chapter_id),
+                versions.append_chapter_rewrite_version(
+                    connection,
+                    chapter_id=chapter_id,
+                    rewritten_text=text,
+                    source_operation="manual",
+                    source_run_id=None,
+                    source_base_kind=source.source_kind,
+                    source_base_version_id=source.source_version_id,
+                    source_hash=source.content_hash,
+                    facts_before=source.facts_before,
+                    facts_after=source.facts_after,
+                    require_head_match=True,
+                    expected_head_version_id=source.expected_head_version_id,
+                    source_kind="manual",
+                    prompt_snapshot={"source": "manual_edit"},
                 )
         self.refresh_project_progress(chapter.project_id)
 

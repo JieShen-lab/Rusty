@@ -42,6 +42,15 @@ async function mockWorkspace(page: Page, projectKind: 'rewrite' | 'branch' | 'le
       body = [{ id: 901, project_id: 99, index: 1, title: '第一章', original_text: '人物进入院子。', rewritten_text: null, word_count: 8, status: 'imported', start_line: 1, end_line: 1 }];
     } else if (path === '/api/chapters/901') {
       body = { chapter: { id: 901, project_id: 99, index: 1, title: '第一章', original_text: '人物进入院子。', rewritten_text: null, word_count: 8, status: 'imported', start_line: 1, end_line: 1 }, ai_outputs: { plot_summary: '', plot_characters: [], style_analysis: null, reviewed_style_analysis: null, style_analysis_status: null }, stage_statuses: [], errors: [] };
+    } else if (path === '/api/chapters/901/rewrite-versions') {
+      body = [{
+        id: 1001, project_id: 99, chapter_id: 901, version: 1,
+        parent_version_id: null, source_kind: 'ai', source_operation: 'plot_generation',
+        source_run_id: 30, source_base_kind: 'original', source_base_version_id: null,
+        source_hash: 'source-hash', rewritten_text: '人物进入院子。伏击结束。',
+        content_hash: 'content-hash', facts_before: {}, facts_after: {},
+        created_at: '2026-08-10T00:00:00', is_current: true,
+      }];
     } else if (path === '/api/projects/99/style-synthesis') {
       body = null;
     } else if (path === '/api/projects/99/branches') {
@@ -121,6 +130,17 @@ test('改写工程提供三种操作、模块化细纲、接缝与补丁选择',
   await expect(page.getByLabel('模块化细纲编辑器')).toBeVisible();
   await page.getByRole('button', { name: '插入事件' }).click();
   await expect(page.getByRole('textbox', { name: '事件 2' })).toBeVisible();
+});
+
+test('正文版本可查看并作为新工作流的显式来源', async ({ page }) => {
+  const state = await mockWorkspace(page, 'rewrite');
+  await page.goto('/workspace/99');
+  const versions = page.getByLabel('rewrite versions');
+  await expect(versions).toContainText('v1');
+  await versions.getByRole('button', { name: '基于此版本创建新操作' }).click();
+  await page.getByLabel('新增剧情目标').fill('从历史版本派生');
+  await page.getByRole('button', { name: '启动分析' }).click();
+  expect(state.getLastPlotPayload()?.source).toEqual({ kind: 'rewrite_version', version_id: 1001 });
 });
 
 test('扩写工程显示三种入口并可创建分支树节点', async ({ page }) => {

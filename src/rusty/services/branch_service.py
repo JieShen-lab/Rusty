@@ -426,6 +426,8 @@ class BranchService:
             "facts_after": json.loads(version["facts_after_json"]),
             "parent_version_id": version["parent_version_id"],
             "source_kind": str(version["source_kind"]),
+            "source_operation": str(version["source_operation"] or ""),
+            "fact_chain_status": str(version["fact_chain_status"]),
             "scenes": [
                 {**dict(row), "facts_after": json.loads(row["facts_after_json"])}
                 for row in scene_rows
@@ -596,82 +598,281 @@ class BranchService:
         if not scenes:
             raise ValueError("Generated chapters require at least one scene.")
         with session(self.database_path) as connection:
-            sequence_index = int(
-                connection.execute(
-                    "SELECT COALESCE(MAX(sequence_index), 0) + 1 FROM branch_chapters WHERE branch_id = ?",
-                    (branch_id,),
-                ).fetchone()[0]
+            created = self._create_generated_chapter_in_connection(
+                connection,
+                branch_id=branch_id,
+                title=title,
+                summary=summary,
+                facts_before=facts_before,
+                facts_after=facts_after,
+                scenes=scenes,
             )
-            chapter_cursor = connection.execute(
-                "INSERT INTO branch_chapters(branch_id, sequence_index, title) VALUES (?, ?, ?)",
-                (branch_id, sequence_index, title),
+        return self.get_chapter(created["id"], version_id=created["version_id"])
+
+    def commit_generated_run(
+        self,
+        connection,
+        *,
+        branch_id: int,
+        chapters: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        branch = connection.execute(
+            "SELECT id FROM story_branches WHERE id = ? AND deleted_at IS NULL",
+            (branch_id,),
+        ).fetchone()
+        if branch is None:
+            raise FileNotFoundError(f"Branch not found: {branch_id}")
+        return [
+            self._create_generated_chapter_in_connection(
+                connection,
+                branch_id=branch_id,
+                title=str(chapter.get("title") or ""),
+                summary=str(chapter.get("summary") or ""),
+                facts_before=dict(chapter.get("facts_before") or {}),
+                facts_after=dict(chapter.get("facts_after") or {}),
+                scenes=list(chapter.get("scenes") or []),
             )
-            chapter_id = int(chapter_cursor.lastrowid)
+            for chapter in chapters
+        ]
+
+    @staticmethod
+    def apply_canon_fact_chain(
+        connection,
+        *,
+        branch_id: int,
+        scene_updates: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Create text/fact versions for the complete downstream chain and one snapshot per chapter."""
+        by_chapter: dict[int, dict[int, int]] = {}
+        scene_version_ids: dict[int, int] = {}
+        for update in scene_updates:
+            scene_id = int(update["scene_id"])
+            row = connection.execute(
+                """
+                SELECT s.branch_chapter_id, s.current_version, v.id AS parent_version_id
+                FROM branch_scenes s
+                JOIN branch_scene_versions v
+                  ON v.branch_scene_id = s.id AND v.version = s.current_version
+                WHERE s.id = ? AND s.branch_id = ? AND s.deleted_at IS NULL
+                """,
+                (scene_id, branch_id),
+            ).fetchone()
+            if row is None:
+                raise FileNotFoundError(f"Branch scene not found: {scene_id}")
+            next_version = int(row["current_version"]) + 1
+            version = connection.execute(
+                """
+                INSERT INTO branch_scene_versions(
+                    branch_scene_id, version, generated_text, facts_after_json,
+                    source_kind, source_operation, parent_version_id
+                ) VALUES (?, ?, ?, ?, 'repair', 'canon_change', ?)
+                """,
+                (
+                    scene_id,
+                    next_version,
+                    str(update["text"]),
+                    json.dumps(update.get("facts_after") or {}, ensure_ascii=False),
+                    int(row["parent_version_id"]),
+                ),
+            )
+            version_id = int(version.lastrowid)
+            connection.execute(
+                "UPDATE branch_scenes SET current_version = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (next_version, scene_id),
+            )
+            by_chapter.setdefault(int(row["branch_chapter_id"]), {})[scene_id] = version_id
+            scene_version_ids[scene_id] = version_id
+
+        snapshots: list[int] = []
+        for chapter_id, replacements in by_chapter.items():
+            current = connection.execute(
+                """
+                SELECT c.current_version, v.* FROM branch_chapters c
+                JOIN branch_chapter_versions v
+                  ON v.branch_chapter_id = c.id AND v.version = c.current_version
+                WHERE c.id = ? AND c.deleted_at IS NULL
+                """,
+                (chapter_id,),
+            ).fetchone()
+            if current is None:
+                raise FileNotFoundError(f"Branch chapter not found: {chapter_id}")
+            mappings = connection.execute(
+                """
+                SELECT branch_scene_id, branch_scene_version_id, scene_index
+                FROM branch_chapter_version_scenes
+                WHERE branch_chapter_version_id = ? ORDER BY scene_index
+                """,
+                (current["id"],),
+            ).fetchall()
+            resolved = [
+                (
+                    int(mapping["branch_scene_id"]),
+                    replacements.get(
+                        int(mapping["branch_scene_id"]),
+                        int(mapping["branch_scene_version_id"]),
+                    ),
+                    int(mapping["scene_index"]),
+                )
+                for mapping in mappings
+            ]
+            last_facts = {}
+            if resolved:
+                last = connection.execute(
+                    "SELECT facts_after_json FROM branch_scene_versions WHERE id = ?",
+                    (resolved[-1][1],),
+                ).fetchone()
+                last_facts = json.loads(last["facts_after_json"]) if last else {}
+            next_version = int(current["current_version"]) + 1
             chapter_version = connection.execute(
                 """
                 INSERT INTO branch_chapter_versions(
                     branch_chapter_id, version, title, summary,
-                    facts_before_json, facts_after_json, source_kind
-                ) VALUES (?, 1, ?, ?, ?, ?, 'generation')
+                    facts_before_json, facts_after_json, parent_version_id,
+                    source_kind, source_operation, fact_chain_status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'repair', 'canon_change', 'consistent')
                 """,
                 (
                     chapter_id,
-                    title,
-                    summary,
-                    json.dumps(facts_before, ensure_ascii=False),
-                    json.dumps(facts_after, ensure_ascii=False),
+                    next_version,
+                    current["title"],
+                    current["summary"],
+                    current["facts_before_json"],
+                    json.dumps(last_facts, ensure_ascii=False),
+                    current["id"],
                 ),
             )
-            base_sequence = int(
-                connection.execute(
-                    "SELECT COALESCE(MAX(sequence_index), 0) FROM branch_scenes WHERE branch_id = ?",
-                    (branch_id,),
-                ).fetchone()[0]
+            chapter_version_id = int(chapter_version.lastrowid)
+            connection.executemany(
+                """
+                INSERT INTO branch_chapter_version_scenes(
+                    branch_chapter_version_id, branch_scene_id,
+                    branch_scene_version_id, scene_index
+                ) VALUES (?, ?, ?, ?)
+                """,
+                [
+                    (chapter_version_id, scene_id, version_id, scene_index)
+                    for scene_id, version_id, scene_index in resolved
+                ],
             )
-            for scene_index, scene in enumerate(scenes, start=1):
-                scene_cursor = connection.execute(
-                    """
-                    INSERT INTO branch_scenes(
-                        branch_id, branch_chapter_id, sequence_index, scene_index, title
-                    ) VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (
-                        branch_id,
-                        chapter_id,
-                        base_sequence + scene_index,
-                        scene_index,
-                        str(scene.get("title") or ""),
-                    ),
-                )
-                scene_id = int(scene_cursor.lastrowid)
-                scene_version = connection.execute(
-                    """
-                    INSERT INTO branch_scene_versions(
-                        branch_scene_id, version, generated_text,
-                        facts_after_json, source_kind
-                    ) VALUES (?, 1, ?, ?, 'generation')
-                    """,
-                    (
-                        scene_id,
-                        str(scene["text"]),
-                        json.dumps(scene.get("facts_after") or {}, ensure_ascii=False),
-                    ),
-                )
-                connection.execute(
-                    """
-                    INSERT INTO branch_chapter_version_scenes(
-                        branch_chapter_version_id, branch_scene_id,
-                        branch_scene_version_id, scene_index
-                    ) VALUES (?, ?, ?, ?)
-                    """,
-                    (
-                        int(chapter_version.lastrowid),
-                        scene_id,
-                        int(scene_version.lastrowid),
-                        scene_index,
-                    ),
-                )
-        return self.get_chapter(chapter_id, version_id=int(chapter_version.lastrowid))
+            connection.execute(
+                "UPDATE branch_chapters SET current_version = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (next_version, chapter_id),
+            )
+            snapshots.append(chapter_version_id)
+        return {
+            "scene_version_ids": scene_version_ids,
+            "chapter_version_ids": snapshots,
+        }
+
+    @staticmethod
+    def _create_generated_chapter_in_connection(
+        connection,
+        *,
+        branch_id: int,
+        title: str,
+        summary: str,
+        facts_before: dict[str, Any],
+        facts_after: dict[str, Any],
+        scenes: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        if not scenes:
+            raise ValueError("Generated chapters require at least one scene.")
+        sequence_index = int(
+            connection.execute(
+                "SELECT COALESCE(MAX(sequence_index), 0) + 1 FROM branch_chapters WHERE branch_id = ?",
+                (branch_id,),
+            ).fetchone()[0]
+        )
+        chapter_cursor = connection.execute(
+            "INSERT INTO branch_chapters(branch_id, sequence_index, title) VALUES (?, ?, ?)",
+            (branch_id, sequence_index, title),
+        )
+        chapter_id = int(chapter_cursor.lastrowid)
+        chapter_version = connection.execute(
+            """
+            INSERT INTO branch_chapter_versions(
+                branch_chapter_id, version, title, summary,
+                facts_before_json, facts_after_json, source_kind, fact_chain_status
+            ) VALUES (?, 1, ?, ?, ?, ?, 'generation', 'consistent')
+            """,
+            (
+                chapter_id,
+                title,
+                summary,
+                json.dumps(facts_before, ensure_ascii=False),
+                json.dumps(facts_after, ensure_ascii=False),
+            ),
+        )
+        chapter_version_id = int(chapter_version.lastrowid)
+        base_sequence = int(
+            connection.execute(
+                "SELECT COALESCE(MAX(sequence_index), 0) FROM branch_scenes WHERE branch_id = ?",
+                (branch_id,),
+            ).fetchone()[0]
+        )
+        created_scenes: list[dict[str, Any]] = []
+        for scene_index, scene in enumerate(scenes, start=1):
+            scene_cursor = connection.execute(
+                """
+                INSERT INTO branch_scenes(
+                    branch_id, branch_chapter_id, sequence_index, scene_index, title
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    branch_id,
+                    chapter_id,
+                    base_sequence + scene_index,
+                    scene_index,
+                    str(scene.get("title") or ""),
+                ),
+            )
+            scene_id = int(scene_cursor.lastrowid)
+            scene_version = connection.execute(
+                """
+                INSERT INTO branch_scene_versions(
+                    branch_scene_id, version, generated_text,
+                    facts_after_json, source_kind
+                ) VALUES (?, 1, ?, ?, 'generation')
+                """,
+                (
+                    scene_id,
+                    str(scene["text"]),
+                    json.dumps(scene.get("facts_after") or {}, ensure_ascii=False),
+                ),
+            )
+            scene_version_id = int(scene_version.lastrowid)
+            connection.execute(
+                """
+                INSERT INTO branch_chapter_version_scenes(
+                    branch_chapter_version_id, branch_scene_id,
+                    branch_scene_version_id, scene_index
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (chapter_version_id, scene_id, scene_version_id, scene_index),
+            )
+            created_scenes.append(
+                {
+                    "id": scene_id,
+                    "version_id": scene_version_id,
+                    "scene_index": scene_index,
+                    "title": str(scene.get("title") or ""),
+                    "generated_text": str(scene["text"]),
+                    "facts_after": dict(scene.get("facts_after") or {}),
+                }
+            )
+        return {
+            "id": chapter_id,
+            "branch_id": branch_id,
+            "sequence_index": sequence_index,
+            "title": title,
+            "summary": summary,
+            "version_id": chapter_version_id,
+            "version": 1,
+            "facts_before": facts_before,
+            "facts_after": facts_after,
+            "fact_chain_status": "consistent",
+            "scenes": created_scenes,
+        }
 
     @staticmethod
     def _snapshot_chapter_after_scene_change(
@@ -683,6 +884,7 @@ class BranchService:
         scene_index: int,
         facts_after: dict[str, Any] | None,
         source_kind: str,
+        fact_chain_status: str | None = None,
     ) -> int:
         current = connection.execute(
             """
@@ -697,12 +899,26 @@ class BranchService:
         if current is None:
             raise FileNotFoundError(f"Branch chapter not found: {branch_chapter_id}")
         next_version = int(current["current_version"]) + 1
+        max_scene_index = int(
+            connection.execute(
+                """
+                SELECT COALESCE(MAX(scene_index), 0)
+                FROM branch_chapter_version_scenes
+                WHERE branch_chapter_version_id = ?
+                """,
+                (current["id"],),
+            ).fetchone()[0]
+        )
+        chain_status = fact_chain_status or (
+            "needs_recompute" if scene_index < max_scene_index else "consistent"
+        )
         version_cursor = connection.execute(
             """
             INSERT INTO branch_chapter_versions(
                 branch_chapter_id, version, title, summary,
-                facts_before_json, facts_after_json, parent_version_id, source_kind
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                facts_before_json, facts_after_json, parent_version_id, source_kind,
+                fact_chain_status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 branch_chapter_id,
@@ -710,11 +926,10 @@ class BranchService:
                 current["title"],
                 current["summary"],
                 current["facts_before_json"],
-                json.dumps(facts_after, ensure_ascii=False)
-                if facts_after is not None
-                else current["facts_after_json"],
+                current["facts_after_json"],
                 current["id"],
                 source_kind,
+                chain_status,
             ),
         )
         new_version_id = int(version_cursor.lastrowid)
@@ -738,6 +953,28 @@ class BranchService:
             ) VALUES (?, ?, ?, ?)
             """,
             (new_version_id, scene_id, scene_version_id, scene_index),
+        )
+        last_scene = connection.execute(
+            """
+            SELECT sv.facts_after_json
+            FROM branch_chapter_version_scenes map
+            JOIN branch_scene_versions sv ON sv.id = map.branch_scene_version_id
+            WHERE map.branch_chapter_version_id = ?
+            ORDER BY map.scene_index DESC LIMIT 1
+            """,
+            (new_version_id,),
+        ).fetchone()
+        connection.execute(
+            """
+            UPDATE branch_chapter_versions
+            SET facts_after_json = ?, fact_chain_status = ?
+            WHERE id = ?
+            """,
+            (
+                last_scene["facts_after_json"] if last_scene is not None else current["facts_after_json"],
+                chain_status,
+                new_version_id,
+            ),
         )
         connection.execute(
             """

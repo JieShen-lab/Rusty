@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sqlite3
@@ -8,7 +9,7 @@ from pathlib import Path
 
 from .connection import session
 
-CURRENT_SCHEMA_VERSION = 37
+CURRENT_SCHEMA_VERSION = 39
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -3356,6 +3357,229 @@ def _migrate_to_v37(connection: sqlite3.Connection) -> None:
         connection.execute("PRAGMA foreign_keys = ON")
 
 
+def _migrate_to_v38(connection: sqlite3.Connection) -> None:
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS chapter_rewrite_versions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            chapter_id INTEGER NOT NULL,
+            version INTEGER NOT NULL,
+            parent_version_id INTEGER,
+            source_kind TEXT NOT NULL DEFAULT 'ai',
+            source_operation TEXT NOT NULL CHECK (source_operation IN (
+                'plot_generation', 'prose_rewrite', 'canon_change',
+                'manual', 'migration', 'restore'
+            )),
+            source_run_id INTEGER,
+            source_base_kind TEXT NOT NULL CHECK (source_base_kind IN (
+                'original', 'rewrite_version'
+            )),
+            source_base_version_id INTEGER,
+            source_hash TEXT NOT NULL,
+            rewritten_text TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            facts_before_json TEXT NOT NULL DEFAULT '{}',
+            facts_after_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (chapter_id, version),
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE,
+            FOREIGN KEY (parent_version_id) REFERENCES chapter_rewrite_versions(id) ON DELETE SET NULL,
+            FOREIGN KEY (source_base_version_id) REFERENCES chapter_rewrite_versions(id) ON DELETE SET NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_chapter_rewrite_versions_chapter
+            ON chapter_rewrite_versions(chapter_id, version DESC);
+        CREATE INDEX IF NOT EXISTS idx_chapter_rewrite_versions_run
+            ON chapter_rewrite_versions(source_operation, source_run_id);
+        """
+    )
+    rows = connection.execute(
+        """
+        SELECT c.id AS chapter_id, c.project_id, c.original_text, c.rewritten_text,
+               cr.created_at
+        FROM chapters c
+        LEFT JOIN chapter_rewrites cr ON cr.chapter_id = c.id
+        WHERE c.rewritten_text IS NOT NULL AND TRIM(c.rewritten_text) <> ''
+        """
+    ).fetchall()
+    for row in rows:
+        existing = connection.execute(
+            "SELECT id FROM chapter_rewrite_versions WHERE chapter_id = ? LIMIT 1",
+            (row["chapter_id"],),
+        ).fetchone()
+        if existing is not None:
+            continue
+        source_text = str(row["original_text"])
+        rewritten_text = str(row["rewritten_text"])
+        connection.execute(
+            """
+            INSERT INTO chapter_rewrite_versions(
+                project_id, chapter_id, version, source_kind, source_operation,
+                source_base_kind, source_hash, rewritten_text, content_hash,
+                facts_before_json, facts_after_json, created_at
+            ) VALUES (?, ?, 1, 'legacy', 'migration', 'original', ?, ?, ?, '{}', '{}', COALESCE(?, CURRENT_TIMESTAMP))
+            """,
+            (
+                row["project_id"],
+                row["chapter_id"],
+                hashlib.sha256(source_text.encode("utf-8")).hexdigest(),
+                rewritten_text,
+                hashlib.sha256(rewritten_text.encode("utf-8")).hexdigest(),
+                row["created_at"],
+            ),
+        )
+
+
+def _migrate_to_v39(connection: sqlite3.Connection) -> None:
+    _add_column_if_missing(
+        connection, "chapter_rewrites", "current_version_id", "current_version_id INTEGER"
+    )
+    _add_column_if_missing(
+        connection, "chapter_rewrites", "current_version", "current_version INTEGER NOT NULL DEFAULT 0"
+    )
+    _add_column_if_missing(
+        connection, "branch_chapter_versions", "fact_chain_status",
+        "fact_chain_status TEXT NOT NULL DEFAULT 'consistent' CHECK (fact_chain_status IN ('consistent', 'needs_recompute'))",
+    )
+    _add_column_if_missing(
+        connection, "branch_scene_versions", "source_operation",
+        "source_operation TEXT NOT NULL DEFAULT 'generation'",
+    )
+    _add_column_if_missing(
+        connection, "branch_chapter_versions", "source_operation",
+        "source_operation TEXT NOT NULL DEFAULT 'generation'",
+    )
+    for name, definition in (
+        ("source_chapter_id", "source_chapter_id INTEGER"),
+        ("source_base_kind", "source_base_kind TEXT"),
+        ("source_base_version_id", "source_base_version_id INTEGER"),
+        ("source_hash", "source_hash TEXT"),
+        ("source_text_snapshot", "source_text_snapshot TEXT"),
+        ("require_source_head_match", "require_source_head_match INTEGER NOT NULL DEFAULT 0"),
+        ("expected_source_head_version_id", "expected_source_head_version_id INTEGER"),
+        ("result_version_id", "result_version_id INTEGER"),
+    ):
+        _add_column_if_missing(connection, "plot_generation_runs", name, definition)
+    for name, definition in (
+        ("source_base_kind", "source_base_kind TEXT"),
+        ("source_base_version_id", "source_base_version_id INTEGER"),
+        ("source_hash", "source_hash TEXT"),
+        ("source_text_snapshot", "source_text_snapshot TEXT"),
+        ("require_source_head_match", "require_source_head_match INTEGER NOT NULL DEFAULT 0"),
+        ("expected_source_head_version_id", "expected_source_head_version_id INTEGER"),
+        ("result_version_id", "result_version_id INTEGER"),
+        ("generation_attempt", "generation_attempt INTEGER NOT NULL DEFAULT 0"),
+    ):
+        _add_column_if_missing(connection, "prose_rewrite_runs", name, definition)
+    _add_column_if_missing(
+        connection, "canon_change_runs", "source_snapshots_json",
+        "source_snapshots_json TEXT NOT NULL DEFAULT '{}'",
+    )
+    _add_column_if_missing(
+        connection, "canon_change_patches", "source_base_version_id",
+        "source_base_version_id INTEGER",
+    )
+    _add_column_if_missing(
+        connection, "canon_change_patches", "result_version_id",
+        "result_version_id INTEGER",
+    )
+    connection.execute(
+        """
+        UPDATE chapter_rewrites
+        SET current_version_id = (
+                SELECT v.id FROM chapter_rewrite_versions v
+                WHERE v.chapter_id = chapter_rewrites.chapter_id
+                ORDER BY v.version DESC LIMIT 1
+            ),
+            current_version = COALESCE((
+                SELECT v.version FROM chapter_rewrite_versions v
+                WHERE v.chapter_id = chapter_rewrites.chapter_id
+                ORDER BY v.version DESC LIMIT 1
+            ), 0)
+        """
+    )
+    connection.commit()
+    connection.execute("PRAGMA foreign_keys = OFF")
+    try:
+        connection.executescript(
+            """
+            DROP TABLE IF EXISTS prose_rewrite_runs_v39;
+            CREATE TABLE prose_rewrite_runs_v39 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id INTEGER NOT NULL,
+                chapter_id INTEGER NOT NULL,
+                operation_type TEXT NOT NULL DEFAULT 'prose_rewrite' CHECK (operation_type = 'prose_rewrite'),
+                source_skeleton_json TEXT NOT NULL,
+                preservation_policy_json TEXT NOT NULL,
+                target_skeleton_json TEXT NOT NULL,
+                rewrite_plan_json TEXT NOT NULL DEFAULT '{}',
+                rewritten_text TEXT,
+                issues_json TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL DEFAULT 'planned' CHECK (status IN (
+                    'planned', 'generating', 'blocked', 'completed', 'failed', 'cancelled'
+                )),
+                source_base_kind TEXT,
+                source_base_version_id INTEGER,
+                source_hash TEXT,
+                source_text_snapshot TEXT,
+                require_source_head_match INTEGER NOT NULL DEFAULT 0,
+                expected_source_head_version_id INTEGER,
+                result_version_id INTEGER,
+                generation_attempt INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+                FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE
+            );
+            INSERT INTO prose_rewrite_runs_v39
+            SELECT id, project_id, chapter_id, operation_type, source_skeleton_json,
+                   preservation_policy_json, target_skeleton_json, rewrite_plan_json,
+                   rewritten_text, issues_json, status, source_base_kind,
+                   source_base_version_id, source_hash, source_text_snapshot,
+                   require_source_head_match, expected_source_head_version_id,
+                   result_version_id, generation_attempt,
+                   created_at, updated_at
+            FROM prose_rewrite_runs;
+            DROP TABLE prose_rewrite_runs;
+            ALTER TABLE prose_rewrite_runs_v39 RENAME TO prose_rewrite_runs;
+
+            DROP TABLE IF EXISTS canon_change_runs_v39;
+            CREATE TABLE canon_change_runs_v39 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id INTEGER NOT NULL,
+                branch_id INTEGER,
+                operation_type TEXT NOT NULL DEFAULT 'canon_change' CHECK (operation_type = 'canon_change'),
+                old_fact_json TEXT NOT NULL,
+                new_fact_json TEXT NOT NULL,
+                effective_order INTEGER NOT NULL DEFAULT 0,
+                fact_ledger_json TEXT NOT NULL DEFAULT '{}',
+                consistency_issues_json TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL DEFAULT 'reviewing' CHECK (status IN (
+                    'scanning', 'reviewing', 'blocked', 'ready_to_apply',
+                    'applying', 'applied', 'failed', 'cancelled'
+                )),
+                source_snapshots_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+                FOREIGN KEY (branch_id) REFERENCES story_branches(id) ON DELETE CASCADE
+            );
+            INSERT INTO canon_change_runs_v39
+            SELECT id, project_id, branch_id, operation_type, old_fact_json,
+                   new_fact_json, effective_order, fact_ledger_json,
+                   consistency_issues_json,
+                   CASE WHEN status = 'scanned' THEN 'reviewing' ELSE status END,
+                   source_snapshots_json, created_at, updated_at
+            FROM canon_change_runs;
+            DROP TABLE canon_change_runs;
+            ALTER TABLE canon_change_runs_v39 RENAME TO canon_change_runs;
+            """
+        )
+    finally:
+        connection.execute("PRAGMA foreign_keys = ON")
+
+
 def _safe_json_list(value: object) -> list[dict[str, object]]:
     try:
         parsed = json.loads(str(value or "[]"))
@@ -3743,6 +3967,8 @@ MIGRATIONS = {
     35: _migrate_to_v35,
     36: _migrate_to_v36,
     37: _migrate_to_v37,
+    38: _migrate_to_v38,
+    39: _migrate_to_v39,
 }
 
 

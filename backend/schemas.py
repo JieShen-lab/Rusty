@@ -551,6 +551,24 @@ class SeamReviewRequest(StrictWorkflowModel):
     reviews: list[SeamReviewItem] = Field(min_length=1)
 
 
+class CurrentChapterSource(StrictWorkflowModel):
+    kind: Literal["current"] = "current"
+
+
+class OriginalChapterSource(StrictWorkflowModel):
+    kind: Literal["original"] = "original"
+
+
+class RewriteVersionChapterSource(StrictWorkflowModel):
+    kind: Literal["rewrite_version"]
+    version_id: int = Field(ge=1)
+
+
+ChapterSourceSelection = (
+    CurrentChapterSource | OriginalChapterSource | RewriteVersionChapterSource
+)
+
+
 class PlotGenerationStartRequest(StrictWorkflowModel):
     project_id: int = Field(ge=1)
     generation_mode: Literal[
@@ -565,6 +583,7 @@ class PlotGenerationStartRequest(StrictWorkflowModel):
     parent_branch_id: int | None = Field(default=None, ge=1)
     branch_name: str = Field(default="Generated branch", min_length=1)
     range_operation: Literal["insert_between", "replace_range"] = "insert_between"
+    source: ChapterSourceSelection = Field(default_factory=CurrentChapterSource)
 
     @model_validator(mode="after")
     def validate_return_anchor(self) -> "PlotGenerationStartRequest":
@@ -630,6 +649,12 @@ class PlotGenerationRunResponse(BaseModel):
     generated_progress: dict[str, Any]
     next_scene_cursor: int
     generation_attempt: int
+    source_chapter_id: int | None = None
+    source_base_kind: Literal["original", "rewrite_version"] | None = None
+    source_base_version_id: int | None = None
+    source_hash: str | None = None
+    expected_source_head_version_id: int | None = None
+    result_version_id: int | None = None
     operation_type: Literal["plot_generation"] = "plot_generation"
     user_direction: str
     created_at: str
@@ -643,6 +668,7 @@ class ProseRewritePlanRequest(StrictWorkflowModel):
     preservation_policy: dict[str, Any]
     style_profile_id: int | None = Field(default=None, ge=1)
     user_direction: str = ""
+    source: ChapterSourceSelection = Field(default_factory=CurrentChapterSource)
 
 
 class ProseRewriteExecuteRequest(StrictWorkflowModel):
@@ -653,13 +679,19 @@ class ProseRewriteRunResponse(BaseModel):
     id: int
     project_id: int
     chapter_id: int
-    status: str
+    status: Literal["planned", "generating", "blocked", "completed", "failed", "cancelled"]
     source_skeleton: dict[str, Any]
     preservation_policy: dict[str, Any]
     target_skeleton: dict[str, Any]
     rewrite_plan: dict[str, Any]
     rewritten_text: str | None
     issues: list[dict[str, Any]]
+    source_base_kind: Literal["original", "rewrite_version"] | None = None
+    source_base_version_id: int | None = None
+    source_hash: str | None = None
+    expected_source_head_version_id: int | None = None
+    result_version_id: int | None = None
+    generation_attempt: int = 0
     operation_type: Literal["prose_rewrite"] = "prose_rewrite"
     created_at: str
     updated_at: str
@@ -671,6 +703,7 @@ class CanonChangeScanRequest(StrictWorkflowModel):
     new_fact: dict[str, Any]
     effective_order: int = Field(ge=0)
     branch_id: int | None = Field(default=None, ge=1)
+    source: ChapterSourceSelection = Field(default_factory=CurrentChapterSource)
 
 
 class CanonPatchReviewRequest(StrictWorkflowModel):
@@ -699,6 +732,8 @@ class CanonPatchResponse(BaseModel):
     evidence: list[Any]
     requires_confirmation: bool
     status: str
+    source_base_version_id: int | None = None
+    result_version_id: int | None = None
 
 
 class CanonChangeRunResponse(BaseModel):
@@ -706,15 +741,42 @@ class CanonChangeRunResponse(BaseModel):
     project_id: int
     branch_id: int | None
     effective_order: int
-    status: str
+    status: Literal[
+        "scanning", "reviewing", "blocked", "ready_to_apply",
+        "applying", "applied", "failed", "cancelled"
+    ]
     old_fact: dict[str, Any]
     new_fact: dict[str, Any]
     fact_ledger: dict[str, Any]
     consistency_issues: list[dict[str, Any]]
     patches: list[CanonPatchResponse]
+    source_snapshots: dict[str, Any] = Field(default_factory=dict)
     operation_type: Literal["canon_change"] = "canon_change"
     created_at: str
     updated_at: str
+
+
+class ChapterRewriteVersionResponse(BaseModel):
+    id: int
+    project_id: int
+    chapter_id: int
+    version: int
+    parent_version_id: int | None
+    source_kind: str
+    source_operation: Literal[
+        "plot_generation", "prose_rewrite", "canon_change",
+        "manual", "migration", "restore"
+    ]
+    source_run_id: int | None
+    source_base_kind: Literal["original", "rewrite_version"]
+    source_base_version_id: int | None
+    source_hash: str
+    rewritten_text: str
+    content_hash: str
+    facts_before: dict[str, Any]
+    facts_after: dict[str, Any]
+    is_current: bool
+    created_at: str
 
 
 class ExportResponse(BaseModel):

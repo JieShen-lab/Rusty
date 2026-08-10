@@ -12,6 +12,7 @@ from rusty.db import session
 from rusty.services.branch_service import BranchService
 from rusty.services.canon_change_orchestrator import CanonChangeOrchestrator
 from rusty.services.project_service import ProjectService
+from rusty.services.chapter_version_service import ChapterVersionService
 
 
 class FakeCanonLLM:
@@ -252,6 +253,90 @@ class CanonChangeOrchestratorTests(unittest.TestCase):
             )
             self.assertEqual({chapters[1].id}, {p["target_id"] for p in run["patches"]})
             self.assertEqual({impact_type}, {p["impact_type"] for p in run["patches"]})
+
+    def test_canon_appends_to_current_rewrite_version_without_mutating_parent(self) -> None:
+        old_text = next(iter(FakeCanonLLM.REWRITES))
+        replacement = FakeCanonLLM.REWRITES[old_text][0]
+        project_id, chapters = self.project([("One", old_text)])
+        chapter_id = chapters[0].id
+        self.projects.save_chapter_rewrite(chapter_id, f"Prose v1: {old_text}")
+        versions = ChapterVersionService(self.database)
+        v1 = versions.list_versions(chapter_id)[0]
+        run = self.scan_injury(project_id)
+        for patch in run["patches"]:
+            self.service.review_patch(patch["id"], decision="accepted")
+        applied = self.service.apply(run["id"])
+        v2 = versions.list_versions(chapter_id)[0]
+        self.assertEqual("applied", applied["status"])
+        self.assertEqual(v1["id"], v2["parent_version_id"])
+        self.assertEqual("canon_change", v2["source_operation"])
+        self.assertIn(old_text, versions.get_version(v1["id"])["rewritten_text"])
+        self.assertIn(replacement, v2["rewritten_text"])
+
+    def test_branch_canon_reversions_all_downstream_facts_and_closes_chain(self) -> None:
+        project_id, chapters = self.project([("One", "Baseline")], kind="branch")
+        branches = BranchService(self.database)
+        branch = branches.create_branch(
+            project_id=project_id,
+            name="fact chain",
+            branch_mode="fork",
+            start_anchor={"anchor_type": "document_end"},
+        )
+        chapter = branches.create_chapter(branch["id"], title="generated")
+        old_text = next(iter(FakeCanonLLM.REWRITES))
+        replacement = FakeCanonLLM.REWRITES[old_text][0]
+        source_fact = self.facts(old_text)
+        scenes = []
+        for index, (text, location) in enumerate(
+            [
+                (old_text, "A"),
+                ("He crosses the quiet hall.", "B"),
+                ("He reaches the tower.", "C"),
+            ],
+            1,
+        ):
+            scenes.append(
+                branches.save_scene(
+                    branch["id"],
+                    branch_chapter_id=chapter["id"],
+                    title=f"scene {index}",
+                    generated_text=text,
+                    facts_after={"location": location, "injury": source_fact},
+                )
+            )
+        run = self.scan_injury(project_id, branch_id=branch["id"])
+        for patch in run["patches"]:
+            self.service.review_patch(patch["id"], decision="accepted")
+        applied = self.service.apply(run["id"])
+        current_scenes = branches.list_scenes(branch["id"])
+        current_chapter = branches.get_chapter(chapter["id"])
+        self.assertEqual("applied", applied["status"])
+        self.assertEqual([2, 2, 2], [scene["current_version"] for scene in current_scenes])
+        self.assertEqual(
+            [replacement] * 3,
+            [scene["facts_after"]["injury"]["value"] for scene in current_scenes],
+        )
+        self.assertEqual("C", current_chapter["facts_after"]["location"])
+        self.assertEqual("consistent", current_chapter["fact_chain_status"])
+        self.assertEqual(
+            scenes[1]["generated_text"], current_scenes[1]["generated_text"]
+        )
+
+    def test_applied_and_cancelled_runs_are_terminal(self) -> None:
+        project_id, _chapters = self.project(
+            [("One", next(iter(FakeCanonLLM.REWRITES)))]
+        )
+        run = self.scan_injury(project_id)
+        for patch in run["patches"]:
+            self.service.review_patch(patch["id"], decision="accepted")
+        applied = self.service.apply(run["id"])
+        with self.assertRaisesRegex(ValueError, "not ready"):
+            self.service.apply(applied["id"])
+        pending = self.scan_injury(project_id)
+        cancelled = self.service.cancel(pending["id"])
+        self.assertEqual("cancelled", cancelled["status"])
+        with self.assertRaisesRegex(ValueError, "not ready"):
+            self.service.apply(cancelled["id"])
 
 
 if __name__ == "__main__":

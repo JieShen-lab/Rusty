@@ -4,12 +4,14 @@ import copy
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from rusty.services.project_service import ProjectService
 from rusty.services.prose_rewrite_orchestrator import ProseRewriteOrchestrator
+from rusty.services.chapter_version_service import ChapterVersionService
 
 
 def skeleton() -> dict:
@@ -75,8 +77,10 @@ class FakeProseLLM:
         self.mode = "valid"
         self.repair_success = True
         self.plan_target = skeleton()
+        self.payloads: dict[str, list[dict]] = {}
 
     def generate_json(self, stage: str, payload: dict) -> dict:
+        self.payloads.setdefault(stage, []).append(copy.deepcopy(payload))
         if stage == "prose_rewrite_plan":
             return {
                 "target_skeleton": copy.deepcopy(self.plan_target),
@@ -201,6 +205,78 @@ class ProseRewriteOrchestratorTests(unittest.TestCase):
         self.llm.plan_target = invalid
         with self.assertRaisesRegex(ValueError, "preservation policy"):
             self.plan()
+
+    def test_uses_effective_source_and_appends_to_immutable_version_lineage(self) -> None:
+        self.projects.save_chapter_rewrite(self.chapter_id, "Plot result containing ambush A.")
+        parent = ChapterVersionService(self.database).list_versions(self.chapter_id)[0]
+
+        run = self.plan()
+        self.assertEqual(
+            "Plot result containing ambush A.",
+            self.llm.payloads["prose_rewrite_plan"][-1]["source_text"],
+        )
+        completed = self.service.execute(run["id"])
+        versions = ChapterVersionService(self.database).list_versions(self.chapter_id)
+        current = versions[0]
+        self.assertEqual("completed", completed["status"])
+        self.assertEqual(parent["id"], current["parent_version_id"])
+        self.assertEqual("prose_rewrite", current["source_operation"])
+        self.assertEqual(completed["result_version_id"], current["id"])
+
+    def test_explicit_historical_source_preserves_true_parent(self) -> None:
+        self.projects.save_chapter_rewrite(self.chapter_id, "version one")
+        v1 = ChapterVersionService(self.database).list_versions(self.chapter_id)[0]
+        self.projects.save_chapter_rewrite(self.chapter_id, "version two")
+        v2 = ChapterVersionService(self.database).list_versions(self.chapter_id)[0]
+        run = self.service.plan(
+            project_id=self.project_id,
+            chapter_id=self.chapter_id,
+            source_skeleton=skeleton(),
+            preservation_policy=POLICY,
+            source_selection={"kind": "rewrite_version", "version_id": v1["id"]},
+        )
+        completed = self.service.execute(run["id"])
+        v3 = ChapterVersionService(self.database).get_version(
+            completed["result_version_id"]
+        )
+        self.assertEqual(v1["id"], v3["parent_version_id"])
+        self.assertEqual("version two", ChapterVersionService(self.database).get_version(v2["id"])["rewritten_text"])
+
+    def test_completed_and_cancelled_runs_cannot_execute_and_failed_can_retry(self) -> None:
+        completed = self.service.execute(self.plan()["id"])
+        with self.assertRaisesRegex(ValueError, "not ready"):
+            self.service.execute(completed["id"])
+        planned = self.plan()
+        cancelled = self.service.cancel(planned["id"])
+        self.assertEqual("cancelled", cancelled["status"])
+        with self.assertRaisesRegex(ValueError, "not ready"):
+            self.service.execute(planned["id"])
+        self.llm.mode = "missing"
+        blocked = self.service.execute(self.plan()["id"], auto_repair=False)
+        retried = self.service.retry(blocked["id"])
+        self.assertEqual("planned", retried["status"])
+        self.assertEqual(1, retried["generation_attempt"])
+
+    def test_version_insert_and_run_completion_are_one_transaction(self) -> None:
+        run = self.plan()
+        original = self.service.chapter_versions.append_chapter_rewrite_version
+
+        def insert_then_fail(connection, **kwargs):
+            original(connection, **kwargs)
+            raise RuntimeError("injected prose completion failure")
+
+        with mock.patch.object(
+            self.service.chapter_versions,
+            "append_chapter_rewrite_version",
+            side_effect=insert_then_fail,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "completion failure"):
+                self.service.execute(run["id"])
+        self.assertEqual(
+            [], ChapterVersionService(self.database).list_versions(self.chapter_id)
+        )
+        self.assertIsNone(self.projects.get_chapter(self.chapter_id).rewritten_text)
+        self.assertEqual("failed", self.service.get_run(run["id"])["status"])
 
 
 if __name__ == "__main__":

@@ -722,6 +722,34 @@ class BranchServiceTests(unittest.TestCase):
         )
         self.assertEqual("scene version two", self.service.get_scene(scene_v1["id"])["generated_text"])
 
+    def test_middle_scene_change_marks_fact_chain_stale_but_keeps_final_scene_facts(self) -> None:
+        branch = self.service.create_branch(
+            project_id=self.project_id,
+            name="fact chain parent",
+            branch_mode="fork",
+            start_anchor=self.anchor("document_end"),
+        )
+        chapter = self.service.create_chapter(branch["id"], title="three scenes")
+        scenes = [
+            self.service.save_scene(
+                branch["id"],
+                branch_chapter_id=chapter["id"],
+                title=f"scene {index}",
+                generated_text=f"text {index}",
+                facts_after={"location": location},
+            )
+            for index, location in enumerate(("A", "B", "C"), 1)
+        ]
+        self.service.save_scene_version(
+            scenes[0]["id"],
+            generated_text="changed scene one",
+            facts_after={"location": "A-prime"},
+        )
+        snapshot = self.service.get_chapter(chapter["id"])
+        self.assertEqual("needs_recompute", snapshot["fact_chain_status"])
+        self.assertEqual({"location": "C"}, snapshot["facts_after"])
+        self.assertEqual("changed scene one", snapshot["scenes"][0]["generated_text"])
+
     def _create_other_project(self):
         other_root = self.root / "other"
         other_root.mkdir()

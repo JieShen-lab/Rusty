@@ -4,6 +4,7 @@ import type {
   Chapter,
   ChapterSplitOptions,
   ChapterDetail,
+  ChapterRewriteVersion,
   CompiledPromptPreview,
   CharacterCard,
   CharacterCardWrite,
@@ -550,6 +551,20 @@ export function createProject(
   });
 }
 
+export function getChapterRewriteVersions(chapterId: number) {
+  return request<ChapterRewriteVersion[]>(`/api/chapters/${chapterId}/rewrite-versions`);
+}
+
+export function getChapterRewriteVersion(versionId: number) {
+  return request<ChapterRewriteVersion>(`/api/chapter-rewrite-versions/${versionId}`);
+}
+
+export function restoreChapterRewriteVersion(versionId: number) {
+  return request<ChapterRewriteVersion>(`/api/chapter-rewrite-versions/${versionId}/restore`, {
+    method: 'POST',
+  });
+}
+
 export function getStoryBranches(projectId: number) {
   return request<StoryBranch[]>(`/api/projects/${projectId}/branches`);
 }
@@ -645,6 +660,18 @@ export function executeProseRewrite(runId: number, payload: ProseRewriteExecuteR
   });
 }
 
+export function cancelProseRewrite(runId: number) {
+  return request<ProseRewriteRun>(`/api/prose-rewrite/runs/${runId}/cancel`, {
+    method: 'POST',
+  });
+}
+
+export function retryProseRewrite(runId: number) {
+  return request<ProseRewriteRun>(`/api/prose-rewrite/runs/${runId}/retry`, {
+    method: 'POST',
+  });
+}
+
 export function scanCanonChange(payload: CanonChangeScanRequest) {
   return request<CanonChangeRun>('/api/canon-change/runs', {
     method: 'POST',
@@ -669,6 +696,12 @@ export function reviewCanonPatch(patchId: number, payload: CanonPatchReviewReque
 
 export function applyCanonChange(runId: number) {
   return request<CanonChangeRun>(`/api/canon-change/runs/${runId}/apply`, { method: 'POST' });
+}
+
+export function cancelCanonChange(runId: number) {
+  return request<CanonChangeRun>(`/api/canon-change/runs/${runId}/cancel`, {
+    method: 'POST',
+  });
 }
 
 export function getModels() {

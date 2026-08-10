@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import sys
 import tempfile
+import threading
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -13,6 +15,7 @@ from rusty.services.project_service import ProjectService
 from rusty.services.rewrite_workflow_service import RewriteWorkflowService
 from rusty.services.scene_service import SceneService
 from rusty.db import session
+from rusty.services.chapter_version_service import ChapterVersionService
 
 
 def skeleton(summary: str, start: dict, end: dict) -> dict:
@@ -55,6 +58,7 @@ class FakePlotLLM:
     def __init__(self) -> None:
         self.force_bad_return = False
         self.scene_count = 1
+        self.chapter_count = 1
         self.stages: list[str] = []
         self.required_end: dict = {}
 
@@ -100,13 +104,14 @@ class FakePlotLLM:
             return {
                 "chapters": [
                     {
-                        "title": "新路线",
+                        "title": f"新路线 {chapter_index}",
                         "summary": "按用户方向展开",
                         "scenes": [
                             {"title": f"新场景 {index}", "direction": "执行目标细纲"}
                             for index in range(1, self.scene_count + 1)
                         ],
                     }
+                    for chapter_index in range(1, self.chapter_count + 1)
                 ]
             }
         if stage == "generate_next_scene":
@@ -213,7 +218,7 @@ class PlotGenerationOrchestratorTests(unittest.TestCase):
 
     def test_a_bounded_insert_plans_and_generates_without_frontend_ai_results(self) -> None:
         project_id, chapter_id = self.create_project("rewrite")
-        offset = self.original.index("人物随后")
+        offset = self.original.rfind("\n\n") + 2
         anchor = {
             "anchor_type": "text_offset",
             "chapter_id": chapter_id,
@@ -294,6 +299,64 @@ class PlotGenerationOrchestratorTests(unittest.TestCase):
         self.assertIn("人物进入院子。", rewritten)
         self.assertIn("人物随后返回客栈。", rewritten)
         self.assertIn("生成正文：替换为伏击战", rewritten)
+
+    def test_consecutive_bounded_inserts_accumulate_on_immutable_rewrite_versions(self) -> None:
+        project_id, chapter_id = self.create_project("rewrite")
+        first_offset = self.original.index("人物随后返回客栈。")
+        run1 = self.orchestrator.start(
+            project_id=project_id,
+            generation_mode="bounded_insert",
+            start_anchor={
+                "anchor_type": "text_offset",
+                "chapter_id": chapter_id,
+                "text_offset": first_offset,
+            },
+            return_anchor={
+                "anchor_type": "chapter_end",
+                "chapter_id": chapter_id,
+            },
+            user_direction="伏击 A",
+        )
+        self.confirm(run1)
+        completed1 = self.orchestrator.execute(run1["id"])
+        first_text = completed1["result"]["rewritten_text"]
+        self.assertIn("伏击 A", first_text)
+
+        second_offset = first_text.index("人物随后返回客栈。")
+        run2 = self.orchestrator.start(
+            project_id=project_id,
+            generation_mode="bounded_insert",
+            start_anchor={
+                "anchor_type": "text_offset",
+                "chapter_id": chapter_id,
+                "text_offset": second_offset,
+            },
+            return_anchor={
+                "anchor_type": "chapter_end",
+                "chapter_id": chapter_id,
+            },
+            user_direction="追逐 B",
+        )
+        self.confirm(run2)
+        completed2 = self.orchestrator.execute(run2["id"])
+        second_text = completed2["result"]["rewritten_text"]
+
+        self.assertIn("伏击 A", second_text)
+        self.assertIn("追逐 B", second_text)
+        self.assertEqual(self.original, self.projects.get_chapter(chapter_id).original_text)
+        with session(self.database) as connection:
+            versions = connection.execute(
+                """
+                SELECT id, parent_version_id, source_run_id, rewritten_text
+                FROM chapter_rewrite_versions
+                WHERE chapter_id = ? ORDER BY version
+                """,
+                (chapter_id,),
+            ).fetchall()
+        self.assertEqual(2, len(versions))
+        self.assertEqual(run1["id"], versions[0]["source_run_id"])
+        self.assertEqual(run2["id"], versions[1]["source_run_id"])
+        self.assertEqual(versions[0]["id"], versions[1]["parent_version_id"])
 
     def test_b_open_continuation_builds_branch_chapter_without_original_scene_input(self) -> None:
         project_id, chapter_id = self.create_project("branch")
@@ -786,6 +849,223 @@ class PlotGenerationOrchestratorTests(unittest.TestCase):
         self.assertNotEqual(
             runs[0]["start_anchor"]["source_hash"], runs[1]["start_anchor"]["source_hash"]
         )
+
+    def test_concurrent_runs_use_source_head_cas_and_do_not_overwrite_winner(self) -> None:
+        project_id, chapter_id = self.create_project("rewrite")
+        offset = self.original.rfind("\n\n") + 2
+
+        def start(direction: str) -> dict:
+            run = self.orchestrator.start(
+                project_id=project_id,
+                generation_mode="bounded_insert",
+                start_anchor={
+                    "anchor_type": "text_offset",
+                    "chapter_id": chapter_id,
+                    "text_offset": offset,
+                },
+                return_anchor={"anchor_type": "chapter_end", "chapter_id": chapter_id},
+                user_direction=direction,
+            )
+            self.confirm(run)
+            return run
+
+        run_a = start("run A")
+        run_b = start("run B")
+        winner = self.orchestrator.execute(run_b["id"])
+        loser = self.orchestrator.execute(run_a["id"])
+        self.assertEqual("completed", winner["status"])
+        self.assertEqual("failed", loser["status"])
+        self.assertEqual("source_version_conflict", loser["issues"][0]["type"])
+        current = ChapterVersionService(self.database).list_versions(chapter_id)[0]
+        self.assertEqual(winner["result_version_id"], current["id"])
+        self.assertIn("run B", current["rewritten_text"])
+        self.assertNotIn("run A", current["rewritten_text"])
+
+    def test_plot_can_explicitly_derive_from_historical_rewrite_version(self) -> None:
+        project_id, chapter_id = self.create_project("rewrite")
+        self.projects.save_chapter_rewrite(chapter_id, "historical v1 marker")
+        versions = ChapterVersionService(self.database)
+        v1 = versions.list_versions(chapter_id)[0]
+        self.projects.save_chapter_rewrite(chapter_id, "current v2 marker")
+        v2 = versions.list_versions(chapter_id)[0]
+        run = self.orchestrator.start(
+            project_id=project_id,
+            generation_mode="bounded_insert",
+            start_anchor={
+                "anchor_type": "text_offset",
+                "chapter_id": chapter_id,
+                "text_offset": len("historical v1 marker"),
+            },
+            return_anchor={"anchor_type": "chapter_end", "chapter_id": chapter_id},
+            user_direction="historical branch edit",
+            source={"kind": "rewrite_version", "version_id": v1["id"]},
+        )
+        self.confirm(run)
+        completed = self.orchestrator.execute(run["id"])
+        derived = versions.get_version(completed["result_version_id"])
+        self.assertEqual(v1["id"], derived["parent_version_id"])
+        self.assertIn("historical v1 marker", derived["rewritten_text"])
+        self.assertEqual("current v2 marker", versions.get_version(v2["id"])["rewritten_text"])
+
+    def test_historical_derivation_freezes_separate_expected_current_head(self) -> None:
+        project_id, chapter_id = self.create_project("rewrite")
+        self.projects.save_chapter_rewrite(chapter_id, "historical v1 marker")
+        versions = ChapterVersionService(self.database)
+        v1 = versions.list_versions(chapter_id)[0]
+        self.projects.save_chapter_rewrite(chapter_id, "current v2 marker")
+        v2 = versions.list_versions(chapter_id)[0]
+        run = self.orchestrator.start(
+            project_id=project_id,
+            generation_mode="bounded_insert",
+            start_anchor={
+                "anchor_type": "text_offset",
+                "chapter_id": chapter_id,
+                "text_offset": len("historical v1 marker"),
+            },
+            return_anchor={"anchor_type": "chapter_end", "chapter_id": chapter_id},
+            user_direction="stale historical derivation",
+            source={"kind": "rewrite_version", "version_id": v1["id"]},
+        )
+        self.assertEqual(v1["id"], run["source_base_version_id"])
+        self.assertEqual(v2["id"], run["expected_source_head_version_id"])
+        self.confirm(run)
+        self.projects.save_chapter_rewrite(chapter_id, "new concurrent v3 marker")
+        v3 = versions.list_versions(chapter_id)[0]
+        failed = self.orchestrator.execute(run["id"])
+        self.assertEqual("failed", failed["status"])
+        self.assertEqual("source_version_conflict", failed["issues"][0]["type"])
+        self.assertTrue(versions.get_version(v3["id"])["is_current"])
+        self.assertEqual(3, len(versions.list_versions(chapter_id)))
+
+    def test_branch_finalization_rolls_back_all_chapters_when_one_insert_fails(self) -> None:
+        self.llm.chapter_count = 3
+        project_id, _chapter_id = self.create_project("branch")
+        run = self.orchestrator.start(
+            project_id=project_id,
+            generation_mode="open_continuation",
+            start_anchor={"anchor_type": "document_end"},
+            user_direction="three chapter atomic commit",
+        )
+        self.confirm(run)
+        original = BranchService._create_generated_chapter_in_connection
+        calls = 0
+
+        def fail_second(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise RuntimeError("injected chapter two failure")
+            return original(*args, **kwargs)
+
+        with mock.patch.object(
+            BranchService,
+            "_create_generated_chapter_in_connection",
+            side_effect=fail_second,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "chapter two"):
+                self.orchestrator.execute(run["id"])
+        failed = self.orchestrator.get_run(run["id"])
+        self.assertEqual("failed", failed["status"])
+        self.assertEqual([], BranchService(self.database).list_chapters(run["branch_id"]))
+        self.assertEqual(3, len(failed["generated_progress"]["chapters"]))
+
+    def test_rewrite_version_and_run_completion_roll_back_together(self) -> None:
+        project_id, chapter_id = self.create_project("rewrite")
+        run = self.orchestrator.start(
+            project_id=project_id,
+            generation_mode="bounded_insert",
+            start_anchor={
+                "anchor_type": "text_offset",
+                "chapter_id": chapter_id,
+                "text_offset": self.original.rfind("\n\n") + 2,
+            },
+            return_anchor={"anchor_type": "chapter_end", "chapter_id": chapter_id},
+            user_direction="atomic rewrite",
+        )
+        self.confirm(run)
+        original_transition = self.orchestrator._transition_in_connection
+
+        def fail_completion(connection, run_id, **kwargs):
+            if kwargs.get("to_status") == "completed":
+                raise RuntimeError("injected run completion failure")
+            return original_transition(connection, run_id, **kwargs)
+
+        with mock.patch.object(
+            self.orchestrator,
+            "_transition_in_connection",
+            side_effect=fail_completion,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "completion failure"):
+                self.orchestrator.execute(run["id"])
+        self.assertEqual([], ChapterVersionService(self.database).list_versions(chapter_id))
+        self.assertIsNone(self.projects.get_chapter(chapter_id).rewritten_text)
+        self.assertEqual("failed", self.orchestrator.get_run(run["id"])["status"])
+
+    def test_cancel_winning_race_leaves_no_formal_rewrite_output(self) -> None:
+        project_id, chapter_id = self.create_project("rewrite")
+        run = self.orchestrator.start(
+            project_id=project_id,
+            generation_mode="bounded_insert",
+            start_anchor={
+                "anchor_type": "text_offset",
+                "chapter_id": chapter_id,
+                "text_offset": self.original.rfind("\n\n") + 2,
+            },
+            return_anchor={"anchor_type": "chapter_end", "chapter_id": chapter_id},
+            user_direction="cancel race",
+        )
+        self.confirm(run)
+        entered_generation = threading.Event()
+        release_generation = threading.Event()
+        original_generate = self.llm.generate_json
+
+        def blocked_generate(stage, payload):
+            if stage == "generate_next_scene":
+                entered_generation.set()
+                release_generation.wait(timeout=5)
+            return original_generate(stage, payload)
+
+        errors: list[Exception] = []
+
+        def execute() -> None:
+            try:
+                self.orchestrator.execute(run["id"])
+            except Exception as exc:  # expected when cancellation wins
+                errors.append(exc)
+
+        with mock.patch.object(self.llm, "generate_json", side_effect=blocked_generate):
+            worker = threading.Thread(target=execute)
+            worker.start()
+            self.assertTrue(entered_generation.wait(timeout=5))
+            cancelled = self.orchestrator.cancel(run["id"])
+            release_generation.set()
+            worker.join(timeout=5)
+
+        self.assertEqual("cancelled", cancelled["status"])
+        self.assertTrue(errors)
+        self.assertEqual([], ChapterVersionService(self.database).list_versions(chapter_id))
+        self.assertIsNone(self.projects.get_chapter(chapter_id).rewritten_text)
+
+    def test_completed_commit_winning_race_rejects_late_cancel(self) -> None:
+        project_id, chapter_id = self.create_project("rewrite")
+        run = self.orchestrator.start(
+            project_id=project_id,
+            generation_mode="bounded_insert",
+            start_anchor={
+                "anchor_type": "text_offset",
+                "chapter_id": chapter_id,
+                "text_offset": self.original.rfind("\n\n") + 2,
+            },
+            return_anchor={"anchor_type": "chapter_end", "chapter_id": chapter_id},
+            user_direction="commit race",
+        )
+        self.confirm(run)
+        completed = self.orchestrator.execute(run["id"])
+        with self.assertRaisesRegex(ValueError, "transition"):
+            self.orchestrator.cancel(run["id"])
+        self.assertEqual("completed", completed["status"])
+        self.assertEqual(1, len(ChapterVersionService(self.database).list_versions(chapter_id)))
+        self.assertIsNotNone(self.projects.get_chapter(chapter_id).rewritten_text)
 
 
 if __name__ == "__main__":

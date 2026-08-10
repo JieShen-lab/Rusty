@@ -6,6 +6,10 @@ from typing import Any
 
 from rusty.db import initialize_database, session
 from rusty.services.branch_service import BranchService
+from rusty.services.chapter_version_service import (
+    ChapterVersionService,
+    SourceVersionConflict,
+)
 from rusty.services.context_service import ContextService
 from rusty.services.project_service import ProjectService, default_database_path
 from rusty.services.structured_skeleton import validate_structured_skeleton
@@ -58,6 +62,7 @@ class PlotGenerationOrchestrator:
         )
         self.projects = ProjectService(self.database_path)
         self.branches = BranchService(self.database_path)
+        self.chapter_versions = ChapterVersionService(self.database_path)
         self.contexts = ContextService(self.database_path)
         self.ai = WorkflowAI(self.database_path, ai_client=ai_client)
         with session(self.database_path) as connection:
@@ -77,6 +82,7 @@ class PlotGenerationOrchestrator:
         style_profile_id: int | None = None,
         branch_name: str = "Generated branch",
         range_operation: str = "insert_between",
+        source: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         required_kind, topology, needs_return = self._validate_mode(
             project_id, generation_mode, return_anchor
@@ -86,6 +92,14 @@ class PlotGenerationOrchestrator:
             raise ValueError(f"Unsupported range operation: {range_operation}")
         if generation_mode != "bounded_insert" and range_operation != "insert_between":
             raise ValueError("range_operation only applies to bounded_insert runs.")
+        rewrite_source = None
+        if generation_mode == "bounded_insert":
+            chapter_id = self.chapter_versions.resolve_anchor_chapter_id(
+                project_id, start_anchor
+            )
+            rewrite_source = self.chapter_versions.resolve_chapter_source(
+                int(chapter_id), source
+            ).to_dict()
         context = self.contexts.compile_plot_generation_context(
             project_id=project_id,
             start_anchor=start_anchor,
@@ -95,6 +109,7 @@ class PlotGenerationOrchestrator:
             selected_character_ids=selected_character_ids or [],
             selected_material_ids=selected_material_ids or [],
             style_profile_id=style_profile_id,
+            rewrite_source_snapshot=rewrite_source,
         )
         source_text = str(context["start_anchor_context"].get("text") or "")
         start_anchor = {**start_anchor}
@@ -146,7 +161,13 @@ class PlotGenerationOrchestrator:
                     "source_version_id",
                     int(context["return_anchor_context"]["source_version_id"]),
                 )
-            self.branches.validate_anchor_order(project_id, start_anchor, return_anchor)
+            if generation_mode == "bounded_insert":
+                if start_anchor.get("chapter_id") != return_anchor.get("chapter_id"):
+                    raise ValueError("bounded_insert anchors must belong to the same chapter.")
+                if int(return_anchor["text_offset"]) < int(start_anchor["text_offset"]):
+                    raise ValueError("Return anchor cannot be earlier than start anchor.")
+            else:
+                self.branches.validate_anchor_order(project_id, start_anchor, return_anchor)
 
         proposed = self.ai.generate_json(
             project_id=project_id,
@@ -195,9 +216,11 @@ class PlotGenerationOrchestrator:
                     required_return_state_json, target_skeleton_json, context_json,
                     issues_json, status, stage, user_direction,
                     selected_character_ids_json, selected_material_ids_json,
-                    style_profile_id
-                    , range_operation
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    style_profile_id, range_operation, source_chapter_id,
+                    source_base_kind, source_base_version_id, source_hash,
+                    source_text_snapshot, require_source_head_match,
+                    expected_source_head_version_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     project_id,
@@ -222,6 +245,13 @@ class PlotGenerationOrchestrator:
                     json.dumps(selected_material_ids or []),
                     style_profile_id,
                     range_operation,
+                    rewrite_source["chapter_id"] if rewrite_source else None,
+                    rewrite_source["source_kind"] if rewrite_source else None,
+                    rewrite_source["source_version_id"] if rewrite_source else None,
+                    rewrite_source["content_hash"] if rewrite_source else None,
+                    rewrite_source["text"] if rewrite_source else None,
+                    1 if rewrite_source and rewrite_source["require_head_match"] else 0,
+                    rewrite_source["expected_head_version_id"] if rewrite_source else None,
                 ),
             )
         return self.get_run(int(cursor.lastrowid))
@@ -530,56 +560,117 @@ class PlotGenerationOrchestrator:
             for scene_index in range(len(chapter["scenes"])):
                 chapter["scenes"][scene_index] = generated[scene_cursor]
                 scene_cursor += 1
-        if run["output_topology"] == "branch":
-            saved_chapters = []
-            for chapter in chapters:
-                saved_chapter = self.branches.create_generated_chapter(
-                    int(run["branch_id"]),
-                    title=chapter["title"],
-                    summary=chapter["summary"],
-                    facts_before=chapter["facts_before"],
-                    facts_after=chapter["facts_after"],
-                    scenes=chapter["scenes"],
+        try:
+            with session(self.database_path) as connection:
+                locked = connection.execute(
+                    """
+                    UPDATE plot_generation_runs SET updated_at = updated_at
+                    WHERE id = ? AND status = ?
+                    """,
+                    (run_id, PLOT_STATUS_GENERATING),
                 )
-                saved_chapters.append(saved_chapter)
-            result = {"branch_id": run["branch_id"], "chapters": saved_chapters}
-        else:
-            start = run["start_anchor"]
-            end = run["return_anchor"]
-            if start.get("chapter_id") != end.get("chapter_id"):
-                raise ValueError("bounded_insert anchors must belong to the same chapter.")
-            chapter = self.projects.get_chapter(int(start["chapter_id"]))
-            if chapter is None:
-                raise FileNotFoundError("Bounded insert chapter not found.")
-            inserted = "\n\n".join(scene["text"] for scene in generated)
-            if run["range_operation"] == "replace_range":
-                rewritten = _compose_replace_range(
-                    chapter.original_text,
-                    int(start["text_offset"]),
-                    int(end["text_offset"]),
-                    inserted,
-                    run["seams"],
+                if locked.rowcount != 1:
+                    raise ValueError("Plot run is no longer generating.")
+                if run["output_topology"] == "branch":
+                    saved_chapters = self.branches.commit_generated_run(
+                        connection,
+                        branch_id=int(run["branch_id"]),
+                        chapters=chapters,
+                    )
+                    result = {"branch_id": run["branch_id"], "chapters": saved_chapters}
+                    result_version_id = None
+                else:
+                    start = run["start_anchor"]
+                    end = run["return_anchor"]
+                    if start.get("chapter_id") != end.get("chapter_id"):
+                        raise ValueError("bounded_insert anchors must belong to the same chapter.")
+                    source_text = str(run.get("source_text_snapshot") or "")
+                    if not source_text:
+                        raise ValueError("Bounded insert run has no frozen source text.")
+                    inserted = "\n\n".join(scene["text"] for scene in generated)
+                    if run["range_operation"] == "replace_range":
+                        rewritten = _compose_replace_range(
+                            source_text,
+                            int(start["text_offset"]),
+                            int(end["text_offset"]),
+                            inserted,
+                            run["seams"],
+                        )
+                    else:
+                        rewritten = _compose_insert_between(
+                            source_text,
+                            int(start["text_offset"]),
+                            inserted,
+                            run["seams"],
+                        )
+                    version = self.chapter_versions.append_chapter_rewrite_version(
+                        connection,
+                        chapter_id=int(run["source_chapter_id"]),
+                        rewritten_text=rewritten,
+                        source_operation="plot_generation",
+                        source_run_id=run_id,
+                        source_base_kind=str(run["source_base_kind"]),
+                        source_base_version_id=run.get("source_base_version_id"),
+                        source_hash=str(run["source_hash"]),
+                        facts_before=run["start_state"],
+                        facts_after=ledger,
+                        require_head_match=bool(run["require_source_head_match"]),
+                        expected_head_version_id=run.get(
+                            "expected_source_head_version_id"
+                        ),
+                    )
+                    result_version_id = int(version["id"])
+                    result = {
+                        "chapter_id": int(run["source_chapter_id"]),
+                        "rewrite_version_id": result_version_id,
+                        "rewritten_text": rewritten,
+                    }
+                self._transition_in_connection(
+                    connection,
+                    run_id,
+                    allowed_from={PLOT_STATUS_GENERATING},
+                    to_status=PLOT_STATUS_COMPLETED,
+                    stage="complete",
+                    updates={
+                        "result_json": result,
+                        "issues_json": [],
+                        "fact_ledger_json": ledger,
+                        "result_version_id": result_version_id,
+                    },
                 )
-            else:
-                rewritten = _compose_insert_between(
-                    chapter.original_text,
-                    int(start["text_offset"]),
-                    inserted,
-                    run["seams"],
+        except SourceVersionConflict as conflict:
+            self._transition(
+                run_id,
+                allowed_from={PLOT_STATUS_GENERATING},
+                to_status=PLOT_STATUS_FAILED,
+                stage="source_conflict",
+                updates={
+                    "issues_json": [
+                        {
+                            "type": "source_version_conflict",
+                            "expected_version_id": conflict.expected_version_id,
+                            "current_version_id": conflict.current_version_id,
+                        }
+                    ]
+                },
+            )
+            return self.get_run(run_id)
+        except Exception as exc:
+            try:
+                self._transition(
+                    run_id,
+                    allowed_from={PLOT_STATUS_GENERATING},
+                    to_status=PLOT_STATUS_FAILED,
+                    stage="finalize",
+                    updates={
+                        "issues_json": [
+                            {"type": "finalization_failure", "message": str(exc)}
+                        ]
+                    },
                 )
-            self.projects.save_chapter_rewrite(chapter.id, rewritten)
-            result = {"chapter_id": chapter.id, "rewritten_text": rewritten}
-        self._transition(
-            run_id,
-            allowed_from={PLOT_STATUS_GENERATING},
-            to_status=PLOT_STATUS_COMPLETED,
-            stage="complete",
-            updates={
-                "result_json": result,
-                "issues_json": [],
-                "fact_ledger_json": ledger,
-            },
-        )
+            except ValueError:
+                pass
+            raise
         return self.get_run(run_id)
 
     @staticmethod
@@ -788,6 +879,20 @@ class PlotGenerationOrchestrator:
     def _resolve_anchor_source(
         self, run: dict[str, Any], anchor: dict[str, Any]
     ) -> dict[str, Any]:
+        if run.get("output_topology") == "in_place":
+            source_text = str(run.get("source_text_snapshot") or "")
+            if not source_text:
+                raise ValueError("Rewrite generation run has no frozen source snapshot.")
+            offset = int(anchor.get("text_offset") or 0)
+            if offset < 0 or offset > len(source_text):
+                raise ValueError("Generation seam offset exceeds the frozen source snapshot.")
+            return {
+                "text": source_text,
+                "source_hash": str(run["source_hash"]),
+                "source_version_id": run.get("source_base_version_id"),
+                "source_range": {"start": 0, "end": len(source_text)},
+                "offset": offset,
+            }
         parent_branch_id = None
         if anchor.get("anchor_type") in {"branch_chapter", "branch_scene"}:
             if run.get("branch_id") is None:

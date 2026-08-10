@@ -53,7 +53,7 @@ AI 输出在持久化前统一校验。桌面编辑器调用创建、读取、�
 
 ## 数据库迁移
 
-当前数据库版本为 v37：
+当前数据库版本为 v39：
 
 - v24：`project_kind`
 - v25：结构化细纲字段
@@ -66,6 +66,9 @@ AI 输出在持久化前统一校验。桌面编辑器调用创建、读取、�
 - v35：接缝独立来源锚点和来源版本，使进入、回接接缝分别校验当前文本
 - v36：`branch_chapter_version_scenes` 固化章节版本所引用的场景版本与顺序
 - v37：Plot 正式状态约束，以及运行草稿进度、下一场景游标和重试次数
+- v38：`chapter_rewrite_versions`，为章节改写正文建立不可变版本链、真实父版本和来源哈希
+- v39：章节改写 current head、Plot/Prose 冻结来源快照与期望 head、分支事实链状态，
+  并统一 Prose/Canon 的取消和终态约束
 
 迁移不删除旧表、项目、原文、摘要、分析、场景、事实账本或历史版本；全新数据库和
 v29 历史数据库均走同一迁移链。
@@ -108,6 +111,30 @@ awaiting_skeleton → awaiting_seams → ready → generating → completed
 快照。场景正文产生新版本时会创建新的章节快照，旧章节版本不再动态读取
 `branch_scenes.current_version`。
 
+## 章节改写版本链与原子最终提交
+
+`chapters.original_text` 是不可变基线；`chapter_rewrite_versions` 是改写正文的唯一权威
+历史，`chapter_rewrites.current_version_id` 和 `chapters.rewritten_text` 只是当前投影。Plot、
+Prose Rewrite 和 Canon Change 都通过 `ChapterVersionService` 解析 effective source：默认读取
+当前 head，也可明确选择原始基线或历史版本。恢复历史版本会追加一个 `restore` 版本，不会
+删除后来的版本。
+
+每个运行在启动时冻结来源种类、来源版本、正文快照、正文 hash 和启动时 current head。
+`parent_version_id` 表示真实派生父版本，`expected_source_head_version_id` 单独用于提交 CAS；
+因此从 v1 派生时可以保留 `parent=v1`，同时防止运行期间变化的 v3/v4 被旧运行覆盖。
+
+最终一致性检查通过后，正式提交以运行级单一 SQLite 写事务完成：
+
+- bounded insert 在同一事务中追加 rewrite version、更新 current projection 并将 run 标记完成；
+- branch 在同一事务中创建全部章节、场景、场景版本、章节快照映射并完成 run；
+- 任一章节/状态更新失败会整体回滚，草稿进度仍留在 run 中用于诊断；
+- cancel 和 final commit 都用状态守卫争夺写锁，合法结果只有“completed + 完整正式输出”或
+  “cancelled + 无正式输出”。
+
+分支章节 `facts_after` 始终来自该 snapshot 的最后一个场景版本。修改中间场景但未重算
+下游事实时，新章节快照标记为 `needs_recompute`；Canon Change 会从生效点向后为所有受
+影响场景创建新版本（即使正文不变但 facts 变化），并提交 `consistent` 的完整场景/事实链。
+
 ## 验证
 
 自动化覆盖后端单元/迁移测试、前端类型检查和构建、API Mock 浏览器 UI E2E、由真实
@@ -122,3 +149,4 @@ FastAPI、临时 SQLite 和 FakeLLM 驱动的八条浏览器集成 E2E，以及�
 - 旧场景 API 的 `expansion` 仍作为短期兼容词存在，新业务统一使用 `bounded_insert`。
 - 文本位置锚点当前使用数值偏移输入，尚未提供富文本拖选交互。
 - 模块化细纲编辑器提供表单与键值编辑，不包含复杂因果关系图谱可视化。
+- 正文版本 UI 当前提供线性列表、历史正文查看和“基于此版本创建新操作”，尚未绘制分叉树。

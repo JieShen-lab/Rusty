@@ -65,6 +65,7 @@ class RealE2EFakeLLM:
     def generate_json(self, stage, payload):
         if stage == "propose_target_skeleton":
             target = deepcopy(SKELETON)
+            target["event_nodes"][0]["summary"] = payload["user_direction"]
             target["required_start_state"] = dict(payload["context"].get("start_state") or {})
             target["required_end_state"] = dict(payload["context"].get("return_state_constraints") or {})
             return {"target_skeleton": target}
@@ -97,7 +98,8 @@ class RealE2EFakeLLM:
             self.required_end = dict(payload["target_skeleton"].get("required_end_state") or {})
             return {"chapters": [{"title": "新章节", "summary": "新路线", "scenes": [{"title": "新场景", "direction": "推进冲突"}]}]}
         if stage == "generate_next_scene":
-            return {"text": "人物遭遇伏击并化解危机。"}
+            summary = payload["target_skeleton"]["event_nodes"][0]["summary"]
+            return {"text": f"人物遭遇伏击并化解危机。目标：{summary}"}
         if stage == "update_fact_ledger":
             return {"facts_after": {**payload["facts_before"], **self.required_end, "ambush_resolved": True}}
         if stage == "consistency_check":

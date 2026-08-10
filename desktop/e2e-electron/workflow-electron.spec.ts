@@ -79,6 +79,10 @@ test('Electron 改写工作流完成增加剧情最小闭环', async () => {
   await page.getByRole('button', { name: '生成全部剩余场景' }).click();
   await expect(page.getByText('本次运行已完成')).toBeVisible();
   await expect(page.getByLabel('剧情生成历史').locator('button')).toHaveCount(2);
+  const finalResult = page.locator('pre').filter({ hasText: 'rewritten_text' }).last();
+  await expect(finalResult).toContainText('增加一场伏击战');
+  await expect(finalResult).toContainText('再增加一场雨夜追逐');
+  await expect(page.getByLabel('rewrite versions').locator('li')).toHaveCount(2);
 });
 
 test('Electron 扩写工作流生成分支章节和场景', async () => {
