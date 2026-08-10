@@ -1,36 +1,23 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 from typing import Any
 
-from rusty.db import initialize_database, session
-from rusty.services.project_service import default_database_path
+from rusty.content_hash import hash_text
+from rusty.db import default_database_path, initialize_database, session
+from rusty.domain.plot_workflow import PLOT_ACTIVE_STATUSES
+from rusty.domain.story_anchors import (
+    BRANCH_CONTENT_ANCHOR_TYPES,
+    BRANCH_GENERATION_MODES,
+    ORIGINAL_ANCHOR_TYPES,
+    STORY_ANCHOR_TYPES,
+)
 
 
-ANCHOR_TYPES = {
-    "document_end",
-    "chapter_start",
-    "chapter_end",
-    "scene_start",
-    "scene_end",
-    "skeleton_node",
-    "text_offset",
-    "branch_chapter",
-    "branch_scene",
-}
-BRANCH_MODES = {"open_continuation", "fork", "fork_and_rejoin"}
-ORIGINAL_ANCHOR_TYPES = ANCHOR_TYPES - {"branch_chapter", "branch_scene"}
-BRANCH_CONTENT_ANCHOR_TYPES = {"branch_chapter", "branch_scene"}
-ACTIVE_PLOT_RUN_STATUSES = {
-    "awaiting_skeleton",
-    "planning_blocked",
-    "awaiting_seams",
-    "ready",
-    "generating",
-    "repair_required",
-}
+ANCHOR_TYPES = STORY_ANCHOR_TYPES
+BRANCH_MODES = BRANCH_GENERATION_MODES
+ACTIVE_PLOT_RUN_STATUSES = PLOT_ACTIVE_STATUSES
 
 
 class BranchService:
@@ -1159,7 +1146,7 @@ class BranchService:
             ).fetchone()
             if row is None:
                 raise FileNotFoundError(f"Seam not found: {seam_id}")
-            actual = hashlib.sha256(current_source_text.encode("utf-8")).hexdigest()
+            actual = hash_text(current_source_text)
             if decision == "confirmed" and actual != row["source_hash"]:
                 raise ValueError("Seam source hash mismatch; refusing silent application.")
             connection.execute(
@@ -1195,7 +1182,7 @@ class BranchService:
 
     @staticmethod
     def source_hash(text: str) -> str:
-        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+        return hash_text(text)
 
     @classmethod
     def _insert_anchor(

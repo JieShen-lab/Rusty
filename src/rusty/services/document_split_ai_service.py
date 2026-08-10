@@ -6,7 +6,7 @@ from typing import Any
 
 from rusty.db import initialize_database, session
 from rusty.services.document_library_service import DocumentLibraryService
-from rusty.services.project_service import default_database_path
+from rusty.db import default_database_path
 from rusty.services.structured_model_service import StructuredModelService
 
 

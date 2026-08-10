@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 from typing import Any
 
+from rusty.content_hash import hash_text
 from rusty.db import initialize_database, session
 from rusty.services.branch_service import BranchService
 from rusty.services.chapter_version_service import ChapterVersionService, SourceVersionConflict
-from rusty.services.project_service import ProjectService, default_database_path
+from rusty.db import default_database_path
+from rusty.services.project_service import ProjectService
 from rusty.services.workflow_ai import WorkflowAI
 from rusty.services.rewrite_version_map_service import RewriteVersionMapService
 
@@ -113,7 +114,7 @@ class CanonChangeOrchestrator:
                                 "expected_source_head_version_id": segment.get(
                                     "expected_source_head_version_id"
                                 ),
-                                "source_hash": _hash(str(segment["text"])),
+                                "source_hash": hash_text(str(segment["text"])),
                                 "text": segment["text"],
                                 "facts": segment.get("facts", {}),
                                 "require_head_match": bool(segment.get("require_head_match", True)),
@@ -123,7 +124,7 @@ class CanonChangeOrchestrator:
                                     )
                                     if segment["route_kind"] == "chapter"
                                     and segment.get("source_base_version_id") is not None
-                                    else _hash(str(segment["text"]))
+                                    else hash_text(str(segment["text"]))
                                 ),
                             }
                             for segment in segments
@@ -148,7 +149,7 @@ class CanonChangeOrchestrator:
                         impact["route_kind"],
                         impact["target_id"],
                         json.dumps(impact["source_range"], ensure_ascii=False),
-                        _hash(impact["original_text"]),
+                        hash_text(impact["original_text"]),
                         impact["original_text"],
                         impact["replacement_text"],
                         impact["impact_type"],
@@ -266,7 +267,7 @@ class CanonChangeOrchestrator:
                         )
                         continue
                 if (
-                    _hash(current) != snapshot["source_hash"]
+                    hash_text(current) != snapshot["source_hash"]
                     or current_version_id
                     != snapshot.get("expected_source_head_version_id")
                 ):
@@ -293,7 +294,7 @@ class CanonChangeOrchestrator:
                 for patch in ordered:
                     bounds = patch["source_range"]
                     current_slice = current[bounds["start"] : bounds["end"]]
-                    if _hash(current_slice) != patch["source_hash"]:
+                    if hash_text(current_slice) != patch["source_hash"]:
                         conflicts.append(
                             {
                                 "type": "source_hash_mismatch",
@@ -730,7 +731,3 @@ def _validate_impact(segment: dict[str, Any], impact: Any) -> dict[str, Any]:
         "evidence": impact.get("evidence") if isinstance(impact.get("evidence"), list) else [],
         "requires_confirmation": bool(impact.get("requires_confirmation", True)),
     }
-
-
-def _hash(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()

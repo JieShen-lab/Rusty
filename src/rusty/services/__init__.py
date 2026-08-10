@@ -25,7 +25,9 @@ from .plot_generation_orchestrator import PlotGenerationOrchestrator
 from .prose_rewrite_orchestrator import ProseRewriteOrchestrator
 from .prompt_service import PromptService, PromptTemplate
 from .prompt_package_extraction_service import PromptPackageExtractionService
-from .project_service import ProjectService, default_database_path
+from rusty.db import default_database_path
+
+from .project_service import ProjectService
 from .style_extraction_service import StyleExtractionService
 from .style_service import StyleTemplate, StyleTemplateService
 

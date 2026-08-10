@@ -6,9 +6,10 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from rusty.db import initialize_database, session
+from rusty.serialization import json_object
 from rusty.services.context_service import ContextService
 from rusty.services.material_service import MaterialService
-from rusty.services.project_service import default_database_path
+from rusty.db import default_database_path
 from rusty.services.scene_service import SceneService
 from rusty.services.structured_skeleton import (
     legacy_skeleton_result,
@@ -258,7 +259,7 @@ class RewriteWorkflowService:
             selected_version,
             "confirmed",
             tuple(_json_list_of_objects(row["nodes_json"])),
-            _json_object(row["skeleton_json"]) or None,
+            json_object(row["skeleton_json"]) or None,
         )
 
     def get_skeleton_version(
@@ -289,7 +290,7 @@ class RewriteWorkflowService:
             selected,
             status,
             tuple(_json_list_of_objects(row["nodes_json"])),
-            _json_object(row["skeleton_json"]) or None,
+            json_object(row["skeleton_json"]) or None,
         )
 
     def get_preferred_chapter_skeleton(self, chapter_id: int) -> dict[str, Any]:
@@ -313,7 +314,7 @@ class RewriteWorkflowService:
                     "version": int(row["current_version"]),
                     "version_id": int(row["version_id"]),
                     "status": str(row["status"]),
-                    "structured": _json_object(row["skeleton_json"]),
+                    "structured": json_object(row["skeleton_json"]),
                 }
             legacy = connection.execute(
                 "SELECT plot_summary FROM chapter_summaries WHERE chapter_id = ?",
@@ -398,7 +399,7 @@ class RewriteWorkflowService:
                 usage_mode = str(mapping.get("usage_mode") or "reference")
                 if usage_mode not in {"required", "reference"}:
                     raise ValueError("Material usage_mode must be required or reference.")
-                impact = _json_object(mapping.get("impact"))
+                impact = json_object(mapping.get("impact"))
                 if not any(key in impact for key in ("characters", "events", "states")):
                     raise ValueError("Material mapping must describe affected characters, events, or states.")
                 connection.execute(
@@ -449,12 +450,12 @@ class RewriteWorkflowService:
             raise FileNotFoundError(f"Rewrite plan not found: {plan_id}")
         return {
             **dict(row),
-            "plan": _json_object(row["plan_json"]),
+            "plan": json_object(row["plan_json"]),
             "materials": [
                 {
                     **dict(mapping),
                     "event_nodes": _json_list_of_objects(mapping["event_nodes_json"]),
-                    "impact": _json_object(mapping["impact_json"]),
+                    "impact": json_object(mapping["impact_json"]),
                 }
                 for mapping in mappings
             ],
@@ -671,7 +672,7 @@ class RewriteWorkflowService:
         for scene in scenes:
             ledger = self.scene_service.get_fact_ledger(scene.id)
             states = {
-                str(item["character_name"]): _json_object(item.get("state"))
+                str(item["character_name"]): json_object(item.get("state"))
                 for item in self.scene_service.list_character_states(scene.id)
             }
             if previous is not None:
@@ -784,7 +785,7 @@ class RewriteWorkflowService:
                 (project_id,),
             ).fetchall()
         ledgers = [
-            {"scene_id": int(row["scene_id"]), "chapter_id": int(row["chapter_id"]), **_json_object(row["facts_json"])}
+            {"scene_id": int(row["scene_id"]), "chapter_id": int(row["chapter_id"]), **json_object(row["facts_json"])}
             for row in rows
         ]
         open_threads: dict[str, int] = {}
@@ -801,7 +802,7 @@ class RewriteWorkflowService:
             for thread in ledger.get("open_threads", []):
                 open_threads.setdefault(str(thread), int(ledger["scene_id"]))
             resolved.update(str(thread) for thread in ledger.get("resolved_threads", []))
-            for character, knowledge in _json_object(ledger.get("knowledge_states")).items():
+            for character, knowledge in json_object(ledger.get("knowledge_states")).items():
                 character_name = str(character)
                 current = set(str(item) for item in (knowledge if isinstance(knowledge, list) else [knowledge]))
                 previous_knowledge = knowledge_by_character.setdefault(character_name, set())
@@ -815,11 +816,11 @@ class RewriteWorkflowService:
                         }
                     )
                 previous_knowledge.update(current)
-            for name, state in _json_object(ledger.get("objects")).items():
-                holder = _json_object(state).get("holder") if isinstance(state, dict) else state
+            for name, state in json_object(ledger.get("objects")).items():
+                holder = json_object(state).get("holder") if isinstance(state, dict) else state
                 if holder:
                     object_holders.setdefault(str(name), set()).add(str(holder))
-            time_state = _json_object(ledger.get("time_state"))
+            time_state = json_object(ledger.get("time_state"))
             raw_order = time_state.get("order", time_state.get("sequence"))
             if isinstance(raw_order, (int, float)):
                 if last_time_order is not None and float(raw_order) < last_time_order:
@@ -845,7 +846,7 @@ class RewriteWorkflowService:
                             }
                         )
                     last_relationships[pair] = state
-            changes = _json_object(ledger.get("character_changes"))
+            changes = json_object(ledger.get("character_changes"))
             for character, change in changes.items():
                 if isinstance(change, dict) and change.get("ability_conflict"):
                     ability_risks.append(
@@ -967,7 +968,7 @@ def _structured_to_legacy_nodes(skeleton: dict[str, Any]) -> list[dict[str, Any]
 
 
 def _normalize_plan(plan: dict[str, Any]) -> dict[str, Any]:
-    normalized = _json_object(plan)
+    normalized = json_object(plan)
     required = {
         "sequence",
         "preserve",
@@ -989,16 +990,6 @@ def _require_keys(value: dict[str, Any], required: set[str], label: str) -> None
     missing = sorted(key for key in required if key not in value)
     if missing:
         raise ValueError(f"{label} output is missing fields: {', '.join(missing)}")
-
-
-def _json_object(value: Any) -> dict[str, Any]:
-    if isinstance(value, dict):
-        return value
-    try:
-        parsed = json.loads(str(value or "{}"))
-    except (json.JSONDecodeError, TypeError):
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
 
 
 def _json_list_of_objects(value: Any) -> list[dict[str, Any]]:

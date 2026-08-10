@@ -5,48 +5,34 @@ from pathlib import Path
 from typing import Any
 
 from rusty.db import initialize_database, session
+from rusty.domain.plot_workflow import (
+    PLOT_ACTIVE_STATUSES,
+    PLOT_STATUS_AWAITING_SEAMS,
+    PLOT_STATUS_AWAITING_SKELETON,
+    PLOT_STATUS_CANCELLED,
+    PLOT_STATUS_COMPLETED,
+    PLOT_STATUS_FAILED,
+    PLOT_STATUS_GENERATING,
+    PLOT_STATUS_PLANNING_BLOCKED,
+    PLOT_STATUS_READY,
+    PLOT_STATUS_REPAIR_REQUIRED,
+    PLOT_TERMINAL_STATUSES,
+)
+from rusty.domain.story_anchors import GENERATION_MODE_RULES
 from rusty.services.branch_service import BranchService
 from rusty.services.chapter_version_service import (
     ChapterVersionService,
     SourceVersionConflict,
 )
 from rusty.services.context_service import ContextService
-from rusty.services.project_service import ProjectService, default_database_path
+from rusty.db import default_database_path
+from rusty.services.project_service import ProjectService
 from rusty.services.structured_skeleton import validate_structured_skeleton
 from rusty.services.workflow_ai import WorkflowAI
 from rusty.services.rewrite_version_map_service import RewriteVersionMapService
 
 
-GENERATION_MODES = {
-    "bounded_insert": ("rewrite", "in_place", True),
-    "open_continuation": ("branch", "branch", False),
-    "fork": ("branch", "branch", False),
-    "fork_and_rejoin": ("branch", "branch", True),
-}
-
-PLOT_STATUS_AWAITING_SKELETON = "awaiting_skeleton"
-PLOT_STATUS_PLANNING_BLOCKED = "planning_blocked"
-PLOT_STATUS_AWAITING_SEAMS = "awaiting_seams"
-PLOT_STATUS_READY = "ready"
-PLOT_STATUS_GENERATING = "generating"
-PLOT_STATUS_REPAIR_REQUIRED = "repair_required"
-PLOT_STATUS_COMPLETED = "completed"
-PLOT_STATUS_FAILED = "failed"
-PLOT_STATUS_CANCELLED = "cancelled"
-
-PLOT_ACTIVE_STATUSES = {
-    PLOT_STATUS_AWAITING_SKELETON,
-    PLOT_STATUS_PLANNING_BLOCKED,
-    PLOT_STATUS_AWAITING_SEAMS,
-    PLOT_STATUS_READY,
-    PLOT_STATUS_GENERATING,
-    PLOT_STATUS_REPAIR_REQUIRED,
-}
-PLOT_TERMINAL_STATUSES = {
-    PLOT_STATUS_COMPLETED,
-    PLOT_STATUS_FAILED,
-    PLOT_STATUS_CANCELLED,
-}
+GENERATION_MODES = GENERATION_MODE_RULES
 
 
 class PlotGenerationOrchestrator:

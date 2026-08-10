@@ -38,7 +38,8 @@ from rusty.services.document_library_service import (
 from rusty.services.document_split_ai_service import DocumentSplitAIService
 from rusty.services.model_service import ModelService
 from rusty.services.pipeline_service import PipelineService
-from rusty.services.project_service import ProjectService, default_database_path
+from rusty.db import default_database_path
+from rusty.services.project_service import ProjectService
 from rusty.services.prompt_service import PromptService
 from rusty.services.context_service import ContextService
 from rusty.services.rewrite_workflow_service import RewriteWorkflowService

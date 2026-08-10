@@ -1,14 +1,16 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+from rusty.content_hash import hash_text
 from rusty.db import initialize_database, session
-from rusty.services.project_service import ProjectService, default_database_path
+from rusty.serialization import json_object
+from rusty.db import default_database_path
+from rusty.services.project_service import ProjectService
 
 
 DEFAULT_FACT_LEDGER: dict[str, Any] = {
@@ -122,7 +124,7 @@ class SceneService:
                         start,
                         end,
                         chapter.original_text,
-                        hashlib.sha256(chapter.original_text.encode("utf-8")).hexdigest(),
+                        hash_text(chapter.original_text),
                     ),
                 )
         return self.get_source_version(chapter_id)
@@ -299,7 +301,7 @@ class SceneService:
         prompt_compilation_id: int | None = None,
     ) -> dict[str, Any]:
         self._require_scene(scene_id)
-        normalized = {**DEFAULT_FACT_LEDGER, **_json_object(facts)}
+        normalized = {**DEFAULT_FACT_LEDGER, **json_object(facts)}
         with session(self.database_path) as connection:
             version = int(
                 connection.execute(
@@ -342,7 +344,7 @@ class SceneService:
         return {
             "scene_id": scene_id,
             "ledger_version": int(row["ledger_version"]),
-            **{**DEFAULT_FACT_LEDGER, **_json_object(row["facts_json"])},
+            **{**DEFAULT_FACT_LEDGER, **json_object(row["facts_json"])},
         }
 
     def save_character_state(
@@ -357,7 +359,7 @@ class SceneService:
         name = character_name.strip()
         if not name:
             raise ValueError("Character name is required.")
-        normalized = {**DEFAULT_CHARACTER_STATE, **_json_object(state)}
+        normalized = {**DEFAULT_CHARACTER_STATE, **json_object(state)}
         with session(self.database_path) as connection:
             connection.execute(
                 """
@@ -395,7 +397,7 @@ class SceneService:
             {
                 "character_card_id": row["character_card_id"],
                 "character_name": row["character_name"],
-                **{**DEFAULT_CHARACTER_STATE, **_json_object(row["state_json"])},
+                **{**DEFAULT_CHARACTER_STATE, **json_object(row["state_json"])},
                 "updated_at": row["updated_at"],
             }
             for row in rows
@@ -658,16 +660,6 @@ def _paragraph_spans(text: str) -> list[tuple[int, int, str]]:
     if not spans and text:
         spans.append((0, len(text), text))
     return spans
-
-
-def _json_object(value: Any) -> dict[str, Any]:
-    if isinstance(value, dict):
-        return value
-    try:
-        parsed = json.loads(str(value or "{}"))
-    except (json.JSONDecodeError, TypeError):
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
 
 
 def _json_list(value: Any) -> list[Any]:

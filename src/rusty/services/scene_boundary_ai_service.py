@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from rusty.services.project_service import default_database_path
+from rusty.db import default_database_path
 from rusty.services.scene_service import SceneService
 from rusty.services.structured_model_service import StructuredModelService
 

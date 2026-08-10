@@ -10,7 +10,7 @@ from typing import Any, Iterable
 from rusty.db import initialize_database, session
 from rusty.services.anchor_service import AnchorService
 from rusty.services.material_service import MaterialService
-from rusty.services.project_service import default_database_path
+from rusty.db import default_database_path
 from rusty.services.prompt_service import PromptService
 from rusty.services.scene_service import SceneRecord, SceneService
 from rusty.services.style_service import StyleTemplateService

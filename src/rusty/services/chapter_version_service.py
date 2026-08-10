@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import sqlite3
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from rusty.content_hash import hash_text
 from rusty.db import initialize_database, session
 from rusty.models import count_text_units
+from rusty.serialization import json_object
 
 
 SOURCE_OPERATIONS = {
@@ -97,8 +98,8 @@ class ChapterVersionService:
                 source_version_id=int(selected["id"]),
                 text=str(selected["rewritten_text"]),
                 content_hash=str(selected["content_hash"]),
-                facts_before=_json_object(selected["facts_before_json"]),
-                facts_after=_json_object(selected["facts_after_json"]),
+                facts_before=json_object(selected["facts_before_json"]),
+                facts_after=json_object(selected["facts_after_json"]),
                 fact_chain_status=str(selected["fact_chain_status"] or "needs_recompute"),
                 require_head_match=require_head_match,
                 expected_head_version_id=current_head_id,
@@ -111,7 +112,7 @@ class ChapterVersionService:
             source_kind="original",
             source_version_id=None,
             text=original,
-            content_hash=_hash(original),
+            content_hash=hash_text(original),
             facts_before=facts_before,
             facts_after=facts_after,
             fact_chain_status="consistent",
@@ -228,7 +229,7 @@ class ChapterVersionService:
             original = connection.execute(
                 "SELECT original_text FROM chapters WHERE id = ?", (chapter_id,)
             ).fetchone()
-            if original is None or _hash(str(original["original_text"])) != source_hash:
+            if original is None or hash_text(str(original["original_text"])) != source_hash:
                 raise ValueError("Original chapter source hash mismatch.")
         next_version = int(
             connection.execute(
@@ -261,7 +262,7 @@ class ChapterVersionService:
                 source_base_version_id,
                 source_hash,
                 text,
-                _hash(text),
+                hash_text(text),
                 json.dumps(facts_before or {}, ensure_ascii=False),
                 json.dumps(facts_after or {}, ensure_ascii=False),
                 fact_chain_status,
@@ -434,14 +435,14 @@ class ChapterVersionService:
                 (row["id"],),
             ).fetchone()
             if ledger is not None:
-                facts.append(_json_object(ledger["facts_json"]))
+                facts.append(json_object(ledger["facts_json"]))
         return ({}, facts[-1] if facts else {})
 
     @staticmethod
     def _version(row: sqlite3.Row) -> dict[str, Any]:
         result = dict(row)
-        result["facts_before"] = _json_object(row["facts_before_json"])
-        result["facts_after"] = _json_object(row["facts_after_json"])
+        result["facts_before"] = json_object(row["facts_before_json"])
+        result["facts_after"] = json_object(row["facts_after_json"])
         result["fact_chain_status"] = str(
             result.get("fact_chain_status") or "needs_recompute"
         )
@@ -461,15 +462,3 @@ class SourceVersionConflict(ValueError):
         self.expected_version_id = expected_version_id
         self.current_version_id = current_version_id
         super().__init__("Chapter source head changed after the workflow run started.")
-
-
-def _hash(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
-def _json_object(value: Any) -> dict[str, Any]:
-    try:
-        parsed = json.loads(str(value or "{}"))
-    except (TypeError, ValueError):
-        return {}
-    return parsed if isinstance(parsed, dict) else {}

@@ -6,7 +6,7 @@ from typing import Any
 
 from rusty.services.anchor_service import AnchorService, CharacterCard
 from rusty.services.material_service import Material, MaterialService
-from rusty.services.project_service import default_database_path
+from rusty.db import default_database_path
 from rusty.services.structured_model_service import StructuredModelResult, StructuredModelService
 
 

@@ -7,7 +7,8 @@ from typing import Any
 from rusty.db import initialize_database, session
 from rusty.services.context_service import ContextService
 from rusty.services.chapter_version_service import ChapterVersionService, SourceVersionConflict
-from rusty.services.project_service import ProjectService, default_database_path
+from rusty.db import default_database_path
+from rusty.services.project_service import ProjectService
 from rusty.services.shared_analysis_service import SkeletonExtractionService
 from rusty.services.structured_skeleton import validate_structured_skeleton
 from rusty.services.workflow_ai import WorkflowAI

@@ -11,7 +11,8 @@ from rusty.models import ChapterAIOutputs, ChapterError, ChapterRecord, StageSta
 from rusty.services.ai_client import AIClient, AIResponse, OpenAICompatibleClient
 from rusty.services.anchor_service import AnchorService, CharacterCard, OutlineTemplate
 from rusty.services.model_service import ModelConfig, ModelService
-from rusty.services.project_service import ProjectService, default_database_path
+from rusty.db import default_database_path
+from rusty.services.project_service import ProjectService
 from rusty.services.prompt_compiler import CompiledRequest, PromptCompiler
 from rusty.services.prompt_service import PromptService, PromptTemplate
 from rusty.services.style_service import StyleTemplate, StyleTemplateService
