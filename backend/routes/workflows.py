@@ -15,7 +15,7 @@ from rusty.services.project_service import ProjectService
 from rusty.services.prose_rewrite_orchestrator import ProseRewriteOrchestrator
 from rusty.services.rewrite_version_map_service import RewriteVersionMapService
 
-from backend.schemas import (
+from backend.workflow_schemas import (
     BranchCreateRequest,
     CanonChangeRunResponse,
     CanonChangeScanRequest,

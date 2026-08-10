@@ -1132,6 +1132,9 @@ class PipelineService:
         chapter = self.project_service.get_chapter(chapter_id)
         if chapter is None:
             raise ValueError(f"Chapter not found: {chapter_id}")
+        # This legacy pipeline outcome selects the immutable original for export; it
+        # does not create formal rewritten content, so the compatibility projection
+        # intentionally remains NULL.
         with session(self.database_path) as connection:
             connection.execute(
                 """
