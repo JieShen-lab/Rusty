@@ -18,6 +18,7 @@ import {
   getCanonChangeRun,
   getChapterStorySkeleton,
   getChapterRewriteVersions,
+  getRewriteVersionSkeleton,
   getLegacyAnalysisExport,
   getPlotGenerationRun,
   getPlotGenerationRuns,
@@ -88,6 +89,7 @@ export function RewriteOperationPanel({
     : { anchor_type: 'document_end' });
   const [sourceSkeleton, setSourceSkeleton] = useState<StructuredSkeleton | null>(null);
   const [sourceSkeletonId, setSourceSkeletonId] = useState<number | null>(null);
+  const [sourceSkeletonVersionId, setSourceSkeletonVersionId] = useState<number | null>(null);
   const [sourceSkeletonInfo, setSourceSkeletonInfo] = useState<SkeletonVersionInfo | null>(null);
   const [oldFact, setOldFact] = useState('');
   const [newFact, setNewFact] = useState('');
@@ -116,6 +118,23 @@ export function RewriteOperationPanel({
     : workflowSource.kind === 'current'
       ? rewriteVersions.find((item) => item.is_current) ?? null
       : null;
+  const sourceLabel = workflowSource.kind === 'original'
+    ? '原始基线'
+    : workflowSource.kind === 'rewrite_version'
+      ? `历史版本 v${selectedRewriteVersion?.version ?? '?'}`
+      : selectedRewriteVersion
+        ? `当前版本 v${selectedRewriteVersion.version}`
+        : '原始基线';
+  const sourceKey = workflowSource.kind === 'rewrite_version'
+    ? `rewrite:${workflowSource.version_id}`
+    : workflowSource.kind;
+
+  useEffect(() => {
+    setSourceSkeleton(null);
+    setSourceSkeletonId(null);
+    setSourceSkeletonVersionId(null);
+    setSourceSkeletonInfo(null);
+  }, [chapter?.id, sourceKey]);
 
   useEffect(() => {
     let active = true;
@@ -181,11 +200,12 @@ export function RewriteOperationPanel({
   }
 
   async function beginProse() {
-    if (!chapter || !sourceSkeleton) return;
+    if (!chapter || !sourceSkeleton || !sourceSkeletonVersionId) return;
     const run = await planProseRewrite({
       project_id: projectId,
       chapter_id: chapter.id,
       source_skeleton: sourceSkeleton,
+      source_skeleton_version_id: sourceSkeletonVersionId,
       preservation_policy: {
         events: true,
         event_order: true,
@@ -206,12 +226,25 @@ export function RewriteOperationPanel({
 
   async function loadSkeleton() {
     if (!chapter) return;
+    if (selectedRewriteVersion) {
+      const versionStructure = await getRewriteVersionSkeleton(selectedRewriteVersion.id);
+      setSourceSkeleton(versionStructure.structured);
+      setSourceSkeletonId(versionStructure.skeleton_id);
+      setSourceSkeletonVersionId(versionStructure.skeleton_version_id);
+      setSourceSkeletonInfo({
+        version: 1,
+        status: versionStructure.status === 'confirmed' ? 'confirmed' : 'draft',
+        previousVersion: null,
+      });
+      return;
+    }
     const loaded = await getChapterStorySkeleton(chapter.id);
-    if (loaded.format !== 'structured' || !loaded.structured || !loaded.skeleton_id) {
+    if (loaded.format !== 'structured' || !loaded.structured || !loaded.skeleton_id || !loaded.version_id) {
       throw new Error('当前章节还没有结构化细纲，请先运行分析或增加剧情规划。');
     }
     setSourceSkeleton(loaded.structured);
     setSourceSkeletonId(loaded.skeleton_id);
+    setSourceSkeletonVersionId(loaded.version_id);
     setSourceSkeletonInfo({ version: loaded.version ?? 1, status: loaded.status ?? 'draft', previousVersion: (loaded.version ?? 1) > 1 ? (loaded.version ?? 1) - 1 : null });
   }
 
@@ -222,6 +255,7 @@ export function RewriteOperationPanel({
         sourceSkeletonId, undefined, '用户在模块化编辑器中修改', sourceSkeleton,
       );
       const confirmed = await confirmStorySkeleton(sourceSkeletonId, version.version);
+      setSourceSkeletonVersionId(confirmed.version_id);
       setSourceSkeletonInfo({ version: confirmed.version, status: confirmed.status, previousVersion: confirmed.version > 1 ? confirmed.version - 1 : null });
       return;
     }
@@ -233,6 +267,7 @@ export function RewriteOperationPanel({
       structured_skeleton: sourceSkeleton,
     });
     setSourceSkeletonId(version.skeleton_id);
+    setSourceSkeletonVersionId(version.version_id);
     const confirmed = await confirmStorySkeleton(version.skeleton_id, version.version);
     setSourceSkeletonInfo({ version: confirmed.version, status: confirmed.status, previousVersion: confirmed.version > 1 ? confirmed.version - 1 : null });
   }
@@ -275,7 +310,8 @@ export function RewriteOperationPanel({
           {chapter ? <StoryAnchorPicker chapters={[chapter]} label="插入点" onChange={setStartAnchor} projectId={projectId} source={workflowSource} sourceTextLength={selectedRewriteVersion?.rewritten_text.length ?? chapter.original_text.length} sourceVersionId={selectedRewriteVersion?.id ?? null} value={startAnchor} /> : null}
           {rangeOperation === 'replace_range' && chapter ? <StoryAnchorPicker chapters={[chapter]} label="范围终点" onChange={setReturnAnchor} projectId={projectId} source={workflowSource} sourceTextLength={selectedRewriteVersion?.rewritten_text.length ?? chapter.original_text.length} sourceVersionId={selectedRewriteVersion?.id ?? null} value={returnAnchor} /> : <label>回接点<input readOnly value="插入点后原文" /></label>}
           <label className="wide">新增剧情目标<textarea onChange={(event) => setDirection(event.target.value)} value={direction} /></label>
-          <p className="wide">本次运行明确以不可变原始基线为来源；历史改写结果可查看，但不会被隐式串入新任务。</p>
+          <p className="wide">默认基于当前正文版本继续操作；也可以显式选择原始基线或历史版本作为本次来源。</p>
+          <p className="wide">本次来源：{sourceLabel}</p>
           {!plotRun ? <button disabled={busy || !chapter || !direction.trim()} onClick={() => void perform(beginPlot)} type="button">启动分析</button> : <RunStatus run={plotRun} />}
           {plotRun?.stage === 'confirm_target_skeleton' ? (
             <ModularSkeletonEditor
@@ -307,7 +343,8 @@ export function RewriteOperationPanel({
           {sourceSkeleton ? <ModularSkeletonEditor onChange={setSourceSkeleton} skeleton={sourceSkeleton} versionInfo={sourceSkeletonInfo} /> : null}
           {sourceSkeleton ? <button disabled={busy} onClick={() => void perform(saveSkeleton)} type="button">保存并确认细纲版本</button> : null}
           <label className="wide">目标风格与说明<textarea onChange={(event) => setDirection(event.target.value)} value={direction} /></label>
-          {!proseRun ? <button disabled={busy || !sourceSkeleton} onClick={() => void perform(beginProse)} type="button">生成重写计划</button> : <RunStatus run={proseRun} />}
+          <p className="wide">本次来源：{sourceLabel}</p>
+          {!proseRun ? <button disabled={busy || !sourceSkeleton || !sourceSkeletonVersionId} onClick={() => void perform(beginProse)} type="button">生成重写计划</button> : <RunStatus run={proseRun} />}
           {proseRun?.status === 'planned' ? <button disabled={busy} onClick={() => void perform(async () => setProseRun(await executeProseRewrite(proseRun.id, { auto_repair: true }), proseRun.id))} type="button">生成正文并自动检查</button> : null}
           {proseRun ? <pre className="wide">{JSON.stringify(proseRun.issues, null, 2)}</pre> : null}
           {proseRun?.status === 'completed' ? <button onClick={clearProseRun} type="button">开始新的运行</button> : null}

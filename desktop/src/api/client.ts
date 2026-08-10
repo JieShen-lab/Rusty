@@ -66,6 +66,7 @@ import type {
   StoryAnchorPreview,
   ChapterSourceSelection,
   RewriteSemanticSegment,
+  RewriteVersionSkeleton,
   ProjectSettingsWrite,
   ProjectStyleBinding,
   PromptTemplate,
@@ -565,6 +566,10 @@ export function getChapterRewriteVersion(versionId: number) {
 
 export function getRewriteVersionAnchors(versionId: number) {
   return request<RewriteSemanticSegment[]>(`/api/chapter-rewrite-versions/${versionId}/anchors`);
+}
+
+export function getRewriteVersionSkeleton(versionId: number) {
+  return request<RewriteVersionSkeleton>(`/api/chapter-rewrite-versions/${versionId}/skeleton`);
 }
 
 export function previewStoryAnchor(payload: {

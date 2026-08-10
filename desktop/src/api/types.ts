@@ -417,6 +417,15 @@ export type ChapterRewriteVersion = {
   is_current: boolean;
 };
 
+export type RewriteVersionSkeleton = {
+  rewrite_version_id: number;
+  skeleton_id: number;
+  skeleton_version_id: number;
+  structured: StructuredSkeleton;
+  source_kind: 'rewrite_version';
+  status: string;
+};
+
 export type PlotGenerationStartRequest = {
   project_id: number;
   generation_mode: 'bounded_insert' | 'open_continuation' | 'fork' | 'fork_and_rejoin';
@@ -506,6 +515,7 @@ export type ProseRewritePlanRequest = {
   project_id: number;
   chapter_id: number;
   source_skeleton: StructuredSkeleton;
+  source_skeleton_version_id: number;
   preservation_policy: WorkflowObject;
   style_profile_id?: number | null;
   user_direction?: string;
@@ -522,6 +532,7 @@ export type ProseRewriteRun = {
   chapter_id: number;
   status: 'planned' | 'generating' | 'blocked' | 'completed' | 'failed' | 'cancelled';
   source_skeleton: StructuredSkeleton;
+  source_skeleton_version_id: number | null;
   preservation_policy: WorkflowObject;
   target_skeleton: StructuredSkeleton;
   rewrite_plan: WorkflowObject;

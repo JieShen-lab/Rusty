@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import difflib
 import json
 import os
 from pathlib import Path
@@ -24,6 +25,22 @@ from rusty.services.chapter_version_service import ChapterVersionService
 def default_database_path() -> Path:
     base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
     return base / "Rusty" / "rusty.db"
+
+
+def _text_changes(source: str, target: str) -> list[dict[str, int]]:
+    """Return deterministic replacement ranges for semantic span transformation."""
+    changes: list[dict[str, int]] = []
+    for tag, source_start, source_end, target_start, target_end in difflib.SequenceMatcher(
+        None, source, target, autojunk=False
+    ).get_opcodes():
+        if tag == "equal":
+            continue
+        changes.append({
+            "start": source_start,
+            "end": source_end,
+            "replacement_length": target_end - target_start,
+        })
+    return changes
 
 
 class ProjectService:
@@ -451,12 +468,15 @@ class ProjectService:
                     expected_head_version_id=original.expected_head_version_id,
                     source_kind="manual",
                     prompt_snapshot={"source": "restore_original"},
+                    mapping_strategy="original_identity",
                 )
             else:
                 versions = ChapterVersionService(self.database_path)
                 source = versions.resolve_chapter_source(
                     chapter_id, {"kind": "current"}, connection=connection
                 )
+                exact_copy = text == source.text
+                changes = [] if exact_copy else _text_changes(source.text, text)
                 versions.append_chapter_rewrite_version(
                     connection,
                     chapter_id=chapter_id,
@@ -472,6 +492,15 @@ class ProjectService:
                     expected_head_version_id=source.expected_head_version_id,
                     source_kind="manual",
                     prompt_snapshot={"source": "manual_edit"},
+                    fact_chain_status=source.fact_chain_status if exact_copy else "needs_recompute",
+                    mapping_strategy=(
+                        "clone"
+                        if exact_copy and source.source_version_id is not None
+                        else "original_identity"
+                        if exact_copy and source.source_kind == "original"
+                        else "transformed"
+                    ),
+                    map_changes=changes,
                 )
         self.refresh_project_progress(chapter.project_id)
 

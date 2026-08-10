@@ -83,6 +83,7 @@ from .schemas import (
     CharacterSourceSummaryOut,
     ChapterDetailOut,
     ChapterRewriteVersionResponse,
+    RewriteVersionSkeletonResponse,
     ChapterErrorOut,
     ChapterOut,
     BranchCreateRequest,
@@ -1077,6 +1078,21 @@ def create_app(
     def list_rewrite_version_anchors(version_id: int) -> list[dict[str, Any]]:
         chapter_version_service.get_version(version_id)
         return rewrite_version_map_service.list_segments(version_id)
+
+    @app.get(
+        "/api/chapter-rewrite-versions/{version_id}/skeleton",
+        response_model=RewriteVersionSkeletonResponse,
+    )
+    def get_rewrite_version_skeleton(version_id: int) -> dict[str, Any]:
+        chapter_version_service.get_version(version_id)
+        try:
+            structure = rewrite_version_map_service.get_rewrite_structure(version_id)
+        except ValueError as exc:
+            raise _http_error(
+                404, "rewrite_structure_unavailable", str(exc)
+            ) from exc
+        assert structure is not None
+        return structure
 
     @app.post(
         "/api/chapter-rewrite-versions/{version_id}/restore",

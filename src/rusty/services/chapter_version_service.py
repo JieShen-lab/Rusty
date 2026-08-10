@@ -31,6 +31,7 @@ class ChapterSourceSnapshot:
     content_hash: str
     facts_before: dict[str, Any]
     facts_after: dict[str, Any]
+    fact_chain_status: str
     require_head_match: bool
     expected_head_version_id: int | None
 
@@ -98,6 +99,7 @@ class ChapterVersionService:
                 content_hash=str(selected["content_hash"]),
                 facts_before=_json_object(selected["facts_before_json"]),
                 facts_after=_json_object(selected["facts_after_json"]),
+                fact_chain_status=str(selected["fact_chain_status"] or "needs_recompute"),
                 require_head_match=require_head_match,
                 expected_head_version_id=current_head_id,
             )
@@ -112,6 +114,7 @@ class ChapterVersionService:
             content_hash=_hash(original),
             facts_before=facts_before,
             facts_after=facts_after,
+            fact_chain_status="consistent",
             require_head_match=require_head_match,
             expected_head_version_id=current_head_id,
         )
@@ -194,7 +197,9 @@ class ChapterVersionService:
             raise ValueError("Rewrite chapter source requires a version id.")
         if fact_chain_status not in {"consistent", "needs_recompute"}:
             raise ValueError("Unsupported rewrite fact chain status.")
-        if mapping_strategy not in {"structural", "transformed"}:
+        if mapping_strategy not in {
+            "structural", "transformed", "clone", "original_identity"
+        }:
             raise ValueError("Unsupported rewrite semantic mapping strategy.")
         chapter = connection.execute(
             "SELECT project_id, word_count FROM chapters WHERE id = ?",
@@ -266,7 +271,21 @@ class ChapterVersionService:
         from rusty.services.rewrite_version_map_service import RewriteVersionMapService
 
         maps = RewriteVersionMapService(self.database_path)
-        if mapping_strategy == "transformed":
+        if mapping_strategy == "clone":
+            if source_base_version_id is None:
+                raise ValueError("Semantic map cloning requires a rewrite source version.")
+            map_result = maps.clone_version_map(
+                connection,
+                source_version_id=source_base_version_id,
+                target_version_id=version_id,
+            )
+        elif mapping_strategy == "original_identity":
+            map_result = maps.create_original_identity_map(
+                connection,
+                target_rewrite_version_id=version_id,
+                chapter_id=chapter_id,
+            )
+        elif mapping_strategy == "transformed":
             map_result = maps.create_transformed_map(
                 connection,
                 rewrite_version_id=version_id,
@@ -287,6 +306,7 @@ class ChapterVersionService:
                 source_skeleton=source_skeleton,
                 observed_skeleton=observed_skeleton,
             )
+        integrity = maps.validate_rewrite_version_snapshot(connection, version_id)
         word_count = count_text_units(text)
         ratio = word_count / int(chapter["word_count"]) if chapter["word_count"] else None
         connection.execute(
@@ -333,8 +353,8 @@ class ChapterVersionService:
             (text, chapter_id),
         )
         result = self.get_version(version_id, connection=connection)
-        result["semantic_map_hash"] = map_result["map_hash"]
-        result["skeleton_version_id"] = map_result.get("skeleton_version_id")
+        result["semantic_map_hash"] = integrity["semantic_map_hash"]
+        result["skeleton_version_id"] = integrity.get("skeleton_version_id")
         return result
 
     def list_versions(self, chapter_id: int) -> list[dict[str, Any]]:
@@ -389,6 +409,7 @@ class ChapterVersionService:
                 require_head_match=True,
                 expected_head_version_id=expected_head,
                 source_kind="manual",
+                mapping_strategy="clone",
             )
 
     @staticmethod

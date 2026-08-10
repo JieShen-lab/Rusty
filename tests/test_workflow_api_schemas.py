@@ -50,6 +50,20 @@ class WorkflowAPISchemaTests(unittest.TestCase):
         )
         self.assert_validation_error(response)
 
+    def test_prose_source_requires_explicit_skeleton_version(self) -> None:
+        response = self.client.post(
+            "/api/prose-rewrite/runs",
+            headers=self.headers,
+            json={
+                "project_id": 1,
+                "chapter_id": 1,
+                "source_skeleton": {},
+                "preservation_policy": {},
+                "source": {"kind": "current"},
+            },
+        )
+        self.assert_validation_error(response)
+
     def test_invalid_generation_mode_is_rejected(self) -> None:
         payload = self.plot_payload("parallel_universe")
         response = self.client.post(
@@ -164,12 +178,8 @@ class WorkflowAPISchemaTests(unittest.TestCase):
                 },
             },
         )
-        self.assertEqual(200, response.status_code, response.text)
-        preview = response.json()
-        self.assertEqual(version_id, preview["resolved_version_id"])
-        self.assertIn("李四", preview["text_excerpt"])
-        self.assertGreater(preview["resolved_end"], preview["resolved_start"])
-        self.assertIn(preview["mapping_method"], {"structural", "semantic"})
+        self.assertEqual(400, response.status_code, response.text)
+        self.assertIn("anchor_unmapped", response.json()["message"])
 
     def test_anchor_preview_rejects_unknown_nested_fields(self) -> None:
         response = self.client.post(

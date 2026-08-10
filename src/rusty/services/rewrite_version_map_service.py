@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import re
@@ -78,9 +79,12 @@ class RewriteVersionMapService:
         source_skeleton_version_id = self._find_source_skeleton_version(
             connection, chapter_id=chapter_id, skeleton=source_skeleton
         )
+        normalized_observed = self.normalize_observed_skeleton_ids(
+            source_skeleton or {}, observed_skeleton or {}, rewrite_version_id
+        ) if observed_skeleton is not None else None
         observed_nodes = {
             str(node.get("id")): node
-            for node in (observed_skeleton or {}).get("event_nodes", [])
+            for node in (normalized_observed or {}).get("event_nodes", [])
             if isinstance(node, dict)
         }
         source_nodes = [
@@ -157,12 +161,12 @@ class RewriteVersionMapService:
                 }
             )
         observed_version_id = None
-        if observed_skeleton is not None:
+        if normalized_observed is not None:
             observed_version_id = self._persist_rewrite_skeleton(
                 connection,
                 rewrite_version_id=rewrite_version_id,
                 chapter_id=chapter_id,
-                skeleton=observed_skeleton,
+                skeleton=normalized_observed,
             )
             for index, row in enumerate(list(event_rows), start=len(event_rows)):
                 event_rows.append(
@@ -177,6 +181,104 @@ class RewriteVersionMapService:
             "map_hash": self.map_hash(rewrite_version_id, connection=connection),
             "skeleton_version_id": observed_version_id,
             "segments": self.list_segments(rewrite_version_id, connection=connection),
+        }
+
+    def clone_version_map(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        source_version_id: int,
+        target_version_id: int,
+    ) -> dict[str, Any]:
+        source = connection.execute(
+            "SELECT chapter_id, rewritten_text FROM chapter_rewrite_versions WHERE id = ?",
+            (source_version_id,),
+        ).fetchone()
+        target = connection.execute(
+            "SELECT chapter_id, rewritten_text FROM chapter_rewrite_versions WHERE id = ?",
+            (target_version_id,),
+        ).fetchone()
+        if source is None or target is None:
+            raise FileNotFoundError("Rewrite version not found for semantic map clone.")
+        if int(source["chapter_id"]) != int(target["chapter_id"]):
+            raise ValueError("A semantic map can only be cloned within the same chapter.")
+        if str(source["rewritten_text"]) != str(target["rewritten_text"]):
+            raise ValueError("Semantic map cloning requires byte-identical rewrite text.")
+        source_structure = self.get_rewrite_structure(
+            source_version_id, connection=connection, required=False
+        )
+        target_skeleton_version_id = None
+        if source_structure is not None:
+            target_skeleton_version_id = self._persist_rewrite_skeleton(
+                connection,
+                rewrite_version_id=target_version_id,
+                chapter_id=int(target["chapter_id"]),
+                skeleton=copy.deepcopy(source_structure["structured"]),
+            )
+        rows = self.list_segments(source_version_id, connection=connection)
+        cloned: list[dict[str, Any]] = []
+        target_node_ids = {
+            str(node.get("id"))
+            for node in (source_structure or {}).get("structured", {}).get("event_nodes", [])
+            if isinstance(node, dict)
+        }
+        for row in rows:
+            item = dict(row)
+            if item.get("segment_kind") == "event_node":
+                if target_skeleton_version_id is not None and str(item.get("node_id")) in target_node_ids:
+                    item["skeleton_version_id"] = target_skeleton_version_id
+                else:
+                    item["skeleton_version_id"] = None
+                    item["needs_remap"] = True
+            cloned.append(item)
+        self._insert_segments(connection, target_version_id, cloned)
+        return {
+            "map_hash": self.map_hash(target_version_id, connection=connection),
+            "skeleton_version_id": target_skeleton_version_id,
+            "segments": self.list_segments(target_version_id, connection=connection),
+        }
+
+    def create_original_identity_map(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        target_rewrite_version_id: int,
+        chapter_id: int,
+    ) -> dict[str, Any]:
+        version = connection.execute(
+            "SELECT rewritten_text FROM chapter_rewrite_versions WHERE id = ? AND chapter_id = ?",
+            (target_rewrite_version_id, chapter_id),
+        ).fetchone()
+        chapter = connection.execute(
+            "SELECT original_text FROM chapters WHERE id = ?", (chapter_id,)
+        ).fetchone()
+        if version is None or chapter is None:
+            raise FileNotFoundError("Chapter rewrite version not found for identity mapping.")
+        if str(version["rewritten_text"]) != str(chapter["original_text"]):
+            raise ValueError("Original identity mapping requires original chapter text.")
+        rows = self._original_segments(connection, chapter_id)
+        original_structure = self._preferred_original_structure(connection, chapter_id)
+        skeleton_version_id = None
+        if original_structure is not None:
+            skeleton_version_id = self._persist_rewrite_skeleton(
+                connection,
+                rewrite_version_id=target_rewrite_version_id,
+                chapter_id=chapter_id,
+                skeleton=copy.deepcopy(original_structure["structured"]),
+            )
+            valid_ids = {
+                str(node.get("id"))
+                for node in original_structure["structured"].get("event_nodes", [])
+                if isinstance(node, dict)
+            }
+            for row in rows:
+                if row["segment_kind"] == "event_node" and str(row.get("node_id")) in valid_ids:
+                    row["skeleton_version_id"] = skeleton_version_id
+        self._insert_segments(connection, target_rewrite_version_id, rows)
+        return {
+            "map_hash": self.map_hash(target_rewrite_version_id, connection=connection),
+            "skeleton_version_id": skeleton_version_id,
+            "segments": self.list_segments(target_rewrite_version_id, connection=connection),
         }
 
     def create_transformed_map(
@@ -255,15 +357,37 @@ class RewriteVersionMapService:
                     "facts_after": dict(generated_segment.get("state_after") or {}),
                 }
             )
-        self._insert_segments(connection, rewrite_version_id, rows)
+        structure = source_skeleton
+        if structure is None and source_base_version_id is not None:
+            record = self.get_rewrite_structure(
+                source_base_version_id, connection=connection, required=False
+            )
+            structure = record["structured"] if record is not None else None
+        if structure is None:
+            record = self._preferred_original_structure(connection, chapter_id)
+            structure = record["structured"] if record is not None else None
         skeleton_version_id = None
-        if source_skeleton is not None:
+        if structure is not None:
             skeleton_version_id = self._persist_rewrite_skeleton(
                 connection,
                 rewrite_version_id=rewrite_version_id,
                 chapter_id=chapter_id,
-                skeleton=source_skeleton,
+                skeleton=copy.deepcopy(structure),
             )
+            valid_ids = {
+                str(node.get("id")) for node in structure.get("event_nodes", [])
+                if isinstance(node, dict)
+            }
+            for row in rows:
+                if row.get("segment_kind") == "event_node":
+                    if str(row.get("node_id")) in valid_ids:
+                        row["skeleton_version_id"] = skeleton_version_id
+                    else:
+                        row["skeleton_version_id"] = None
+                        row["needs_remap"] = True
+                        row["mapping_method"] = "semantic"
+                        row["confidence"] = min(float(row.get("confidence", 1.0)), 0.5)
+        self._insert_segments(connection, rewrite_version_id, rows)
         return {
             "map_hash": self.map_hash(rewrite_version_id, connection=connection),
             "skeleton_version_id": skeleton_version_id,
@@ -291,6 +415,20 @@ class RewriteVersionMapService:
         self, rewrite_version_id: int, skeleton_version_id: int, node_id: str
     ) -> VersionSpan:
         with session(self.database_path) as connection:
+            owner = connection.execute(
+                """
+                SELECT s.chapter_id, s.source_kind, s.source_rewrite_version_id
+                FROM story_skeleton_versions v
+                JOIN story_skeletons s ON s.id = v.skeleton_id
+                WHERE v.id = ?
+                """,
+                (skeleton_version_id,),
+            ).fetchone()
+            if owner is None or (
+                owner["source_kind"] == "rewrite_version"
+                and int(owner["source_rewrite_version_id"] or 0) != rewrite_version_id
+            ):
+                raise AnchorUnmapped("anchor_unmapped: skeleton does not belong to rewrite version")
             row = connection.execute(
                 """
                 SELECT * FROM chapter_rewrite_version_segments
@@ -300,6 +438,16 @@ class RewriteVersionMapService:
                 """,
                 (rewrite_version_id, skeleton_version_id, node_id),
             ).fetchone()
+            if row is None and owner["source_kind"] == "rewrite_version":
+                row = connection.execute(
+                    """
+                    SELECT * FROM chapter_rewrite_version_segments
+                    WHERE rewrite_version_id = ? AND segment_kind = 'event_node'
+                      AND node_id = ? AND needs_remap = 0
+                    ORDER BY confidence DESC, id DESC LIMIT 1
+                    """,
+                    (rewrite_version_id, node_id),
+                ).fetchone()
         if row is None:
             raise AnchorUnmapped("anchor_unmapped: event node has no mapping in this rewrite version")
         return _span(row)
@@ -421,6 +569,182 @@ class RewriteVersionMapService:
         value = _json_object(row["skeleton_json"]) if row is not None else {}
         return value or None
 
+    def get_rewrite_structure(
+        self,
+        rewrite_version_id: int,
+        *,
+        connection: sqlite3.Connection | None = None,
+        required: bool = True,
+    ) -> dict[str, Any] | None:
+        if connection is None:
+            with session(self.database_path) as owned:
+                return self.get_rewrite_structure(
+                    rewrite_version_id, connection=owned, required=required
+                )
+        row = connection.execute(
+            """
+            SELECT s.source_rewrite_version_id AS rewrite_version_id, s.id AS skeleton_id,
+                   v.id AS skeleton_version_id, v.skeleton_json,
+                   s.source_kind, s.status
+            FROM story_skeletons s
+            JOIN story_skeleton_versions v
+              ON v.skeleton_id = s.id AND v.version = s.current_version
+            WHERE s.source_kind = 'rewrite_version'
+              AND s.source_rewrite_version_id = ?
+            ORDER BY v.id DESC LIMIT 1
+            """,
+            (rewrite_version_id,),
+        ).fetchone()
+        if row is None:
+            if required:
+                raise AnchorUnmapped(
+                    "rewrite_structure_unavailable: rewrite version has no structure"
+                )
+            return None
+        return {
+            "rewrite_version_id": int(row["rewrite_version_id"]),
+            "skeleton_id": int(row["skeleton_id"]),
+            "skeleton_version_id": int(row["skeleton_version_id"]),
+            "structured": _json_object(row["skeleton_json"]),
+            "source_kind": str(row["source_kind"]),
+            "status": str(row["status"]),
+        }
+
+    def get_original_structure(
+        self,
+        chapter_id: int,
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> dict[str, Any] | None:
+        if connection is None:
+            with session(self.database_path) as owned:
+                return self.get_original_structure(chapter_id, connection=owned)
+        record = self._preferred_original_structure(connection, chapter_id)
+        if record is None:
+            return None
+        return {
+            **record,
+            "source_kind": "original",
+            "chapter_id": chapter_id,
+        }
+
+    def validate_rewrite_version_snapshot(
+        self, connection: sqlite3.Connection, rewrite_version_id: int
+    ) -> dict[str, Any]:
+        version = connection.execute(
+            "SELECT chapter_id, rewritten_text, content_hash, fact_chain_status FROM chapter_rewrite_versions WHERE id = ?",
+            (rewrite_version_id,),
+        ).fetchone()
+        if version is None:
+            raise FileNotFoundError(f"Rewrite version not found: {rewrite_version_id}")
+        text = str(version["rewritten_text"])
+        if hashlib.sha256(text.encode("utf-8")).hexdigest() != str(version["content_hash"]):
+            raise ValueError("Rewrite version content hash is invalid.")
+        if str(version["fact_chain_status"]) not in {"consistent", "needs_recompute"}:
+            raise ValueError("Rewrite version fact chain status is invalid.")
+        segments = connection.execute(
+            "SELECT * FROM chapter_rewrite_version_segments WHERE rewrite_version_id = ?",
+            (rewrite_version_id,),
+        ).fetchall()
+        for segment in segments:
+            if not 0 <= int(segment["start_offset"]) <= int(segment["end_offset"]) <= len(text):
+                raise ValueError("Rewrite semantic segment is outside version text.")
+            if segment["source_scene_id"] is not None:
+                owner = connection.execute(
+                    "SELECT 1 FROM scenes WHERE id = ? AND chapter_id = ?",
+                    (segment["source_scene_id"], version["chapter_id"]),
+                ).fetchone()
+                if owner is None:
+                    raise ValueError("Rewrite semantic scene does not belong to the chapter.")
+            if segment["segment_kind"] == "event_node" and segment["skeleton_version_id"] is not None:
+                skeleton = connection.execute(
+                    """
+                    SELECT v.skeleton_json, s.chapter_id, s.source_kind,
+                           s.source_rewrite_version_id
+                    FROM story_skeleton_versions v
+                    JOIN story_skeletons s ON s.id = v.skeleton_id
+                    WHERE v.id = ?
+                    """,
+                    (segment["skeleton_version_id"],),
+                ).fetchone()
+                if skeleton is None or int(skeleton["chapter_id"]) != int(version["chapter_id"]):
+                    raise ValueError("Rewrite semantic skeleton does not belong to the chapter.")
+                if (
+                    skeleton["source_kind"] == "rewrite_version"
+                    and int(skeleton["source_rewrite_version_id"] or 0) != rewrite_version_id
+                ):
+                    raise ValueError("Rewrite semantic skeleton belongs to another rewrite version.")
+                node_ids = {
+                    str(node.get("id"))
+                    for node in _json_object(skeleton["skeleton_json"]).get("event_nodes", [])
+                    if isinstance(node, dict)
+                }
+                if str(segment["node_id"]) not in node_ids:
+                    raise ValueError("Rewrite semantic segment node is absent from its skeleton.")
+        structure = self.get_rewrite_structure(
+            rewrite_version_id, connection=connection, required=False
+        )
+        return {
+            "rewrite_version_id": rewrite_version_id,
+            "semantic_map_hash": self.map_hash(rewrite_version_id, connection=connection),
+            "skeleton_version_id": (
+                structure["skeleton_version_id"] if structure is not None else None
+            ),
+        }
+
+    @staticmethod
+    def normalize_observed_skeleton_ids(
+        source_skeleton: dict[str, Any],
+        observed_skeleton: dict[str, Any],
+        rewrite_version_id: int,
+    ) -> dict[str, Any]:
+        normalized = copy.deepcopy(observed_skeleton)
+        source_nodes = [
+            node for node in source_skeleton.get("event_nodes", []) if isinstance(node, dict)
+        ]
+        observed_nodes = [
+            node for node in normalized.get("event_nodes", []) if isinstance(node, dict)
+        ]
+        source_ids = {str(node.get("id")) for node in source_nodes}
+        used: set[str] = set()
+        id_mapping: dict[str, str] = {}
+        for index, node in enumerate(observed_nodes):
+            observed_id = str(node.get("id"))
+            if observed_id in source_ids and observed_id not in used:
+                used.add(observed_id)
+                id_mapping[observed_id] = observed_id
+                continue
+            candidates = [item for item in source_nodes if str(item.get("id")) not in used]
+            match = next(
+                (
+                    item for item in candidates
+                    if item.get("summary") == node.get("summary")
+                    and item.get("participants", []) == node.get("participants", [])
+                ),
+                None,
+            )
+            if match is None and index < len(source_nodes):
+                ordered = source_nodes[index]
+                if str(ordered.get("id")) not in used:
+                    match = ordered
+            if match is not None:
+                normalized_id = str(match.get("id"))
+                node["id"] = normalized_id
+                used.add(normalized_id)
+            else:
+                normalized_id = f"rwv-{rewrite_version_id}-event-{index + 1}"
+                node["id"] = normalized_id
+            id_mapping[observed_id] = normalized_id
+        for node in observed_nodes:
+            node["causes"] = [id_mapping.get(str(item), str(item)) for item in node.get("causes", [])]
+            node["effects"] = [id_mapping.get(str(item), str(item)) for item in node.get("effects", [])]
+        for link in normalized.get("causal_links", []):
+            if isinstance(link, dict):
+                link["source_id"] = id_mapping.get(str(link.get("source_id")), link.get("source_id"))
+                link["target_id"] = id_mapping.get(str(link.get("target_id")), link.get("target_id"))
+        normalized["event_nodes"] = observed_nodes
+        return normalized
+
     def _base_segments(
         self,
         connection: sqlite3.Connection,
@@ -430,6 +754,32 @@ class RewriteVersionMapService:
         if source_base_version_id is not None:
             return self.list_segments(source_base_version_id, connection=connection)
         return self._original_segments(connection, chapter_id)
+
+    @staticmethod
+    def _preferred_original_structure(
+        connection: sqlite3.Connection, chapter_id: int
+    ) -> dict[str, Any] | None:
+        row = connection.execute(
+            """
+            SELECT s.id AS skeleton_id, v.id AS skeleton_version_id,
+                   v.skeleton_json, s.status
+            FROM story_skeletons s
+            JOIN story_skeleton_versions v
+              ON v.skeleton_id = s.id AND v.version = s.current_version
+            WHERE s.chapter_id = ? AND s.source_kind <> 'rewrite_version'
+            ORDER BY CASE WHEN s.status = 'confirmed' THEN 0 ELSE 1 END, s.id DESC
+            LIMIT 1
+            """,
+            (chapter_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "skeleton_id": int(row["skeleton_id"]),
+            "skeleton_version_id": int(row["skeleton_version_id"]),
+            "structured": _json_object(row["skeleton_json"]),
+            "status": str(row["status"]),
+        }
 
     def _base_scene_segments(
         self,
@@ -487,6 +837,33 @@ class RewriteVersionMapService:
                 }
             )
             previous = facts
+        structure = self._preferred_original_structure(connection, chapter_id)
+        if structure is not None:
+            for index, node in enumerate(structure["structured"].get("event_nodes", [])):
+                if not isinstance(node, dict):
+                    continue
+                span = _valid_span(node.get("source_span"), 2**31 - 1)
+                if span is None:
+                    continue
+                scene_id = self._scene_for_original_node(result, node)
+                before, after = self._states_for_scene(result, scene_id)
+                result.append({
+                    "segment_kind": "event_node",
+                    "source_scene_id": scene_id,
+                    "skeleton_version_id": structure["skeleton_version_id"],
+                    "node_id": str(node.get("id")),
+                    "segment_index": index,
+                    "start_offset": span[0],
+                    "end_offset": span[1],
+                    "mapping_method": "identity",
+                    "confidence": 1.0,
+                    "needs_remap": False,
+                    "state_method": "scene_ledger",
+                    "state_before": before,
+                    "state_after": after,
+                    "facts_before": before,
+                    "facts_after": after,
+                })
         return result
 
     @staticmethod

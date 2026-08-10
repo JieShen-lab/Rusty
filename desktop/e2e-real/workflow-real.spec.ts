@@ -136,6 +136,34 @@ test('2. 根据细纲重写正文并自动结构检查', async ({ page, request 
   expect(finalVersions).toHaveLength(4);
   expect(finalVersions.map((version: { source_operation: string }) => version.source_operation))
     .toEqual(['canon_change', 'plot_generation', 'prose_rewrite', 'plot_generation']);
+
+  const restoreResponse = await request.post(
+    `${backend}/api/chapter-rewrite-versions/${proseVersion.id}/restore`,
+    { headers: { 'X-Rusty-Token': 'real-e2e-token' } },
+  );
+  expect(restoreResponse.ok()).toBe(true);
+  const restored = await restoreResponse.json();
+  expect(restored.rewritten_text).toBe(proseVersion.rewritten_text);
+  const restoredStructure = await request.get(
+    `${backend}/api/chapter-rewrite-versions/${restored.id}/skeleton`,
+  );
+  expect(restoredStructure.ok()).toBe(true);
+  expect((await restoredStructure.json()).rewrite_version_id).toBe(restored.id);
+
+  await openProject(page, 2);
+  await page.getByLabel('插入点节点类型').selectOption('scene_end');
+  await page.getByLabel('插入点场景').selectOption(String(scenes[0].id));
+  await page.getByRole('button', { name: '预览锚点' }).first().click();
+  await expect(page.getByLabel('插入点锚点预览')).toBeVisible();
+  await page.getByLabel('新增剧情目标').fill('恢复版本后的语义锚点事件');
+  const [restoredStartResponse] = await Promise.all([
+    page.waitForResponse((response) => response.url().endsWith('/api/plot-generation/runs') && response.request().method() === 'POST'),
+    page.getByRole('button', { name: '启动分析' }).click(),
+  ]);
+  expect((await restoredStartResponse.json()).source_base_version_id).toBe(restored.id);
+  await finishPlot(page);
+  const afterRestoreVersions = await (await request.get(`${backend}/api/chapters/2/rewrite-versions`)).json();
+  expect(afterRestoreVersions).toHaveLength(6);
 });
 
 test('3. 修改设定、审查补丁并原子应用', async ({ page, request }) => {

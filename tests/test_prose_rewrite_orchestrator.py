@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from rusty.services.project_service import ProjectService
 from rusty.services.prose_rewrite_orchestrator import ProseRewriteOrchestrator
 from rusty.services.chapter_version_service import ChapterVersionService
+from rusty.services.rewrite_version_map_service import RewriteVersionMapService
 
 
 def skeleton() -> dict:
@@ -99,6 +100,21 @@ class FakeProseLLM:
         if stage == "extract_observed_skeleton":
             observed = copy.deepcopy(skeleton())
             text = payload["text"]
+            if self.mode == "random_ids":
+                replacements = {
+                    node["id"]: f"random-{index * 777}"
+                    for index, node in enumerate(observed["event_nodes"], 1)
+                }
+                for node in observed["event_nodes"]:
+                    node["id"] = replacements[node["id"]]
+                    node["causes"] = [replacements.get(item, item) for item in node["causes"]]
+                    node["effects"] = [replacements.get(item, item) for item in node["effects"]]
+                observed["event_nodes"][0]["source_span"] = {"start": 0, "end": 10}
+                observed["event_nodes"][1]["source_span"] = {"start": 10, "end": 20}
+                for link in observed["causal_links"]:
+                    link["source_id"] = replacements.get(link["source_id"], link["source_id"])
+                    link["target_id"] = replacements.get(link["target_id"], link["target_id"])
+                return observed
             if text.startswith("REPAIRED") or self.mode == "valid":
                 return observed
             if self.mode == "missing":
@@ -156,6 +172,24 @@ class ProseRewriteOrchestratorTests(unittest.TestCase):
         self.assertEqual([], completed["issues"])
         self.assertIn("Rain", chapter.rewritten_text)
         self.assertEqual("Original baseline.", chapter.original_text)
+
+    def test_observed_node_ids_are_normalized_before_snapshot_persistence(self) -> None:
+        self.llm.mode = "random_ids"
+        completed = self.service.execute(self.plan()["id"])
+        self.assertEqual("completed", completed["status"])
+        maps = RewriteVersionMapService(self.database)
+        structure = maps.get_rewrite_structure(completed["result_version_id"])
+        persisted_ids = {
+            node["id"] for node in structure["structured"]["event_nodes"]
+        }
+        segment_ids = {
+            item["node_id"]
+            for item in maps.list_segments(completed["result_version_id"])
+            if item["segment_kind"] == "event_node"
+            and item["skeleton_version_id"] == structure["skeleton_version_id"]
+        }
+        self.assertEqual({"discover", "leave"}, persisted_ids)
+        self.assertEqual(persisted_ids, segment_ids)
 
     def test_detects_missing_added_and_reordered_events(self) -> None:
         expectations = {

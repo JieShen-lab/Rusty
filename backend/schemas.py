@@ -687,6 +687,7 @@ class ProseRewritePlanRequest(StrictWorkflowModel):
     project_id: int = Field(ge=1)
     chapter_id: int = Field(ge=1)
     source_skeleton: dict[str, Any]
+    source_skeleton_version_id: int = Field(ge=1)
     preservation_policy: dict[str, Any]
     style_profile_id: int | None = Field(default=None, ge=1)
     user_direction: str = ""
@@ -703,6 +704,7 @@ class ProseRewriteRunResponse(BaseModel):
     chapter_id: int
     status: Literal["planned", "generating", "blocked", "completed", "failed", "cancelled"]
     source_skeleton: dict[str, Any]
+    source_skeleton_version_id: int | None = None
     preservation_policy: dict[str, Any]
     target_skeleton: dict[str, Any]
     rewrite_plan: dict[str, Any]
@@ -801,6 +803,15 @@ class ChapterRewriteVersionResponse(BaseModel):
     fact_chain_status: Literal["consistent", "needs_recompute"] = "needs_recompute"
     is_current: bool
     created_at: str
+
+
+class RewriteVersionSkeletonResponse(BaseModel):
+    rewrite_version_id: int
+    skeleton_id: int
+    skeleton_version_id: int
+    structured: dict[str, Any]
+    source_kind: Literal["rewrite_version"]
+    status: str
 
 
 class ExportResponse(BaseModel):

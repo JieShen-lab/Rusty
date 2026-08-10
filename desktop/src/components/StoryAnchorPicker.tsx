@@ -4,6 +4,7 @@ import {
   getChapterScenes,
   getChapterStorySkeleton,
   getRewriteVersionAnchors,
+  getRewriteVersionSkeleton,
   previewStoryAnchor,
 } from '../api/client';
 import type {
@@ -79,7 +80,15 @@ export function StoryAnchorPicker({
     let active = true;
     Promise.all([
       getChapterScenes(chapterId),
-      getChapterStorySkeleton(chapterId).catch(() => null),
+      (sourceVersionId
+        ? getRewriteVersionSkeleton(sourceVersionId).then((item): PreferredStorySkeleton => ({
+            format: 'structured',
+            skeleton_id: item.skeleton_id,
+            version_id: item.skeleton_version_id,
+            status: item.status === 'confirmed' ? 'confirmed' : 'draft',
+            structured: item.structured,
+          }))
+        : getChapterStorySkeleton(chapterId)).catch(() => null),
       sourceVersionId ? getRewriteVersionAnchors(sourceVersionId) : Promise.resolve([]),
     ]).then(([loadedScenes, loadedSkeleton, loadedSegments]) => {
       if (!active) return;
@@ -97,7 +106,6 @@ export function StoryAnchorPicker({
         : availableScenes[0]?.id ?? null);
       const mappedNodes = new Set(loadedSegments
         .filter((item) => item.segment_kind === 'event_node'
-          && item.skeleton_version_id === loadedSkeleton?.version_id
           && !item.needs_remap)
         .map((item) => item.node_id));
       const firstNode = loadedSkeleton?.structured?.event_nodes
@@ -181,7 +189,6 @@ export function StoryAnchorPicker({
     if (!sourceVersionId) return nodes;
     const ids = new Set(segments
       .filter((item) => item.segment_kind === 'event_node'
-        && item.skeleton_version_id === skeleton?.version_id
         && !item.needs_remap)
       .map((item) => item.node_id));
     return nodes.filter((node) => ids.has(node.id));

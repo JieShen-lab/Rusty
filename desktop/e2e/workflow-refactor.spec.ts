@@ -61,6 +61,15 @@ async function mockWorkspace(page: Page, projectKind: 'rewrite' | 'branch' | 'le
         state_after: { location: '院子' }, facts_before: { location: '院门' },
         facts_after: { location: '院子' },
       }];
+    } else if (path === '/api/chapter-rewrite-versions/1001/skeleton') {
+      body = {
+        rewrite_version_id: 1001,
+        skeleton_id: 701,
+        skeleton_version_id: 701 + skeletonVersion,
+        structured: storedSkeleton,
+        source_kind: 'rewrite_version',
+        status: skeletonStatus,
+      };
     } else if (path === '/api/story-anchors/preview' && route.request().method() === 'POST') {
       body = {
         resolved_version_id: 1001, resolved_start: 0, resolved_end: 16,

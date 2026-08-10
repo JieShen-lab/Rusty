@@ -109,6 +109,13 @@ test('Electron 从当前 Prose 版本预览语义场景锚点并继续 Plot', as
   await expect(result).toContainText('警觉地观察');
   await expect(result).toContainText('Electron 语义锚点事件');
   await expect(page.getByLabel('rewrite versions').locator('li')).toHaveCount(2);
+  const historicalVersion = page.getByLabel('rewrite versions').locator('li').nth(1);
+  await historicalVersion.getByRole('button', { name: '基于此版本创建新操作' }).click();
+  await expect(page.getByText('本次来源：历史版本 v1')).toBeVisible();
+  await page.getByLabel('插入点节点类型').selectOption('scene_end');
+  await expect(page.getByLabel('插入点场景')).not.toHaveValue('');
+  await page.getByRole('button', { name: '预览锚点' }).first().click();
+  await expect(page.getByLabel('插入点锚点预览')).toContainText('人物');
 });
 
 test('Electron 扩写工作流生成分支章节和场景', async () => {

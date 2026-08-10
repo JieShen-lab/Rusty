@@ -52,6 +52,7 @@ class ProseRewriteOrchestrator:
         project_id: int,
         chapter_id: int,
         source_skeleton: dict[str, Any],
+        source_skeleton_version_id: int | None = None,
         preservation_policy: dict[str, Any],
         style_profile_id: int | None = None,
         user_direction: str = "",
@@ -67,6 +68,22 @@ class ProseRewriteOrchestrator:
         chapter_source = self.chapter_versions.resolve_chapter_source(
             chapter_id, source_selection
         )
+        resolved_skeleton_version_id = source_skeleton_version_id
+        if source_skeleton_version_id is not None:
+            if chapter_source.source_version_id is not None:
+                structure = self.rewrite_maps.get_rewrite_structure(
+                    chapter_source.source_version_id
+                )
+            else:
+                structure = self.rewrite_maps.get_original_structure(chapter_id)
+            if structure is None:
+                raise ValueError(
+                    "Selected chapter source has no reliable structured skeleton."
+                )
+            if source_skeleton_version_id != int(structure["skeleton_version_id"]):
+                raise ValueError("Source skeleton does not belong to the selected chapter version.")
+            if structure["structured"] != source:
+                raise ValueError("Source text and source skeleton are not the same version snapshot.")
         source_map_hash = (
             self.rewrite_maps.map_hash(chapter_source.source_version_id)
             if chapter_source.source_version_id is not None
@@ -118,6 +135,7 @@ class ProseRewriteOrchestrator:
                             **rewrite_plan,
                             "style_profile_id": style_profile_id,
                             "user_direction": user_direction,
+                            "source_skeleton_version_id": resolved_skeleton_version_id,
                         },
                         ensure_ascii=False,
                     ),
@@ -173,6 +191,9 @@ class ProseRewriteOrchestrator:
                 workflow_ai=self.ai,
                 expected_skeleton=run["target_skeleton"],
             )
+            observed = self.rewrite_maps.normalize_observed_skeleton_ids(
+                run["target_skeleton"], observed, 0
+            )
         except Exception as exc:
             self._mark_failed(run_id, exc)
             raise
@@ -199,6 +220,9 @@ class ProseRewriteOrchestrator:
                         text=rewritten_text,
                         workflow_ai=self.ai,
                         expected_skeleton=run["target_skeleton"],
+                    )
+                    observed = self.rewrite_maps.normalize_observed_skeleton_ids(
+                        run["target_skeleton"], observed, 0
                     )
                     issues = compare_skeletons(
                         run["target_skeleton"], observed, run["preservation_policy"]
@@ -348,6 +372,9 @@ class ProseRewriteOrchestrator:
             "issues",
         ):
             result[key] = json.loads(row[f"{key}_json"])
+        result["source_skeleton_version_id"] = result["rewrite_plan"].get(
+            "source_skeleton_version_id"
+        )
         return result
 
     def list_runs(self, project_id: int) -> list[dict[str, Any]]:
