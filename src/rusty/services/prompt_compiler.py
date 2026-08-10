@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from typing import Any, Iterable
 
 
@@ -56,6 +57,34 @@ class CompiledRequest:
 
 class PromptCompiler:
     """Compile Rusty-native rules and user-owned assets without hiding either."""
+
+    def compile_workflow_json(
+        self,
+        *,
+        stage: str,
+        payload: dict[str, Any],
+        output_contract: str,
+    ) -> CompiledRequest:
+        system = (
+            "You are Rusty's structured novel-workflow component. Use only the supplied "
+            "story state and user direction. Return valid JSON only. Scene and style "
+            "references guide expression and must not introduce unconfirmed key facts."
+        )
+        user = (
+            f"WORKFLOW STAGE: {stage}\n\n"
+            f"INPUT:\n{json.dumps(payload, ensure_ascii=False, indent=2)}\n\n"
+            f"OUTPUT CONTRACT:\n{output_contract}"
+        )
+        return CompiledRequest(
+            stage=stage,
+            messages=(
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ),
+            expected_output=output_contract,
+            provenance={"workflow_stage": stage},
+            ruleset_id="rusty.native.workflow.v1",
+        )
 
     def compile_summary(self, chapter, template) -> CompiledRequest:
         system = _system_message(

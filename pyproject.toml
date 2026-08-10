@@ -24,6 +24,7 @@ ai = [
 ]
 dev = [
     "pytest>=8.0",
+    "keyrings.alt>=5.0",
 ]
 ui-r2 = [
     "fastapi>=0.115",

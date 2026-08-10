@@ -1,6 +1,7 @@
 export type Project = {
   id: number;
   name: string;
+  project_kind: 'rewrite' | 'branch' | 'legacy_extract';
   status: string;
   current_stage: string;
   source_format: string | null;
@@ -251,7 +252,371 @@ export type ProjectDetail = {
   exports: Array<Record<string, unknown>>;
 };
 
-export type ProjectPurpose = 'rewrite' | 'extract';
+export type ProjectKind = 'rewrite' | 'branch';
+
+export type StoryBranch = {
+  id: number;
+  project_id: number;
+  parent_branch_id: number | null;
+  base_source_kind: 'original' | 'branch';
+  base_source_version_id: number | null;
+  name: string;
+  branch_mode: 'open_continuation' | 'fork' | 'fork_and_rejoin';
+  downstream_strategy: 'replace' | 'reference' | 'rejoin';
+  status: string;
+  start_anchor?: StoryAnchor | null;
+  return_anchor?: StoryAnchor | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type WorkflowObject = { [key: string]: unknown };
+
+export type SourceRange = {
+  start: number;
+  end: number;
+};
+
+export type StoryAnchor = {
+  anchor_type:
+    | 'document_end'
+    | 'chapter_start'
+    | 'chapter_end'
+    | 'scene_start'
+    | 'scene_end'
+    | 'skeleton_node'
+    | 'text_offset'
+    | 'branch_chapter'
+    | 'branch_scene';
+  chapter_id?: number | null;
+  scene_id?: number | null;
+  skeleton_version_id?: number | null;
+  node_id?: string | null;
+  branch_chapter_id?: number | null;
+  branch_scene_id?: number | null;
+  text_offset?: number | null;
+  side?: 'before' | 'after' | 'at' | null;
+  source_version_id?: number | null;
+  source_hash?: string | null;
+};
+
+export type RewriteSemanticSegment = {
+  id: number;
+  rewrite_version_id: number;
+  segment_kind: 'scene' | 'event_node' | 'generated_event';
+  source_scene_id: number | null;
+  skeleton_version_id: number | null;
+  node_id: string | null;
+  segment_index: number;
+  start_offset: number;
+  end_offset: number;
+  mapping_method: 'identity' | 'shifted' | 'structural' | 'semantic';
+  confidence: number;
+  needs_remap: boolean;
+  state_method: string;
+  state_before: WorkflowObject;
+  state_after: WorkflowObject;
+};
+
+export type StoryAnchorPreview = {
+  resolved_version_id: number | null;
+  resolved_start: number;
+  resolved_end: number;
+  text_excerpt: string;
+  state_before: WorkflowObject;
+  state_after: WorkflowObject;
+  mapping_method: 'identity' | 'shifted' | 'structural' | 'semantic';
+  state_method: string;
+  confidence: number;
+  semantic_map_hash: string | null;
+};
+
+export type BranchCreateRequest = {
+  name: string;
+  branch_mode: 'open_continuation' | 'fork' | 'fork_and_rejoin';
+  parent_branch_id?: number | null;
+  start_anchor: StoryAnchor;
+  return_anchor?: StoryAnchor | null;
+  base_source_version_id?: number | null;
+  downstream_strategy?: 'replace' | 'reference' | 'rejoin' | null;
+};
+
+export type SeamProposal = {
+  id?: number | null;
+  seam_kind: 'entry' | 'return';
+  operation: 'keep' | 'insert_before' | 'insert_after' | 'replace_range';
+  original_text: string;
+  proposed_text: string;
+  source_range: SourceRange;
+  source_hash: string;
+  reason: string;
+  status: 'draft' | 'confirmed' | 'rejected';
+  source_anchor?: StoryAnchor | null;
+  source_version_id?: number | null;
+};
+
+export type StructuredEventNode = {
+  id: string;
+  order: number;
+  event_type: string;
+  summary: string;
+  participants: string[];
+  location: string;
+  time_state: WorkflowObject;
+  causes: string[];
+  effects: string[];
+  motivation?: string;
+  knowledge_changes?: string[];
+  locked: boolean;
+  source_span: WorkflowObject | null;
+  confidence: number;
+};
+
+export type StructuredSkeleton = {
+  metadata: WorkflowObject;
+  event_nodes: StructuredEventNode[];
+  causal_links: WorkflowObject[];
+  character_state_changes: WorkflowObject[];
+  location_changes: WorkflowObject[];
+  time_changes: WorkflowObject[];
+  object_changes: WorkflowObject[];
+  knowledge_changes: WorkflowObject[];
+  relationship_changes: WorkflowObject[];
+  foreshadowing: WorkflowObject[];
+  open_threads: WorkflowObject[];
+  resolved_threads: WorkflowObject[];
+  required_start_state: WorkflowObject;
+  required_end_state: WorkflowObject;
+  editable_points: WorkflowObject[];
+  source_references: WorkflowObject[];
+};
+
+export type ChapterSourceSelection =
+  | { kind: 'current' }
+  | { kind: 'original' }
+  | { kind: 'rewrite_version'; version_id: number };
+
+export type ChapterRewriteVersion = {
+  id: number;
+  project_id: number;
+  chapter_id: number;
+  version: number;
+  parent_version_id: number | null;
+  source_kind: string;
+  source_operation: 'plot_generation' | 'prose_rewrite' | 'canon_change' | 'manual' | 'migration' | 'restore';
+  source_run_id: number | null;
+  source_base_kind: 'original' | 'rewrite_version';
+  source_base_version_id: number | null;
+  source_hash: string;
+  rewritten_text: string;
+  content_hash: string;
+  facts_before: WorkflowObject;
+  facts_after: WorkflowObject;
+  fact_chain_status: 'consistent' | 'needs_recompute';
+  created_at: string;
+  is_current: boolean;
+};
+
+export type RewriteVersionSkeleton = {
+  rewrite_version_id: number;
+  skeleton_id: number;
+  skeleton_version_id: number;
+  structured: StructuredSkeleton;
+  source_kind: 'rewrite_version';
+  status: string;
+};
+
+export type PlotGenerationStartRequest = {
+  project_id: number;
+  generation_mode: 'bounded_insert' | 'open_continuation' | 'fork' | 'fork_and_rejoin';
+  start_anchor: StoryAnchor;
+  return_anchor?: StoryAnchor | null;
+  user_direction: string;
+  selected_character_ids?: number[];
+  selected_material_ids?: number[];
+  style_profile_id?: number | null;
+  parent_branch_id?: number | null;
+  branch_name?: string;
+  range_operation?: 'insert_between' | 'replace_range';
+  source?: ChapterSourceSelection;
+};
+
+export type PlotGenerationSeamConfirmRequest = {
+  reviews: Array<{
+    seam_id: number;
+    decision: 'confirmed' | 'rejected';
+    proposed_text?: string | null;
+  }>;
+};
+
+export type GeneratedSceneRequest = {
+  title?: string;
+  text: string;
+  facts_after?: WorkflowObject;
+};
+
+export type PlotGenerationExecuteRequest = {
+  max_scenes?: number | null;
+};
+
+export type PlotGenerationStatus =
+  | 'awaiting_skeleton'
+  | 'planning_blocked'
+  | 'awaiting_seams'
+  | 'ready'
+  | 'generating'
+  | 'repair_required'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
+
+export type PlotGenerationRun = {
+  id: number;
+  project_id: number;
+  branch_id: number | null;
+  generation_mode: PlotGenerationStartRequest['generation_mode'];
+  range_operation: 'insert_between' | 'replace_range';
+  output_topology: 'in_place' | 'branch';
+  status: PlotGenerationStatus;
+  stage: string;
+  start_anchor: StoryAnchor;
+  return_anchor: StoryAnchor | null;
+  start_state: WorkflowObject;
+  required_return_state: WorkflowObject;
+  target_skeleton: StructuredSkeleton;
+  context: WorkflowObject;
+  seams: SeamProposal[] | WorkflowObject;
+  issues: WorkflowObject[] | WorkflowObject;
+  result: WorkflowObject;
+  scene_plan: WorkflowObject;
+  fact_ledger: WorkflowObject;
+  generated_progress: {
+    chapters: Array<WorkflowObject & { scenes?: WorkflowObject[] }>;
+    scenes: WorkflowObject[];
+  };
+  next_scene_cursor: number;
+  generation_attempt: number;
+  operation_type: 'plot_generation';
+  user_direction: string;
+  created_at: string;
+  updated_at: string;
+  source_chapter_id: number | null;
+  source_base_kind: 'original' | 'rewrite_version' | null;
+  source_base_version_id: number | null;
+  source_hash: string | null;
+  source_map_hash: string | null;
+  resolved_start_anchor: WorkflowObject;
+  resolved_return_anchor: WorkflowObject | null;
+  expected_source_head_version_id: number | null;
+  result_version_id: number | null;
+};
+
+export type ProseRewritePlanRequest = {
+  project_id: number;
+  chapter_id: number;
+  source_skeleton: StructuredSkeleton;
+  source_skeleton_version_id: number;
+  preservation_policy: WorkflowObject;
+  style_profile_id?: number | null;
+  user_direction?: string;
+  source?: ChapterSourceSelection;
+};
+
+export type ProseRewriteExecuteRequest = {
+  auto_repair?: boolean;
+};
+
+export type ProseRewriteRun = {
+  id: number;
+  project_id: number;
+  chapter_id: number;
+  status: 'planned' | 'generating' | 'blocked' | 'completed' | 'failed' | 'cancelled';
+  source_skeleton: StructuredSkeleton;
+  source_skeleton_version_id: number | null;
+  preservation_policy: WorkflowObject;
+  target_skeleton: StructuredSkeleton;
+  rewrite_plan: WorkflowObject;
+  rewritten_text: string | null;
+  issues: WorkflowObject[];
+  operation_type: 'prose_rewrite';
+  source_base_kind: 'original' | 'rewrite_version' | null;
+  source_base_version_id: number | null;
+  source_hash: string | null;
+  source_map_hash: string | null;
+  expected_source_head_version_id: number | null;
+  result_version_id: number | null;
+  generation_attempt: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CanonChangeScanRequest = {
+  project_id: number;
+  old_fact: WorkflowObject;
+  new_fact: WorkflowObject;
+  effective_order: number;
+  branch_id?: number | null;
+  source?: ChapterSourceSelection;
+};
+
+export type CanonPatchReviewRequest = {
+  decision: 'accepted' | 'rejected' | 'edited' | 'skipped';
+  replacement_text?: string | null;
+};
+
+export type CanonPatch = {
+  id: number;
+  run_id: number;
+  route_kind: string;
+  target_id: number;
+  source_range: SourceRange;
+  source_hash: string;
+  original_text: string;
+  replacement_text: string;
+  impact_type: string;
+  reason: string;
+  confidence: number;
+  evidence: unknown[];
+  requires_confirmation: boolean;
+  status: string;
+  source_base_version_id: number | null;
+  result_version_id: number | null;
+};
+
+export type CanonChangeRun = {
+  id: number;
+  project_id: number;
+  branch_id: number | null;
+  effective_order: number;
+  status: 'scanning' | 'reviewing' | 'blocked' | 'ready_to_apply' | 'applying' | 'applied' | 'failed' | 'cancelled';
+  old_fact: WorkflowObject;
+  new_fact: WorkflowObject;
+  fact_ledger: WorkflowObject;
+  consistency_issues: WorkflowObject[];
+  patches: CanonPatch[];
+  source_snapshots: Record<string, WorkflowObject>;
+  operation_type: 'canon_change';
+  created_at: string;
+  updated_at: string;
+};
+
+export type LegacyAnalysisExport = {
+  schema: 'rusty.legacy_analysis_export.v1';
+  project: WorkflowObject;
+  metadata: WorkflowObject;
+  chapter_analyses: WorkflowObject[];
+  character_analyses: WorkflowObject[];
+  style_analysis: WorkflowObject;
+  generated_prompts: WorkflowObject[];
+  structured_skeletons: WorkflowObject[];
+};
+
+export type LegacyProjectCreateRequest = {
+  target_project_kind: 'rewrite' | 'branch';
+  copy_source_text: true;
+  copy_analysis_results: boolean;
+  project_name?: string | null;
+};
 
 export type ChapterSplitOptions = {
   mode: 'auto' | 'simple' | 'regex';
@@ -912,6 +1277,44 @@ export type StorySkeletonVersion = {
   version: number;
   status: 'draft' | 'confirmed';
   nodes: Record<string, unknown>[];
+  structured?: StructuredSkeleton | null;
+};
+
+export type PreferredStorySkeleton = {
+  format: 'structured' | 'legacy_summary' | 'missing';
+  skeleton_id?: number;
+  version?: number;
+  version_id?: number;
+  status?: 'draft' | 'confirmed';
+  structured?: StructuredSkeleton;
+  legacy_summary?: string;
+};
+
+export type BranchSceneRecord = {
+  id: number;
+  branch_id: number;
+  branch_chapter_id: number;
+  sequence_index: number;
+  scene_index: number;
+  title: string;
+  current_version: number;
+  version_id: number;
+  generated_text: string;
+  facts_after: WorkflowObject;
+};
+
+export type BranchChapterRecord = {
+  id: number;
+  branch_id: number;
+  sequence_index: number;
+  title: string;
+  current_version: number;
+  version_id: number;
+  version: number;
+  summary: string;
+  facts_before: WorkflowObject;
+  facts_after: WorkflowObject;
+  scenes: BranchSceneRecord[];
 };
 
 export type RewriteMode = 'skeleton_rewrite' | 'expansion';

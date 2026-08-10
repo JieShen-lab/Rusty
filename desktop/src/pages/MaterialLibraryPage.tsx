@@ -359,30 +359,19 @@ export function MaterialLibraryPage() {
             </div>
           </header>
           {loading ? <LibraryEmptyState title="正在读取素材库…" /> : visible.length ? (
-            <div className="document-shelf-scroll">
-              <div className="library-material-grid material-compact-grid">
+            <div className="document-shelf-scroll resource-list-scroll">
+              <div aria-label="素材条目" className="resource-row-list">
                 {visible.map((material) => (
-                  <article
+                  <button
                     aria-pressed={selectedId === material.id}
-                    className={`library-material-card material-compact-card ${selectedId === material.id ? 'selected' : ''}`}
+                    className={`resource-list-row material-resource-row ${selectedId === material.id ? 'selected' : ''}`}
                     key={material.id}
                     onClick={() => setSelectedId(material.id)}
                     onDoubleClick={() => setEditing(material)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter') setSelectedId(material.id);
-                    }}
-                    role="button"
-                    tabIndex={0}
+                    type="button"
                   >
-                    <span className={`material-type-mark ${material.material_type}`} aria-hidden="true">
-                      {material.material_type === 'plot_skeleton' ? <ListTree size={18} /> : <Boxes size={18} />}
-                    </span>
-                    <div>
-                      <strong>{material.name}</strong>
-                      <span>{material.analysis_status === 'analyzed' ? '已分析' : '未分析'}</span>
-                      <p>{material.source_summary.label}</p>
-                    </div>
-                  </article>
+                    <strong className="resource-row-name">{material.name}</strong>
+                  </button>
                 ))}
               </div>
             </div>

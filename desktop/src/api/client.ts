@@ -4,6 +4,7 @@ import type {
   Chapter,
   ChapterSplitOptions,
   ChapterDetail,
+  ChapterRewriteVersion,
   CompiledPromptPreview,
   CharacterCard,
   CharacterCardWrite,
@@ -13,6 +14,11 @@ import type {
   CharacterExtractionPreview,
   CharacterExtractionSettings,
   CharacterProjectSummary,
+  BranchCreateRequest,
+  CanonChangeRun,
+  CanonChangeScanRequest,
+  CanonPatch,
+  CanonPatchReviewRequest,
   ExportPlanItem,
   ExportPlanUpdate,
   GenerationAttempt,
@@ -44,6 +50,8 @@ import type {
   LibraryDocumentExportResult,
   LibraryDocumentImportResult,
   LibraryDocumentRevision,
+  LegacyAnalysisExport,
+  LegacyProjectCreateRequest,
   DocumentProcessingSettings,
   DocumentProcessingTemplate,
   DocumentLibrarySettings,
@@ -52,12 +60,26 @@ import type {
   ProjectCharacterBindings,
   ProjectDetail,
   ProjectMaterialFilter,
-  ProjectPurpose,
+  ProjectKind,
+  StoryBranch,
+  StoryAnchor,
+  StoryAnchorPreview,
+  ChapterSourceSelection,
+  RewriteSemanticSegment,
+  RewriteVersionSkeleton,
   ProjectSettingsWrite,
   ProjectStyleBinding,
   PromptTemplate,
   PromptTemplateWrite,
   PipelineRunResult,
+  PlotGenerationExecuteRequest,
+  PlotGenerationRun,
+  PlotGenerationSeamConfirmRequest,
+  PlotGenerationStartRequest,
+  StructuredSkeleton,
+  ProseRewriteExecuteRequest,
+  ProseRewritePlanRequest,
+  ProseRewriteRun,
   StyleTemplateExtractWrite,
   StyleTemplate,
   StyleTrialWrite,
@@ -449,6 +471,22 @@ export function getProject(projectId: number) {
   return request<ProjectDetail>(`/api/projects/${projectId}`);
 }
 
+export function getLegacyAnalysisExport(projectId: number) {
+  return request<LegacyAnalysisExport>(
+    `/api/projects/${projectId}/legacy-analysis/export`,
+  );
+}
+
+export function createProjectFromLegacy(
+  projectId: number,
+  payload: LegacyProjectCreateRequest,
+) {
+  return request<Project>(
+    `/api/projects/${projectId}/legacy-analysis/create-project`,
+    { method: 'POST', body: JSON.stringify(payload) },
+  );
+}
+
 export function getChapters(projectId: number) {
   return request<Chapter[]>(`/api/projects/${projectId}/chapters`);
 }
@@ -499,7 +537,7 @@ export function createProject(
   previewToken: string,
   projectName?: string,
   workspacePath?: string,
-  purpose: ProjectPurpose = 'rewrite',
+  projectKind: ProjectKind = 'rewrite',
   promptTemplateId?: number | null,
   analysisPromptTemplateId?: number | null,
   modelId?: number | null,
@@ -510,11 +548,183 @@ export function createProject(
       preview_token: previewToken,
       project_name: projectName || null,
       workspace_path: workspacePath || null,
-      purpose,
+      project_kind: projectKind,
       model_id: modelId ?? null,
       prompt_template_id: promptTemplateId ?? null,
       analysis_prompt_template_id: analysisPromptTemplateId ?? null,
     }),
+  });
+}
+
+export function getChapterRewriteVersions(chapterId: number) {
+  return request<ChapterRewriteVersion[]>(`/api/chapters/${chapterId}/rewrite-versions`);
+}
+
+export function getChapterRewriteVersion(versionId: number) {
+  return request<ChapterRewriteVersion>(`/api/chapter-rewrite-versions/${versionId}`);
+}
+
+export function getRewriteVersionAnchors(versionId: number) {
+  return request<RewriteSemanticSegment[]>(`/api/chapter-rewrite-versions/${versionId}/anchors`);
+}
+
+export function getRewriteVersionSkeleton(versionId: number) {
+  return request<RewriteVersionSkeleton>(`/api/chapter-rewrite-versions/${versionId}/skeleton`);
+}
+
+export function previewStoryAnchor(payload: {
+  project_id: number;
+  source: ChapterSourceSelection;
+  anchor: StoryAnchor;
+}) {
+  return request<StoryAnchorPreview>('/api/story-anchors/preview', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function restoreChapterRewriteVersion(versionId: number) {
+  return request<ChapterRewriteVersion>(`/api/chapter-rewrite-versions/${versionId}/restore`, {
+    method: 'POST',
+  });
+}
+
+export function getStoryBranches(projectId: number) {
+  return request<StoryBranch[]>(`/api/projects/${projectId}/branches`);
+}
+
+export function getBranchChapters(branchId: number) {
+  return request<import('./types').BranchChapterRecord[]>(`/api/branches/${branchId}/chapters`);
+}
+
+export function createStoryBranch(projectId: number, payload: BranchCreateRequest) {
+  return request<StoryBranch>(`/api/projects/${projectId}/branches`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteStoryBranch(branchId: number) {
+  return request<{ ok: boolean }>(`/api/branches/${branchId}/delete`, { method: 'POST' });
+}
+
+export function startPlotGeneration(payload: PlotGenerationStartRequest) {
+  return request<PlotGenerationRun>('/api/plot-generation/runs', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function getPlotGenerationRun(runId: number) {
+  return request<PlotGenerationRun>(`/api/plot-generation/runs/${runId}`);
+}
+
+export function getPlotGenerationRuns(projectId: number) {
+  return request<PlotGenerationRun[]>(`/api/projects/${projectId}/plot-generation/runs`);
+}
+
+export function cancelPlotGeneration(runId: number) {
+  return request<PlotGenerationRun>(`/api/plot-generation/runs/${runId}/cancel`, {
+    method: 'POST',
+  });
+}
+
+export function confirmPlotGenerationSeams(runId: number, payload: PlotGenerationSeamConfirmRequest) {
+  return request<PlotGenerationRun>(`/api/plot-generation/runs/${runId}/seams`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function confirmPlotGenerationSkeleton(runId: number, targetSkeleton: StructuredSkeleton) {
+  return request<PlotGenerationRun>(`/api/plot-generation/runs/${runId}/skeleton`, {
+    method: 'POST',
+    body: JSON.stringify({ target_skeleton: targetSkeleton }),
+  });
+}
+
+export function executePlotGeneration(runId: number, payload: PlotGenerationExecuteRequest) {
+  return request<PlotGenerationRun>(`/api/plot-generation/runs/${runId}/execute`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function generateNextPlotScene(runId: number) {
+  return request<PlotGenerationRun>(`/api/plot-generation/runs/${runId}/generate-next`, {
+    method: 'POST',
+  });
+}
+
+export function retryPlotGeneration(runId: number) {
+  return request<PlotGenerationRun>(`/api/plot-generation/runs/${runId}/retry`, {
+    method: 'POST',
+  });
+}
+
+export function planProseRewrite(payload: ProseRewritePlanRequest) {
+  return request<ProseRewriteRun>('/api/prose-rewrite/runs', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function getProseRewriteRun(runId: number) {
+  return request<ProseRewriteRun>(`/api/prose-rewrite/runs/${runId}`);
+}
+
+export function getProseRewriteRuns(projectId: number) {
+  return request<ProseRewriteRun[]>(`/api/projects/${projectId}/prose-rewrite/runs`);
+}
+
+export function executeProseRewrite(runId: number, payload: ProseRewriteExecuteRequest) {
+  return request<ProseRewriteRun>(`/api/prose-rewrite/runs/${runId}/execute`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function cancelProseRewrite(runId: number) {
+  return request<ProseRewriteRun>(`/api/prose-rewrite/runs/${runId}/cancel`, {
+    method: 'POST',
+  });
+}
+
+export function retryProseRewrite(runId: number) {
+  return request<ProseRewriteRun>(`/api/prose-rewrite/runs/${runId}/retry`, {
+    method: 'POST',
+  });
+}
+
+export function scanCanonChange(payload: CanonChangeScanRequest) {
+  return request<CanonChangeRun>('/api/canon-change/runs', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function getCanonChangeRun(runId: number) {
+  return request<CanonChangeRun>(`/api/canon-change/runs/${runId}`);
+}
+
+export function getCanonChangeRuns(projectId: number) {
+  return request<CanonChangeRun[]>(`/api/projects/${projectId}/canon-change/runs`);
+}
+
+export function reviewCanonPatch(patchId: number, payload: CanonPatchReviewRequest) {
+  return request<CanonPatch>(`/api/canon-change/patches/${patchId}/review`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function applyCanonChange(runId: number) {
+  return request<CanonChangeRun>(`/api/canon-change/runs/${runId}/apply`, { method: 'POST' });
+}
+
+export function cancelCanonChange(runId: number) {
+  return request<CanonChangeRun>(`/api/canon-change/runs/${runId}/cancel`, {
+    method: 'POST',
   });
 }
 
@@ -1134,7 +1344,8 @@ export function createStorySkeleton(payload: {
   scene_id?: number | null;
   scope?: string;
   source_kind?: string;
-  nodes: Record<string, unknown>[];
+  nodes?: Record<string, unknown>[];
+  structured_skeleton?: StructuredSkeleton;
 }) {
   return request<import('./types').StorySkeletonVersion>('/api/story-skeletons', {
     method: 'POST',
@@ -1144,13 +1355,22 @@ export function createStorySkeleton(payload: {
 
 export function reviseStorySkeleton(
   skeletonId: number,
-  nodes: Record<string, unknown>[],
+  nodes: Record<string, unknown>[] | undefined,
   changeNote = '',
+  structuredSkeleton?: StructuredSkeleton,
 ) {
   return request<import('./types').StorySkeletonVersion>(`/api/story-skeletons/${skeletonId}/versions`, {
     method: 'POST',
-    body: JSON.stringify({ nodes, change_note: changeNote }),
+    body: JSON.stringify({ nodes: nodes ?? [], structured_skeleton: structuredSkeleton ?? null, change_note: changeNote }),
   });
+}
+
+export function getChapterStorySkeleton(chapterId: number) {
+  return request<import('./types').PreferredStorySkeleton>(`/api/chapters/${chapterId}/story-skeleton`);
+}
+
+export function getStorySkeletonVersion(skeletonId: number, version: number) {
+  return request<import('./types').StorySkeletonVersion>(`/api/story-skeletons/${skeletonId}/versions/${version}`);
 }
 
 export function confirmStorySkeleton(skeletonId: number, version?: number) {

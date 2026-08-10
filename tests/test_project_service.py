@@ -91,10 +91,12 @@ class ProjectServiceTests(unittest.TestCase):
         self.assertIn("Manual rewrite.", exported_text)
         self.assertNotIn("Original text.", exported_text)
         self.assertIsNotNone(cleared)
-        self.assertIsNone(cleared.rewritten_text)
-        self.assertEqual("imported", cleared.status)
+        # Clearing is an append-only restore operation: the current projection
+        # points at a new version containing the immutable original text.
+        self.assertEqual("Original text.", cleared.rewritten_text)
+        self.assertEqual("rewritten", cleared.status)
         self.assertIsNotNone(project_after_clear)
-        self.assertEqual(0, project_after_clear.completed_chapters)
+        self.assertEqual(1, project_after_clear.completed_chapters)
 
     def test_export_plan_reorders_renames_excludes_and_drives_exports(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:

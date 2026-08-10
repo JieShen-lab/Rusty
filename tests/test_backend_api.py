@@ -118,14 +118,12 @@ class BackendApiTests(unittest.TestCase):
 
             preview = client.post("/api/projects/preview", json={"source_path": str(source)}, headers=headers)
             token = preview.json()["preview_token"]
-            analysis_prompt_id = create_analysis_prompt(client, headers)
             created = client.post(
                 "/api/projects",
                 json={
                     "preview_token": token,
                     "project_name": "API Book",
-                    "purpose": "extract",
-                    "analysis_prompt_template_id": analysis_prompt_id,
+                    "project_kind": "branch",
                 },
                 headers=headers,
             )
@@ -136,9 +134,12 @@ class BackendApiTests(unittest.TestCase):
         self.assertEqual(200, preview.status_code)
         self.assertEqual(200, created.status_code)
         self.assertEqual("API Book", created.json()["name"])
+        self.assertEqual("branch", created.json()["project_kind"])
         self.assertEqual(1, len(projects.json()))
+        self.assertEqual("branch", projects.json()[0]["project_kind"])
         self.assertEqual(1, len(chapters.json()))
-        self.assertEqual("extract", detail.json()["settings"]["processing_mode"])
+        self.assertEqual("branch", detail.json()["project"]["project_kind"])
+        self.assertEqual("manual", detail.json()["settings"]["processing_mode"])
 
     def test_configured_txt_split_is_preserved_when_project_is_created(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:

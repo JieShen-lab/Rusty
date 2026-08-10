@@ -10,6 +10,10 @@ from rusty.services.context_service import ContextService
 from rusty.services.material_service import MaterialService
 from rusty.services.project_service import default_database_path
 from rusty.services.scene_service import SceneService
+from rusty.services.structured_skeleton import (
+    legacy_skeleton_result,
+    validate_structured_skeleton,
+)
 
 
 SCENE_ANALYSIS_KEYS = {
@@ -42,6 +46,7 @@ class SkeletonVersion:
     version: int
     status: str
     nodes: tuple[dict[str, Any], ...]
+    structured: dict[str, Any] | None = None
 
 
 class RewriteWorkflowService:
@@ -87,6 +92,50 @@ class RewriteWorkflowService:
             )
         return SkeletonVersion(skeleton_id, int(version_cursor.lastrowid), 1, "draft", tuple(normalized))
 
+    def create_structured_skeleton(
+        self,
+        *,
+        project_id: int,
+        chapter_id: int,
+        scene_id: int | None,
+        skeleton: dict[str, Any],
+        scope: str = "scene",
+        source_kind: str = "ai_extraction",
+    ) -> SkeletonVersion:
+        structured = validate_structured_skeleton(skeleton)
+        nodes = _structured_to_legacy_nodes(structured)
+        with session(self.database_path) as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO story_skeletons (
+                    project_id, chapter_id, scene_id, scope, source_kind, status, current_version
+                ) VALUES (?, ?, ?, ?, ?, 'draft', 1)
+                """,
+                (project_id, chapter_id, scene_id, scope, source_kind),
+            )
+            skeleton_id = int(cursor.lastrowid)
+            version_cursor = connection.execute(
+                """
+                INSERT INTO story_skeleton_versions (
+                    skeleton_id, version, nodes_json, skeleton_json, source_references_json
+                ) VALUES (?, 1, ?, ?, ?)
+                """,
+                (
+                    skeleton_id,
+                    json.dumps(nodes, ensure_ascii=False),
+                    json.dumps(structured, ensure_ascii=False),
+                    json.dumps(structured["source_references"], ensure_ascii=False),
+                ),
+            )
+        return SkeletonVersion(
+            skeleton_id,
+            int(version_cursor.lastrowid),
+            1,
+            "draft",
+            tuple(nodes),
+            structured,
+        )
+
     def revise_skeleton(
         self,
         skeleton_id: int,
@@ -123,6 +172,51 @@ class RewriteWorkflowService:
             )
         return SkeletonVersion(skeleton_id, int(cursor.lastrowid), version, "draft", tuple(normalized))
 
+    def revise_structured_skeleton(
+        self,
+        skeleton_id: int,
+        skeleton: dict[str, Any],
+        *,
+        change_note: str = "",
+    ) -> SkeletonVersion:
+        structured = validate_structured_skeleton(skeleton)
+        nodes = _structured_to_legacy_nodes(structured)
+        with session(self.database_path) as connection:
+            row = connection.execute(
+                "SELECT current_version FROM story_skeletons WHERE id = ?",
+                (skeleton_id,),
+            ).fetchone()
+            if row is None:
+                raise FileNotFoundError(f"Story skeleton not found: {skeleton_id}")
+            version = int(row["current_version"]) + 1
+            cursor = connection.execute(
+                """
+                INSERT INTO story_skeleton_versions (
+                    skeleton_id, version, nodes_json, skeleton_json,
+                    source_references_json, change_note
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    skeleton_id,
+                    version,
+                    json.dumps(nodes, ensure_ascii=False),
+                    json.dumps(structured, ensure_ascii=False),
+                    json.dumps(structured["source_references"], ensure_ascii=False),
+                    change_note,
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE story_skeletons
+                SET current_version = ?, status = 'draft', updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (version, skeleton_id),
+            )
+        return SkeletonVersion(
+            skeleton_id, int(cursor.lastrowid), version, "draft", tuple(nodes), structured
+        )
+
     def confirm_skeleton(self, skeleton_id: int, version: int | None = None) -> SkeletonVersion:
         with session(self.database_path) as connection:
             skeleton = connection.execute(
@@ -134,7 +228,7 @@ class RewriteWorkflowService:
             selected_version = int(version or skeleton["current_version"])
             row = connection.execute(
                 """
-                SELECT id, nodes_json
+                SELECT id, nodes_json, skeleton_json
                 FROM story_skeleton_versions
                 WHERE skeleton_id = ? AND version = ?
                 """,
@@ -164,7 +258,68 @@ class RewriteWorkflowService:
             selected_version,
             "confirmed",
             tuple(_json_list_of_objects(row["nodes_json"])),
+            _json_object(row["skeleton_json"]) or None,
         )
+
+    def get_skeleton_version(
+        self, skeleton_id: int, version: int | None = None
+    ) -> SkeletonVersion:
+        with session(self.database_path) as connection:
+            skeleton = connection.execute(
+                "SELECT current_version, status FROM story_skeletons WHERE id = ?",
+                (skeleton_id,),
+            ).fetchone()
+            if skeleton is None:
+                raise FileNotFoundError(f"Story skeleton not found: {skeleton_id}")
+            selected = int(version or skeleton["current_version"])
+            row = connection.execute(
+                """
+                SELECT id, nodes_json, skeleton_json, confirmed_at
+                FROM story_skeleton_versions
+                WHERE skeleton_id = ? AND version = ?
+                """,
+                (skeleton_id, selected),
+            ).fetchone()
+        if row is None:
+            raise FileNotFoundError(f"Skeleton version not found: {skeleton_id}@{selected}")
+        status = "confirmed" if row["confirmed_at"] else "draft"
+        return SkeletonVersion(
+            skeleton_id,
+            int(row["id"]),
+            selected,
+            status,
+            tuple(_json_list_of_objects(row["nodes_json"])),
+            _json_object(row["skeleton_json"]) or None,
+        )
+
+    def get_preferred_chapter_skeleton(self, chapter_id: int) -> dict[str, Any]:
+        with session(self.database_path) as connection:
+            row = connection.execute(
+                """
+                SELECT s.id, s.current_version, s.status, v.id AS version_id, v.skeleton_json
+                FROM story_skeletons s
+                JOIN story_skeleton_versions v
+                  ON v.skeleton_id = s.id AND v.version = s.current_version
+                WHERE s.chapter_id = ? AND v.skeleton_json <> '{}'
+                ORDER BY (s.status = 'confirmed') DESC, s.updated_at DESC, s.id DESC
+                LIMIT 1
+                """,
+                (chapter_id,),
+            ).fetchone()
+            if row is not None:
+                return {
+                    "format": "structured",
+                    "skeleton_id": int(row["id"]),
+                    "version": int(row["current_version"]),
+                    "version_id": int(row["version_id"]),
+                    "status": str(row["status"]),
+                    "structured": _json_object(row["skeleton_json"]),
+                }
+            legacy = connection.execute(
+                "SELECT plot_summary FROM chapter_summaries WHERE chapter_id = ?",
+                (chapter_id,),
+            ).fetchone()
+        return legacy_skeleton_result(legacy["plot_summary"] if legacy else None)
 
     def create_skeleton_rewrite_plan(
         self,
@@ -794,6 +949,21 @@ def _normalize_skeleton_nodes(nodes: Iterable[dict[str, Any]]) -> list[dict[str,
             }
         )
     return normalized
+
+
+def _structured_to_legacy_nodes(skeleton: dict[str, Any]) -> list[dict[str, Any]]:
+    return _normalize_skeleton_nodes(
+        {
+            "id": node["id"],
+            "event": node["summary"],
+            "required": bool(node["locked"]),
+            "characters": node["participants"],
+            "causes": node["causes"],
+            "results": node["effects"],
+            "editable": not bool(node["locked"]),
+        }
+        for node in skeleton["event_nodes"]
+    )
 
 
 def _normalize_plan(plan: dict[str, Any]) -> dict[str, Any]:

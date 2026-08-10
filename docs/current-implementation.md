@@ -216,7 +216,7 @@ SQLite + OS keyring + 本地文件
 
 ## 5. 数据实现
 
-数据库当前架构版本为 20。主要数据域包括：
+数据库当前架构版本为 40。主要数据域包括：
 
 - 项目、书籍元数据、导入来源、分章规则和章节；
 - AI 模型、提示词模板、项目提示词和项目设置；
@@ -225,12 +225,57 @@ SQLite + OS keyring + 本地文件
 - 流水线阶段状态、摘要、场景分析、情节扩写、改写结果、生成尝试和错误；
 - 导出计划和导出记录；
 - 文档库文档、分类、标签、处理模板、修订版本、卷、章节、草稿和存储设置。
+- 剧情运行状态、草稿生成进度、运行历史、分支血缘、接缝和不可变章节/场景版本快照。
 
 v14 将旧素材类型 `snippet` 映射为 `scene_reference`，将 `outline` 映射为 `plot_skeleton` 并保留旧类型元数据；旧素材分类和文档分类迁移为标签。角色卡旧固定字段迁移为身份、年龄、设定及有序自定义字段。v19 新增文档卷层级；v20 新增仅适用于公共角色的 `character_categories` / `character_category_links`，并幂等补齐历史工程角色的有效 `project_character_bindings`；v21 新增单例 `character_extraction_settings`；v22 新增素材分类、标签组、工程素材筛选和三任务 `material_ai_settings`。v22 会原地保留历史工程素材 ID，把 `scope` 统一为 `public`、清空 `project_id`，并在来源元数据记录 `legacy_scope` / `legacy_project_id` / `migrated_to_unified_library`；已有标签会转为对应工程的素材筛选，未打标签的旧素材不会生成伪标签。v23 为三个素材 AI 任务分别增加用户提示词模板、JSON 分析维度、通用标签开关和适用场景标签开关；v22 的 `generate_tags` 会迁移到两个新开关。迁移和关系写入均可幂等重放。
 
 兼容性：旧的 `POST /api/characters/extract`、`POST /api/characters/{card_id}/analyze` 和 `POST /api/characters/{card_id}/analyze/confirm` 暂时仅作为后端 legacy 接口保留；对应前端调用已清理，新角色页不再调用这些单阶段接口。素材的 `POST /api/material-extractions`、`POST /api/materials/{id}/copy`、`POST /api/materials/{id}/analyze` 与分析 apply 接口也仅作为后端 legacy 接口保留；对应前端调用与废弃的旧素材管理页已清理，新的素材页只调用 `/api/material-extractions/preview` 与 `/api/material-extractions/apply`。旧的选区直接创建素材接口已删除，文档和工程选区必须进入候选确认流程。
 
 SQLite 连接默认启用外键、WAL、`synchronous=NORMAL` 和 5 秒忙等待。迁移由 `schema_migrations` 记录，初始化时按版本顺序执行。
+
+### 5.1 工作流生命周期与版本一致性
+
+Plot Generation 使用 `awaiting_skeleton`、`planning_blocked`、`awaiting_seams`、`ready`、
+`generating`、`repair_required`、`completed`、`failed`、`cancelled` 九个正式状态。所有状态
+变化通过带来源状态守卫的内部转换接口完成。活动运行可取消；一致性失败必须调用 retry，
+其草稿进度、游标和事实账本恢复到起点后才重新进入 `ready`。终态记录不会被前端“开始
+新的运行”删除，项目级历史 API 是运行状态的权威来源。
+
+`generate-next` 推进一个计划场景，`execute` 复用相同核心推进所有剩余场景。生成中的正文
+只保存在 `plot_generation_runs.generated_progress_json`；通过最终一致性检查后才原子提交正式
+改写正文或分支章节。
+
+分支血缘由后端强制：顶级分支只能使用原文锚点，子分支只能使用所属父分支的章节或场景
+锚点，来源版本由锚点唯一确定。v36 的 `branch_chapter_version_scenes` 使每个章节版本同时
+固定 facts、场景顺序和每个场景的正文版本；v37 增加运行进度、场景游标、生成尝试次数及
+正式状态约束。旧数据回填优先选择不晚于章节版本创建时间的最近场景版本，并保持当前正文
+与 facts 不丢失。
+
+v38 新增 `chapter_rewrite_versions`。原始章节正文保持不可变，所有 Plot、Prose Rewrite、
+Canon Change、人工编辑、迁移和恢复结果都追加为新版本；`chapter_rewrites.current_version_id`
+是 current head，`chapters.rewritten_text` 是兼容投影。版本号在章节内单调递增，
+`parent_version_id` 指向真实来源，因此允许从历史版本形成分叉而不改写历史。
+
+v39 为 Plot/Prose run 保存来源正文快照、来源版本/hash 和独立的
+`expected_source_head_version_id`。最终提交先用状态守卫获取 SQLite 写锁，再执行 source-head
+CAS；正文版本、current projection、全部分支章节/场景及 run 终态在单一事务中提交。运行期间
+正文 head 改变时，旧运行进入结构化 source conflict，不会覆盖新版本。
+
+章节 effective source 统一由 `ChapterVersionService` 解析。默认继续当前版本，也可显式选择
+原始基线或历史 rewrite version；恢复历史正文会创建新的 `restore` 版本。桌面工作区提供轻量
+版本列表、历史正文查看和“基于此版本创建新操作”。
+
+分支章节快照的 `facts_after` 取最后一个场景版本。修改非末场景但未重算下游时，
+`fact_chain_status=needs_recompute`；Canon Change 会为所有下游场景建立正文+facts 对齐的新版本，
+包括正文未变化但事实发生变化的场景，完成后章节快照标记 `consistent`。
+
+v40 增加 `chapter_rewrite_version_segments` 与 rewrite-version skeleton 关联。每个 rewrite
+version 现在同时固定正文、章节边界 facts、场景/event-node 的 version-local span、局部状态、
+映射方法和置信度。`ContextService` 不再用 `find(original_scene_text)` 或 original skeleton
+offset 解析 rewrite 锚点；任意 text offset 也只使用相邻 segment state。Plot/Prose run 冻结
+semantic-map hash 与 resolved anchor snapshot，最终 CAS 同时验证正文版本和 map 归属。
+SQLite trigger 禁止业务 UPDATE/DELETE rewrite version 及其 semantic map。锚点预览 API 和
+`StoryAnchorPicker` 会展示实际 rewrite excerpt、局部状态与低置信度提示。
 
 ## 6. 桌面端与安全边界
 
@@ -292,6 +337,14 @@ Set-Location desktop
 npm run build
 ```
 
+桌面自动化分为三类，不能互相替代：
+
+```powershell
+npm run test:e2e          # Mock 浏览器 UI
+npm run test:e2e:real     # React 浏览器 UI + FastAPI + SQLite + FakeLLM
+npm run test:e2e:electron # 实际 Electron + preload + FastAPI + SQLite + FakeLLM
+```
+
 完整后端测试覆盖数据库迁移、导入导出、项目与文档库、卷章层级、草稿与 revision、模型密钥隔离、提示词兼容、素材与锚点、API 权限、流水线成功/失败/重试、结构化改写校验，以及 PySide6 基础 UI。
 
 ## 9. 当前边界
@@ -304,3 +357,8 @@ npm run build
 - “引用范围”仍未持久化或接入下游消费，因此 Electron 工作台暂不显示该入口。
 - 当前仓库没有桌面安装包构建与签名脚本，开发运行以源码环境为主。
 
+> 2026-08-04：工程类型、任意语义锚点与父分支锚点、模块化细纲和三类写作工作流已接入
+> Electron。`bounded_insert` 默认保留原文并执行插入；接缝按各自来源独立校验哈希。
+> 自动化明确区分浏览器真实后端集成测试与实际 Electron E2E。
+> 最新模型与迁移说明见 [workflow-refactor.md](workflow-refactor.md)，审计基线见
+> [workflow-refactor-audit.md](workflow-refactor-audit.md)。

@@ -24,6 +24,7 @@ from rusty.services.anchor_service import AnchorService, CharacterCard, OutlineT
 from rusty.services.material_service import Material, MaterialService
 from rusty.services.analysis_service import AnalysisService
 from rusty.services.chapter_split_service import ChapterSplitService
+from rusty.services.chapter_version_service import ChapterVersionService
 from rusty.services.document_library_service import (
     DocumentLibraryService,
     DocumentRevision,
@@ -45,6 +46,11 @@ from rusty.services.resource_analysis_service import ResourceAnalysisService
 from rusty.services.scene_service import SceneService
 from rusty.services.scene_rewrite_orchestrator import SceneRewriteOrchestrator
 from rusty.services.scene_boundary_ai_service import SceneBoundaryAIService
+from rusty.services.branch_service import BranchService
+from rusty.services.canon_change_orchestrator import CanonChangeOrchestrator
+from rusty.services.plot_generation_orchestrator import PlotGenerationOrchestrator
+from rusty.services.prose_rewrite_orchestrator import ProseRewriteOrchestrator
+from rusty.services.rewrite_version_map_service import RewriteVersionMapService
 from rusty.services.style_extraction_service import StyleExtractionService
 from rusty.services.style_service import StyleTemplate, StyleTemplateService
 
@@ -76,9 +82,18 @@ from .schemas import (
     CharacterProjectSummaryOut,
     CharacterSourceSummaryOut,
     ChapterDetailOut,
+    ChapterRewriteVersionResponse,
+    RewriteVersionSkeletonResponse,
     ChapterErrorOut,
     ChapterOut,
+    BranchCreateRequest,
+    CanonChangeRunResponse,
+    CanonChangeScanRequest,
+    CanonPatchResponse,
+    CanonPatchReviewRequest,
     CreateProjectRequest,
+    LegacyAnalysisExportResponse,
+    LegacyProjectCreateRequest,
     ErrorResponse,
     ExportPlanItemOut,
     ExportPlanUpdateRequest,
@@ -156,6 +171,16 @@ from .schemas import (
     OutlineTemplateOut,
     OutlineTemplateWriteRequest,
     PipelineRunResponse,
+    PlotGenerationExecuteRequest,
+    PlotGenerationRunResponse,
+    PlotGenerationSeamConfirmRequest,
+    PlotGenerationSkeletonConfirmRequest,
+    PlotGenerationStartRequest,
+    StoryAnchorPreviewRequest,
+    StoryAnchorPreviewResponse,
+    ProseRewriteExecuteRequest,
+    ProseRewritePlanRequest,
+    ProseRewriteRunResponse,
     RetryStageRequest,
     RewriteTextRequest,
     SceneBoundaryWriteRequest,
@@ -181,6 +206,7 @@ from .schemas import (
     ResourceTagRenameRequest,
     SelectionResourceCreateRequest,
     StageStatusOut,
+    StoryBranchResponse,
     StyleTemplateExtractRequest,
     StyleTemplateExportResponse,
     StyleTemplateImportRequest,
@@ -225,6 +251,7 @@ def create_app(
     style_ai_client=None,
     anchor_ai_client=None,
     prompt_package_ai_client=None,
+    workflow_ai_client=None,
 ) -> FastAPI:
     db_path = Path(database_path) if database_path is not None else Path(
         os.environ.get("RUSTY_DATABASE_PATH", default_database_path())
@@ -247,6 +274,18 @@ def create_app(
     rewrite_workflow_service = RewriteWorkflowService(db_path)
     resource_analysis_service = ResourceAnalysisService(db_path)
     scene_rewrite_orchestrator = SceneRewriteOrchestrator(db_path)
+    branch_service = BranchService(db_path)
+    plot_generation_orchestrator = PlotGenerationOrchestrator(
+        db_path, ai_client=workflow_ai_client
+    )
+    prose_rewrite_orchestrator = ProseRewriteOrchestrator(
+        db_path, ai_client=workflow_ai_client
+    )
+    canon_change_orchestrator = CanonChangeOrchestrator(
+        db_path, ai_client=workflow_ai_client
+    )
+    chapter_version_service = ChapterVersionService(db_path)
+    rewrite_version_map_service = RewriteVersionMapService(db_path)
     anchor_extraction_service = AnchorExtractionService(db_path, ai_client=anchor_ai_client or style_ai_client)
 
     app = FastAPI(
@@ -782,11 +821,8 @@ def create_app(
             raise _http_error(400, "preview_mismatch", "源文件已变化，请重新预览后再创建工程。")
         workspace = _optional_workspace_path(payload.workspace_path) or state.workspace_path or state.source_path.parent
         parsed = state.parsed_book
-        purpose = "extract" if payload.purpose == "summary" else payload.purpose
-        if purpose == "rewrite" and payload.prompt_template_id is None:
+        if payload.project_kind == "rewrite" and payload.prompt_template_id is None:
             raise _http_error(400, "rewrite_prompt_required", "创建改写工程前请选择改写提示词。")
-        if purpose == "extract" and payload.analysis_prompt_template_id is None:
-            raise _http_error(400, "analysis_prompt_required", "创建提取工程前请选择风格分析提示词。")
         txt_split_rule_id = 1
         if parsed.source_format == "txt" and state.split_options.get("mode") != "auto":
             options = state.split_options
@@ -805,7 +841,8 @@ def create_app(
             parsed,
             workspace,
             payload.project_name,
-            processing_mode=purpose,
+            project_kind=payload.project_kind,
+            processing_mode="manual",
             prompt_template_id=payload.prompt_template_id,
             analysis_prompt_template_id=payload.analysis_prompt_template_id,
             txt_split_rule_id=txt_split_rule_id,
@@ -814,11 +851,256 @@ def create_app(
         document_library_service.ensure_project_document(project_id, state.source_path)
         return _project_out(_require_project(project_service, project_id))
 
+    @app.get(
+        "/api/projects/{project_id}/legacy-analysis/export",
+        response_model=LegacyAnalysisExportResponse,
+    )
+    def export_legacy_analysis(project_id: int) -> dict[str, Any]:
+        return project_service.export_legacy_analysis(project_id)
+
+    @app.post(
+        "/api/projects/{project_id}/legacy-analysis/create-project",
+        response_model=ProjectOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def create_project_from_legacy(
+        project_id: int, payload: LegacyProjectCreateRequest
+    ) -> ProjectOut:
+        target_id = project_service.create_from_legacy(
+            project_id, **payload.model_dump()
+        )
+        return _project_out(_require_project(project_service, target_id))
+
     @app.post("/api/projects/{project_id}/delete", dependencies=[Depends(_require_token)])
     def delete_project(project_id: int) -> dict[str, bool]:
         _require_project(project_service, project_id)
         project_service.delete_project(project_id)
         return {"ok": True}
+
+    @app.get("/api/projects/{project_id}/branches", response_model=list[StoryBranchResponse])
+    def list_story_branches(project_id: int) -> list[dict[str, Any]]:
+        _require_project(project_service, project_id)
+        return branch_service.list_branches(project_id)
+
+    @app.get("/api/branches/{branch_id}", response_model=StoryBranchResponse)
+    def get_story_branch(branch_id: int) -> dict[str, Any]:
+        return branch_service.get_branch(branch_id)
+
+    @app.get("/api/branches/{branch_id}/chapters", response_model=list[dict[str, Any]])
+    def list_story_branch_chapters(branch_id: int) -> list[dict[str, Any]]:
+        return branch_service.list_chapters(branch_id)
+
+    @app.post("/api/projects/{project_id}/branches", response_model=StoryBranchResponse, dependencies=[Depends(_require_token)])
+    def create_story_branch(project_id: int, payload: BranchCreateRequest) -> dict[str, Any]:
+        project = _require_project(project_service, project_id)
+        if project.project_kind != "branch":
+            raise _http_error(409, "branch_project_required", "Branches require a branch project.")
+        values = payload.model_dump()
+        start_anchor = values["start_anchor"]
+        return_anchor = values["return_anchor"]
+        return branch_service.create_branch(
+            project_id=project_id,
+            name=values["name"],
+            branch_mode=values["branch_mode"],
+            start_anchor=start_anchor,
+            return_anchor=return_anchor,
+            parent_branch_id=values.get("parent_branch_id"),
+            base_source_version_id=values.get("base_source_version_id"),
+            downstream_strategy=values.get("downstream_strategy"),
+        )
+
+    @app.post("/api/branches/{branch_id}/delete", dependencies=[Depends(_require_token)])
+    def delete_story_branch(branch_id: int) -> dict[str, bool]:
+        branch_service.delete_branch(branch_id)
+        return {"ok": True}
+
+    @app.post("/api/plot-generation/runs", response_model=PlotGenerationRunResponse, dependencies=[Depends(_require_token)])
+    def start_plot_generation(payload: PlotGenerationStartRequest) -> dict[str, Any]:
+        return plot_generation_orchestrator.start(**payload.model_dump())
+
+    @app.post(
+        "/api/story-anchors/preview",
+        response_model=StoryAnchorPreviewResponse,
+        dependencies=[Depends(_require_token)],
+    )
+    def preview_story_anchor(
+        payload: StoryAnchorPreviewRequest,
+    ) -> dict[str, Any]:
+        values = payload.model_dump()
+        return context_service.preview_story_anchor(
+            project_id=values["project_id"],
+            source=values["source"],
+            anchor=values["anchor"],
+        )
+
+    @app.get(
+        "/api/plot-generation/runs/{run_id}",
+        response_model=PlotGenerationRunResponse,
+    )
+    def get_plot_generation_run(run_id: int) -> dict[str, Any]:
+        return plot_generation_orchestrator.get_run(run_id)
+
+    @app.get(
+        "/api/projects/{project_id}/plot-generation/runs",
+        response_model=list[PlotGenerationRunResponse],
+    )
+    def list_plot_generation_runs(project_id: int) -> list[dict[str, Any]]:
+        _require_project(project_service, project_id)
+        return plot_generation_orchestrator.list_runs(project_id)
+
+    @app.post(
+        "/api/plot-generation/runs/{run_id}/cancel",
+        response_model=PlotGenerationRunResponse,
+        dependencies=[Depends(_require_token)],
+    )
+    def cancel_plot_generation(run_id: int) -> dict[str, Any]:
+        return plot_generation_orchestrator.cancel(run_id)
+
+    @app.post("/api/plot-generation/runs/{run_id}/seams", response_model=PlotGenerationRunResponse, dependencies=[Depends(_require_token)])
+    def confirm_plot_generation_seams(run_id: int, payload: PlotGenerationSeamConfirmRequest) -> dict[str, Any]:
+        return plot_generation_orchestrator.confirm_seams(
+            run_id,
+            [review.model_dump() for review in payload.reviews],
+        )
+
+    @app.post("/api/plot-generation/runs/{run_id}/skeleton", response_model=PlotGenerationRunResponse, dependencies=[Depends(_require_token)])
+    def confirm_plot_generation_skeleton(
+        run_id: int, payload: PlotGenerationSkeletonConfirmRequest
+    ) -> dict[str, Any]:
+        return plot_generation_orchestrator.confirm_target_skeleton(
+            run_id, payload.target_skeleton
+        )
+
+    @app.post("/api/plot-generation/runs/{run_id}/execute", response_model=PlotGenerationRunResponse, dependencies=[Depends(_require_token)])
+    def execute_plot_generation(run_id: int, payload: PlotGenerationExecuteRequest) -> dict[str, Any]:
+        return plot_generation_orchestrator.execute(
+            run_id,
+            max_scenes=payload.max_scenes,
+        )
+
+    @app.post(
+        "/api/plot-generation/runs/{run_id}/generate-next",
+        response_model=PlotGenerationRunResponse,
+        dependencies=[Depends(_require_token)],
+    )
+    def generate_next_plot_scene(run_id: int) -> dict[str, Any]:
+        return plot_generation_orchestrator.generate_next(run_id)
+
+    @app.post(
+        "/api/plot-generation/runs/{run_id}/retry",
+        response_model=PlotGenerationRunResponse,
+        dependencies=[Depends(_require_token)],
+    )
+    def retry_plot_generation(run_id: int) -> dict[str, Any]:
+        return plot_generation_orchestrator.retry(run_id)
+
+    @app.post("/api/prose-rewrite/runs", response_model=ProseRewriteRunResponse, dependencies=[Depends(_require_token)])
+    def plan_prose_rewrite(payload: ProseRewritePlanRequest) -> dict[str, Any]:
+        values = payload.model_dump()
+        values["source_selection"] = values.pop("source")
+        return prose_rewrite_orchestrator.plan(**values)
+
+    @app.get(
+        "/api/prose-rewrite/runs/{run_id}",
+        response_model=ProseRewriteRunResponse,
+    )
+    def get_prose_rewrite_run(run_id: int) -> dict[str, Any]:
+        return prose_rewrite_orchestrator.get_run(run_id)
+
+    @app.get(
+        "/api/projects/{project_id}/prose-rewrite/runs",
+        response_model=list[ProseRewriteRunResponse],
+    )
+    def list_prose_rewrite_runs(project_id: int) -> list[dict[str, Any]]:
+        _require_project(project_service, project_id)
+        return prose_rewrite_orchestrator.list_runs(project_id)
+
+    @app.post("/api/prose-rewrite/runs/{run_id}/execute", response_model=ProseRewriteRunResponse, dependencies=[Depends(_require_token)])
+    def execute_prose_rewrite(run_id: int, payload: ProseRewriteExecuteRequest) -> dict[str, Any]:
+        return prose_rewrite_orchestrator.execute(run_id, **payload.model_dump())
+
+    @app.post("/api/prose-rewrite/runs/{run_id}/cancel", response_model=ProseRewriteRunResponse, dependencies=[Depends(_require_token)])
+    def cancel_prose_rewrite(run_id: int) -> dict[str, Any]:
+        return prose_rewrite_orchestrator.cancel(run_id)
+
+    @app.post("/api/prose-rewrite/runs/{run_id}/retry", response_model=ProseRewriteRunResponse, dependencies=[Depends(_require_token)])
+    def retry_prose_rewrite(run_id: int) -> dict[str, Any]:
+        return prose_rewrite_orchestrator.retry(run_id)
+
+    @app.post("/api/canon-change/runs", response_model=CanonChangeRunResponse, dependencies=[Depends(_require_token)])
+    def scan_canon_change(payload: CanonChangeScanRequest) -> dict[str, Any]:
+        return canon_change_orchestrator.scan(**payload.model_dump())
+
+    @app.get(
+        "/api/canon-change/runs/{run_id}",
+        response_model=CanonChangeRunResponse,
+    )
+    def get_canon_change_run(run_id: int) -> dict[str, Any]:
+        return canon_change_orchestrator.get_run(run_id)
+
+    @app.get(
+        "/api/projects/{project_id}/canon-change/runs",
+        response_model=list[CanonChangeRunResponse],
+    )
+    def list_canon_change_runs(project_id: int) -> list[dict[str, Any]]:
+        _require_project(project_service, project_id)
+        return canon_change_orchestrator.list_runs(project_id)
+
+    @app.post("/api/canon-change/patches/{patch_id}/review", response_model=CanonPatchResponse, dependencies=[Depends(_require_token)])
+    def review_canon_patch(patch_id: int, payload: CanonPatchReviewRequest) -> dict[str, Any]:
+        return canon_change_orchestrator.review_patch(patch_id, **payload.model_dump())
+
+    @app.post("/api/canon-change/runs/{run_id}/apply", response_model=CanonChangeRunResponse, dependencies=[Depends(_require_token)])
+    def apply_canon_change(run_id: int) -> dict[str, Any]:
+        return canon_change_orchestrator.apply(run_id)
+
+    @app.post("/api/canon-change/runs/{run_id}/cancel", response_model=CanonChangeRunResponse, dependencies=[Depends(_require_token)])
+    def cancel_canon_change(run_id: int) -> dict[str, Any]:
+        return canon_change_orchestrator.cancel(run_id)
+
+    @app.get(
+        "/api/chapters/{chapter_id}/rewrite-versions",
+        response_model=list[ChapterRewriteVersionResponse],
+    )
+    def list_chapter_rewrite_versions(chapter_id: int) -> list[dict[str, Any]]:
+        if project_service.get_chapter(chapter_id) is None:
+            raise _http_error(404, "chapter_not_found", "Chapter not found.")
+        return chapter_version_service.list_versions(chapter_id)
+
+    @app.get(
+        "/api/chapter-rewrite-versions/{version_id}",
+        response_model=ChapterRewriteVersionResponse,
+    )
+    def get_chapter_rewrite_version(version_id: int) -> dict[str, Any]:
+        return chapter_version_service.get_version(version_id)
+
+    @app.get("/api/chapter-rewrite-versions/{version_id}/anchors")
+    def list_rewrite_version_anchors(version_id: int) -> list[dict[str, Any]]:
+        chapter_version_service.get_version(version_id)
+        return rewrite_version_map_service.list_segments(version_id)
+
+    @app.get(
+        "/api/chapter-rewrite-versions/{version_id}/skeleton",
+        response_model=RewriteVersionSkeletonResponse,
+    )
+    def get_rewrite_version_skeleton(version_id: int) -> dict[str, Any]:
+        chapter_version_service.get_version(version_id)
+        try:
+            structure = rewrite_version_map_service.get_rewrite_structure(version_id)
+        except ValueError as exc:
+            raise _http_error(
+                404, "rewrite_structure_unavailable", str(exc)
+            ) from exc
+        assert structure is not None
+        return structure
+
+    @app.post(
+        "/api/chapter-rewrite-versions/{version_id}/restore",
+        response_model=ChapterRewriteVersionResponse,
+        dependencies=[Depends(_require_token)],
+    )
+    def restore_chapter_rewrite_version(version_id: int) -> dict[str, Any]:
+        return chapter_version_service.restore_version(version_id)
 
     @app.get("/api/projects/{project_id}/chapters", response_model=list[ChapterOut])
     def list_chapters(project_id: int) -> list[ChapterOut]:
@@ -908,13 +1190,14 @@ def create_app(
 
     @app.post("/api/projects/{project_id}/pipeline/run", response_model=PipelineRunResponse, dependencies=[Depends(_require_token)])
     def run_project_pipeline(project_id: int) -> PipelineRunResponse:
-        _require_project(project_service, project_id)
-        settings = project_service.get_project_settings(project_id)
-        result = (
-            pipeline_service.run_summary_project(project_id)
-            if settings and settings.processing_mode == "summary"
-            else pipeline_service.run_project(project_id)
-        )
+        project = _require_project(project_service, project_id)
+        if project.project_kind == "legacy_extract":
+            raise _http_error(
+                409,
+                "legacy_extract_read_only",
+                "Legacy extract projects are read-only and cannot run the retired pipeline.",
+            )
+        result = pipeline_service.run_project(project_id)
         return PipelineRunResponse(
             ok=True,
             processed=result.processed,
@@ -925,8 +1208,14 @@ def create_app(
 
     @app.post("/api/projects/{project_id}/pipeline/summarize", response_model=PipelineRunResponse, dependencies=[Depends(_require_token)])
     def run_project_summary(project_id: int) -> PipelineRunResponse:
-        _require_project(project_service, project_id)
-        result = pipeline_service.run_summary_project(project_id)
+        project = _require_project(project_service, project_id)
+        if project.project_kind == "legacy_extract":
+            raise _http_error(
+                409,
+                "legacy_extract_read_only",
+                "Legacy extract projects are read-only and cannot run the retired pipeline.",
+            )
+        result = pipeline_service.run_document_analysis(project_id)
         return PipelineRunResponse(
             ok=True,
             processed=result.processed,
@@ -1171,7 +1460,14 @@ def create_app(
         dependencies=[Depends(_require_token)],
     )
     def create_story_skeleton(payload: StorySkeletonWriteRequest) -> dict[str, Any]:
-        value = rewrite_workflow_service.create_skeleton(**payload.model_dump())
+        values = payload.model_dump()
+        structured = values.pop("structured_skeleton")
+        if structured is not None:
+            values.pop("nodes")
+            values["skeleton"] = structured
+            value = rewrite_workflow_service.create_structured_skeleton(**values)
+        else:
+            value = rewrite_workflow_service.create_skeleton(**values)
         return value.__dict__
 
     @app.post(
@@ -1180,11 +1476,29 @@ def create_app(
         dependencies=[Depends(_require_token)],
     )
     def revise_story_skeleton(skeleton_id: int, payload: StorySkeletonRevisionRequest) -> dict[str, Any]:
+        if payload.structured_skeleton is not None:
+            return rewrite_workflow_service.revise_structured_skeleton(
+                skeleton_id,
+                payload.structured_skeleton,
+                change_note=payload.change_note,
+            ).__dict__
         return rewrite_workflow_service.revise_skeleton(
-            skeleton_id,
-            payload.nodes,
-            change_note=payload.change_note,
+            skeleton_id, payload.nodes, change_note=payload.change_note
         ).__dict__
+
+    @app.get("/api/chapters/{chapter_id}/story-skeleton", response_model=dict[str, Any])
+    def get_chapter_story_skeleton(chapter_id: int) -> dict[str, Any]:
+        skeleton = rewrite_workflow_service.get_preferred_chapter_skeleton(chapter_id)
+        if not skeleton:
+            raise FileNotFoundError(f"Story skeleton not found for chapter: {chapter_id}")
+        return skeleton
+
+    @app.get(
+        "/api/story-skeletons/{skeleton_id}/versions/{version}",
+        response_model=dict[str, Any],
+    )
+    def get_story_skeleton_version(skeleton_id: int, version: int) -> dict[str, Any]:
+        return rewrite_workflow_service.get_skeleton_version(skeleton_id, version).__dict__
 
     @app.post(
         "/api/story-skeletons/{skeleton_id}/confirm",
@@ -2592,6 +2906,7 @@ def _project_out(project: ProjectSummary) -> ProjectOut:
     return ProjectOut(
         id=project.id,
         name=project.name,
+        project_kind=project.project_kind,
         status=project.status,
         current_stage=project.current_stage,
         source_format=project.source_format,
