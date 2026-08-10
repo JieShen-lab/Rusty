@@ -358,6 +358,81 @@ class ChapterVersionService:
         result["skeleton_version_id"] = integrity.get("skeleton_version_id")
         return result
 
+    def append_pipeline_rewrite_version(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        chapter_id: int,
+        rewritten_text: str,
+        target_word_count: int | None,
+        model_id: int,
+        prompt_template_id: int,
+        prompt_snapshot: dict[str, Any],
+        anchor_snapshot: dict[str, Any],
+        rewrite_mode: str,
+        anchor_text: str,
+        expanded_text: str,
+        token_usage: dict[str, Any],
+        elapsed_ms: int,
+    ) -> dict[str, Any]:
+        """Append a legacy pipeline result through the authoritative version path."""
+
+        source = self.resolve_chapter_source(
+            chapter_id, {"kind": "current"}, connection=connection
+        )
+        result = self.append_chapter_rewrite_version(
+            connection,
+            chapter_id=chapter_id,
+            rewritten_text=rewritten_text,
+            source_operation="prose_rewrite",
+            source_run_id=None,
+            source_base_kind=source.source_kind,
+            source_base_version_id=source.source_version_id,
+            source_hash=source.content_hash,
+            facts_before=source.facts_before,
+            facts_after=source.facts_after,
+            expected_head_version_id=source.expected_head_version_id,
+            source_kind="ai",
+            prompt_snapshot=prompt_snapshot,
+            anchor_snapshot=anchor_snapshot,
+            fact_chain_status="needs_recompute",
+            mapping_strategy="structural",
+        )
+        word_count = count_text_units(rewritten_text)
+        chapter = connection.execute(
+            "SELECT word_count FROM chapters WHERE id = ?", (chapter_id,)
+        ).fetchone()
+        ratio = (
+            word_count / int(chapter["word_count"])
+            if chapter is not None and chapter["word_count"]
+            else None
+        )
+        connection.execute(
+            """
+            UPDATE chapter_rewrites
+            SET target_word_count = ?, actual_word_count = ?, expansion_ratio = ?,
+                model_id = ?, prompt_template_id = ?, rewrite_mode = ?,
+                anchor_text = ?, expanded_text = ?, token_usage_json = ?,
+                elapsed_ms = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE chapter_id = ? AND current_version_id = ?
+            """,
+            (
+                target_word_count,
+                word_count,
+                ratio,
+                model_id,
+                prompt_template_id,
+                rewrite_mode,
+                anchor_text,
+                expanded_text,
+                json.dumps(token_usage, ensure_ascii=False),
+                elapsed_ms,
+                chapter_id,
+                int(result["id"]),
+            ),
+        )
+        return result
+
     def list_versions(self, chapter_id: int) -> list[dict[str, Any]]:
         with session(self.database_path) as connection:
             rows = connection.execute(
