@@ -28,7 +28,7 @@ test('1. rewrite 与历史 branch 使用同一章节中心工作台并恢复活�
   await expect(page.getByRole('button', { name: '继续写' })).toHaveCount(0);
 });
 
-test('2. 真后端完成预分析、方向和贴合原文人物专项分析', async ({ page, request }) => {
+test('2. 真后端完成 faithful Target、Plan、Draft、选区编辑与 Diff 审查纵向流程', async ({ page, request }) => {
   await openProject(page, 2);
   await expect(page.getByRole('button', { name: /场景 1.*当前/ })).toBeVisible();
   await page.getByRole('button', { name: '运行预分析' }).click();
@@ -51,6 +51,43 @@ test('2. 真后端完成预分析、方向和贴合原文人物专项分析', as
   expect(chapter.chapter.rewritten_text).toBeNull();
   await page.reload();
   await expect(page.getByRole('heading', { name: '目标设计' })).toBeVisible();
+  await page.getByRole('button', { name: '生成目标草案' }).click();
+  await expect(page.locator('input[value="李四"]')).toBeVisible();
+  await page.getByRole('button', { name: '确认目标' }).click();
+  await expect(page.getByRole('heading', { name: '写作规划' })).toBeVisible();
+  await page.getByRole('button', { name: '生成写作规划' }).click();
+  await expect(page.getByLabel('区块 1 操作')).toHaveValue('preserve');
+  await expect(page.getByLabel('区块 2 操作')).toHaveValue('transform');
+  await page.getByRole('button', { name: '开始生成' }).click();
+  const editor = page.getByLabel('当前正文');
+  await expect(editor).toHaveValue(/李四谨慎地检查了院门/);
+  const generated = await editor.inputValue();
+  await editor.fill(`【人工修改】${generated}`);
+  await editor.evaluate((node: HTMLTextAreaElement) => {
+    const start = node.value.indexOf('李四谨慎地检查');
+    node.setSelectionRange(start, start + '李四谨慎地检查'.length);
+  });
+  page.once('dialog', (dialog) => dialog.accept('动作更准确，不增加新事件'));
+  await page.getByRole('button', { name: 'AI 修改选中内容' }).click();
+  await expect(editor).toHaveValue(/【人工修改】/);
+  await expect(editor).toHaveValue(/李四仔细检查/);
+  await page.getByRole('button', { name: '进入审查' }).click();
+  await expect(page.getByRole('heading', { name: 'Source ↔ Current Draft' })).toBeVisible();
+  await expect(page.getByText('传统文本 Diff；进入本页不会调用 AI。')).toBeVisible();
+  await page.getByText('选择原文与当前稿范围').click();
+  await page.getByLabel('原文范围').evaluate((node: HTMLTextAreaElement) => node.setSelectionRange(0, 6));
+  await page.getByLabel('当前稿范围').evaluate((node: HTMLTextAreaElement) => node.setSelectionRange(0, 6));
+  page.once('dialog', (dialog) => dialog.accept('这里要保留进入院子的动作。'));
+  await page.getByRole('button', { name: '添加备注' }).click();
+  await expect(page.getByText('这里要保留进入院子的动作。')).toBeVisible();
+  page.once('dialog', (dialog) => dialog.accept('保留动作并适配李四'));
+  await page.getByRole('button', { name: 'AI 重改此处' }).last().click();
+  await expect(page.getByRole('button', { name: '采用新版' })).toBeVisible();
+  await page.getByRole('button', { name: '采用新版' }).click();
+  await page.getByRole('button', { name: '确认场景' }).click();
+  await expect(page.getByText('场景已确认。')).toBeVisible();
+  const finalState = await (await request.get(`${backend}/api/projects/2/creative-workflow`)).json();
+  expect(finalState[0].current_stage).toBe('confirmed');
 });
 
 test('3. 工程总提示词是可独立编辑的当前文本', async ({ page, request }) => {
@@ -59,8 +96,8 @@ test('3. 工程总提示词是可独立编辑的当前文本', async ({ page, re
   const editor = page.getByLabel('总提示词');
   await editor.fill('保持人物行为一致，不自动生成正文。');
   await page.getByRole('button', { name: '保存设置' }).click();
-  const stored = await (await request.get(`${backend}/api/projects/3/master-prompt`)).json();
-  expect(stored.content).toBe('保持人物行为一致，不自动生成正文。');
+  await expect.poll(async () => (await (await request.get(`${backend}/api/projects/3/master-prompt`)).json()).content)
+    .toBe('保持人物行为一致，不自动生成正文。');
 });
 
 test('4. 旧提取工程仍可导出分析并派生独立工程', async ({ page, request }) => {

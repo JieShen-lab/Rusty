@@ -79,6 +79,25 @@ class RealE2EFakeLLM:
                 "spatial_relations": [], "related_events": [],
                 "target_character_conflicts": [{"id": "conflict-1", "summary": "行动方式存在差异", "source_text": "检查了院门", "start_offset": 10, "end_offset": 15, "inferred": False, "source_state": "直接检查", "target_state": "谨慎观察", "difference": "存在差异"}],
             }
+        if stage == "target_design":
+            return {"items": [
+                {"id": "character", "label": "人物", "operation": "modify", "source_value": "人物", "target_value": "李四"},
+                {"id": "entry", "label": "进入院子", "operation": "preserve", "source_value": "进入院子", "target_value": ""},
+                {"id": "action", "label": "检查院门", "operation": "adapt", "source_value": "检查了院门", "target_value": "谨慎观察"},
+            ], "summary": ["人物 → 李四", "进入院子保持", "检查动作适配"]}
+        if stage == "writing_plan":
+            source = payload["source_text"]
+            split = source.index("他检查")
+            return {"blocks": [
+                {"title": "进入院子", "source_start_offset": 0, "source_end_offset": split, "source_text_snapshot": source[:split], "operation": "preserve"},
+                {"title": "检查院门", "source_start_offset": split, "source_end_offset": len(source), "source_text_snapshot": source[split:], "operation": "transform", "instruction": "人物改为李四，动作适配"},
+            ]}
+        if stage == "transform_block":
+            return {"text": "李四谨慎地检查了院门。\n\n"}
+        if stage == "selected_text_edit":
+            return {"text": "李四仔细检查"}
+        if stage == "review_rework":
+            return {"text": "李四贴近院门仔细观察。"}
         if stage == "propose_target_skeleton":
             target = deepcopy(SKELETON)
             target["event_nodes"][0]["summary"] = payload["user_direction"]
