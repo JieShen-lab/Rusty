@@ -2358,3 +2358,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .skeleton-node-list article > div { display: flex; gap: 2px; }
 .strategy-target-actions { display: flex; gap: 8px; padding: 18px 22px; }
 .strategy-target-actions .primary { margin-left: auto; }
+.insertion-boundaries { display: grid; grid-template-columns: 1fr 1fr 2fr; gap: 12px; padding: 18px 22px; border-bottom: 1px solid #edf0f3; }
+.insertion-boundaries label, .insertion-exit label { display: grid; gap: 7px; color: #5f6878; font-size: 12px; }
+.insertion-boundaries input, .insertion-boundaries textarea, .insertion-exit textarea, .insertion-event-list input { box-sizing: border-box; width: 100%; border: 1px solid #ccd2dc; border-radius: 5px; padding: 8px; }
+.insertion-boundaries input { height: 36px; }
+.insertion-boundaries textarea { min-height: 70px; resize: vertical; }
+.insertion-event-list article { display: grid; grid-template-columns: 42px 1fr auto; gap: 10px; align-items: center; padding: 10px 22px; border-bottom: 1px solid #edf0f3; }
+.insertion-event-list article > span { color: #a8502d; font: 12px ui-monospace,monospace; }
+.insertion-exit { padding: 18px 22px; background: #f8f9fb; }
+.insertion-exit textarea { min-height: 100px; resize: vertical; background: #fff; }

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .connection import session
 
-CURRENT_SCHEMA_VERSION = 49
+CURRENT_SCHEMA_VERSION = 50
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -4201,6 +4201,34 @@ def _migrate_to_v49(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_to_v50(connection: sqlite3.Connection) -> None:
+    """Seed expansion analysis, insertion planning, generation, and seam prompts."""
+    connection.executescript(
+        """
+        INSERT INTO prompt_definitions(name,description,kind,workflow_key,task_key,content,input_description,is_default)
+        SELECT '增加剧情 / 专项分析','分析插入点前后的状态桥接','workflow_task','expansion','special_analysis',
+               '提取 entry_state、exit_constraints、character_relations、active_events、unresolved_goals、available_hooks。只分析 Source，不设计新增事件。','Source、Preanalysis 与 CreativeIntent。',1
+        WHERE NOT EXISTS(SELECT 1 FROM prompt_definitions WHERE kind='workflow_task' AND workflow_key='expansion' AND task_key='special_analysis' AND deleted_at IS NULL);
+        INSERT INTO prompt_definitions(name,description,kind,workflow_key,task_key,content,input_description,is_default)
+        SELECT '增加剧情 / 目标设计','生成局部 InsertionBlock','workflow_task','expansion','target_design',
+               '只设计 InsertionBlock：insert_after、insert_before、entry_state、new_events、exit_constraints。不要复制整份 Scene Skeleton；exit_constraints 必须明确可编辑。','Source、已确认桥接分析、用户要求与 plot_skeleton 素材。',1
+        WHERE NOT EXISTS(SELECT 1 FROM prompt_definitions WHERE kind='workflow_task' AND workflow_key='expansion' AND task_key='target_design' AND deleted_at IS NULL);
+        INSERT INTO prompt_definitions(name,description,kind,workflow_key,task_key,content,input_description,is_default)
+        SELECT '增加剧情 / 写作规划','把 InsertionBlock 映射到 Source 保留块','workflow_task','expansion','writing_plan',
+               'Source 原有 blocks 使用 preserve，在指定位置添加一个 insert block。不要无意义 transform 或 rewrite A/B/C。','Source、InsertionBlock 与桥接约束。',1
+        WHERE NOT EXISTS(SELECT 1 FROM prompt_definitions WHERE kind='workflow_task' AND workflow_key='expansion' AND task_key='writing_plan' AND deleted_at IS NULL);
+        INSERT INTO prompt_definitions(name,description,kind,workflow_key,task_key,content,input_description,is_default)
+        SELECT '增加剧情 / 插入正文','只生成 Insertion content','workflow_task','expansion','insert_block',
+               '只生成 new_events 对应的 insertion content，满足 entry_state 与 exit_constraints；不复述或重写相邻 Source。','InsertionBlock、前一 Current Draft 尾部与后一 Source 开头。',1
+        WHERE NOT EXISTS(SELECT 1 FROM prompt_definitions WHERE kind='workflow_task' AND workflow_key='expansion' AND task_key='insert_block' AND deleted_at IS NULL);
+        INSERT INTO prompt_definitions(name,description,kind,workflow_key,task_key,content,input_description,is_default)
+        SELECT '增加剧情 / 接缝修复','只修复插入内容接缝','workflow_task','expansion','seam_repair',
+               '只处理 Insert 与相邻 Preserve 的接缝附近，不得重写整个场景。','接缝两侧短上下文与 exit constraints。',1
+        WHERE NOT EXISTS(SELECT 1 FROM prompt_definitions WHERE kind='workflow_task' AND workflow_key='expansion' AND task_key='seam_repair' AND deleted_at IS NULL);
+        """
+    )
+
+
 def _safe_json_list(value: object) -> list[dict[str, object]]:
     try:
         parsed = json.loads(str(value or "[]"))
@@ -4600,6 +4628,7 @@ MIGRATIONS = {
     47: _migrate_to_v47,
     48: _migrate_to_v48,
     49: _migrate_to_v49,
+    50: _migrate_to_v50,
 }
 
 
