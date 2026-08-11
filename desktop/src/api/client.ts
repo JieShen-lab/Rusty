@@ -1281,8 +1281,9 @@ export function getReviewMarks(sceneId: number) { return request<import('./types
 export function createReviewMark(sceneId: number, value: Partial<import('./types').ReviewMark>) { return request<import('./types').ReviewMark>(`/api/scenes/${sceneId}/review-marks`, { method: 'POST', body: JSON.stringify(value) }); }
 export function removeReviewMark(sceneId: number, markId: number) { return request<{ok:boolean}>(`/api/scenes/${sceneId}/review-marks/${markId}`, { method: 'DELETE' }); }
 export function restoreReviewSource(sceneId: number, markId: number) { return request<import('./types').SceneDraft>(`/api/scenes/${sceneId}/review-marks/${markId}/restore`, { method: 'POST' }); }
-export function reworkReviewRange(sceneId: number, value: Record<string, unknown>) { return request<{draft: import('./types').SceneDraft; before_text: string; after_text: string; start_offset: number; end_offset: number}>(`/api/scenes/${sceneId}/review/rework`, { method: 'POST', body: JSON.stringify(value) }); }
-export function reworkAllReviewMarks(sceneId: number) { return request<{draft: import('./types').SceneDraft; before_text: string; processed: number}>(`/api/scenes/${sceneId}/review/rework-all`, { method: 'POST' }); }
+export function reworkReviewRange(sceneId: number, value: Record<string, unknown>) { return request<{draft: import('./types').SceneDraft; before_text: string; after_text: string; start_offset: number; end_offset: number; mark_ids: number[]}>(`/api/scenes/${sceneId}/review/rework`, { method: 'POST', body: JSON.stringify(value) }); }
+export function reworkAllReviewMarks(sceneId: number) { return request<{draft: import('./types').SceneDraft; before_text: string; processed: number; mark_ids: number[]}>(`/api/scenes/${sceneId}/review/rework-all`, { method: 'POST' }); }
+export function adoptReviewRework(sceneId: number, markIds: number[]) { return request<import('./types').ReviewMark[]>(`/api/scenes/${sceneId}/review/adopt`, { method: 'POST', body: JSON.stringify({ mark_ids: markIds }) }); }
 export function confirmCreativeScene(sceneId: number) { return request<{draft: import('./types').SceneDraft; unresolved_marks: number}>(`/api/scenes/${sceneId}/confirm`, { method: 'POST' }); }
 
 export function analyzeChapterScenes(

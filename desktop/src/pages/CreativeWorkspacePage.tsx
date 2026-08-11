@@ -19,6 +19,7 @@ import {
   restoreReviewSource,
   reworkReviewRange,
   reworkAllReviewMarks,
+  adoptReviewRework,
   confirmCreativeScene,
   generateCurrentDraft,
   getChapter,
@@ -167,7 +168,7 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
   const reviewTargetRef = useRef<HTMLTextAreaElement | null>(null);
   const [reviewDiff, setReviewDiff] = useState<SceneReviewDiff | null>(null);
   const [reviewMarks, setReviewMarks] = useState<ReviewMark[]>([]);
-  const [reviewUndo, setReviewUndo] = useState<string | null>(null);
+  const [reviewUndo, setReviewUndo] = useState<{ beforeText: string; markIds: number[] } | null>(null);
   const [sourceCharacter, setSourceCharacter] = useState('');
   const [targetCharacterId, setTargetCharacterId] = useState<number | null>(null);
   const [focusedEvidence, setFocusedEvidence] = useState('');
@@ -847,7 +848,7 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
     const range = selectedReviewRanges();
     if (!range || range.targetStart === range.targetEnd) { setError('请先在当前稿中选择需要重改的范围。'); return; }
     const instruction = window.prompt('重改要求', '') ?? '';
-    await perform(async () => { const result = await reworkReviewRange(activeSceneId, { target_start_offset: range.targetStart, target_end_offset: range.targetEnd, source_start_offset: range.sourceStart, source_end_offset: range.sourceEnd, user_instruction: instruction }); const draft = loadedDraftRef.current; if (draft?.sceneId === activeSceneId) draft.currentDraft = result.draft; setReviewUndo(result.before_text); setCurrentDraft(result.draft); setReviewDiff(await getReviewDiff(activeSceneId)); });
+    await perform(async () => { const result = await reworkReviewRange(activeSceneId, { target_start_offset: range.targetStart, target_end_offset: range.targetEnd, source_start_offset: range.sourceStart, source_end_offset: range.sourceEnd, user_instruction: instruction }); const draft = loadedDraftRef.current; if (draft?.sceneId === activeSceneId) draft.currentDraft = result.draft; setReviewUndo({ beforeText: result.before_text, markIds: result.mark_ids }); setCurrentDraft(result.draft); setReviewDiff(await getReviewDiff(activeSceneId)); });
   }
 
   async function deleteMark(markId: number) {
@@ -873,7 +874,7 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
         target_end_offset: mark.target_end_offset, mark_id: mark.id, user_instruction: instruction });
       const draft = loadedDraftRef.current;
       if (draft?.sceneId === activeSceneId) draft.currentDraft = result.draft;
-      setReviewUndo(result.before_text); setCurrentDraft(result.draft); setReviewMarks(await getReviewMarks(activeSceneId)); setReviewDiff(await getReviewDiff(activeSceneId));
+      setReviewUndo({ beforeText: result.before_text, markIds: result.mark_ids }); setCurrentDraft(result.draft); setReviewMarks(await getReviewMarks(activeSceneId)); setReviewDiff(await getReviewDiff(activeSceneId));
     });
   }
 
@@ -884,17 +885,25 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
       if (!result.draft) return;
       const draft = loadedDraftRef.current;
       if (draft?.sceneId === activeSceneId) draft.currentDraft = result.draft;
-      setReviewUndo(result.before_text); setCurrentDraft(result.draft); setReviewMarks(await getReviewMarks(activeSceneId)); setReviewDiff(await getReviewDiff(activeSceneId));
+      setReviewUndo({ beforeText: result.before_text, markIds: result.mark_ids }); setCurrentDraft(result.draft); setReviewMarks(await getReviewMarks(activeSceneId)); setReviewDiff(await getReviewDiff(activeSceneId));
     });
   }
 
   async function undoReviewRework() {
     if (!activeSceneId || reviewUndo === null || !currentDraft) return;
     await perform(async () => {
-      const saved = await saveCurrentDraft(activeSceneId, { ...currentDraft, text: reviewUndo });
+      const saved = await saveCurrentDraft(activeSceneId, { ...currentDraft, text: reviewUndo.beforeText });
       const draft = loadedDraftRef.current;
       if (draft?.sceneId === activeSceneId) draft.currentDraft = saved;
-      setCurrentDraft(saved); setReviewUndo(null); setReviewDiff(await getReviewDiff(activeSceneId));
+      setCurrentDraft(saved); setReviewUndo(null); setReviewMarks(await getReviewMarks(activeSceneId)); setReviewDiff(await getReviewDiff(activeSceneId));
+    });
+  }
+
+  async function acceptReviewRework() {
+    if (!activeSceneId || reviewUndo === null) return;
+    await perform(async () => {
+      if (reviewUndo.markIds.length) setReviewMarks(await adoptReviewRework(activeSceneId, reviewUndo.markIds));
+      setReviewUndo(null);
     });
   }
 
@@ -1019,7 +1028,7 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
           {viewStage === 'special_analysis' ? (intent?.strategy === 'faithful' ? <CharacterAnalysisEditor analysis={characterAnalysis} busy={busy || sceneContextLoading} characters={characters} dirty={characterAnalysisDirty} intent={intent} onAnalyze={() => void analyzeCharacterModification()} onChange={patchCharacterAnalysis} onConfirm={() => void confirmCharacterAnalysis()} onEvidence={setFocusedEvidence} onSourceCharacter={setSourceCharacter} onTargetCharacter={setTargetCharacterId} sourceCharacter={sourceCharacter} targetCharacterId={targetCharacterId} /> : <StrategyAnalysisEditor analysis={strategyAnalysis} busy={busy || sceneContextLoading} dirty={strategyAnalysisDirty} intent={intent} onAnalyze={() => void analyzeStrategy()} onChange={patchStrategyAnalysis} onConfirm={() => void confirmGenericAnalysis()} />) : null}
           {viewStage === 'target_design' ? (intent?.strategy === 'faithful' ? <TargetDesignEditor busy={busy || sceneContextLoading} dirty={targetDirty} intent={intent} onChange={patchTarget} onConfirm={() => void confirmTargetDesign()} onGenerate={() => void generateTarget()} target={target} /> : <StrategyTargetEditor busy={busy || sceneContextLoading} dirty={targetDirty} intent={intent} materials={materials} onChange={patchTarget} onConfirm={() => void confirmTargetDesign()} onGenerate={() => void generateTarget()} target={target} />) : null}
           {viewStage === 'writing' ? <WritingStage busy={busy || sceneContextLoading} currentDraft={currentDraft} draftDirty={currentDraftDirty} draftEditorRef={draftEditorRef} onDraftText={patchCurrentDraftText} onGenerate={() => void generateDraft()} onPlan={patchWritingPlan} onPlanWriting={() => void planWriting()} onReview={() => void beginReview()} onSelectedEdit={() => void aiEditSelection()} onView={setWritingView} plan={writingPlan} planDirty={writingPlanDirty} target={target} view={writingView} /> : null}
-          {viewStage === 'review' ? <ReviewStage busy={busy || sceneContextLoading} currentDraft={currentDraft} diff={reviewDiff} onAccept={() => setReviewUndo(null)} onAddNote={() => void addReviewNote()} onConfirm={() => void confirmSceneFromReview()} onRestore={() => void restoreSelectedReview()} onRework={() => void aiReworkSelected()} onReworkAll={() => void reworkAllMarks()} onUndo={() => void undoReviewRework()} sourceRef={reviewSourceRef} targetRef={reviewTargetRef} undoAvailable={reviewUndo !== null} /> : null}
+          {viewStage === 'review' ? <ReviewStage busy={busy || sceneContextLoading} currentDraft={currentDraft} diff={reviewDiff} onAccept={() => void acceptReviewRework()} onAddNote={() => void addReviewNote()} onConfirm={() => void confirmSceneFromReview()} onRestore={() => void restoreSelectedReview()} onRework={() => void aiReworkSelected()} onReworkAll={() => void reworkAllMarks()} onUndo={() => void undoReviewRework()} sourceRef={reviewSourceRef} targetRef={reviewTargetRef} undoAvailable={reviewUndo !== null} /> : null}
           {!['preanalysis', 'direction', 'special_analysis', 'target_design', 'writing', 'review'].includes(viewStage) ? <section className="stage-placeholder"><h2>{stageLabels[viewStage]}</h2><p>场景已确认。</p></section> : null}
         </main>
 
@@ -1126,6 +1135,7 @@ function StrategyAnalysisEditor({ analysis, busy, dirty, intent, onAnalyze, onCh
 }
 
 type SkeletonNode = { id: string; order: number; summary: string; participants: string[]; outcome: string; source_relation: 'inherited' | 'modified' | 'inserted' };
+type SourceMapping = { source_event_id: string; target_node_id: string | null };
 function StrategyTargetEditor({ busy, dirty, intent, materials, onChange, onConfirm, onGenerate, target }: { busy: boolean; dirty: boolean; intent: CreativeIntent | null; materials: Material[]; onChange: (value: SceneTarget) => void; onConfirm: () => void; onGenerate: () => void; target: SceneTarget | null }) {
   if (intent?.strategy === 'expansion') return <ExpansionTargetEditor busy={busy} dirty={dirty} intent={intent} materials={materials} onChange={onChange} onConfirm={onConfirm} onGenerate={onGenerate} target={target} />;
   if (intent?.strategy === 'reimagine') return <ReimagineTargetEditor busy={busy} dirty={dirty} onChange={onChange} onConfirm={onConfirm} onGenerate={onGenerate} target={target} />;
@@ -1134,11 +1144,23 @@ function StrategyTargetEditor({ busy, dirty, intent, materials, onChange, onConf
   const currentTarget = target;
   const currentIntent = intent;
   const nodes = (Array.isArray(currentTarget.design.nodes) ? currentTarget.design.nodes : []) as SkeletonNode[];
-  function setNodes(next: SkeletonNode[]) { onChange({ ...currentTarget, design: { ...currentTarget.design, nodes: next.map((node,index) => ({ ...node, order: index + 1 })) } }); }
+  const sourceMapping = (Array.isArray(currentTarget.design.source_mapping) ? currentTarget.design.source_mapping : []) as SourceMapping[];
+  function setNodes(next: SkeletonNode[]) {
+    const ids = new Set(next.map((node) => node.id));
+    onChange({
+      ...currentTarget,
+      design: {
+        ...currentTarget.design,
+        nodes: next.map((node,index) => ({ ...node, order: index + 1 })),
+        source_mapping: sourceMapping.map((item) => item.target_node_id && !ids.has(item.target_node_id) ? { ...item, target_node_id: null } : item),
+      },
+    });
+  }
+  function setSourceMapping(next: SourceMapping[]) { onChange({ ...currentTarget, design: { ...currentTarget.design, source_mapping: next } }); }
   function patchNode(id: string, patch: Partial<SkeletonNode>) { setNodes(nodes.map((node) => node.id === id ? { ...node, ...patch } : node)); }
   function move(index: number, offset: number) { const next = [...nodes]; const destination = index + offset; if (destination < 0 || destination >= next.length) return; [next[index], next[destination]] = [next[destination], next[index]]; setNodes(next); }
   function insertMaterial() { const material = materials.find((item) => currentIntent.selected_plot_material_ids.includes(item.id)); const stages = material?.content.stages; const first = Array.isArray(stages) ? stages[0] as Record<string, unknown> : null; setNodes([...nodes, { id: `material-${Date.now()}`, order: nodes.length + 1, summary: String(first?.summary ?? material?.description ?? material?.name ?? '素材节点'), participants: [], outcome: '', source_relation: 'inserted' }]); }
-  return <section className="strategy-target-editor"><header><div><h2>调整剧情 / TargetSkeleton</h2><p>{target.status === 'stale' ? '专项分析已修改，需要重新生成' : dirty ? '正在自动保存…' : '结构化目标草案'}</p></div><button className="button secondary" disabled={busy} onClick={onGenerate} type="button"><RefreshCw size={15} />AI 生成草案</button></header><div className="skeleton-node-list">{nodes.map((node,index) => <article key={node.id}><span>{String(index+1).padStart(2,'0')}</span><input aria-label={`节点 ${index+1} 摘要`} value={node.summary} onChange={(event) => patchNode(node.id,{summary:event.target.value})} /><input aria-label={`节点 ${index+1} 参与人物`} placeholder="参与人物，用 / 分隔" value={node.participants.join(' / ')} onChange={(event) => patchNode(node.id,{participants:event.target.value.split('/').map((item)=>item.trim()).filter(Boolean)})} /><input aria-label={`节点 ${index+1} 结果`} placeholder="结果" value={node.outcome} onChange={(event) => patchNode(node.id,{outcome:event.target.value})} /><select value={node.source_relation} onChange={(event) => patchNode(node.id,{source_relation:event.target.value as SkeletonNode['source_relation']})}><option value="inherited">继承</option><option value="modified">修改</option><option value="inserted">新增</option></select><div><button className="button ghost" onClick={() => move(index,-1)} type="button">上移</button><button className="button ghost" onClick={() => move(index,1)} type="button">下移</button><button className="button ghost danger-quiet" onClick={() => setNodes(nodes.filter((item)=>item.id!==node.id))} type="button">删除</button></div></article>)}</div><div className="strategy-target-actions"><button className="button secondary" onClick={() => setNodes([...nodes,{id:`node-${Date.now()}`,order:nodes.length+1,summary:'',participants:[],outcome:'',source_relation:'inserted'}])} type="button">＋ 新增节点</button><button className="button secondary" disabled={!intent.selected_plot_material_ids.length} onClick={insertMaterial} type="button">从剧情素材插入</button><button className="button primary" disabled={busy || dirty || target.status === 'stale' || !nodes.length} onClick={onConfirm} type="button">确认目标</button></div></section>;
+  return <section className="strategy-target-editor"><header><div><h2>调整剧情 / TargetSkeleton</h2><p>{target.status === 'stale' ? '专项分析已修改，需要重新生成' : dirty ? '正在自动保存…' : '结构化目标草案'}</p></div><button className="button secondary" disabled={busy} onClick={onGenerate} type="button"><RefreshCw size={15} />AI 生成草案</button></header><div className="skeleton-node-list">{nodes.map((node,index) => <article key={node.id}><span>{String(index+1).padStart(2,'0')}</span><input aria-label={`节点 ${index+1} 摘要`} value={node.summary} onChange={(event) => patchNode(node.id,{summary:event.target.value})} /><input aria-label={`节点 ${index+1} 参与人物`} placeholder="参与人物，用 / 分隔" value={node.participants.join(' / ')} onChange={(event) => patchNode(node.id,{participants:event.target.value.split('/').map((item)=>item.trim()).filter(Boolean)})} /><input aria-label={`节点 ${index+1} 结果`} placeholder="结果" value={node.outcome} onChange={(event) => patchNode(node.id,{outcome:event.target.value})} /><select value={node.source_relation} onChange={(event) => patchNode(node.id,{source_relation:event.target.value as SkeletonNode['source_relation']})}><option value="inherited">继承</option><option value="modified">修改</option><option value="inserted">新增</option></select><div><button className="button ghost" onClick={() => move(index,-1)} type="button">上移</button><button className="button ghost" onClick={() => move(index,1)} type="button">下移</button><button className="button ghost danger-quiet" onClick={() => setNodes(nodes.filter((item)=>item.id!==node.id))} type="button">删除</button></div></article>)}</div><div className="source-mapping-list"><h3>Source → Target 映射</h3>{sourceMapping.map((mapping) => <label key={mapping.source_event_id}><span>{mapping.source_event_id}</span><select aria-label={`${mapping.source_event_id} 映射`} value={mapping.target_node_id ?? ''} onChange={(event) => setSourceMapping(sourceMapping.map((item) => item.source_event_id === mapping.source_event_id ? { ...item, target_node_id: event.target.value || null } : item))}><option value="">删除此 Source 事件</option>{nodes.filter((node) => node.source_relation !== 'inserted').map((node) => <option key={node.id} value={node.id}>{node.summary || node.id}</option>)}</select></label>)}</div><div className="strategy-target-actions"><button className="button secondary" onClick={() => setNodes([...nodes,{id:`node-${Date.now()}`,order:nodes.length+1,summary:'',participants:[],outcome:'',source_relation:'inserted'}])} type="button">＋ 新增节点</button><button className="button secondary" disabled={!intent.selected_plot_material_ids.length} onClick={insertMaterial} type="button">从剧情素材插入</button><button className="button primary" disabled={busy || dirty || target.status === 'stale' || !nodes.length || !sourceMapping.length} onClick={onConfirm} type="button">确认目标</button></div></section>;
 }
 
 type InsertionEvent = { id: string; order: number; summary: string };
@@ -1166,7 +1188,13 @@ function ReimagineTargetEditor({ busy, dirty, onChange, onConfirm, onGenerate, t
 const writingOperationLabels = { preserve: '保留', transform: '局部修改', rewrite: '重写', insert: '新增', delete: '删除' } as const;
 
 function WritingStage({ busy, currentDraft, draftDirty, draftEditorRef, onDraftText, onGenerate, onPlan, onPlanWriting, onReview, onSelectedEdit, onView, plan, planDirty, target, view }: { busy: boolean; currentDraft: SceneDraft | null; draftDirty: boolean; draftEditorRef: RefObject<HTMLTextAreaElement>; onDraftText: (text: string) => void; onGenerate: () => void; onPlan: (value: WritingPlan) => void; onPlanWriting: () => void; onReview: () => void; onSelectedEdit: () => void; onView: (view: 'plan' | 'draft') => void; plan: WritingPlan | null; planDirty: boolean; target: SceneTarget | null; view: 'plan' | 'draft' }) {
-  const staleDraft = Boolean(currentDraft && (plan?.status === 'stale' || currentDraft.based_on_plan_id !== plan?.id || currentDraft.based_on_target_id !== target?.id));
+  const staleDraft = Boolean(currentDraft && (
+    currentDraft.status === 'stale'
+    || target?.status === 'stale'
+    || plan?.status === 'stale'
+    || currentDraft.based_on_plan_id !== plan?.id
+    || currentDraft.based_on_target_id !== target?.id
+  ));
   return <section className="writing-stage"><nav><button aria-pressed={view === 'plan'} onClick={() => onView('plan')} type="button">写作规划</button><button aria-pressed={view === 'draft'} disabled={!currentDraft} onClick={() => onView('draft')} type="button">当前正文</button></nav>{view === 'plan' ? <WritingPlanEditor busy={busy} dirty={planDirty} onChange={onPlan} onGenerate={onGenerate} onPlan={onPlanWriting} plan={plan} /> : <div className="current-draft-editor"><header><div><h2>当前正文</h2><p>{draftDirty ? '正在自动保存…' : '已自动保存'}{staleDraft ? ' · 当前正文基于旧目标/旧规划生成' : ''}</p></div><div><button className="button secondary" disabled={busy || !currentDraft} onClick={onSelectedEdit} type="button"><Sparkles size={15} />AI 修改选中内容</button><button className="button secondary" disabled={busy || !plan || plan.status === 'stale'} onClick={onGenerate} type="button">重新生成</button><button className="button primary" disabled={busy || !currentDraft || draftDirty} onClick={onReview} type="button">进入审查</button></div></header>{currentDraft ? <textarea aria-label="当前正文" ref={draftEditorRef} value={currentDraft.text} onChange={(event) => onDraftText(event.target.value)} /> : <div className="stage-action-empty"><p>尚未生成当前正文。</p></div>}</div>}</section>;
 }
 
@@ -1174,7 +1202,7 @@ function WritingPlanEditor({ busy, dirty, onChange, onGenerate, onPlan, plan }: 
   if (!plan) return <div className="stage-placeholder stage-action-empty"><h2>写作规划</h2><p>规划 Source 正文的语义区块操作；Target 已回答“改成什么”，此处只决定具体位置怎么操作。</p><button className="button primary" disabled={busy} onClick={onPlan} type="button"><Sparkles size={16} />生成写作规划</button></div>;
   const currentPlan = plan;
   function patchBlock(id: number, patch: Partial<WritingBlock>) { onChange({ ...currentPlan, blocks: currentPlan.blocks.map((block) => block.id === id ? { ...block, ...patch } : block) }); }
-  return <div className="writing-plan-editor"><header><div><h2>写作规划</h2><p>{plan.status === 'stale' ? 'Target 已修改，需要重新规划' : dirty ? '正在自动保存…' : '规划已就绪'}</p></div><button className="button secondary" disabled={busy} onClick={onPlan} type="button"><RefreshCw size={15} />重新规划</button></header><div className="coverage-row">{(['preserve','transform','rewrite','insert'] as const).map((operation) => <span key={operation}><strong>{writingOperationLabels[operation]}</strong>{plan.coverage[operation] ?? 0}%</span>)}</div><div className="writing-block-list">{plan.blocks.map((block) => <article key={block.id}><span className="block-number">{String(block.order).padStart(2, '0')}</span><div><input aria-label={`区块 ${block.order} 标题`} value={block.title} onChange={(event) => patchBlock(block.id, { title: event.target.value })} /><small>{block.source_text_snapshot.slice(0, 80) || '插入点'}</small></div><select aria-label={`区块 ${block.order} 操作`} value={block.operation} onChange={(event) => patchBlock(block.id, { operation: event.target.value as WritingBlock['operation'] })}>{Object.entries(writingOperationLabels).map(([key,label]) => <option key={key} value={key}>{label}</option>)}</select><div className="block-instructions"><textarea aria-label={`区块 ${block.order} 指令`} placeholder="操作指令" value={block.instruction} onChange={(event) => patchBlock(block.id, { instruction: event.target.value })} /><textarea aria-label={`区块 ${block.order} 保留约束`} placeholder="保持（每行一项）" value={block.preserve_constraints.join('\n')} onChange={(event) => patchBlock(block.id, { preserve_constraints: lines(event.target.value) })} /><textarea aria-label={`区块 ${block.order} 目标要求`} placeholder="目标要求（每行一项）" value={block.target_requirements.join('\n')} onChange={(event) => patchBlock(block.id, { target_requirements: lines(event.target.value) })} /></div></article>)}</div><footer><button className="button primary" disabled={busy || dirty || plan.status === 'stale' || !plan.blocks.length} onClick={onGenerate} type="button">开始生成</button></footer></div>;
+  return <div className="writing-plan-editor"><header><div><h2>写作规划</h2><p>{plan.status === 'stale' ? 'Target 已修改，需要重新规划' : dirty ? '正在自动保存…' : '规划已就绪'}</p></div><button className="button secondary" disabled={busy} onClick={onPlan} type="button"><RefreshCw size={15} />重新规划</button></header><div className="coverage-row">{(['preserve','transform','rewrite','insert'] as const).map((operation) => <span key={operation}><strong>{writingOperationLabels[operation]}</strong>{plan.coverage[operation] ?? 0}%</span>)}</div><div className="writing-block-list">{plan.blocks.map((block) => { const allowedOperations = block.operation === 'insert' ? (['insert'] as const) : (['preserve','transform','rewrite','delete'] as const); return <article key={block.id}><span className="block-number">{String(block.order).padStart(2, '0')}</span><div><input aria-label={`区块 ${block.order} 标题`} value={block.title} onChange={(event) => patchBlock(block.id, { title: event.target.value })} /><small>{block.source_text_snapshot.slice(0, 80) || '插入点'}</small></div><select aria-label={`区块 ${block.order} 操作`} value={block.operation} onChange={(event) => patchBlock(block.id, { operation: event.target.value as WritingBlock['operation'] })}>{allowedOperations.map((key) => <option key={key} value={key}>{writingOperationLabels[key]}</option>)}</select><div className="block-instructions"><textarea aria-label={`区块 ${block.order} 指令`} placeholder="操作指令" value={block.instruction} onChange={(event) => patchBlock(block.id, { instruction: event.target.value })} /><textarea aria-label={`区块 ${block.order} 保留约束`} placeholder="保持（每行一项）" value={block.preserve_constraints.join('\n')} onChange={(event) => patchBlock(block.id, { preserve_constraints: lines(event.target.value) })} /><textarea aria-label={`区块 ${block.order} 目标要求`} placeholder="目标要求（每行一项）" value={block.target_requirements.join('\n')} onChange={(event) => patchBlock(block.id, { target_requirements: lines(event.target.value) })} /></div></article>; })}</div><footer><button className="button primary" disabled={busy || dirty || plan.status === 'stale' || !plan.blocks.length} onClick={onGenerate} type="button">开始生成</button></footer></div>;
 }
 
 function TargetContext({ target }: { target: SceneTarget | null }) {

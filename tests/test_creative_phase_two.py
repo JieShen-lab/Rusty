@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import sys
 import tempfile
@@ -10,10 +11,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from rusty.db.schema import CURRENT_SCHEMA_VERSION, _migrate_to_v47, _migrate_to_v48, _migrate_to_v49, _migrate_to_v50, _migrate_to_v51
+from rusty.db import session
 from rusty.services.anchor_service import AnchorService
 from rusty.services.creative_workflow_service import CreativeWorkflowService
 from rusty.services.project_service import ProjectService
 from rusty.services.scene_service import SceneService
+from rusty.services.material_service import MaterialService
 
 
 SOURCE = "张三被王五逼到墙边。\n王五第二刀横扫而来。\n张三握紧长刀借墙反冲。"
@@ -54,7 +57,9 @@ class PlotAdjustAI:
             {"id":"a","order":1,"summary":"A","participants":[],"outcome":"","source_relation":"inherited"},
             {"id":"b","order":2,"summary":"B2","participants":["李四"],"outcome":"","source_relation":"modified"},
             {"id":"x","order":3,"summary":"X","participants":["王五"],"outcome":"","source_relation":"inserted"},
-            {"id":"d","order":4,"summary":"D2","participants":[],"outcome":"","source_relation":"modified"}], "source_mapping": [], "summary": ["保留 A，改写 B，删除 C，插入 X，调整 D"]}
+            {"id":"d","order":4,"summary":"D2","participants":[],"outcome":"","source_relation":"modified"}],
+            "source_mapping": [{"source_event_id":"source-1","target_node_id":"a"},{"source_event_id":"source-2","target_node_id":"b"},{"source_event_id":"source-3","target_node_id":None},{"source_event_id":"source-4","target_node_id":"d"}],
+            "summary": ["保留 A，改写 B，删除 C，插入 X，调整 D"]}
         if stage == "writing_plan": return {"blocks": [
             {"title":"A","source_start_offset":0,"source_end_offset":2,"source_text_snapshot":"A\n","operation":"preserve"},
             {"title":"B","source_start_offset":2,"source_end_offset":4,"source_text_snapshot":"B\n","operation":"rewrite","preserve_constraints":["承接 A"]},
@@ -89,6 +94,20 @@ class ReimagineAI:
         if stage=="target_design": return {"boundary_conditions":{"initial_state":["李四在酒楼"],"required_characters":["李四","王五"],"location":"酒楼","time":"夜","inherited_facts":["幕后身份未知"],"required_end_state":["王五离开"],"downstream_constraints":["下一场可继续"]},"nodes":[{"id":"n1","order":1,"summary":"李四识破伏击","participants":["李四","王五"],"outcome":"交手","source_relation":"modified"}],"summary":["在酒楼重新构思交手"]}
         if stage=="writing_plan": return {"blocks":[{"title":"整场重新构思","source_start_offset":0,"source_end_offset":len(payload["source_text"]),"source_text_snapshot":payload["source_text"],"operation":"rewrite","preserve_constraints":["边界条件"]}]}
         if stage=="full_scene_generation": return {"text":"酒楼灯影摇曳，李四识破王五的伏击。交手后，王五翻窗离开。"}
+        raise AssertionError(stage)
+
+
+class ContextAI:
+    def __init__(self) -> None: self.calls: list[tuple[str, dict]] = []
+    def generate_json(self, stage: str, payload: dict) -> dict:
+        self.calls.append((stage, payload))
+        if stage == "target_design":
+            return {"items":[{"id":"all","label":"全文","operation":"adapt","source_value":"Source","target_value":"按人物适配"}],"summary":["适配"]}
+        if stage == "writing_plan":
+            source = payload["source_text"]
+            return {"blocks":[{"title":"all","source_start_offset":0,"source_end_offset":len(source),
+                               "source_text_snapshot":source,"operation":"transform"}]}
+        if stage == "transform_block": return {"text":"CONTEXT-GENERATED"}
         raise AssertionError(stage)
 
 
@@ -269,8 +288,161 @@ class CreativePhaseTwoTests(unittest.TestCase):
             self.assertEqual("酒楼",payload["boundary_conditions"]["location"])
             self.assertEqual(["王五离开"],payload["boundary_conditions"]["required_end_state"])
             self.assertIn("李四识破伏击",payload["target_skeleton"][0]["summary"])
+            self.assertIn("善于观察", json.dumps(payload["character_cards"], ensure_ascii=False))
             self.assertEqual(original,scenes.get_scene(scene.id).original_text)
             self.assertNotEqual(original,draft["text"])
+
+    def test_downstream_invalidation_keeps_stale_draft_until_regeneration(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd(), ignore_cleanup_errors=True) as directory:
+            service, scene_id, _ = self._prepared(Path(directory))
+            service.run_writing_plan(scene_id)
+            original_draft = service.generate_current_draft(scene_id)
+            analysis = service.get_character_modification_analysis(scene_id)
+            analysis["actions"] = [{"id":"changed","summary":"补充动作","source_text":"借墙反冲",
+                                    "start_offset": SOURCE.index("借墙反冲"),
+                                    "end_offset": SOURCE.index("借墙反冲") + len("借墙反冲"), "inferred":False}]
+            service.save_character_modification_analysis(scene_id, analysis)
+            self.assertEqual("stale", service.get_target(scene_id)["status"])
+            self.assertEqual("stale", service.get_writing_plan(scene_id)["status"])
+            self.assertEqual("stale", service.get_current_draft(scene_id)["status"])
+            self.assertEqual(original_draft["text"], service.get_current_draft(scene_id)["text"])
+
+            service.confirm_character_modification_analysis(scene_id)
+            target = service.get_target(scene_id)
+            service.save_target(scene_id, {**target, "design": {**target["design"], "summary": ["新目标"]}})
+            service.confirm_target(scene_id)
+            service.run_writing_plan(scene_id, replace_existing=True)
+            self.assertEqual("stale", service.get_current_draft(scene_id)["status"])
+            refreshed = service.generate_current_draft(scene_id, replace_existing=True)
+            self.assertEqual("draft", refreshed["status"])
+
+            plan = service.get_writing_plan(scene_id)
+            plan["blocks"][0]["instruction"] = "用户调整规划"
+            service.save_writing_plan(scene_id, plan)
+            self.assertEqual("stale", service.get_current_draft(scene_id)["status"])
+            edited = service.save_current_draft(scene_id, {**service.get_current_draft(scene_id), "text": refreshed["text"] + "手改"})
+            self.assertEqual("stale", edited["status"])
+            with self.assertRaisesRegex(ValueError, "stale Current Draft"):
+                service.confirm_scene(scene_id)
+
+    def test_preanalysis_and_intent_changes_invalidate_every_downstream_layer(self) -> None:
+        for changed_level in ("preanalysis", "intent"):
+            with self.subTest(changed_level=changed_level), tempfile.TemporaryDirectory(dir=Path.cwd(), ignore_cleanup_errors=True) as directory:
+                service, scene_id, _ = self._prepared(Path(directory))
+                service.run_writing_plan(scene_id); service.generate_current_draft(scene_id)
+                if changed_level == "preanalysis":
+                    value = service.get_preanalysis(scene_id); value["summary"] += "（修改）"; service.save_preanalysis(scene_id, value)
+                else:
+                    value = service.get_intent(scene_id); value["user_instruction"] += "并保持节奏"; service.save_intent(scene_id, value)
+                self.assertEqual("stale", service.get_character_modification_analysis(scene_id)["status"])
+                self.assertEqual("stale", service.get_target(scene_id)["status"])
+                self.assertEqual("stale", service.get_writing_plan(scene_id)["status"])
+                self.assertEqual("stale", service.get_current_draft(scene_id)["status"])
+
+    def test_writing_plan_rejects_gap_overlap_order_and_invalid_insert(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd(), ignore_cleanup_errors=True) as directory:
+            service, scene_id, _ = self._prepared(Path(directory))
+            target = service.get_target(scene_id)
+            def block(start: int, end: int, operation: str = "preserve") -> dict:
+                return {"title":"block","source_start_offset":start,"source_end_offset":end,
+                        "source_text_snapshot":"" if operation == "insert" else SOURCE[start:end],"operation":operation}
+            invalid_plans = (
+                [block(0, 3), block(4, len(SOURCE))],
+                [block(0, 5), block(4, len(SOURCE))],
+                [block(4, len(SOURCE)), block(0, 4)],
+                [{**block(2, 3), "operation":"insert", "source_text_snapshot":""}, block(0, len(SOURCE))],
+            )
+            for blocks in invalid_plans:
+                with self.assertRaises(ValueError):
+                    service.save_writing_plan(scene_id, {"target_id":target["id"],"strategy":"faithful","blocks":blocks})
+            valid = service.save_writing_plan(scene_id, {"target_id":target["id"],"strategy":"faithful",
+                "blocks":[block(0, 4), block(4, 4, "insert"), block(4, len(SOURCE))]})
+            self.assertEqual(["preserve","insert","preserve"], [item["operation"] for item in valid["blocks"]])
+
+    def test_review_offsets_are_scene_local_and_marks_follow_replacements(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd(), ignore_cleanup_errors=True) as directory:
+            root = Path(directory)
+            long_source = SOURCE * 6
+            source = root / "book.txt"; source.write_text("第一章\n" + ("前" * 100) + long_source, encoding="utf-8")
+            database = root / "rusty.db"; projects = ProjectService(database)
+            project_id = projects.create_project(projects.preview_book(source), root)
+            chapter = projects.list_chapters(project_id)[0]; scenes = SceneService(database)
+            scene = scenes.split_chapter(chapter.id, proposed_boundaries=[
+                {"start_offset":0,"end_offset":100,"title":"前场","reasons":[]},
+                {"start_offset":100,"end_offset":100 + len(long_source),"title":"后场","reasons":[]},
+            ])[1]
+            scenes.confirm_boundaries(chapter.id)
+            card_id = AnchorService(database).create_character_card(name="李四",scope="project",project_id=project_id,setting_text="惯用剑。")
+            service = CreativeWorkflowService(database, ai_client=RecordingAI()); scene_id = scene.id
+            self.assertEqual(100, service.scenes.get_scene(scene_id).original_start_offset)
+            service.save_preanalysis(scene_id,{"summary":"后部场景","characters":["张三"],"basic_events":["战斗"]}); service.confirm_preanalysis(scene_id)
+            service.save_intent(scene_id,{"strategy":"faithful","user_instruction":"替换人物","selected_character_ids":[card_id]})
+            service.save_character_modification_analysis(scene_id,{"source_character":"张三","target_character_card_id":card_id,
+                "explicit_mentions":[],"implicit_references":[],"actions":[],"dialogue":[],"states":[],"objects":[],
+                "spatial_relations":[],"related_events":[],"target_character_conflicts":[]})
+            service.confirm_character_modification_analysis(scene_id)
+            service.save_target(scene_id,{"strategy":"faithful","design":{"items":[{"label":"人物","operation":"adapt","source_value":"张三","target_value":"李四"}],"summary":["适配"]}}); service.confirm_target(scene_id)
+            target = service.get_target(scene_id)
+            service.save_writing_plan(scene_id, {"target_id":target["id"],"strategy":"faithful","blocks":[{
+                "title":"all","source_start_offset":0,"source_end_offset":len(long_source),
+                "source_text_snapshot":long_source,"operation":"preserve"}]})
+            draft = service.generate_current_draft(scene_id)
+            source_start, source_end = 20, 30
+            first = service.save_review_mark(scene_id, {"source_start_offset":source_start,"source_end_offset":source_end,
+                "target_start_offset":0,"target_end_offset":2,"user_note":"first"})
+            second = service.save_review_mark(scene_id, {"source_start_offset":150,"source_end_offset":160,
+                "target_start_offset":5,"target_end_offset":7,"user_note":"second"})
+            self.assertEqual(long_source[source_start:source_end], first["source_text"])
+            self.assertEqual(long_source[150:160], second["source_text"])
+            service.replace_draft_range(scene_id, 0, 2, "LONGER", current_mark_id=first["id"])
+            marks = {item["id"]: item for item in service.list_review_marks(scene_id)}
+            self.assertEqual((0, len("LONGER")), (marks[first["id"]]["target_start_offset"], marks[first["id"]]["target_end_offset"]))
+            self.assertEqual((5 + len("LONGER") - 2, 7 + len("LONGER") - 2),
+                             (marks[second["id"]]["target_start_offset"], marks[second["id"]]["target_end_offset"]))
+
+    def test_review_rework_undo_and_adopt_control_resolution(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd(), ignore_cleanup_errors=True) as directory:
+            service, scene_id, _ = self._prepared(Path(directory))
+            service.run_writing_plan(scene_id); draft = service.generate_current_draft(scene_id)
+            mark = service.save_review_mark(scene_id, {"source_start_offset":0,"source_end_offset":2,
+                "target_start_offset":0,"target_end_offset":2,"user_note":"重改"})
+            result = service.rework_review_range(scene_id, target_start_offset=0, target_end_offset=2, mark_id=mark["id"])
+            pending = next(item for item in service.list_review_marks(scene_id) if item["id"] == mark["id"])
+            self.assertFalse(pending["resolved"])
+            self.assertEqual(len("李四贴墙避开刀锋。"), pending["target_end_offset"])
+            service.save_current_draft(scene_id, {**result["draft"], "text":result["before_text"]})
+            self.assertFalse(next(item for item in service.list_review_marks(scene_id) if item["id"] == mark["id"])["resolved"])
+            again = service.rework_review_range(scene_id, target_start_offset=0, target_end_offset=2, mark_id=mark["id"])
+            service.resolve_review_marks(scene_id, again["mark_ids"])
+            self.assertTrue(next(item for item in service.list_review_marks(scene_id) if item["id"] == mark["id"])["resolved"])
+
+    def test_material_and_character_context_are_routed_to_correct_stages(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd(), ignore_cleanup_errors=True) as directory:
+            service, scene_id, _ = self._prepared(Path(directory))
+            scene = service.scenes.get_scene(scene_id)
+            materials = MaterialService(service.database_path)
+            plot_id = materials.create_material(material_type="plot_skeleton",scope="public",name="Plot",
+                                                raw_text="PLOT-CONTENT-ONLY",content={"premise":"PLOT-CONTENT-ONLY"})
+            scene_id_ref = materials.create_material(material_type="scene_reference",scope="public",name="SceneRef",
+                                                     raw_text="SCENE-REFERENCE-CONTENT")
+            intent = service.get_intent(scene_id)
+            with session(service.database_path) as connection:
+                connection.execute("UPDATE creative_intents SET selected_plot_material_ids_json=?,selected_scene_material_ids_json=? WHERE scene_id=?",
+                                   (json.dumps([plot_id]), json.dumps([scene_id_ref]), scene_id))
+            ai = ContextAI(); service = CreativeWorkflowService(service.database_path, ai_client=ai)
+            service.run_target_design(scene_id, replace_existing=True)
+            target_payload = ai.calls[-1][1]
+            self.assertIn("PLOT-CONTENT-ONLY", json.dumps(target_payload, ensure_ascii=False))
+            self.assertNotIn("SCENE-REFERENCE-CONTENT", json.dumps(target_payload, ensure_ascii=False))
+            self.assertIn("惯用剑", json.dumps(target_payload["character_cards"], ensure_ascii=False))
+            service.confirm_target(scene_id)
+            service.run_writing_plan(scene_id, replace_existing=True)
+            writing_payload = ai.calls[-1][1]
+            self.assertIn("SCENE-REFERENCE-CONTENT", json.dumps(writing_payload["scene_references"], ensure_ascii=False))
+            service.generate_current_draft(scene_id)
+            generation_payload = ai.calls[-1][1]
+            self.assertIn("SCENE-REFERENCE-CONTENT", json.dumps(generation_payload["scene_references"], ensure_ascii=False))
+            self.assertIn("惯用剑", json.dumps(generation_payload["character_cards"], ensure_ascii=False))
 
     @staticmethod
     def _prepared(root: Path) -> tuple[CreativeWorkflowService, int, RecordingAI]:

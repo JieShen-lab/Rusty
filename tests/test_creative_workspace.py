@@ -446,9 +446,13 @@ class CreativeWorkspaceTests(unittest.TestCase):
             })
             confirmed = service.confirm_target(scene.id)
             confirmed_stage = service.get_scene_state(scene.id)["current_stage"]
-            service.save_character_modification_analysis(
-                scene.id, service.get_character_modification_analysis(scene.id)
-            )
+            changed_analysis = service.get_character_modification_analysis(scene.id)
+            changed_analysis["actions"] = [{
+                "id": "changed-action", "summary": "用户补充动作证据", "source_text": "借墙反冲",
+                "start_offset": fixture.index("借墙反冲"), "end_offset": fixture.index("借墙反冲") + len("借墙反冲"),
+                "inferred": False,
+            }]
+            service.save_character_modification_analysis(scene.id, changed_analysis)
             stale = service.get_target(scene.id)
             source_after = scenes.get_scene(scene.id).original_text
 

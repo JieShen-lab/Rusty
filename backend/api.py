@@ -1146,6 +1146,11 @@ def create_app(
         _require_scene(scene_service, scene_id)
         return creative_workflow_service.rework_all_review_marks(scene_id)
 
+    @app.post("/api/scenes/{scene_id}/review/adopt", response_model=list[dict[str, Any]], dependencies=[Depends(_require_token)])
+    def adopt_review_rework(scene_id: int, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.resolve_review_marks(scene_id, payload.get("mark_ids") or [])
+
     @app.post("/api/scenes/{scene_id}/confirm", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
     def confirm_creative_scene(scene_id: int) -> dict[str, Any]:
         _require_scene(scene_service, scene_id)
