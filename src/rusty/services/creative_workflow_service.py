@@ -312,6 +312,8 @@ class CreativeWorkflowService:
         normalized = self._normalize_preanalysis(value)
         current = self.get_preanalysis(scene_id)
         changed = current is None or any(current.get(key) != normalized[key] for key in normalized)
+        if not changed and current is not None:
+            return current
         with session(self.database_path) as connection:
             connection.execute(
                 """
@@ -494,6 +496,8 @@ class CreativeWorkflowService:
         analysis = value.get("analysis") if isinstance(value.get("analysis"), dict) else {}
         current = self.get_strategy_analysis(scene_id)
         changed = current is None or current["strategy"] != strategy or current["analysis"] != analysis
+        if not changed and current is not None:
+            return current
         status = "stale" if user_edited and current and current["status"] == "stale" else "draft"
         with session(self.database_path) as connection:
             connection.execute("""INSERT INTO strategy_scene_analyses(scene_id,strategy,analysis_json,status,user_edited,confirmed_at,updated_at)
@@ -607,6 +611,8 @@ class CreativeWorkflowService:
                 **{category: normalized[category] for category in CHARACTER_ANALYSIS_CATEGORIES},
             }.items()
         )
+        if not changed and current is not None:
+            return current
         saved_status = "stale" if user_edited and current and current["status"] == "stale" else "draft"
         columns = ", ".join(f"{category}_json" for category in CHARACTER_ANALYSIS_CATEGORIES)
         placeholders = ", ".join("?" for _ in CHARACTER_ANALYSIS_CATEGORIES)
@@ -699,6 +705,8 @@ class CreativeWorkflowService:
         changed = current is None or any(
             (current["strategy"] != strategy, current["user_instruction"] != instruction, current["design"] != design)
         )
+        if not changed and current is not None:
+            return current
         with session(self.database_path) as connection:
             connection.execute(
                 """
@@ -772,9 +780,16 @@ class CreativeWorkflowService:
             output_contract=("Return {blocks:[{title,source_start_offset,source_end_offset,source_text_snapshot,operation,instruction,preserve_constraints,target_requirements,resource_refs}]}. "
                              "Use semantic blocks and cover Source in order. Operations: preserve, transform, rewrite, insert, delete."),
         )
-        return self.save_writing_plan(scene_id, {"target_id": target["id"], "strategy": target["strategy"], "blocks": value.get("blocks", [])})
+        return self._save_writing_plan(
+            scene_id,
+            {"target_id": target["id"], "strategy": target["strategy"], "blocks": value.get("blocks", [])},
+            refresh_status=True,
+        )
 
     def save_writing_plan(self, scene_id: int, value: dict[str, Any]) -> dict[str, Any]:
+        return self._save_writing_plan(scene_id, value, refresh_status=False)
+
+    def _save_writing_plan(self, scene_id: int, value: dict[str, Any], *, refresh_status: bool) -> dict[str, Any]:
         scene = self.scenes.get_scene(scene_id)
         if scene is None:
             raise FileNotFoundError(f"Scene not found: {scene_id}")
@@ -799,6 +814,15 @@ class CreativeWorkflowService:
                 if material is None or material.material_type != "scene_reference":
                     raise ValueError("Writing block resource_refs must resolve to scene_reference materials.")
         self._validate_writing_plan(scene, blocks)
+        current = self.get_writing_plan(scene_id)
+        if not refresh_status and current is not None and self._writing_plan_semantically_equal(
+            scene,
+            current,
+            target_id=target_id,
+            strategy=strategy,
+            blocks=blocks,
+        ):
+            return current
         coverage = self._coverage(blocks)
         with session(self.database_path) as connection:
             connection.execute(
@@ -885,6 +909,8 @@ class CreativeWorkflowService:
     def save_current_draft(self, scene_id: int, value: dict[str, Any]) -> dict[str, Any]:
         current = self.get_current_draft(scene_id)
         next_text = str(value.get("text") or "")
+        if current is not None and current["text"] == next_text:
+            return current
         if current is not None and current["text"] != next_text:
             opcodes = difflib.SequenceMatcher(None, current["text"], next_text, autojunk=False).get_opcodes()
             result = current
@@ -916,6 +942,8 @@ class CreativeWorkflowService:
             raise ValueError("Current Draft replacement range is invalid.")
         replacement_text = str(replacement)
         updated = draft["text"][:start_offset] + replacement_text + draft["text"][end_offset:]
+        if updated == draft["text"]:
+            return draft
         saved = self._save_current_draft(scene_id, {**draft, "text": updated}, refresh_basis=False)
         delta = len(replacement_text) - (end_offset - start_offset)
         replacement_end = start_offset + len(replacement_text)
@@ -1258,6 +1286,41 @@ class CreativeWorkflowService:
             cursor = end
         if cursor != source_end:
             raise ValueError("Writing plan does not cover Source through its final character.")
+
+    @staticmethod
+    def _writing_plan_semantically_equal(
+        scene: Any,
+        current: dict[str, Any],
+        *,
+        target_id: int,
+        strategy: str,
+        blocks: list[dict[str, Any]],
+    ) -> bool:
+        if current["target_id"] != target_id or current["strategy"] != strategy:
+            return False
+        current_blocks = current["blocks"]
+        if len(current_blocks) != len(blocks):
+            return False
+        compared_keys = (
+            "title",
+            "source_start_offset",
+            "source_end_offset",
+            "source_text_snapshot",
+            "operation",
+            "instruction",
+            "preserve_constraints",
+            "target_requirements",
+            "resource_refs",
+        )
+        for index, (existing, normalized) in enumerate(zip(current_blocks, blocks), 1):
+            candidate = {
+                **normalized,
+                "source_start_offset": normalized["source_start_offset"] - scene.original_start_offset,
+                "source_end_offset": normalized["source_end_offset"] - scene.original_start_offset,
+            }
+            if existing["order"] != index or any(existing[key] != candidate[key] for key in compared_keys):
+                return False
+        return True
 
     @staticmethod
     def _coverage(blocks: list[dict[str, Any]]) -> dict[str, float]:

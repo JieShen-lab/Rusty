@@ -473,6 +473,94 @@ class CreativePhaseTwoTests(unittest.TestCase):
             self.assertIn("SCENE-REFERENCE-CONTENT", json.dumps(generation_payload["scene_references"], ensure_ascii=False))
             self.assertIn("惯用剑", json.dumps(generation_payload["character_cards"], ensure_ascii=False))
 
+    def test_preanalysis_and_character_analysis_noop_saves_preserve_confirmation(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd(), ignore_cleanup_errors=True) as directory:
+            service, scene_id, _ = self._prepared(Path(directory))
+            stage_before = service.get_scene_state(scene_id)["current_stage"]
+            preanalysis = service.get_preanalysis(scene_id)
+            saved_preanalysis = service.save_preanalysis(scene_id, preanalysis)
+            self.assertEqual("confirmed", saved_preanalysis["status"])
+            self.assertEqual(preanalysis["confirmed_at"], saved_preanalysis["confirmed_at"])
+            self.assertEqual(preanalysis["updated_at"], saved_preanalysis["updated_at"])
+            self.assertEqual(stage_before, service.get_scene_state(scene_id)["current_stage"])
+
+            analysis = service.get_character_modification_analysis(scene_id)
+            target_before = service.get_target(scene_id)
+            saved_analysis = service.save_character_modification_analysis(scene_id, analysis)
+            self.assertEqual("confirmed", saved_analysis["status"])
+            self.assertEqual(analysis["confirmed_at"], saved_analysis["confirmed_at"])
+            self.assertEqual(analysis["updated_at"], saved_analysis["updated_at"])
+            self.assertEqual("confirmed", service.get_target(scene_id)["status"])
+            self.assertEqual(target_before["updated_at"], service.get_target(scene_id)["updated_at"])
+            self.assertEqual(stage_before, service.get_scene_state(scene_id)["current_stage"])
+
+    def test_strategy_analysis_noop_save_preserves_confirmation_and_downstream(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd(), ignore_cleanup_errors=True) as directory:
+            root = Path(directory); source = root / "book.txt"; source.write_text("第一章\nA\nB\nC\nD", encoding="utf-8")
+            database = root / "rusty.db"; projects = ProjectService(database); project_id = projects.create_project(projects.preview_book(source), root)
+            chapter = projects.list_chapters(project_id)[0]; scenes = SceneService(database); scene = scenes.split_chapter(chapter.id)[0]; scenes.confirm_boundaries(chapter.id)
+            service = CreativeWorkflowService(database, ai_client=PlotAdjustAI())
+            service.save_preanalysis(scene.id,{"summary":"四个事件","characters":[],"basic_events":["A","B","C","D"]}); service.confirm_preanalysis(scene.id)
+            service.save_intent(scene.id,{"strategy":"plot_adjust","user_instruction":"修改 B，删除 C，增加 X。"})
+            service.run_strategy_analysis(scene.id); service.confirm_strategy_analysis(scene.id)
+            service.run_target_design(scene.id); service.confirm_target(scene.id); service.run_writing_plan(scene.id); service.generate_current_draft(scene.id)
+            analysis = service.get_strategy_analysis(scene.id)
+            target_before, plan_before, draft_before = service.get_target(scene.id), service.get_writing_plan(scene.id), service.get_current_draft(scene.id)
+            stage_before = service.get_scene_state(scene.id)["current_stage"]
+            saved = service.save_strategy_analysis(scene.id, analysis)
+            self.assertEqual("confirmed", saved["status"])
+            self.assertEqual(analysis["confirmed_at"], saved["confirmed_at"])
+            self.assertEqual(analysis["updated_at"], saved["updated_at"])
+            self.assertEqual("confirmed", service.get_target(scene.id)["status"])
+            self.assertEqual("ready", service.get_writing_plan(scene.id)["status"])
+            self.assertEqual("draft", service.get_current_draft(scene.id)["status"])
+            self.assertEqual((target_before["updated_at"], plan_before["updated_at"], draft_before["updated_at"]),
+                             (service.get_target(scene.id)["updated_at"], service.get_writing_plan(scene.id)["updated_at"], service.get_current_draft(scene.id)["updated_at"]))
+            self.assertEqual(stage_before, service.get_scene_state(scene.id)["current_stage"])
+
+    def test_target_and_writing_plan_noop_saves_preserve_ready_fresh_state(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd(), ignore_cleanup_errors=True) as directory:
+            service, scene_id, _ = self._prepared(Path(directory))
+            service.run_writing_plan(scene_id); service.generate_current_draft(scene_id)
+            target, plan, draft = service.get_target(scene_id), service.get_writing_plan(scene_id), service.get_current_draft(scene_id)
+            stage_before = service.get_scene_state(scene_id)["current_stage"]
+            saved_target = service.save_target(scene_id, target)
+            self.assertEqual("confirmed", saved_target["status"])
+            self.assertEqual(target["confirmed_at"], saved_target["confirmed_at"])
+            self.assertEqual(target["updated_at"], saved_target["updated_at"])
+            self.assertEqual("ready", service.get_writing_plan(scene_id)["status"])
+            self.assertEqual("draft", service.get_current_draft(scene_id)["status"])
+            self.assertEqual(stage_before, service.get_scene_state(scene_id)["current_stage"])
+
+            saved_plan = service.save_writing_plan(scene_id, plan)
+            self.assertEqual("ready", saved_plan["status"])
+            self.assertEqual(plan["updated_at"], saved_plan["updated_at"])
+            self.assertEqual(draft["updated_at"], service.get_current_draft(scene_id)["updated_at"])
+            self.assertEqual("draft", service.get_current_draft(scene_id)["status"])
+            changed_plan = {**saved_plan, "blocks":[{**block, "instruction": "真实变化" if index == 0 else block["instruction"]}
+                                                   for index, block in enumerate(saved_plan["blocks"])]}
+            service.save_writing_plan(scene_id, changed_plan)
+            self.assertEqual("stale", service.get_current_draft(scene_id)["status"])
+
+    def test_current_draft_noop_save_preserves_confirmed_and_stale_states(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd(), ignore_cleanup_errors=True) as directory:
+            service, scene_id, _ = self._prepared(Path(directory))
+            service.run_writing_plan(scene_id); service.generate_current_draft(scene_id); service.confirm_scene(scene_id)
+            confirmed = service.get_current_draft(scene_id)
+            saved_confirmed = service.save_current_draft(scene_id, confirmed)
+            self.assertEqual("confirmed", saved_confirmed["status"])
+            self.assertEqual(confirmed["updated_at"], saved_confirmed["updated_at"])
+            self.assertEqual("confirmed", service.get_scene_state(scene_id)["current_stage"])
+
+            target = service.get_target(scene_id)
+            service.save_target(scene_id,{**target,"design":{**target["design"],"summary":["真实修改"]}})
+            stale = service.get_current_draft(scene_id)
+            stage_before = service.get_scene_state(scene_id)["current_stage"]
+            saved_stale = service.save_current_draft(scene_id, stale)
+            self.assertEqual("stale", saved_stale["status"])
+            self.assertEqual(stale["updated_at"], saved_stale["updated_at"])
+            self.assertEqual(stage_before, service.get_scene_state(scene_id)["current_stage"])
+
     @staticmethod
     def _prepared(root: Path) -> tuple[CreativeWorkflowService, int, RecordingAI]:
         source = root / "book.txt"

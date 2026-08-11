@@ -146,7 +146,41 @@ test('5. reimagine 以 Boundary Conditions 和 TargetSkeleton 完成完整场景
   await expect(page.getByLabel('当前正文')).toHaveValue('李四进入院子，识破伏击并检查院门，随后仍返回客栈。');
 });
 
-test('6. 工程总提示词是可独立编辑的当前文本', async ({ page, request }) => {
+test('6. Target 输入恢复原值后的 autosave 保持 confirmed 且不 stale 下游', async ({ page, request }) => {
+  await openProject(page, 7);
+  await page.getByRole('button', { name: '运行预分析' }).click();
+  await page.getByRole('button', { name: '确认预分析' }).click();
+  await page.getByRole('button', { name: /贴合原文/ }).click();
+  await page.getByPlaceholder(/把张三替换成李四/).fill('把人物替换成李四，事件过程尽量保留。');
+  await page.getByRole('checkbox', { name: '李四' }).check();
+  await page.getByRole('button', { name: '进入专项分析' }).click();
+  await page.getByRole('button', { name: '运行人物专项分析' }).click();
+  await page.getByRole('button', { name: '确认分析' }).click();
+  await page.getByRole('button', { name: '生成目标草案' }).click();
+  await page.getByRole('button', { name: '确认目标' }).click();
+  await page.getByRole('button', { name: '生成写作规划' }).click();
+  await page.getByRole('button', { name: '开始生成' }).click();
+
+  const workflow = await (await request.get(`${backend}/api/projects/7/creative-workflow`)).json();
+  const sceneId = workflow[0].active_scene_id;
+  await page.getByRole('button', { name: '目标设计' }).click();
+  const label = page.getByLabel('目标项名称').first();
+  const original = await label.inputValue();
+  await label.fill(`${original}临`);
+  await label.fill(original);
+  await expect(page.locator('.target-editor').getByText('已确认', { exact: true })).toBeVisible();
+  await expect.poll(async () => (await (await request.get(`${backend}/api/scenes/${sceneId}/target`)).json()).status).toBe('confirmed');
+  expect((await (await request.get(`${backend}/api/scenes/${sceneId}/writing-plan`)).json()).status).toBe('ready');
+  expect((await (await request.get(`${backend}/api/scenes/${sceneId}/current-draft`)).json()).status).toBe('draft');
+
+  await page.reload();
+  await page.getByRole('button', { name: '目标设计' }).click();
+  await expect(page.locator('.target-editor').getByText('已确认', { exact: true })).toBeVisible();
+  expect((await (await request.get(`${backend}/api/scenes/${sceneId}/writing-plan`)).json()).status).toBe('ready');
+  expect((await (await request.get(`${backend}/api/scenes/${sceneId}/current-draft`)).json()).status).toBe('draft');
+});
+
+test('7. 工程总提示词是可独立编辑的当前文本', async ({ page, request }) => {
   await openProject(page, 3);
   await page.getByRole('button', { name: '工程设置' }).click();
   const editor = page.getByLabel('总提示词');
@@ -156,7 +190,7 @@ test('6. 工程总提示词是可独立编辑的当前文本', async ({ page, re
     .toBe('保持人物行为一致，不自动生成正文。');
 });
 
-test('7. 旧提取工程仍可导出分析并派生独立工程', async ({ page, request }) => {
+test('8. 旧提取工程仍可导出分析并派生独立工程', async ({ page, request }) => {
   await openProject(page, 8);
   const before = await (await request.get(`${backend}/api/projects/8`)).json();
   const beforeChapter = await (await request.get(`${backend}/api/chapters/8`)).json();
