@@ -2284,3 +2284,17 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .character-context-card p { margin: 0; color: #515a6a; font-size: 12px; line-height: 1.65; }
 .character-context-card small { color: #737c8b; font-size: 11px; line-height: 1.55; }
 .target-design-shell { border-style: dashed; background: #fafbfc; }
+.target-editor { margin: 22px 34px 40px; border: 1px solid #dfe3e9; border-radius: 8px; background: #fff; overflow: hidden; }
+.target-editor > header, .target-editor > footer { display: flex; align-items: center; justify-content: space-between; padding: 18px 22px; }
+.target-editor > header { border-bottom: 1px solid #e5e8ed; }
+.target-editor > footer { justify-content: flex-end; border-top: 1px solid #e5e8ed; }
+.target-editor h2, .target-editor h3 { margin: 0; font-size: 16px; }
+.target-editor header p { margin: 5px 0 0; color: #7b8390; font-size: 12px; }
+.target-item-list { display: grid; }
+.target-item-list article { display: grid; grid-template-columns: minmax(110px, .8fr) 92px minmax(120px, 1fr) auto minmax(120px, 1fr) auto; align-items: center; gap: 10px; padding: 12px 22px; border-bottom: 1px solid #edf0f3; }
+.target-item-list input, .target-item-list select, .target-summary textarea { box-sizing: border-box; width: 100%; border: 1px solid #ccd2dc; border-radius: 6px; background: #fff; color: #202839; font: 13px/1.5 inherit; }
+.target-item-list input, .target-item-list select { height: 36px; padding: 0 9px; }
+.target-summary { margin: 18px 22px; padding: 18px; border-radius: 7px; background: #f6f7f9; }
+.target-summary h3 { margin-bottom: 10px; font-size: 13px; }
+.target-summary textarea { min-height: 90px; padding: 9px 11px; resize: vertical; }
+.add-target-item { margin: 14px 22px 0; }

@@ -8,6 +8,7 @@ from rusty.db import default_database_path, initialize_database, session
 from rusty.services.scene_service import SceneService
 from rusty.services.workflow_ai import WorkflowAI
 from rusty.services.anchor_service import AnchorService
+from rusty.services.material_service import MaterialService
 
 
 WORKFLOW_STAGES = (
@@ -36,6 +37,7 @@ class CreativeWorkflowService:
             initialize_database(connection)
         self.scenes = SceneService(self.database_path)
         self.characters = AnchorService(self.database_path)
+        self.materials = MaterialService(self.database_path)
         self.ai = WorkflowAI(self.database_path, ai_client=ai_client)
 
     def list_chapter_states(self, project_id: int) -> list[dict[str, Any]]:
@@ -570,8 +572,134 @@ class CreativeWorkflowService:
                     target.name, *category_values, saved_status, 1 if user_edited else 0,
                 ),
             )
+            self._mark_target_stale(connection, scene_id)
         self.set_scene_stage(scene_id, "special_analysis")
         return self.get_character_modification_analysis(scene_id) or {}
+
+    def get_target(self, scene_id: int) -> dict[str, Any] | None:
+        with session(self.database_path) as connection:
+            row = connection.execute("SELECT * FROM scene_targets WHERE scene_id = ?", (scene_id,)).fetchone()
+        if row is None:
+            return None
+        return {
+            "id": int(row["id"]), "scene_id": int(row["scene_id"]),
+            "strategy": str(row["strategy"]), "user_instruction": str(row["user_instruction"]),
+            "design": self._json_object(row["design_json"]), "status": str(row["status"]),
+            "created_at": str(row["created_at"]), "updated_at": str(row["updated_at"]),
+            "confirmed_at": row["confirmed_at"],
+        }
+
+    def run_target_design(self, scene_id: int, *, replace_existing: bool = False) -> dict[str, Any]:
+        scene = self.scenes.get_scene(scene_id)
+        if scene is None:
+            raise FileNotFoundError(f"Scene not found: {scene_id}")
+        intent = self.get_intent(scene_id)
+        if intent is None:
+            raise ValueError("Choose a creative direction before target design.")
+        existing = self.get_target(scene_id)
+        if existing and existing["status"] == "draft" and not replace_existing:
+            raise ValueError("Regenerating would replace the current target draft.")
+        analysis = self.get_character_modification_analysis(scene_id)
+        if intent["strategy"] == "faithful" and (not analysis or analysis["status"] != "confirmed"):
+            raise ValueError("Confirm character modification analysis before target design.")
+        target_character = None
+        if analysis:
+            card = self.characters.get_character_card(int(analysis["target_character_card_id"]))
+            if card:
+                target_character = {
+                    "id": card.id, "name": card.name, "description": card.description,
+                    "setting_text": card.setting_text, "personality": card.personality,
+                    "action_constraints": card.action_constraints, "profile": card.profile,
+                    "custom_fields": card.custom_fields,
+                }
+        resources = []
+        for material_id in [*intent["selected_plot_material_ids"], *intent["selected_scene_material_ids"]]:
+            material = self.materials.get_material(material_id)
+            if material:
+                resources.append({"id": material.id, "type": material.material_type, "name": material.name,
+                                  "content": self._json_object(material.content_json)})
+        value = self.ai.generate_json(
+            project_id=scene.project_id, stage="target_design", workflow_key=intent["strategy"],
+            task_key="target_design", user_instruction=intent["user_instruction"],
+            payload={"source_text": scene.original_text, "confirmed_special_analysis": analysis,
+                     "creative_intent": intent, "target_character": target_character,
+                     "selected_resources": resources},
+            output_contract=("Return {items:[{id,label,operation,source_value,target_value,source_start_offset,source_end_offset}], summary:string[]}. "
+                             "operation must be preserve, adapt, or modify. Do not write prose."),
+        )
+        return self.save_target(scene_id, {"strategy": intent["strategy"], "user_instruction": intent["user_instruction"], "design": value})
+
+    def save_target(self, scene_id: int, value: dict[str, Any]) -> dict[str, Any]:
+        scene = self.scenes.get_scene(scene_id)
+        if scene is None:
+            raise FileNotFoundError(f"Scene not found: {scene_id}")
+        intent = self.get_intent(scene_id)
+        strategy = str(value.get("strategy") or (intent or {}).get("strategy") or "")
+        if strategy not in {"faithful", "plot_adjust", "expansion", "reimagine"}:
+            raise ValueError(f"Unsupported target strategy: {strategy}")
+        design = self._normalize_target_design(strategy, value.get("design"))
+        with session(self.database_path) as connection:
+            connection.execute(
+                """
+                INSERT INTO scene_targets (scene_id, strategy, user_instruction, design_json, status, confirmed_at, updated_at)
+                VALUES (?, ?, ?, ?, 'draft', NULL, CURRENT_TIMESTAMP)
+                ON CONFLICT(scene_id) DO UPDATE SET strategy=excluded.strategy,
+                    user_instruction=excluded.user_instruction, design_json=excluded.design_json,
+                    status='draft', confirmed_at=NULL, updated_at=CURRENT_TIMESTAMP
+                """,
+                (scene_id, strategy, str(value.get("user_instruction") or (intent or {}).get("user_instruction") or ""),
+                 json.dumps(design, ensure_ascii=False)),
+            )
+            if self._table_exists(connection, "writing_plans"):
+                connection.execute("UPDATE writing_plans SET status='stale', updated_at=CURRENT_TIMESTAMP WHERE scene_id=?", (scene_id,))
+        self.set_scene_stage(scene_id, "target_design")
+        return self.get_target(scene_id) or {}
+
+    def confirm_target(self, scene_id: int) -> dict[str, Any]:
+        target = self.get_target(scene_id)
+        if target is None:
+            raise ValueError("Generate or create a target before confirming it.")
+        if target["status"] == "stale":
+            raise ValueError("Regenerate the stale target before confirming it.")
+        with session(self.database_path) as connection:
+            connection.execute("UPDATE scene_targets SET status='confirmed', confirmed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE scene_id=?", (scene_id,))
+        self.set_scene_stage(scene_id, "writing")
+        return self.get_target(scene_id) or {}
+
+    @staticmethod
+    def _normalize_target_design(strategy: str, value: Any) -> dict[str, Any]:
+        design = value if isinstance(value, dict) else {}
+        if strategy != "faithful":
+            return design
+        items = []
+        for index, raw in enumerate(design.get("items") if isinstance(design.get("items"), list) else []):
+            if not isinstance(raw, dict):
+                continue
+            operation = str(raw.get("operation") or "preserve").lower()
+            if operation not in {"preserve", "adapt", "modify"}:
+                raise ValueError(f"Unsupported faithful target operation: {operation}")
+            items.append({
+                "id": str(raw.get("id") or f"change-{index + 1}"), "label": str(raw.get("label") or ""),
+                "operation": operation, "source_value": str(raw.get("source_value") or ""),
+                "target_value": str(raw.get("target_value") or ""),
+                "source_start_offset": int(raw.get("source_start_offset") or 0),
+                "source_end_offset": int(raw.get("source_end_offset") or 0),
+            })
+        summary = [str(item) for item in design.get("summary", [])] if isinstance(design.get("summary"), list) else []
+        return {"items": items, "summary": summary}
+
+    @staticmethod
+    def _json_object(value: Any) -> dict[str, Any]:
+        try:
+            parsed = json.loads(str(value or "{}"))
+        except (TypeError, ValueError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    @staticmethod
+    def _mark_target_stale(connection: Any, scene_id: int) -> None:
+        if CreativeWorkflowService._table_exists(connection, "scene_targets"):
+            connection.execute("UPDATE scene_targets SET status='stale', confirmed_at=NULL, updated_at=CURRENT_TIMESTAMP WHERE scene_id=?", (scene_id,))
 
     def confirm_character_modification_analysis(self, scene_id: int) -> dict[str, Any]:
         scene = self.scenes.get_scene(scene_id)

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .connection import session
 
-CURRENT_SCHEMA_VERSION = 45
+CURRENT_SCHEMA_VERSION = 46
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -4007,6 +4007,44 @@ def _migrate_to_v45(connection: sqlite3.Connection) -> None:
         )
 
 
+def _migrate_to_v46(connection: sqlite3.Connection) -> None:
+    """Add strategy-shaped scene targets without changing the immutable Source layer."""
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS scene_targets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scene_id INTEGER NOT NULL UNIQUE,
+            strategy TEXT NOT NULL CHECK (strategy IN (
+                'faithful', 'plot_adjust', 'expansion', 'reimagine'
+            )),
+            user_instruction TEXT NOT NULL DEFAULT '',
+            design_json TEXT NOT NULL DEFAULT '{}',
+            status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'confirmed', 'stale')),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            confirmed_at TEXT,
+            FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_scene_targets_status
+            ON scene_targets(status, updated_at);
+
+        INSERT INTO prompt_definitions (
+            name, description, kind, workflow_key, task_key,
+            content, input_description, is_default
+        ) SELECT
+            '贴合原文 / 目标设计', '根据已确认专项分析生成 ChangeSet 草案',
+            'workflow_task', 'faithful', 'target_design',
+            '把已确认的 Source 事实与差异转成明确的 preserve、adapt 或 modify 目标项。Target 回答最终要改成什么，不要生成正文或写作规划。',
+            '工程总提示词、Source、已确认专项分析、CreativeIntent、目标人物卡和用户已选资源。', 1
+        WHERE NOT EXISTS (
+            SELECT 1 FROM prompt_definitions
+            WHERE kind = 'workflow_task' AND workflow_key = 'faithful'
+              AND task_key = 'target_design' AND deleted_at IS NULL
+        );
+        """
+    )
+
+
 def _safe_json_list(value: object) -> list[dict[str, object]]:
     try:
         parsed = json.loads(str(value or "[]"))
@@ -4402,6 +4440,7 @@ MIGRATIONS = {
     43: _migrate_to_v43,
     44: _migrate_to_v44,
     45: _migrate_to_v45,
+    46: _migrate_to_v46,
 }
 
 

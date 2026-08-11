@@ -1244,6 +1244,26 @@ export function confirmCharacterModificationAnalysis(sceneId: number) {
   return request<CharacterModificationAnalysis>(`/api/scenes/${sceneId}/character-modification-analysis/confirm`, { method: 'POST' });
 }
 
+export function getSceneTarget(sceneId: number) {
+  return request<import('./types').SceneTarget | null>(`/api/scenes/${sceneId}/target`);
+}
+
+export function runSceneTarget(sceneId: number, replaceExisting = false) {
+  return request<import('./types').SceneTarget>(`/api/scenes/${sceneId}/target/run`, {
+    method: 'POST', body: JSON.stringify({ replace_existing: replaceExisting }),
+  });
+}
+
+export function saveSceneTarget(sceneId: number, value: import('./types').SceneTarget) {
+  return request<import('./types').SceneTarget>(`/api/scenes/${sceneId}/target`, {
+    method: 'PUT', body: JSON.stringify(value),
+  });
+}
+
+export function confirmSceneTarget(sceneId: number) {
+  return request<import('./types').SceneTarget>(`/api/scenes/${sceneId}/target/confirm`, { method: 'POST' });
+}
+
 export function analyzeChapterScenes(
   chapterId: number,
   payload: {

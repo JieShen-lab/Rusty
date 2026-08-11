@@ -1244,6 +1244,28 @@ export type CharacterModificationAnalysis = {
   updated_at: string;
 };
 
+export type ChangeOperation = 'preserve' | 'adapt' | 'modify';
+export type ChangeSetItem = {
+  id: string;
+  label: string;
+  operation: ChangeOperation;
+  source_value: string;
+  target_value: string;
+  source_start_offset: number;
+  source_end_offset: number;
+};
+export type SceneTarget = {
+  id: number;
+  scene_id: number;
+  strategy: CreativeStrategy;
+  user_instruction: string;
+  design: { items?: ChangeSetItem[]; summary?: string[]; [key: string]: unknown };
+  status: 'draft' | 'confirmed' | 'stale';
+  created_at: string;
+  updated_at: string;
+  confirmed_at: string | null;
+};
+
 export type SceneBoundaryItem = {
   start_offset: number;
   end_offset: number;

@@ -18,6 +18,7 @@ from rusty.db.schema import (
     _migrate_to_v42,
     _migrate_to_v44,
     _migrate_to_v45,
+    _migrate_to_v46,
 )
 from rusty.services.anchor_service import AnchorService
 from rusty.services.creative_workflow_service import CreativeWorkflowService
@@ -28,6 +29,16 @@ from rusty.services.scene_service import SceneService
 class CreativeWorkspaceTests(unittest.TestCase):
     class FakeWorkflowAI:
         def generate_json(self, stage: str, payload: dict) -> dict:
+            if stage == "target_design":
+                return {
+                    "items": [
+                        {"id": "character", "label": "人物替换", "operation": "modify", "source_value": "张三", "target_value": "李四"},
+                        {"id": "plot", "label": "主要剧情", "operation": "preserve", "source_value": "王五袭击", "target_value": ""},
+                        {"id": "action", "label": "主角动作", "operation": "adapt", "source_value": "硬接攻击", "target_value": "按人物卡适配"},
+                        {"id": "weapon", "label": "武器", "operation": "modify", "source_value": "长刀", "target_value": "剑"},
+                    ],
+                    "summary": ["张三 → 李四", "主要剧情保持", "长刀 → 剑"],
+                }
             if stage == "character_modification_analysis":
                 text = payload["source_text"]
                 return {
@@ -154,7 +165,28 @@ class CreativeWorkspaceTests(unittest.TestCase):
             "SELECT scene_id, current_stage FROM scene_workflow_state ORDER BY scene_id"
         ).fetchall()
         self.assertEqual([(100, "target_design"), (200, "not_started")], [tuple(row) for row in rows])
-        self.assertEqual(45, CURRENT_SCHEMA_VERSION)
+        self.assertGreaterEqual(CURRENT_SCHEMA_VERSION, 45)
+
+    def test_v46_migration_adds_strategy_shaped_scene_targets(self) -> None:
+        connection = sqlite3.connect(":memory:")
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.executescript(
+            """
+            CREATE TABLE scenes (id INTEGER PRIMARY KEY);
+            CREATE TABLE prompt_definitions (
+                id INTEGER PRIMARY KEY, name TEXT, description TEXT, kind TEXT,
+                workflow_key TEXT, task_key TEXT, content TEXT, input_description TEXT,
+                is_default INTEGER, deleted_at TEXT
+            );
+            """
+        )
+        _migrate_to_v46(connection)
+        _migrate_to_v46(connection)
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(scene_targets)")}
+        self.assertTrue({"scene_id", "strategy", "design_json", "status", "confirmed_at"}.issubset(columns))
+        self.assertEqual(1, connection.execute("SELECT COUNT(*) FROM prompt_definitions WHERE task_key='target_design'").fetchone()[0])
+        self.assertEqual(46, CURRENT_SCHEMA_VERSION)
 
     def test_preanalysis_edit_reanalysis_guard_confirmation_and_intent(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd(), ignore_cleanup_errors=True) as directory:
@@ -376,6 +408,55 @@ class CreativeWorkspaceTests(unittest.TestCase):
             [(scenes[0].id, "target_design"), (scenes[1].id, "not_started")],
             [(item["scene_id"], item["current_stage"]) for item in independent],
         )
+
+    def test_faithful_target_changeset_is_editable_confirmable_and_stale(self) -> None:
+        fixture = "张三退到了墙边。要不是因为他挡在这里，王五早已经走了。王五第二刀横扫而来。刚刚挡下攻击的人握紧了长刀借墙反冲。"
+        with tempfile.TemporaryDirectory(dir=Path.cwd(), ignore_cleanup_errors=True) as directory:
+            root = Path(directory)
+            source = root / "book.txt"
+            source.write_text(f"第一章\n{fixture}", encoding="utf-8")
+            database = root / "rusty.db"
+            projects = ProjectService(database)
+            project_id = projects.create_project(projects.preview_book(source), root)
+            chapter = projects.list_chapters(project_id)[0]
+            scenes = SceneService(database)
+            scene = scenes.split_chapter(chapter.id)[0]
+            scenes.confirm_boundaries(chapter.id)
+            target_id = AnchorService(database).create_character_card(
+                name="李四", scope="project", project_id=project_id, setting_text="惯用剑。"
+            )
+            service = CreativeWorkflowService(database, ai_client=self.FakeWorkflowAI())
+            service.run_preanalysis(scene.id)
+            service.confirm_preanalysis(scene.id)
+            service.save_intent(scene.id, {
+                "strategy": "faithful", "user_instruction": "张三换成李四，长刀换剑。",
+                "selected_character_ids": [target_id],
+            })
+            service.run_character_modification_analysis(
+                scene.id, source_character="张三", target_character_card_id=target_id,
+            )
+            service.confirm_character_modification_analysis(scene.id)
+            generated = service.run_target_design(scene.id)
+            edited = service.save_target(scene.id, {
+                **generated,
+                "design": {"items": generated["design"]["items"][:-1] + [{
+                    "id": "ending", "label": "结局", "operation": "preserve",
+                    "source_value": "借墙反冲", "target_value": "",
+                }], "summary": ["张三 → 李四", "结局保持"]},
+            })
+            confirmed = service.confirm_target(scene.id)
+            confirmed_stage = service.get_scene_state(scene.id)["current_stage"]
+            service.save_character_modification_analysis(
+                scene.id, service.get_character_modification_analysis(scene.id)
+            )
+            stale = service.get_target(scene.id)
+            source_after = scenes.get_scene(scene.id).original_text
+
+        self.assertEqual(["modify", "preserve", "adapt", "preserve"], [item["operation"] for item in edited["design"]["items"]])
+        self.assertEqual("confirmed", confirmed["status"])
+        self.assertEqual("writing", confirmed_stage)
+        self.assertEqual("stale", stale["status"])
+        self.assertEqual(scene.original_text, source_after)
 
     def test_adjusting_boundaries_retires_active_scene_and_initializes_replacements(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd(), ignore_cleanup_errors=True) as directory:
