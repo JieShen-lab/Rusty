@@ -14,6 +14,18 @@ async function openProject(page: Page, id: number) {
   }
 }
 
+async function advanceStrategyToTarget(page: Page, projectId: number, strategy: '调整剧情' | '增加剧情' | '重新构思') {
+  await openProject(page, projectId);
+  await page.getByRole('button', { name: '运行预分析' }).click();
+  await page.getByRole('button', { name: '确认预分析' }).click();
+  await page.getByRole('button', { name: strategy }).click();
+  await page.getByPlaceholder(/把张三替换成李四/).fill(`${strategy}，保持已确认的场景边界。`);
+  await page.getByRole('checkbox', { name: '李四' }).check();
+  await page.getByRole('button', { name: '进入专项分析' }).click();
+  await page.getByRole('button', { name: '运行专项分析' }).click();
+  await page.getByRole('button', { name: '确认分析' }).click();
+}
+
 test('1. rewrite 与历史 branch 使用同一章节中心工作台并恢复活动场景', async ({ page, request }) => {
   await openProject(page, 1);
   await expect(page.getByRole('button', { name: /场景 1.*当前/ })).toBeVisible();
@@ -90,7 +102,51 @@ test('2. 真后端完成 faithful Target、Plan、Draft、选区编辑与 Diff �
   expect(finalState[0].current_stage).toBe('confirmed');
 });
 
-test('3. 工程总提示词是可独立编辑的当前文本', async ({ page, request }) => {
+test('3. plot_adjust 专项分析、TargetSkeleton 编辑持久化并进入 Writing Plan', async ({ page }) => {
+  await advanceStrategyToTarget(page, 4, '调整剧情');
+  await page.getByRole('button', { name: 'AI 生成草案' }).click();
+  const node = page.getByLabel('节点 2 摘要');
+  await expect(node).toHaveValue('李四发现院门暗记');
+  await node.fill('李四发现院门上的新暗记');
+  await expect(page.getByRole('button', { name: '确认目标' })).toBeEnabled();
+  await page.reload();
+  await expect(page.getByLabel('节点 2 摘要')).toHaveValue('李四发现院门上的新暗记');
+  await expect(page.getByLabel('source-2 映射')).toHaveValue('inspect');
+  await page.getByRole('button', { name: '确认目标' }).click();
+  await page.getByRole('button', { name: '生成写作规划' }).click();
+  await expect(page.getByLabel('区块 1 操作')).toHaveValue('rewrite');
+});
+
+test('4. expansion 编辑退出约束并只在 Preserve Source 间生成插入正文', async ({ page }) => {
+  await advanceStrategyToTarget(page, 5, '增加剧情');
+  await page.getByRole('button', { name: 'AI 生成草案' }).click();
+  const constraints = page.getByLabel('退出约束（必须可见、可编辑）');
+  await expect(constraints).toHaveValue(/旧设定仍有效/);
+  await constraints.fill('旧设定仍有效\n人物仍会检查院门\n人物不知道脚步声来源');
+  await expect(page.getByRole('button', { name: '确认目标' })).toBeEnabled();
+  await page.getByRole('button', { name: '确认目标' }).click();
+  await page.getByRole('button', { name: '生成写作规划' }).click();
+  await expect(page.getByLabel('区块 2 操作')).toHaveValue('insert');
+  await page.getByRole('button', { name: '开始生成' }).click();
+  const draft = page.getByLabel('当前正文');
+  await expect(draft).toHaveValue(/人物进入院子/);
+  await expect(draft).toHaveValue(/门外忽然传来一阵脚步声/);
+  await expect(draft).toHaveValue(/他检查了院门/);
+});
+
+test('5. reimagine 以 Boundary Conditions 和 TargetSkeleton 完成完整场景生成', async ({ page }) => {
+  await advanceStrategyToTarget(page, 6, '重新构思');
+  await page.getByRole('button', { name: 'AI 生成草案' }).click();
+  await expect(page.getByLabel('地点')).toHaveValue('院子');
+  await expect(page.locator('.skeleton-node-list input').first()).toHaveValue('李四识破院中伏击');
+  await page.getByRole('button', { name: '确认目标' }).click();
+  await page.getByRole('button', { name: '生成写作规划' }).click();
+  await expect(page.getByLabel('区块 1 操作')).toHaveValue('rewrite');
+  await page.getByRole('button', { name: '开始生成' }).click();
+  await expect(page.getByLabel('当前正文')).toHaveValue('李四进入院子，识破伏击并检查院门，随后仍返回客栈。');
+});
+
+test('6. 工程总提示词是可独立编辑的当前文本', async ({ page, request }) => {
   await openProject(page, 3);
   await page.getByRole('button', { name: '工程设置' }).click();
   const editor = page.getByLabel('总提示词');
@@ -100,7 +156,7 @@ test('3. 工程总提示词是可独立编辑的当前文本', async ({ page, re
     .toBe('保持人物行为一致，不自动生成正文。');
 });
 
-test('4. 旧提取工程仍可导出分析并派生独立工程', async ({ page, request }) => {
+test('7. 旧提取工程仍可导出分析并派生独立工程', async ({ page, request }) => {
   await openProject(page, 8);
   const before = await (await request.get(`${backend}/api/projects/8`)).json();
   const beforeChapter = await (await request.get(`${backend}/api/chapters/8`)).json();
