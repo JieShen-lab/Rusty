@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .connection import session
 
-CURRENT_SCHEMA_VERSION = 44
+CURRENT_SCHEMA_VERSION = 45
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -3940,6 +3940,73 @@ def _migrate_to_v44(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_to_v45(connection: sqlite3.Connection) -> None:
+    """Persist authoritative progress independently for every active scene."""
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS scene_workflow_state (
+            scene_id INTEGER PRIMARY KEY,
+            current_stage TEXT NOT NULL DEFAULT 'not_started' CHECK (current_stage IN (
+                'not_started', 'preanalysis', 'direction', 'special_analysis',
+                'target_design', 'writing', 'review', 'confirmed'
+            )),
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_scene_workflow_stage
+            ON scene_workflow_state(current_stage, updated_at);
+        """
+    )
+    if not _table_exists(connection, "scenes"):
+        return
+    deleted_filter = "WHERE deleted_at IS NULL" if _column_exists(connection, "scenes", "deleted_at") else ""
+    connection.execute(
+        f"""
+        INSERT OR IGNORE INTO scene_workflow_state (scene_id, current_stage)
+        SELECT id, 'not_started' FROM scenes {deleted_filter}
+        """
+    )
+    if all(
+        _table_exists(connection, name)
+        for name in ("scene_preanalyses", "creative_intents", "character_modification_analyses")
+    ):
+        connection.execute(
+            f"""
+            UPDATE scene_workflow_state
+            SET current_stage = CASE
+                WHEN (SELECT status FROM character_modification_analyses WHERE scene_id = scene_workflow_state.scene_id) = 'confirmed'
+                    THEN 'target_design'
+                WHEN EXISTS (SELECT 1 FROM character_modification_analyses WHERE scene_id = scene_workflow_state.scene_id)
+                    THEN 'special_analysis'
+                WHEN EXISTS (SELECT 1 FROM creative_intents WHERE scene_id = scene_workflow_state.scene_id)
+                    THEN 'direction'
+                WHEN (SELECT status FROM scene_preanalyses WHERE scene_id = scene_workflow_state.scene_id) = 'confirmed'
+                    THEN 'direction'
+                WHEN EXISTS (SELECT 1 FROM scene_preanalyses WHERE scene_id = scene_workflow_state.scene_id)
+                    THEN 'preanalysis'
+                ELSE current_stage
+            END
+            WHERE scene_id IN (SELECT id FROM scenes {deleted_filter})
+            """
+        )
+    if _table_exists(connection, "chapter_workflow_state"):
+        connection.execute(
+            """
+            UPDATE scene_workflow_state
+            SET current_stage = COALESCE((
+                    SELECT chapter.current_stage
+                    FROM chapter_workflow_state chapter
+                    WHERE chapter.active_scene_id = scene_workflow_state.scene_id
+                ), current_stage),
+                updated_at = CURRENT_TIMESTAMP
+            WHERE EXISTS (
+                SELECT 1 FROM chapter_workflow_state chapter
+                WHERE chapter.active_scene_id = scene_workflow_state.scene_id
+            )
+            """
+        )
+
+
 def _safe_json_list(value: object) -> list[dict[str, object]]:
     try:
         parsed = json.loads(str(value or "[]"))
@@ -4334,6 +4401,7 @@ MIGRATIONS = {
     42: _migrate_to_v42,
     43: _migrate_to_v43,
     44: _migrate_to_v44,
+    45: _migrate_to_v45,
 }
 
 

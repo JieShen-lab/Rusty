@@ -12,7 +12,13 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from rusty.db.schema import CURRENT_SCHEMA_VERSION, _migrate_to_v41, _migrate_to_v42, _migrate_to_v44
+from rusty.db.schema import (
+    CURRENT_SCHEMA_VERSION,
+    _migrate_to_v41,
+    _migrate_to_v42,
+    _migrate_to_v44,
+    _migrate_to_v45,
+)
 from rusty.services.anchor_service import AnchorService
 from rusty.services.creative_workflow_service import CreativeWorkflowService
 from rusty.services.project_service import ProjectService
@@ -116,7 +122,39 @@ class CreativeWorkspaceTests(unittest.TestCase):
         columns = {row[1] for row in connection.execute("PRAGMA table_info(character_modification_analyses)")}
         self.assertIn("implicit_references_json", columns)
         self.assertIn("target_character_conflicts_json", columns)
-        self.assertEqual(44, CURRENT_SCHEMA_VERSION)
+        self.assertGreaterEqual(CURRENT_SCHEMA_VERSION, 44)
+
+    def test_v45_migration_adds_authoritative_scene_state(self) -> None:
+        connection = sqlite3.connect(":memory:")
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.executescript(
+            """
+            CREATE TABLE chapters (id INTEGER PRIMARY KEY);
+            CREATE TABLE scenes (
+                id INTEGER PRIMARY KEY,
+                chapter_id INTEGER NOT NULL,
+                deleted_at TEXT
+            );
+            CREATE TABLE character_cards (id INTEGER PRIMARY KEY);
+            INSERT INTO chapters(id) VALUES (10);
+            INSERT INTO scenes(id, chapter_id) VALUES (100, 10), (200, 10);
+            """
+        )
+        _migrate_to_v41(connection)
+        _migrate_to_v42(connection)
+        _migrate_to_v44(connection)
+        connection.execute(
+            "UPDATE chapter_workflow_state SET active_scene_id = 100, current_stage = 'target_design' WHERE chapter_id = 10"
+        )
+        _migrate_to_v45(connection)
+        _migrate_to_v45(connection)
+
+        rows = connection.execute(
+            "SELECT scene_id, current_stage FROM scene_workflow_state ORDER BY scene_id"
+        ).fetchall()
+        self.assertEqual([(100, "target_design"), (200, "not_started")], [tuple(row) for row in rows])
+        self.assertEqual(45, CURRENT_SCHEMA_VERSION)
 
     def test_preanalysis_edit_reanalysis_guard_confirmation_and_intent(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd(), ignore_cleanup_errors=True) as directory:
@@ -130,7 +168,9 @@ class CreativeWorkspaceTests(unittest.TestCase):
             projects = ProjectService(database)
             project_id = projects.create_project(projects.preview_book(source), root)
             chapter = projects.list_chapters(project_id)[0]
-            scene = SceneService(database).split_chapter(chapter.id)[0]
+            scene_service = SceneService(database)
+            scene = scene_service.split_chapter(chapter.id)[0]
+            scene_service.confirm_boundaries(chapter.id)
             service = CreativeWorkflowService(database, ai_client=self.FakeWorkflowAI())
 
             generated = service.run_preanalysis(scene.id)
@@ -220,7 +260,9 @@ class CreativeWorkspaceTests(unittest.TestCase):
             projects = ProjectService(database)
             project_id = projects.create_project(projects.preview_book(source), root)
             chapter = projects.list_chapters(project_id)[0]
-            scene = SceneService(database).split_chapter(chapter.id)[0]
+            scene_service = SceneService(database)
+            scene = scene_service.split_chapter(chapter.id)[0]
+            scene_service.confirm_boundaries(chapter.id)
             target_id = AnchorService(database).create_character_card(
                 name="李四", scope="project", project_id=project_id,
                 setting_text="惯用剑，倾向速度与闪避。", action_constraints="避免硬接攻击。",
@@ -253,6 +295,15 @@ class CreativeWorkspaceTests(unittest.TestCase):
                 "user_instruction": "改为李四，但保留事件。",
             })
             stale = service.get_character_modification_analysis(scene.id)
+            with self.assertRaisesRegex(ValueError, "Re-run stale"):
+                service.confirm_character_modification_analysis(scene.id)
+            regenerated = service.run_character_modification_analysis(
+                scene.id,
+                source_character="张三",
+                target_character_card_id=target_id,
+                replace_existing=True,
+            )
+            reconfirmed = service.confirm_character_modification_analysis(scene.id)
 
         implicit = generated["implicit_references"][0]
         weapon = generated["objects"][0]
@@ -263,6 +314,66 @@ class CreativeWorkspaceTests(unittest.TestCase):
         self.assertEqual("confirmed", confirmed["status"])
         self.assertEqual("target_design", unlocked["current_stage"])
         self.assertEqual("stale", stale["status"])
+        self.assertEqual("draft", regenerated["status"])
+        self.assertEqual("confirmed", reconfirmed["status"])
+
+    def test_each_scene_restores_its_own_stage_in_any_order(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd(), ignore_cleanup_errors=True) as directory:
+            root = Path(directory)
+            source = root / "book.txt"
+            source.write_text("第一章\n场景甲。\n\n场景乙。", encoding="utf-8")
+            database = root / "rusty.db"
+            projects = ProjectService(database)
+            project_id = projects.create_project(projects.preview_book(source), root)
+            chapter = projects.list_chapters(project_id)[0]
+            scene_service = SceneService(database)
+            scenes = scene_service.split_chapter(
+                chapter.id,
+                proposed_boundaries=[chapter.original_text.index("场景乙")],
+            )
+            scene_service.confirm_boundaries(chapter.id)
+            service = CreativeWorkflowService(database)
+
+            service.set_scene_stage(scenes[0].id, "target_design")
+            service.activate_scene(scenes[1].id)
+            scene_b = service.get_chapter_state(chapter.id)
+            independent = service.list_scene_states(chapter.id)
+            service.activate_scene(scenes[0].id)
+            scene_a = service.get_chapter_state(chapter.id)
+
+        self.assertEqual("not_started", scene_b["current_stage"])
+        self.assertEqual("target_design", scene_a["current_stage"])
+        self.assertEqual(
+            [(scenes[0].id, "target_design"), (scenes[1].id, "not_started")],
+            [(item["scene_id"], item["current_stage"]) for item in independent],
+        )
+
+    def test_adjusting_boundaries_retires_active_scene_and_initializes_replacements(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd(), ignore_cleanup_errors=True) as directory:
+            root = Path(directory)
+            source = root / "book.txt"
+            source.write_text("第一章\n甲段。\n\n乙段。\n\n丙段。", encoding="utf-8")
+            database = root / "rusty.db"
+            projects = ProjectService(database)
+            project_id = projects.create_project(projects.preview_book(source), root)
+            chapter = projects.list_chapters(project_id)[0]
+            scene_service = SceneService(database)
+            old_scenes = scene_service.split_chapter(chapter.id)
+            scene_service.confirm_boundaries(chapter.id)
+            service = CreativeWorkflowService(database)
+            service.set_scene_stage(old_scenes[0].id, "direction")
+
+            new_scenes = scene_service.adjust_boundaries(
+                chapter.id,
+                [chapter.original_text.index("乙段"), chapter.original_text.index("丙段")],
+            )
+            service.reconcile_chapter_scenes(chapter.id)
+            chapter_state = service.get_chapter_state(chapter.id)
+            states = service.list_scene_states(chapter.id)
+
+        self.assertNotIn(chapter_state["active_scene_id"], {scene.id for scene in old_scenes})
+        self.assertEqual(new_scenes[0].id, chapter_state["active_scene_id"])
+        self.assertTrue(all(item["current_stage"] == "not_started" for item in states))
 
 
 if __name__ == "__main__":

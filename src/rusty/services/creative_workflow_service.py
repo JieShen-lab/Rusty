@@ -40,6 +40,16 @@ class CreativeWorkflowService:
 
     def list_chapter_states(self, project_id: int) -> list[dict[str, Any]]:
         with session(self.database_path) as connection:
+            chapter_ids = [
+                int(row["id"])
+                for row in connection.execute(
+                    "SELECT id FROM chapters WHERE project_id = ? ORDER BY chapter_index",
+                    (project_id,),
+                ).fetchall()
+            ]
+        for chapter_id in chapter_ids:
+            self.reconcile_chapter_scenes(chapter_id)
+        with session(self.database_path) as connection:
             connection.execute(
                 """
                 INSERT OR IGNORE INTO chapter_workflow_state (chapter_id)
@@ -50,9 +60,13 @@ class CreativeWorkflowService:
             rows = connection.execute(
                 """
                 SELECT c.id AS chapter_id, c.chapter_index, c.title,
-                       state.active_scene_id, state.current_stage, state.updated_at
+                       state.active_scene_id,
+                       COALESCE(scene_state.current_stage, state.current_stage) AS current_stage,
+                       state.updated_at
                 FROM chapters c
                 JOIN chapter_workflow_state state ON state.chapter_id = c.id
+                LEFT JOIN scene_workflow_state scene_state
+                    ON scene_state.scene_id = state.active_scene_id
                 WHERE c.project_id = ?
                 ORDER BY c.chapter_index
                 """,
@@ -61,6 +75,7 @@ class CreativeWorkflowService:
         return [dict(row) for row in rows]
 
     def get_chapter_state(self, chapter_id: int) -> dict[str, Any]:
+        self.reconcile_chapter_scenes(chapter_id)
         with session(self.database_path) as connection:
             connection.execute(
                 "INSERT OR IGNORE INTO chapter_workflow_state (chapter_id) VALUES (?)",
@@ -69,9 +84,13 @@ class CreativeWorkflowService:
             row = connection.execute(
                 """
                 SELECT c.id AS chapter_id, c.chapter_index, c.title,
-                       state.active_scene_id, state.current_stage, state.updated_at
+                       state.active_scene_id,
+                       COALESCE(scene_state.current_stage, state.current_stage) AS current_stage,
+                       state.updated_at
                 FROM chapters c
                 JOIN chapter_workflow_state state ON state.chapter_id = c.id
+                LEFT JOIN scene_workflow_state scene_state
+                    ON scene_state.scene_id = state.active_scene_id
                 WHERE c.id = ?
                 """,
                 (chapter_id,),
@@ -89,19 +108,17 @@ class CreativeWorkflowService:
     ) -> dict[str, Any]:
         if current_stage not in WORKFLOW_STAGES:
             raise ValueError(f"Unsupported creative workflow stage: {current_stage}")
+        if active_scene_id is not None:
+            scene = self.scenes.get_scene(active_scene_id)
+            if scene is None or scene.chapter_id != chapter_id:
+                raise ValueError("Active scene must belong to the selected chapter.")
+            return self.set_scene_stage(active_scene_id, current_stage, activate=True)
         with session(self.database_path) as connection:
             chapter = connection.execute(
                 "SELECT project_id FROM chapters WHERE id = ?", (chapter_id,)
             ).fetchone()
             if chapter is None:
                 raise FileNotFoundError(f"Chapter not found: {chapter_id}")
-            if active_scene_id is not None:
-                scene = connection.execute(
-                    "SELECT chapter_id FROM scenes WHERE id = ? AND deleted_at IS NULL",
-                    (active_scene_id,),
-                ).fetchone()
-                if scene is None or int(scene["chapter_id"]) != chapter_id:
-                    raise ValueError("Active scene must belong to the selected chapter.")
             connection.execute(
                 """
                 INSERT INTO chapter_workflow_state (
@@ -116,6 +133,134 @@ class CreativeWorkflowService:
             )
         return self.get_chapter_state(chapter_id)
 
+    def list_scene_states(self, chapter_id: int) -> list[dict[str, Any]]:
+        self.reconcile_chapter_scenes(chapter_id)
+        with session(self.database_path) as connection:
+            rows = connection.execute(
+                """
+                SELECT scene.id AS scene_id, scene.scene_index, scene.title,
+                       state.current_stage, state.updated_at
+                FROM scenes scene
+                JOIN scene_workflow_state state ON state.scene_id = scene.id
+                WHERE scene.chapter_id = ? AND scene.deleted_at IS NULL
+                ORDER BY scene.scene_index
+                """,
+                (chapter_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_scene_state(self, scene_id: int) -> dict[str, Any]:
+        scene = self.scenes.get_scene(scene_id)
+        if scene is None:
+            raise FileNotFoundError(f"Scene not found: {scene_id}")
+        self.reconcile_chapter_scenes(scene.chapter_id)
+        with session(self.database_path) as connection:
+            row = connection.execute(
+                "SELECT scene_id, current_stage, updated_at FROM scene_workflow_state WHERE scene_id = ?",
+                (scene_id,),
+            ).fetchone()
+        if row is None:
+            raise FileNotFoundError(f"Scene workflow state not found: {scene_id}")
+        return dict(row)
+
+    def activate_scene(self, scene_id: int) -> dict[str, Any]:
+        scene = self.scenes.get_scene(scene_id)
+        if scene is None:
+            raise FileNotFoundError(f"Scene not found: {scene_id}")
+        state = self.get_scene_state(scene_id)
+        self._sync_chapter_to_scene(scene.chapter_id, scene_id, str(state["current_stage"]))
+        return self.get_chapter_state(scene.chapter_id)
+
+    def set_scene_stage(self, scene_id: int, current_stage: str, *, activate: bool = True) -> dict[str, Any]:
+        if current_stage not in WORKFLOW_STAGES:
+            raise ValueError(f"Unsupported creative workflow stage: {current_stage}")
+        scene = self.scenes.get_scene(scene_id)
+        if scene is None:
+            raise FileNotFoundError(f"Scene not found: {scene_id}")
+        with session(self.database_path) as connection:
+            connection.execute(
+                """
+                INSERT INTO scene_workflow_state (scene_id, current_stage, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(scene_id) DO UPDATE SET
+                    current_stage = excluded.current_stage,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (scene_id, current_stage),
+            )
+        if activate:
+            self._sync_chapter_to_scene(scene.chapter_id, scene_id, current_stage)
+        return self.get_scene_state(scene_id)
+
+    def reconcile_chapter_scenes(self, chapter_id: int) -> dict[str, Any]:
+        with session(self.database_path) as connection:
+            chapter = connection.execute(
+                "SELECT id FROM chapters WHERE id = ?", (chapter_id,)
+            ).fetchone()
+            if chapter is None:
+                raise FileNotFoundError(f"Chapter not found: {chapter_id}")
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO scene_workflow_state (scene_id)
+                SELECT id FROM scenes WHERE chapter_id = ? AND deleted_at IS NULL
+                """,
+                (chapter_id,),
+            )
+            live = connection.execute(
+                "SELECT id FROM scenes WHERE chapter_id = ? AND deleted_at IS NULL ORDER BY scene_index",
+                (chapter_id,),
+            ).fetchall()
+            live_ids = [int(row["id"]) for row in live]
+            current = connection.execute(
+                "SELECT active_scene_id FROM chapter_workflow_state WHERE chapter_id = ?",
+                (chapter_id,),
+            ).fetchone()
+            active_scene_id = (
+                int(current["active_scene_id"])
+                if current is not None and current["active_scene_id"] is not None
+                else None
+            )
+            if active_scene_id not in live_ids:
+                active_scene_id = live_ids[0] if live_ids else None
+            stage = "not_started"
+            if active_scene_id is not None:
+                stage_row = connection.execute(
+                    "SELECT current_stage FROM scene_workflow_state WHERE scene_id = ?",
+                    (active_scene_id,),
+                ).fetchone()
+                stage = str(stage_row["current_stage"]) if stage_row is not None else "not_started"
+            connection.execute(
+                """
+                INSERT INTO chapter_workflow_state (chapter_id, active_scene_id, current_stage, updated_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(chapter_id) DO UPDATE SET
+                    active_scene_id = excluded.active_scene_id,
+                    current_stage = excluded.current_stage,
+                    updated_at = CASE
+                        WHEN chapter_workflow_state.active_scene_id IS excluded.active_scene_id
+                         AND chapter_workflow_state.current_stage = excluded.current_stage
+                        THEN chapter_workflow_state.updated_at
+                        ELSE CURRENT_TIMESTAMP
+                    END
+                """,
+                (chapter_id, active_scene_id, stage),
+            )
+        return {"chapter_id": chapter_id, "active_scene_id": active_scene_id, "current_stage": stage}
+
+    def _sync_chapter_to_scene(self, chapter_id: int, scene_id: int, current_stage: str) -> None:
+        with session(self.database_path) as connection:
+            connection.execute(
+                """
+                INSERT INTO chapter_workflow_state (chapter_id, active_scene_id, current_stage, updated_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(chapter_id) DO UPDATE SET
+                    active_scene_id = excluded.active_scene_id,
+                    current_stage = excluded.current_stage,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (chapter_id, scene_id, current_stage),
+            )
+
     def get_preanalysis(self, scene_id: int) -> dict[str, Any] | None:
         with session(self.database_path) as connection:
             row = connection.execute(
@@ -127,6 +272,8 @@ class CreativeWorkflowService:
         scene = self.scenes.get_scene(scene_id)
         if scene is None:
             raise FileNotFoundError(f"Scene not found: {scene_id}")
+        if not scene.user_confirmed:
+            raise ValueError("Confirm scene boundaries before running scene preanalysis.")
         current = self.get_preanalysis(scene_id)
         if current and current["user_edited"] and not replace_existing:
             raise ValueError("Reanalysis would replace the user-edited preanalysis result.")
@@ -200,9 +347,7 @@ class CreativeWorkflowService:
                     """,
                     (scene_id,),
                 )
-        self.update_chapter_state(
-            scene.chapter_id, active_scene_id=scene_id, current_stage="preanalysis"
-        )
+        self.set_scene_stage(scene_id, "preanalysis")
         return self.get_preanalysis(scene_id) or {}
 
     def confirm_preanalysis(self, scene_id: int) -> dict[str, Any]:
@@ -221,9 +366,7 @@ class CreativeWorkflowService:
                 """,
                 (scene_id,),
             )
-        self.update_chapter_state(
-            scene.chapter_id, active_scene_id=scene_id, current_stage="direction"
-        )
+        self.set_scene_stage(scene_id, "direction")
         return self.get_preanalysis(scene_id) or {}
 
     def get_intent(self, scene_id: int) -> dict[str, Any] | None:
@@ -288,7 +431,7 @@ class CreativeWorkflowService:
                     """,
                     (scene_id,),
                 )
-        self.update_chapter_state(scene.chapter_id, active_scene_id=scene_id, current_stage="direction")
+        self.set_scene_stage(scene_id, "direction")
         return self.get_intent(scene_id) or {}
 
     def get_character_modification_analysis(self, scene_id: int) -> dict[str, Any] | None:
@@ -415,17 +558,24 @@ class CreativeWorkflowService:
                     target.name, *category_values, 1 if user_edited else 0,
                 ),
             )
-        self.update_chapter_state(
-            scene.chapter_id, active_scene_id=scene_id, current_stage="special_analysis"
-        )
+        self.set_scene_stage(scene_id, "special_analysis")
         return self.get_character_modification_analysis(scene_id) or {}
 
     def confirm_character_modification_analysis(self, scene_id: int) -> dict[str, Any]:
         scene = self.scenes.get_scene(scene_id)
         if scene is None:
             raise FileNotFoundError(f"Scene not found: {scene_id}")
-        if self.get_character_modification_analysis(scene_id) is None:
+        analysis = self.get_character_modification_analysis(scene_id)
+        if analysis is None:
             raise ValueError("Run character modification analysis before confirming it.")
+        if analysis["status"] == "stale":
+            raise ValueError("Re-run stale character modification analysis before confirming it.")
+        preanalysis = self.get_preanalysis(scene_id)
+        if not preanalysis or preanalysis["status"] != "confirmed":
+            raise ValueError("Character analysis cannot be confirmed after preanalysis changed.")
+        intent = self.get_intent(scene_id)
+        if not intent or intent["strategy"] != "faithful":
+            raise ValueError("Character analysis confirmation requires the current faithful intent.")
         with session(self.database_path) as connection:
             connection.execute(
                 """
@@ -436,9 +586,7 @@ class CreativeWorkflowService:
                 """,
                 (scene_id,),
             )
-        self.update_chapter_state(
-            scene.chapter_id, active_scene_id=scene_id, current_stage="target_design"
-        )
+        self.set_scene_stage(scene_id, "target_design")
         return self.get_character_modification_analysis(scene_id) or {}
 
     @staticmethod

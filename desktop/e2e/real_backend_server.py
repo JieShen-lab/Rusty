@@ -150,6 +150,7 @@ def seed(database: Path) -> None:
         scene_service = SceneService(database)
         split_at = chapter.original_text.index("旧设定")
         scenes = scene_service.split_chapter(chapter.id, proposed_boundaries=[split_at])
+        scene_service.confirm_boundaries(chapter.id)
         scene_service.save_fact_ledger(
             scenes[0].id,
             {

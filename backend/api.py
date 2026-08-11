@@ -899,6 +899,28 @@ def create_app(
             raise _http_error(409, "legacy_extract_workflow", "Legacy extract projects use their dedicated workflow.")
         return creative_workflow_service.get_chapter_state(chapter_id)
 
+    @app.get("/api/chapters/{chapter_id}/creative-scene-states", response_model=list[dict[str, Any]])
+    def list_creative_scene_states(chapter_id: int) -> list[dict[str, Any]]:
+        chapter = _require_existing_chapter(project_service, chapter_id)
+        project = _require_project(project_service, chapter.project_id)
+        if project.project_kind == "legacy_extract":
+            raise _http_error(409, "legacy_extract_workflow", "Legacy extract projects use their dedicated workflow.")
+        return creative_workflow_service.list_scene_states(chapter_id)
+
+    @app.get("/api/scenes/{scene_id}/creative-workflow", response_model=dict[str, Any])
+    def get_creative_scene_state(scene_id: int) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.get_scene_state(scene_id)
+
+    @app.post(
+        "/api/scenes/{scene_id}/creative-workflow/activate",
+        response_model=dict[str, Any],
+        dependencies=[Depends(_require_token)],
+    )
+    def activate_creative_scene(scene_id: int) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.activate_scene(scene_id)
+
     @app.put(
         "/api/chapters/{chapter_id}/creative-workflow",
         response_model=dict[str, Any],
@@ -1285,6 +1307,7 @@ def create_app(
             )
         if payload.confirm:
             scenes = scene_service.confirm_boundaries(chapter_id)
+        creative_workflow_service.reconcile_chapter_scenes(chapter_id)
         return [scene.__dict__ for scene in scenes]
 
     @app.post(
@@ -1297,13 +1320,12 @@ def create_app(
         _require_project(project_service, chapter.project_id)
         if payload.boundaries is None:
             raise _http_error(400, "scene_boundaries_required", "Manual scene adjustment requires boundaries.")
-        return [
-            scene.__dict__
-            for scene in scene_service.adjust_boundaries(
-                chapter_id,
-                [item.model_dump() for item in payload.boundaries],
-            )
-        ]
+        scenes = scene_service.adjust_boundaries(
+            chapter_id,
+            [item.model_dump() for item in payload.boundaries],
+        )
+        creative_workflow_service.reconcile_chapter_scenes(chapter_id)
+        return [scene.__dict__ for scene in scenes]
 
     @app.post(
         "/api/chapters/{chapter_id}/scenes/confirm",
@@ -1313,7 +1335,9 @@ def create_app(
     def confirm_chapter_scenes(chapter_id: int) -> list[dict[str, Any]]:
         chapter = _require_existing_chapter(project_service, chapter_id)
         _require_project(project_service, chapter.project_id)
-        return [scene.__dict__ for scene in scene_service.confirm_boundaries(chapter_id)]
+        scenes = scene_service.confirm_boundaries(chapter_id)
+        creative_workflow_service.reconcile_chapter_scenes(chapter_id)
+        return [scene.__dict__ for scene in scenes]
 
     @app.get("/api/scenes/{scene_id}/facts", response_model=dict[str, Any])
     def get_scene_facts(scene_id: int) -> dict[str, Any]:
