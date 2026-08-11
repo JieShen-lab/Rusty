@@ -64,6 +64,9 @@ import type {
   ProjectStyleBinding,
   PromptTemplate,
   PromptTemplateWrite,
+  PromptDefinition,
+  PromptDefinitionWrite,
+  ProjectMasterPrompt,
   PipelineRunResult,
   StructuredSkeleton,
   StyleTemplateExtractWrite,
@@ -546,6 +549,7 @@ export function createProject(
   promptTemplateId?: number | null,
   analysisPromptTemplateId?: number | null,
   modelId?: number | null,
+  masterPromptDefinitionId?: number | null,
 ) {
   return request<Project>('/api/projects', {
     method: 'POST',
@@ -557,6 +561,7 @@ export function createProject(
       model_id: modelId ?? null,
       prompt_template_id: promptTemplateId ?? null,
       analysis_prompt_template_id: analysisPromptTemplateId ?? null,
+      master_prompt_definition_id: masterPromptDefinitionId ?? null,
     }),
   });
 }
@@ -1118,6 +1123,46 @@ export function confirmChapterRewrite(chapterId: number) {
 
 export function getChapterScenes(chapterId: number) {
   return request<import('./types').SceneRecord[]>(`/api/chapters/${chapterId}/scenes`);
+}
+
+export function getPromptDefinitions() {
+  return request<PromptDefinition[]>('/api/prompt-definitions');
+}
+
+export function createPromptDefinition(value: PromptDefinitionWrite) {
+  return request<PromptDefinition>('/api/prompt-definitions', { method: 'POST', body: JSON.stringify(value) });
+}
+
+export function updatePromptDefinition(id: number, value: PromptDefinitionWrite) {
+  return request<PromptDefinition>(`/api/prompt-definitions/${id}`, { method: 'PUT', body: JSON.stringify(value) });
+}
+
+export function copyPromptDefinition(id: number) {
+  return request<PromptDefinition>(`/api/prompt-definitions/${id}/copy`, { method: 'POST' });
+}
+
+export function deletePromptDefinition(id: number) {
+  return request<{ ok: boolean }>(`/api/prompt-definitions/${id}/delete`, { method: 'POST' });
+}
+
+export function exportPromptDefinition(id: number) {
+  return request<{ content: string }>(`/api/prompt-definitions/${id}/export`, { method: 'POST' });
+}
+
+export function importPromptDefinition(content: string) {
+  return request<PromptDefinition>('/api/prompt-definitions/import', { method: 'POST', body: JSON.stringify({ content }) });
+}
+
+export function getProjectMasterPrompt(projectId: number) {
+  return request<ProjectMasterPrompt>(`/api/projects/${projectId}/master-prompt`);
+}
+
+export function saveProjectMasterPrompt(projectId: number, content: string) {
+  return request<ProjectMasterPrompt>(`/api/projects/${projectId}/master-prompt`, { method: 'PUT', body: JSON.stringify({ content }) });
+}
+
+export function exportProjectMasterPrompt(projectId: number, name: string, description = '') {
+  return request<PromptDefinition>(`/api/projects/${projectId}/master-prompt/export`, { method: 'POST', body: JSON.stringify({ name, description }) });
 }
 
 export function getScenePreanalysis(sceneId: number) {

@@ -41,6 +41,7 @@ from rusty.services.pipeline_service import PipelineService
 from rusty.db import default_database_path
 from rusty.services.project_service import ProjectService
 from rusty.services.prompt_service import PromptService
+from rusty.services.prompt_definition_service import PromptDefinitionService
 from rusty.services.context_service import ContextService
 from rusty.services.creative_workflow_service import CreativeWorkflowService
 from rusty.services.rewrite_workflow_service import RewriteWorkflowService
@@ -247,6 +248,7 @@ def create_app(
     pipeline_service = PipelineService(db_path)
     model_service = ModelService(db_path)
     prompt_service = PromptService(db_path)
+    prompt_definition_service = PromptDefinitionService(db_path)
     analysis_service = AnalysisService(db_path, ai_client=prompt_package_ai_client or style_ai_client)
     style_service = StyleTemplateService(db_path)
     style_extraction_service = StyleExtractionService(db_path, ai_client=style_ai_client)
@@ -820,8 +822,6 @@ def create_app(
             raise _http_error(400, "preview_mismatch", "源文件已变化，请重新预览后再创建工程。")
         workspace = _optional_workspace_path(payload.workspace_path) or state.workspace_path or state.source_path.parent
         parsed = state.parsed_book
-        if payload.project_kind == "rewrite" and payload.prompt_template_id is None:
-            raise _http_error(400, "rewrite_prompt_required", "创建改写工程前请选择改写提示词。")
         txt_split_rule_id = 1
         if parsed.source_format == "txt" and state.split_options.get("mode") != "auto":
             options = state.split_options
@@ -848,6 +848,9 @@ def create_app(
             model_id=payload.model_id,
         )
         document_library_service.ensure_project_document(project_id, state.source_path)
+        prompt_definition_service.initialize_project_master(
+            project_id, payload.master_prompt_definition_id
+        )
         return _project_out(_require_project(project_service, project_id))
 
     @app.get(
@@ -1545,6 +1548,86 @@ def create_app(
     @app.get("/api/analysis-prompts", response_model=list[AnalysisPromptTemplateOut])
     def list_analysis_prompts() -> list[AnalysisPromptTemplateOut]:
         return [AnalysisPromptTemplateOut(**template.__dict__) for template in analysis_service.list_templates()]
+
+    @app.get("/api/prompt-definitions", response_model=list[dict[str, Any]])
+    def list_prompt_definitions() -> list[dict[str, Any]]:
+        return [item.__dict__ for item in prompt_definition_service.list_definitions()]
+
+    @app.post(
+        "/api/prompt-definitions",
+        response_model=dict[str, Any],
+        dependencies=[Depends(_require_token)],
+    )
+    def create_prompt_definition(payload: dict[str, Any]) -> dict[str, Any]:
+        return prompt_definition_service.create_definition(**payload).__dict__
+
+    @app.put(
+        "/api/prompt-definitions/{definition_id}",
+        response_model=dict[str, Any],
+        dependencies=[Depends(_require_token)],
+    )
+    def update_prompt_definition(definition_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        return prompt_definition_service.update_definition(definition_id, **payload).__dict__
+
+    @app.post(
+        "/api/prompt-definitions/{definition_id}/copy",
+        response_model=dict[str, Any],
+        dependencies=[Depends(_require_token)],
+    )
+    def copy_prompt_definition(definition_id: int) -> dict[str, Any]:
+        return prompt_definition_service.duplicate_definition(definition_id).__dict__
+
+    @app.post(
+        "/api/prompt-definitions/{definition_id}/delete",
+        response_model=dict[str, bool],
+        dependencies=[Depends(_require_token)],
+    )
+    def delete_prompt_definition(definition_id: int) -> dict[str, bool]:
+        prompt_definition_service.delete_definition(definition_id)
+        return {"ok": True}
+
+    @app.post(
+        "/api/prompt-definitions/{definition_id}/export",
+        response_model=dict[str, str],
+        dependencies=[Depends(_require_token)],
+    )
+    def export_prompt_definition(definition_id: int) -> dict[str, str]:
+        return {"content": prompt_definition_service.export_definition(definition_id)}
+
+    @app.post(
+        "/api/prompt-definitions/import",
+        response_model=dict[str, Any],
+        dependencies=[Depends(_require_token)],
+    )
+    def import_prompt_definition(payload: dict[str, str]) -> dict[str, Any]:
+        return prompt_definition_service.import_definition(payload.get("content", "")).__dict__
+
+    @app.get("/api/projects/{project_id}/master-prompt", response_model=dict[str, Any])
+    def get_project_master_prompt(project_id: int) -> dict[str, Any]:
+        _require_project(project_service, project_id)
+        return prompt_definition_service.get_project_master(project_id)
+
+    @app.put(
+        "/api/projects/{project_id}/master-prompt",
+        response_model=dict[str, Any],
+        dependencies=[Depends(_require_token)],
+    )
+    def save_project_master_prompt(project_id: int, payload: dict[str, str]) -> dict[str, Any]:
+        _require_project(project_service, project_id)
+        return prompt_definition_service.save_project_master(project_id, payload.get("content", ""))
+
+    @app.post(
+        "/api/projects/{project_id}/master-prompt/export",
+        response_model=dict[str, Any],
+        dependencies=[Depends(_require_token)],
+    )
+    def export_project_master_prompt(project_id: int, payload: dict[str, str]) -> dict[str, Any]:
+        _require_project(project_service, project_id)
+        return prompt_definition_service.export_project_master(
+            project_id,
+            name=payload.get("name", "").strip() or "工程总提示词",
+            description=payload.get("description", ""),
+        ).__dict__
 
     @app.post(
         "/api/analysis-prompts",

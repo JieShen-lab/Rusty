@@ -2194,3 +2194,49 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .creative-context-panel h3 { margin: 26px 0 12px; font-size: 13px; color: #a8502d; }
 .source-context { max-height: calc(100vh - 175px); overflow: auto; padding: 16px; border: 1px solid #d9dee6; border-radius: 8px; background: #fff; color: #3c4352; font: 14px/1.9 "Noto Serif SC", "Songti SC", serif; white-space: pre-wrap; }
 @media (max-width: 1080px) { .creative-columns { grid-template-columns: 210px minmax(500px, 1fr); } .creative-context-panel { display: none; } }
+.prompt-definition-page { min-height: 100vh; background: #f7f8fa; color: #1f2737; }
+.prompt-definition-header { height: 66px; display: flex; align-items: center; justify-content: space-between; padding: 0 26px; border-bottom: 1px solid #dfe3e9; background: #fff; }
+.prompt-definition-header h1 { margin: 0; font-size: 20px; }
+.prompt-definition-header > div { display: flex; gap: 8px; }
+.prompt-definition-page > .inline-alert { margin: 12px 20px 0; }
+.prompt-definition-layout { height: calc(100vh - 66px); display: grid; grid-template-columns: 220px 270px minmax(520px,1fr); }
+.prompt-kind-tree, .prompt-item-list { overflow: auto; padding: 20px 12px; border-right: 1px solid #dfe3e9; background: #f8f9fb; }
+.prompt-kind-tree section { margin-bottom: 20px; }
+.prompt-kind-tree section.compact { margin: 7px 0 7px 12px; }
+.prompt-kind-tree section header { display: flex; align-items: center; justify-content: space-between; min-height: 30px; padding: 0 8px; font-size: 13px; }
+.prompt-kind-tree section header button { display: grid; place-items: center; border: 0; background: transparent; color: #727b8b; cursor: pointer; }
+.prompt-kind-tree section > button { width: 100%; min-height: 32px; padding: 0 10px; border: 0; border-radius: 5px; background: transparent; color: #555e6e; text-align: left; cursor: pointer; font: 12px inherit; }
+.prompt-kind-tree section > button.active { background: #f4e9e4; color: #a6502e; }
+.prompt-workflow-group > strong { display: block; padding: 0 8px 5px; font-size: 13px; }
+.prompt-item-list .panel-heading { padding: 0 6px 12px; }
+.prompt-item-list > button { width: 100%; display: grid; gap: 5px; padding: 12px; border: 0; border-radius: 6px; background: transparent; text-align: left; cursor: pointer; }
+.prompt-item-list > button:hover { background: #f0f2f5; }
+.prompt-item-list > button.active { background: #fff; box-shadow: inset 3px 0 #bc6338; }
+.prompt-item-list > button strong { color: #293143; font-size: 13px; }
+.prompt-item-list > button small { color: #7a8290; font-size: 11px; }
+.prompt-definition-editor { min-width: 0; overflow: auto; padding: 28px 34px; background: #fff; }
+.prompt-editor-title { display: grid; grid-template-columns: 1fr auto; gap: 20px; align-items: start; padding-bottom: 22px; border-bottom: 1px solid #e3e6eb; }
+.prompt-editor-title > div { display: grid; gap: 8px; }
+.prompt-editor-title input { border: 0; outline: none; }
+.prompt-editor-title > div input:first-child { color: #20283a; font: 600 22px/1.3 inherit; }
+.prompt-editor-title > div input:last-child { color: #6e7685; font: 13px inherit; }
+.prompt-editor-title label { display: flex; gap: 6px; align-items: center; color: #5f6878; font-size: 12px; }
+.prompt-definition-fields { display: grid; grid-template-columns: repeat(3, minmax(140px, 1fr)); gap: 14px; margin: 22px 0; }
+.prompt-definition-fields label, .prompt-content-field, .prompt-input-field { display: grid; gap: 7px; color: #596273; font-size: 12px; }
+.prompt-definition-fields input, .prompt-definition-fields select, .prompt-definition-editor textarea { box-sizing: border-box; width: 100%; border: 1px solid #cfd5de; border-radius: 6px; background: #fff; color: #252e3f; font: 13px/1.6 inherit; }
+.prompt-definition-fields input, .prompt-definition-fields select { height: 38px; padding: 0 10px; }
+.prompt-definition-editor textarea { min-height: 260px; padding: 12px; resize: vertical; }
+.prompt-input-field { margin-top: 18px; }
+.prompt-input-field textarea { min-height: 90px; }
+.prompt-definition-editor > footer { display: flex; align-items: center; justify-content: space-between; margin-top: 22px; padding-top: 18px; border-top: 1px solid #e3e6eb; }
+.prompt-definition-editor > footer > div { display: flex; gap: 4px; }
+.settings-backdrop { position: fixed; inset: 0; z-index: 60; display: flex; justify-content: flex-end; background: rgb(24 32 51 / 24%); }
+.creative-settings-panel { width: min(520px, 92vw); height: 100%; box-sizing: border-box; display: grid; grid-template-rows: auto auto minmax(0,1fr) auto; gap: 22px; padding: 26px; background: #fff; box-shadow: -10px 0 36px rgb(24 32 51 / 14%); }
+.creative-settings-panel > header { display: flex; align-items: start; justify-content: space-between; padding-bottom: 18px; border-bottom: 1px solid #e1e5ea; }
+.creative-settings-panel h2 { margin: 0; font-size: 19px; }
+.creative-settings-panel header p { margin: 6px 0 0; color: #7b8391; font-size: 12px; }
+.creative-settings-panel > label { display: grid; gap: 8px; color: #555e6e; font-size: 12px; }
+.creative-settings-panel select, .creative-settings-panel textarea { box-sizing: border-box; width: 100%; border: 1px solid #ccd2dc; border-radius: 6px; background: #fff; color: #252d3e; font: 13px/1.65 inherit; }
+.creative-settings-panel select { height: 40px; padding: 0 10px; }
+.creative-settings-panel textarea { height: 100%; min-height: 260px; padding: 12px; resize: none; }
+.creative-settings-panel > footer { display: flex; justify-content: space-between; padding-top: 18px; border-top: 1px solid #e1e5ea; }

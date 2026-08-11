@@ -1152,6 +1152,31 @@ export type SceneRecord = {
   confirmed_at: string | null;
 };
 
+export type PromptDefinitionKind = 'master' | 'workflow_task' | 'common_task';
+
+export type PromptDefinition = {
+  id: number;
+  name: string;
+  description: string;
+  kind: PromptDefinitionKind;
+  workflow_key: CreativeStrategy | null;
+  task_key: string | null;
+  content: string;
+  input_description: string;
+  is_default: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type PromptDefinitionWrite = Omit<PromptDefinition, 'id' | 'created_at' | 'updated_at'>;
+
+export type ProjectMasterPrompt = {
+  project_id: number;
+  content: string;
+  source_prompt_definition_id: number | null;
+  updated_at: string;
+};
+
 export type BaseSceneAnalysis = {
   scene_id: number;
   summary: string;

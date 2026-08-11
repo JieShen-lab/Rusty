@@ -137,6 +137,7 @@ class CreativeWorkflowService:
                 "scene_type:string, basic_events:string[]. Do not perform detailed character "
                 "state, causality, or rewrite planning analysis."
             ),
+            task_key="scene_preanalysis",
         )
         normalized = self._normalize_preanalysis(value)
         return self.save_preanalysis(scene_id, normalized, user_edited=False)

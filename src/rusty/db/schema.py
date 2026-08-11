@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .connection import session
 
-CURRENT_SCHEMA_VERSION = 42
+CURRENT_SCHEMA_VERSION = 43
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -3837,6 +3837,77 @@ def _migrate_to_v42(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_to_v43(connection: sqlite3.Connection) -> None:
+    """Introduce simple master, workflow-task, and common-task prompts."""
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS prompt_definitions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            kind TEXT NOT NULL CHECK (kind IN ('master', 'workflow_task', 'common_task')),
+            workflow_key TEXT,
+            task_key TEXT,
+            content TEXT NOT NULL DEFAULT '',
+            input_description TEXT NOT NULL DEFAULT '',
+            is_default INTEGER NOT NULL DEFAULT 0 CHECK (is_default IN (0, 1)),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            deleted_at TEXT
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_prompt_definition_default_master
+            ON prompt_definitions(kind)
+            WHERE kind = 'master' AND is_default = 1 AND deleted_at IS NULL;
+        CREATE INDEX IF NOT EXISTS idx_prompt_definition_lookup
+            ON prompt_definitions(kind, workflow_key, task_key, is_default, updated_at);
+
+        CREATE TABLE IF NOT EXISTS project_master_prompts (
+            project_id INTEGER PRIMARY KEY,
+            content TEXT NOT NULL DEFAULT '',
+            source_prompt_definition_id INTEGER,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (source_prompt_definition_id) REFERENCES prompt_definitions(id) ON DELETE SET NULL
+        );
+
+        INSERT INTO prompt_definitions (
+            name, description, kind, content, input_description, is_default
+        ) SELECT
+            '默认总提示词', '适用于普通小说创作的工程级规则', 'master',
+            '保持事实一致、人物行为可信、语言自然；遵守用户本次明确要求。',
+            '所有新工作流任务都会携带此文本。', 1
+        WHERE NOT EXISTS (
+            SELECT 1 FROM prompt_definitions WHERE kind = 'master' AND deleted_at IS NULL
+        );
+
+        INSERT INTO prompt_definitions (
+            name, description, kind, task_key, content, input_description, is_default
+        ) SELECT
+            '场景预分析', '轻量识别场景基础信息', 'common_task', 'scene_preanalysis',
+            '只判断场景摘要、人物、地点、时间、场景类型和基础事件；不要生成改写方案。',
+            '当前场景完整 Source 文本及其原文范围。', 1
+        WHERE NOT EXISTS (
+            SELECT 1 FROM prompt_definitions
+            WHERE kind = 'common_task' AND task_key = 'scene_preanalysis' AND deleted_at IS NULL
+        );
+
+        INSERT INTO prompt_definitions (
+            name, description, kind, workflow_key, task_key,
+            content, input_description, is_default
+        ) SELECT
+            '贴合原文 / 人物专项分析', '识别人物修改涉及的 Source 关联',
+            'workflow_task', 'faithful', 'character_modification_analysis',
+            '识别显式与隐式人物关联、动作、对白、状态、物品、空间关系和关联事件；只陈述 Source 事实与目标人物卡差异，不替用户设计修改方案。',
+            '当前场景 Source、CreativeIntent、源人物和目标人物卡。', 1
+        WHERE NOT EXISTS (
+            SELECT 1 FROM prompt_definitions
+            WHERE kind = 'workflow_task' AND workflow_key = 'faithful'
+              AND task_key = 'character_modification_analysis' AND deleted_at IS NULL
+        );
+        """
+    )
+
+
 def _safe_json_list(value: object) -> list[dict[str, object]]:
     try:
         parsed = json.loads(str(value or "[]"))
@@ -4229,6 +4300,7 @@ MIGRATIONS = {
     40: _migrate_to_v40,
     41: _migrate_to_v41,
     42: _migrate_to_v42,
+    43: _migrate_to_v43,
 }
 
 

@@ -10,6 +10,7 @@ from rusty.services.model_service import ModelService
 from rusty.db import default_database_path
 from rusty.services.project_service import ProjectService
 from rusty.services.prompt_compiler import PromptCompiler
+from rusty.services.prompt_definition_service import PromptDefinitionService
 
 
 class WorkflowAI:
@@ -28,6 +29,7 @@ class WorkflowAI:
         self.models = ModelService(self.database_path)
         self.projects = ProjectService(self.database_path)
         self.compiler = PromptCompiler()
+        self.prompts = PromptDefinitionService(self.database_path)
 
     def generate_json(
         self,
@@ -36,6 +38,9 @@ class WorkflowAI:
         stage: str,
         payload: dict[str, Any],
         output_contract: str,
+        workflow_key: str | None = None,
+        task_key: str | None = None,
+        user_instruction: str = "",
     ) -> dict[str, Any]:
         fake_method = getattr(self.client, "generate_json", None)
         if callable(fake_method):
@@ -52,11 +57,24 @@ class WorkflowAI:
         )
         if model is None:
             raise ValueError("No AI model is configured for this workflow.")
-        request = self.compiler.compile_workflow_json(
-            stage=stage,
-            payload=payload,
-            output_contract=output_contract,
-        )
+        if task_key:
+            master = self.prompts.get_project_master(project_id)
+            definition = self.prompts.find_task(workflow_key=workflow_key, task_key=task_key)
+            request = self.compiler.compile_creative_json(
+                stage=stage,
+                master_prompt=str(master["content"]),
+                task_prompt=definition.content if definition else "",
+                payload=payload,
+                user_instruction=user_instruction,
+                output_contract=output_contract,
+                prompt_definition_id=definition.id if definition else None,
+            )
+        else:
+            request = self.compiler.compile_workflow_json(
+                stage=stage,
+                payload=payload,
+                output_contract=output_contract,
+            )
         response = self.client.chat(
             model,
             self.models.get_api_key(model.id),

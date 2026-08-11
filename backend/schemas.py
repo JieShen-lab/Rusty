@@ -411,6 +411,7 @@ class CreateProjectRequest(BaseModel):
     model_id: int | None = None
     prompt_template_id: int | None = None
     analysis_prompt_template_id: int | None = None
+    master_prompt_definition_id: int | None = None
 
 
 class LegacyProjectCreateRequest(BaseModel):

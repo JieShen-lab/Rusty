@@ -19,19 +19,17 @@ import {
 } from 'lucide-react';
 import {
   createProject,
-  getAnalysisPrompts,
+  getPromptDefinitions,
   getModels,
-  getPrompts,
   previewProject,
   testModel,
 } from '../api/client';
 import type {
-  AnalysisPromptTemplate,
   ChapterSplitOptions,
   ModelConfig,
   PreviewResponse,
   ProjectKind,
-  PromptTemplate,
+  PromptDefinition,
 } from '../api/types';
 
 type Props = { onNavigate: (path: string) => void };
@@ -43,13 +41,13 @@ const FLOW_STEPS: Array<{ key: Exclude<WizardStep, 'purpose'>; label: string; hi
   { key: 'split', label: '章节拆分', hint: '配置章节识别规则', icon: <Scissors size={17} /> },
   { key: 'preview', label: '预览信息', hint: '确认章节与元数据', icon: <Eye size={17} /> },
   { key: 'model', label: '模型配置', hint: '选择 AI 推理引擎', icon: <Cpu size={17} /> },
-  { key: 'prompt', label: '提示词策略', hint: '绑定本次工程模板', icon: <MessageSquareText size={17} /> },
+  { key: 'prompt', label: '总提示词', hint: '填入当前工程实际使用的规则', icon: <MessageSquareText size={17} /> },
   { key: 'confirm', label: '确认创建', hint: '检查并启动工程', icon: <ClipboardCheck size={17} /> },
 ];
 
 export function NewProjectPage({ onNavigate }: Props) {
-  const [step, setStep] = useState<WizardStep>('purpose');
-  const [purpose, setPurpose] = useState<ProjectKind | null>(null);
+  const [step, setStep] = useState<WizardStep>('import');
+  const [purpose, setPurpose] = useState<ProjectKind | null>('rewrite');
   const [sourcePath, setSourcePath] = useState('');
   const [workspacePath, setWorkspacePath] = useState('');
   const [projectName, setProjectName] = useState('');
@@ -65,23 +63,20 @@ export function NewProjectPage({ onNavigate }: Props) {
   const [models, setModels] = useState<ModelConfig[]>([]);
   const [modelId, setModelId] = useState<number | null>(null);
   const [modelTestMessage, setModelTestMessage] = useState<string | null>(null);
-  const [rewritePrompts, setRewritePrompts] = useState<PromptTemplate[]>([]);
-  const [analysisPrompts, setAnalysisPrompts] = useState<AnalysisPromptTemplate[]>([]);
-  const [rewritePromptId, setRewritePromptId] = useState<number | null>(null);
-  const [analysisPromptId, setAnalysisPromptId] = useState<number | null>(null);
+  const [masterPrompts, setMasterPrompts] = useState<PromptDefinition[]>([]);
+  const [masterPromptId, setMasterPromptId] = useState<number | null>(null);
   const [query, setQuery] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    Promise.all([getModels(), getPrompts(), getAnalysisPrompts()])
-      .then(([modelItems, rewriteItems, analysisItems]) => {
+    Promise.all([getModels(), getPromptDefinitions()])
+      .then(([modelItems, promptItems]) => {
         setModels(modelItems);
         setModelId(modelItems.find((item) => item.is_default)?.id ?? modelItems[0]?.id ?? null);
-        setRewritePrompts(rewriteItems);
-        setAnalysisPrompts(analysisItems);
-        setRewritePromptId(rewriteItems.find((item) => item.is_default)?.id ?? rewriteItems[0]?.id ?? null);
-        setAnalysisPromptId(analysisItems.find((item) => item.is_default)?.id ?? analysisItems[0]?.id ?? null);
+        const masters = promptItems.filter((item) => item.kind === 'master');
+        setMasterPrompts(masters);
+        setMasterPromptId(masters.find((item) => item.is_default)?.id ?? masters[0]?.id ?? null);
       })
       .catch((reason) => setError(messageOf(reason)));
   }, []);
@@ -91,14 +86,12 @@ export function NewProjectPage({ onNavigate }: Props) {
   const selectedModel = models.find((item) => item.id === modelId) ?? null;
   const visiblePrompts = useMemo(() => {
     const normalized = query.trim().toLowerCase();
-    const source = purpose === 'branch' ? analysisPrompts : rewritePrompts;
+    const source = masterPrompts;
     return normalized
       ? source.filter((item) => `${item.name} ${item.description}`.toLowerCase().includes(normalized))
       : source;
-  }, [analysisPrompts, purpose, query, rewritePrompts]);
-  const selectedPrompt = purpose === 'branch'
-    ? analysisPrompts.find((item) => item.id === analysisPromptId)
-    : rewritePrompts.find((item) => item.id === rewritePromptId);
+  }, [masterPrompts, query]);
+  const selectedPrompt = masterPrompts.find((item) => item.id === masterPromptId);
 
   function resetPreview() {
     setPreview(null);
@@ -187,9 +180,10 @@ export function NewProjectPage({ onNavigate }: Props) {
         projectName,
         workspacePath,
         purpose,
-        purpose === 'rewrite' ? rewritePromptId : null,
-        purpose === 'branch' ? analysisPromptId : null,
+        null,
+        null,
         modelId,
+        masterPromptId,
       );
       onNavigate(`/workspace/${project.id}`);
     } catch (reason) {
@@ -201,7 +195,7 @@ export function NewProjectPage({ onNavigate }: Props) {
 
   function previous() {
     setError(null);
-    if (step === 'purpose') {
+    if (step === 'purpose' || step === 'import') {
       onNavigate('/library');
       return;
     }
@@ -257,9 +251,9 @@ export function NewProjectPage({ onNavigate }: Props) {
       <header className="setup-header wizard-header">
         <div>
           <h1>新建工程</h1>
-          <p>{purpose ? `${purpose === 'rewrite' ? '改写' : '扩写'}工程 · 按步骤完成导入与配置` : '先选择本次工程要完成的工作'}</p>
+          <p>普通小说创作工程 · 按步骤完成导入与配置</p>
         </div>
-        {purpose ? <span className="wizard-purpose-badge">{purpose === 'rewrite' ? '改写工程' : '扩写工程'}</span> : null}
+        <span className="wizard-purpose-badge">小说创作工程</span>
       </header>
 
       {error ? <div className="inline-alert error" role="alert">{error}</div> : null}
@@ -268,7 +262,7 @@ export function NewProjectPage({ onNavigate }: Props) {
         <aside className="wizard-sidebar" aria-label="创建工程步骤">
           <div className="wizard-sidebar-title">
             <FilePenLine size={20} />
-            <strong>{purpose ? `${purpose === 'rewrite' ? '改写' : '扩写'}工程` : '选择工程类型'}</strong>
+            <strong>小说创作工程</strong>
           </div>
           <ol>
             {FLOW_STEPS.map((item, index) => {
@@ -408,13 +402,13 @@ export function NewProjectPage({ onNavigate }: Props) {
           ) : null}
 
           {step === 'prompt' ? (
-            <WizardSection title={purpose === 'branch' ? '选择分析提示词' : '选择改写提示词'} description="选择本工程后续处理使用的提示词模板。">
+            <WizardSection title="选择总提示词" description="所选内容会复制到工程中，之后可独立编辑，不与提示词库同步。">
               <div className="search-field"><Search size={16} /><input aria-label="搜索提示词" placeholder="搜索名称或说明" value={query} onChange={(event) => setQuery(event.target.value)} /></div>
               <div className="prompt-choice-list wizard-prompt-list">
                 {visiblePrompts.map((item) => {
-                  const selected = purpose === 'branch' ? item.id === analysisPromptId : item.id === rewritePromptId;
+                  const selected = item.id === masterPromptId;
                   return (
-                    <button className={`prompt-choice ${selected ? 'selected' : ''}`} key={item.id} onClick={() => purpose === 'branch' ? setAnalysisPromptId(item.id) : setRewritePromptId(item.id)} type="button">
+                    <button className={`prompt-choice ${selected ? 'selected' : ''}`} key={item.id} onClick={() => setMasterPromptId(item.id)} type="button">
                       <span className="radio-mark" /><span><strong>{item.name}</strong><small>{item.description || '暂无说明'}</small></span>{item.is_default ? <em>默认</em> : null}
                     </button>
                   );
@@ -427,13 +421,13 @@ export function NewProjectPage({ onNavigate }: Props) {
           {step === 'confirm' && preview ? (
             <WizardSection title="确认配置" description="检查无误后创建工程。">
               <div className="confirm-grid">
-                <ConfirmItem label="工程类型" value={purpose === 'rewrite' ? '改写工程' : '扩写工程'} />
+                <ConfirmItem label="工程类型" value="小说创作工程" />
                 <ConfirmItem label="工程名称" value={projectName} />
                 <ConfirmItem label="书名" value={preview.title} />
                 <ConfirmItem label="规模" value={`${preview.total_chapters} 章 · ${preview.total_words.toLocaleString()} 字`} />
                 <ConfirmItem label="章节拆分" value={splitModeLabel(preview.split_mode)} />
                 <ConfirmItem label="AI 模型" value={selectedModel?.display_name || '未选择'} />
-                <ConfirmItem label="提示词" value={selectedPrompt?.name || '未选择'} />
+                <ConfirmItem label="总提示词" value={selectedPrompt?.name || '未选择'} />
                 <ConfirmItem label="源文件" value={sourcePath} wide />
                 <ConfirmItem label="工作目录" value={workspacePath} wide />
               </div>
@@ -477,7 +471,7 @@ function footerHint(step: WizardStep, preview: PreviewResponse | null) {
   if (step === 'split') return '拆分后进入章节预览';
   if (step === 'preview' && preview) return `已识别 ${preview.total_chapters} 章`;
   if (step === 'model') return '模型配置将用于后续工程处理';
-  if (step === 'prompt') return '提示词类型随工程类型切换';
+  if (step === 'prompt') return '所选总提示词会复制到工程，不建立同步关系';
   return '创建后进入工程工作台';
 }
 

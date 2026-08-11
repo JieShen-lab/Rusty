@@ -76,7 +76,7 @@ class CreativeWorkspaceTests(unittest.TestCase):
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         self.assertIn("scene_preanalyses", tables)
         self.assertIn("creative_intents", tables)
-        self.assertEqual(42, CURRENT_SCHEMA_VERSION)
+        self.assertGreaterEqual(CURRENT_SCHEMA_VERSION, 42)
 
     def test_preanalysis_edit_reanalysis_guard_confirmation_and_intent(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd(), ignore_cleanup_errors=True) as directory:

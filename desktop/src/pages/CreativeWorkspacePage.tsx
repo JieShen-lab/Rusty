@@ -8,12 +8,18 @@ import {
   getChapters,
   getCreativeWorkflowStates,
   getProjectCharacters,
+  getProject,
+  getProjectMasterPrompt,
   getProjectMaterials,
+  getModels,
   getSceneCreativeIntent,
   getScenePreanalysis,
   runScenePreanalysis,
   saveSceneCreativeIntent,
   saveScenePreanalysis,
+  saveProjectMasterPrompt,
+  exportProjectMasterPrompt,
+  updateProjectSettings,
   updateCreativeWorkflowState,
 } from '../api/client';
 import type {
@@ -26,6 +32,7 @@ import type {
   CreativeStrategy,
   CharacterCard,
   Material,
+  ModelConfig,
   SceneRecord,
 } from '../api/types';
 
@@ -65,6 +72,11 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
   const [viewStage, setViewStage] = useState<CreativeWorkflowStage>('preanalysis');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [models, setModels] = useState<ModelConfig[]>([]);
+  const [settingsModelId, setSettingsModelId] = useState<number | null>(null);
+  const [masterPrompt, setMasterPrompt] = useState('');
+  const [masterDirty, setMasterDirty] = useState(false);
 
   const stateByChapter = useMemo(
     () => new Map(states.map((item) => [item.chapter_id, item])),
@@ -251,6 +263,35 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
     }
   }
 
+  async function openSettings() {
+    await perform(async () => {
+      const [project, modelItems, master] = await Promise.all([
+        getProject(projectId), getModels(), getProjectMasterPrompt(projectId),
+      ]);
+      setModels(modelItems);
+      setSettingsModelId(typeof project.settings?.model_id === 'number' ? project.settings.model_id : null);
+      setMasterPrompt(master.content);
+      setMasterDirty(false);
+      setSettingsOpen(true);
+    });
+  }
+
+  async function saveSettings() {
+    await perform(async () => {
+      await Promise.all([
+        updateProjectSettings(projectId, { model_id: settingsModelId }),
+        saveProjectMasterPrompt(projectId, masterPrompt),
+      ]);
+      setMasterDirty(false);
+    });
+  }
+
+  async function exportMaster() {
+    const name = window.prompt('保存到提示词库的名称', `${projectName} · 总提示词`);
+    if (!name?.trim()) return;
+    await perform(async () => { await exportProjectMasterPrompt(projectId, name.trim()); });
+  }
+
   return (
     <div className="creative-workspace">
       <header className="creative-topbar">
@@ -259,7 +300,7 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
         </button>
         <div className="creative-project-title"><strong>{projectName}</strong><span>/</span><span>{selectedChapter?.title ?? '暂无章节'}</span></div>
         <div className="creative-top-actions">
-          <button className="button ghost" type="button"><Settings2 size={17} />工程设置</button>
+          <button className="button ghost" onClick={() => void openSettings()} type="button"><Settings2 size={17} />工程设置</button>
           <button className="button ghost" type="button"><Download size={17} />导出</button>
         </div>
       </header>
@@ -344,6 +385,7 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
           <div className="source-context">{scenes.find((item) => item.id === activeSceneId)?.original_text || selectedChapter?.original_text || '暂无原文'}</div>
         </aside>
       </div>
+      {settingsOpen ? <div className="settings-backdrop" role="presentation"><section aria-label="工程设置" className="creative-settings-panel" role="dialog"><header><div><h2>工程设置</h2><p>AI 配置</p></div><button className="button ghost" onClick={() => setSettingsOpen(false)} type="button">关闭</button></header><label><span>默认模型</span><select value={settingsModelId ?? ''} onChange={(event) => setSettingsModelId(event.target.value ? Number(event.target.value) : null)}><option value="">使用全局默认模型</option>{models.map((model) => <option key={model.id} value={model.id}>{model.display_name}</option>)}</select></label><label className="settings-master-field"><span>总提示词</span><textarea value={masterPrompt} onChange={(event) => { setMasterPrompt(event.target.value); setMasterDirty(true); }} /></label><footer><button className="button secondary" onClick={() => void exportMaster()} type="button">导出到提示词库</button><button className="button primary" disabled={busy || (!masterDirty && settingsModelId === null)} onClick={() => void saveSettings()} type="button">保存设置</button></footer></section></div> : null}
     </div>
   );
 }
