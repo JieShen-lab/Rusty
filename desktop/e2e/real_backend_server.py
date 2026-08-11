@@ -79,6 +79,74 @@ class RealE2EFakeLLM:
                 "spatial_relations": [], "related_events": [],
                 "target_character_conflicts": [{"id": "conflict-1", "summary": "行动方式存在差异", "source_text": "检查了院门", "start_offset": 10, "end_offset": 15, "inferred": False, "source_state": "直接检查", "target_state": "谨慎观察", "difference": "存在差异"}],
             }
+        if stage == "special_analysis":
+            strategy = payload["creative_intent"]["strategy"]
+            if strategy == "plot_adjust":
+                return {"source_events": ["进入院子", "检查院门"], "causal_links": ["进入→检查"],
+                        "participants": ["人物"], "preconditions": [], "downstream_dependencies": ["旧设定仍有效"],
+                        "affected_events": ["检查院门"]}
+            if strategy == "expansion":
+                return {"entry_state": ["人物已进入院子"], "exit_constraints": ["旧设定仍有效"],
+                        "character_relations": [], "active_events": ["检查院门"], "unresolved_goals": [],
+                        "available_hooks": ["门外脚步声"]}
+            return {"initial_state": ["人物进入院子"], "required_characters": ["李四"], "location": "院子",
+                    "time": "当前", "inherited_facts": ["旧设定仍有效"], "required_end_state": ["院门已检查"],
+                    "downstream_constraints": ["人物仍返回客栈"]}
+        if stage == "target_design":
+            strategy = payload["creative_intent"]["strategy"]
+            if strategy == "plot_adjust":
+                return {"nodes": [
+                    {"id":"enter","order":1,"summary":"人物进入院子","participants":["人物"],"outcome":"进入","source_relation":"inherited"},
+                    {"id":"inspect","order":2,"summary":"李四发现院门暗记","participants":["李四"],"outcome":"发现线索","source_relation":"modified"}],
+                    "source_mapping":[{"source_event_id":"source-1","target_node_id":"enter"},{"source_event_id":"source-2","target_node_id":"inspect"}],
+                    "summary":["检查院门改为发现暗记"]}
+            if strategy == "expansion":
+                return {"insert_after":"人物进入院子","insert_before":"他检查了院门","entry_state":["人物已进入院子"],
+                        "new_events":[{"id":"noise","order":1,"summary":"门外传来脚步声"}],
+                        "exit_constraints":["旧设定仍有效","人物仍会检查院门"],"summary":["在进入与检查之间增加脚步声"]}
+            if strategy == "reimagine":
+                return {"boundary_conditions":{"initial_state":["人物进入院子"],"required_characters":["李四"],"location":"院子",
+                        "time":"当前","inherited_facts":["旧设定仍有效"],"required_end_state":["院门已检查"],
+                        "downstream_constraints":["人物仍返回客栈"]},
+                        "nodes":[{"id":"new-1","order":1,"summary":"李四识破院中伏击","participants":["李四"],
+                                  "outcome":"解除危机","source_relation":"modified"}],"summary":["重新构思院中冲突"]}
+            return {"items": [
+                {"id": "character", "label": "人物", "operation": "modify", "source_value": "人物", "target_value": "李四"},
+                {"id": "entry", "label": "进入院子", "operation": "preserve", "source_value": "进入院子", "target_value": ""},
+                {"id": "action", "label": "检查院门", "operation": "adapt", "source_value": "检查了院门", "target_value": "谨慎观察"},
+            ], "summary": ["人物 → 李四", "进入院子保持", "检查动作适配"]}
+        if stage == "writing_plan":
+            source = payload["source_text"]
+            strategy = payload["target"]["strategy"]
+            if strategy == "plot_adjust":
+                return {"blocks":[{"title":"调整院门事件","source_start_offset":0,"source_end_offset":len(source),
+                                   "source_text_snapshot":source,"operation":"rewrite","preserve_constraints":["进入院子"]}]}
+            if strategy == "expansion":
+                split = source.index("他检查")
+                return {"blocks":[
+                    {"title":"进入院子","source_start_offset":0,"source_end_offset":split,"source_text_snapshot":source[:split],"operation":"preserve"},
+                    {"title":"脚步声","source_start_offset":split,"source_end_offset":split,"source_text_snapshot":"","operation":"insert","target_requirements":["门外脚步声"]},
+                    {"title":"检查院门","source_start_offset":split,"source_end_offset":len(source),"source_text_snapshot":source[split:],"operation":"preserve"}]}
+            if strategy == "reimagine":
+                return {"blocks":[{"title":"整场重新构思","source_start_offset":0,"source_end_offset":len(source),
+                                   "source_text_snapshot":source,"operation":"rewrite","preserve_constraints":["边界条件"]}]}
+            split = source.index("他检查")
+            return {"blocks": [
+                {"title": "进入院子", "source_start_offset": 0, "source_end_offset": split, "source_text_snapshot": source[:split], "operation": "preserve"},
+                {"title": "检查院门", "source_start_offset": split, "source_end_offset": len(source), "source_text_snapshot": source[split:], "operation": "transform", "instruction": "人物改为李四，动作适配"},
+            ]}
+        if stage == "transform_block":
+            return {"text": "李四谨慎地检查了院门。\n\n"}
+        if stage == "rewrite_block":
+            return {"text": "人物进入院子后，李四在院门上发现了一枚暗记。\n\n"}
+        if stage == "insert_block":
+            return {"text": "门外忽然传来一阵脚步声。\n\n"}
+        if stage == "full_scene_generation":
+            return {"text": "李四进入院子，识破伏击并检查院门，随后仍返回客栈。"}
+        if stage == "selected_text_edit":
+            return {"text": "李四仔细检查"}
+        if stage == "review_rework":
+            return {"text": "李四贴近院门仔细观察。"}
         if stage == "propose_target_skeleton":
             target = deepcopy(SKELETON)
             target["event_nodes"][0]["summary"] = payload["user_direction"]

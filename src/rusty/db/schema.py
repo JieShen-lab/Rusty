@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .connection import session
 
-CURRENT_SCHEMA_VERSION = 45
+CURRENT_SCHEMA_VERSION = 51
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -4007,6 +4007,252 @@ def _migrate_to_v45(connection: sqlite3.Connection) -> None:
         )
 
 
+def _migrate_to_v46(connection: sqlite3.Connection) -> None:
+    """Add strategy-shaped scene targets without changing the immutable Source layer."""
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS scene_targets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scene_id INTEGER NOT NULL UNIQUE,
+            strategy TEXT NOT NULL CHECK (strategy IN (
+                'faithful', 'plot_adjust', 'expansion', 'reimagine'
+            )),
+            user_instruction TEXT NOT NULL DEFAULT '',
+            design_json TEXT NOT NULL DEFAULT '{}',
+            status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'confirmed', 'stale')),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            confirmed_at TEXT,
+            FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_scene_targets_status
+            ON scene_targets(status, updated_at);
+
+        INSERT INTO prompt_definitions (
+            name, description, kind, workflow_key, task_key,
+            content, input_description, is_default
+        ) SELECT
+            '贴合原文 / 目标设计', '根据已确认专项分析生成 ChangeSet 草案',
+            'workflow_task', 'faithful', 'target_design',
+            '把已确认的 Source 事实与差异转成明确的 preserve、adapt 或 modify 目标项。Target 回答最终要改成什么，不要生成正文或写作规划。',
+            '工程总提示词、Source、已确认专项分析、CreativeIntent、目标人物卡和用户已选资源。', 1
+        WHERE NOT EXISTS (
+            SELECT 1 FROM prompt_definitions
+            WHERE kind = 'workflow_task' AND workflow_key = 'faithful'
+              AND task_key = 'target_design' AND deleted_at IS NULL
+        );
+        """
+    )
+
+
+def _migrate_to_v47(connection: sqlite3.Connection) -> None:
+    """Add semantic writing plans and a Source-separated authoritative current draft."""
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS writing_plans (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scene_id INTEGER NOT NULL UNIQUE,
+            target_id INTEGER NOT NULL,
+            strategy TEXT NOT NULL CHECK (strategy IN ('faithful','plot_adjust','expansion','reimagine')),
+            status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','ready','stale')),
+            coverage_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE,
+            FOREIGN KEY (target_id) REFERENCES scene_targets(id) ON DELETE RESTRICT
+        );
+        CREATE INDEX IF NOT EXISTS idx_writing_plans_status ON writing_plans(status, updated_at);
+
+        CREATE TABLE IF NOT EXISTS writing_plan_blocks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            plan_id INTEGER NOT NULL,
+            scene_id INTEGER NOT NULL,
+            block_order INTEGER NOT NULL,
+            title TEXT NOT NULL DEFAULT '',
+            source_start_offset INTEGER NOT NULL,
+            source_end_offset INTEGER NOT NULL,
+            source_text_snapshot TEXT NOT NULL DEFAULT '',
+            operation TEXT NOT NULL CHECK (operation IN ('preserve','transform','rewrite','insert','delete')),
+            instruction TEXT NOT NULL DEFAULT '',
+            preserve_constraints_json TEXT NOT NULL DEFAULT '[]',
+            target_requirements_json TEXT NOT NULL DEFAULT '[]',
+            resource_refs_json TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(plan_id, block_order),
+            FOREIGN KEY (plan_id) REFERENCES writing_plans(id) ON DELETE CASCADE,
+            FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_writing_blocks_source ON writing_plan_blocks(scene_id, source_start_offset, source_end_offset);
+
+        CREATE TABLE IF NOT EXISTS scene_current_drafts (
+            scene_id INTEGER PRIMARY KEY,
+            text TEXT NOT NULL DEFAULT '',
+            based_on_target_id INTEGER NOT NULL,
+            based_on_plan_id INTEGER NOT NULL,
+            block_spans_json TEXT NOT NULL DEFAULT '[]',
+            status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','confirmed','stale')),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE,
+            FOREIGN KEY (based_on_target_id) REFERENCES scene_targets(id) ON DELETE RESTRICT,
+            FOREIGN KEY (based_on_plan_id) REFERENCES writing_plans(id) ON DELETE RESTRICT
+        );
+
+        INSERT INTO prompt_definitions (name, description, kind, workflow_key, task_key, content, input_description, is_default)
+        SELECT '贴合原文 / 写作规划', '将 Target 映射到语义 Source blocks', 'workflow_task', 'faithful', 'writing_plan',
+               '把已确认 Target 映射为语义正文区块操作。不要重复设计剧情目标；覆盖完整 Source，合理使用 preserve、transform、rewrite、insert、delete。',
+               'Source、已确认 Target、专项分析、人物卡与素材。', 1
+        WHERE NOT EXISTS (SELECT 1 FROM prompt_definitions WHERE kind='workflow_task' AND workflow_key='faithful' AND task_key='writing_plan' AND deleted_at IS NULL);
+        INSERT INTO prompt_definitions (name, description, kind, workflow_key, task_key, content, input_description, is_default)
+        SELECT '贴合原文 / 局部修改', '以 Source block 为主体执行明确修改', 'workflow_task', 'faithful', 'transform_block',
+               '使用 Source block 作为正文主体，只修改本 block 明确指定内容；不要写一个意义类似的新段落，只返回当前 block。',
+               'Source block、Target、当前 block、人物卡和邻接上下文。', 1
+        WHERE NOT EXISTS (SELECT 1 FROM prompt_definitions WHERE kind='workflow_task' AND workflow_key='faithful' AND task_key='transform_block' AND deleted_at IS NULL);
+        INSERT INTO prompt_definitions (name, description, kind, workflow_key, task_key, content, input_description, is_default)
+        SELECT '贴合原文 / 区块重写', '保留事件功能与硬约束的局部重写', 'workflow_task', 'faithful', 'rewrite_block',
+               '只重写当前 Source block；保留列出的剧情功能、事件、空间关系、对手行为、结果和 Target constraints。',
+               'Source block、Target、preserve constraints、target requirements 和邻接上下文。', 1
+        WHERE NOT EXISTS (SELECT 1 FROM prompt_definitions WHERE kind='workflow_task' AND workflow_key='faithful' AND task_key='rewrite_block' AND deleted_at IS NULL);
+        INSERT INTO prompt_definitions (name, description, kind, workflow_key, task_key, content, input_description, is_default)
+        SELECT '通用 / 插入区块', '只生成 insertion content', 'common_task', NULL, 'insert_block',
+               '只生成指定 insertion block，不要复述或重写相邻 Source。', 'Target、当前 block 与邻接上下文。', 1
+        WHERE NOT EXISTS (SELECT 1 FROM prompt_definitions WHERE kind='common_task' AND task_key='insert_block' AND deleted_at IS NULL);
+        INSERT INTO prompt_definitions (name, description, kind, workflow_key, task_key, content, input_description, is_default)
+        SELECT '通用 / 选中文本修改', '只修改 Current Draft 选中区间', 'common_task', NULL, 'selected_text_edit',
+               '按用户要求只返回选中区间的新文本，不要返回前后文。', '选中文本、Current Draft 前后文、Target、人物与用户要求。', 1
+        WHERE NOT EXISTS (SELECT 1 FROM prompt_definitions WHERE kind='common_task' AND task_key='selected_text_edit' AND deleted_at IS NULL);
+        """
+    )
+
+
+def _migrate_to_v48(connection: sqlite3.Connection) -> None:
+    """Add user-authored review marks for traditional Source-to-Draft review."""
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS review_marks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scene_id INTEGER NOT NULL,
+            source_start_offset INTEGER NOT NULL,
+            source_end_offset INTEGER NOT NULL,
+            source_text TEXT NOT NULL DEFAULT '',
+            target_start_offset INTEGER NOT NULL,
+            target_end_offset INTEGER NOT NULL,
+            user_note TEXT NOT NULL DEFAULT '',
+            resolved INTEGER NOT NULL DEFAULT 0 CHECK (resolved IN (0,1)),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_review_marks_scene ON review_marks(scene_id, resolved, created_at);
+
+        INSERT INTO prompt_definitions (name, description, kind, task_key, content, input_description, is_default)
+        SELECT '通用 / 审查局部重改', '按 ReviewMark 定向处理正文区间', 'common_task', 'review_rework',
+               '只返回当前选中区间的新版本。使用对应 Source、当前 Draft 区间、前后文、Target、Writing Plan 和用户备注；不要重写整场景。',
+               'Source 对应区间、Current Draft 当前区间与前后文、Target、Writing Plan、用户要求或备注。', 1
+        WHERE NOT EXISTS (SELECT 1 FROM prompt_definitions WHERE kind='common_task' AND task_key='review_rework' AND deleted_at IS NULL);
+        """
+    )
+
+
+def _migrate_to_v49(connection: sqlite3.Connection) -> None:
+    """Add strategy-specific analysis persistence and plot-adjustment prompts."""
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS strategy_scene_analyses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scene_id INTEGER NOT NULL UNIQUE,
+            strategy TEXT NOT NULL CHECK (strategy IN ('plot_adjust','expansion','reimagine')),
+            analysis_json TEXT NOT NULL DEFAULT '{}',
+            status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','confirmed','stale')),
+            user_edited INTEGER NOT NULL DEFAULT 0 CHECK (user_edited IN (0,1)),
+            confirmed_at TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_strategy_scene_analyses ON strategy_scene_analyses(strategy,status,updated_at);
+
+        INSERT INTO prompt_definitions(name,description,kind,workflow_key,task_key,content,input_description,is_default)
+        SELECT '调整剧情 / 专项分析','分析当前事件结构及受影响事件','workflow_task','plot_adjust','special_analysis',
+               '只分析 Source 当前剧情结构：source_events、causal_links、participants、preconditions、downstream_dependencies、affected_events。不要提出目标剧情。',
+               'Source、Preanalysis、CreativeIntent 和用户资源。',1
+        WHERE NOT EXISTS(SELECT 1 FROM prompt_definitions WHERE kind='workflow_task' AND workflow_key='plot_adjust' AND task_key='special_analysis' AND deleted_at IS NULL);
+        INSERT INTO prompt_definitions(name,description,kind,workflow_key,task_key,content,input_description,is_default)
+        SELECT '调整剧情 / 目标设计','生成结构化 TargetSkeleton','workflow_task','plot_adjust','target_design',
+               '根据已确认分析与用户要求生成有序 TargetSkeleton。节点包含 id、order、summary、participants、outcome、source_relation；source_relation 只能是 inherited、modified、inserted。',
+               'Source、已确认剧情分析、CreativeIntent 与 plot_skeleton 素材。',1
+        WHERE NOT EXISTS(SELECT 1 FROM prompt_definitions WHERE kind='workflow_task' AND workflow_key='plot_adjust' AND task_key='target_design' AND deleted_at IS NULL);
+        INSERT INTO prompt_definitions(name,description,kind,workflow_key,task_key,content,input_description,is_default)
+        SELECT '调整剧情 / 写作规划','把 Source 与 TargetSkeleton 映射为统一 blocks','workflow_task','plot_adjust','writing_plan',
+               '把 Source→Target mapping 表达为 preserve、rewrite、delete、insert、transform 的语义 blocks，覆盖 Source 并按目标节点插入。',
+               'Source、TargetSkeleton 与专项分析。',1
+        WHERE NOT EXISTS(SELECT 1 FROM prompt_definitions WHERE kind='workflow_task' AND workflow_key='plot_adjust' AND task_key='writing_plan' AND deleted_at IS NULL);
+        INSERT INTO prompt_definitions(name,description,kind,workflow_key,task_key,content,input_description,is_default)
+        SELECT '调整剧情 / 局部修改','执行 plot_adjust transform block','workflow_task','plot_adjust','transform_block','以 Source block 为主体执行已确认的局部变化，只返回当前 block。','当前 block、TargetSkeleton 与邻接上下文。',1
+        WHERE NOT EXISTS(SELECT 1 FROM prompt_definitions WHERE kind='workflow_task' AND workflow_key='plot_adjust' AND task_key='transform_block' AND deleted_at IS NULL);
+        INSERT INTO prompt_definitions(name,description,kind,workflow_key,task_key,content,input_description,is_default)
+        SELECT '调整剧情 / 区块重写','执行 plot_adjust rewrite block','workflow_task','plot_adjust','rewrite_block','按 TargetSkeleton 重写当前 block，并保留列出的 Source constraints；只返回当前 block。','当前 Source block、目标节点与约束。',1
+        WHERE NOT EXISTS(SELECT 1 FROM prompt_definitions WHERE kind='workflow_task' AND workflow_key='plot_adjust' AND task_key='rewrite_block' AND deleted_at IS NULL);
+        INSERT INTO prompt_definitions(name,description,kind,workflow_key,task_key,content,input_description,is_default)
+        SELECT '调整剧情 / 插入区块','生成 TargetSkeleton 插入节点','workflow_task','plot_adjust','insert_block','只生成指定插入节点的正文，不重写相邻 Source。','目标节点与邻接上下文。',1
+        WHERE NOT EXISTS(SELECT 1 FROM prompt_definitions WHERE kind='workflow_task' AND workflow_key='plot_adjust' AND task_key='insert_block' AND deleted_at IS NULL);
+        """
+    )
+
+
+def _migrate_to_v50(connection: sqlite3.Connection) -> None:
+    """Seed expansion analysis, insertion planning, generation, and seam prompts."""
+    connection.executescript(
+        """
+        INSERT INTO prompt_definitions(name,description,kind,workflow_key,task_key,content,input_description,is_default)
+        SELECT '增加剧情 / 专项分析','分析插入点前后的状态桥接','workflow_task','expansion','special_analysis',
+               '提取 entry_state、exit_constraints、character_relations、active_events、unresolved_goals、available_hooks。只分析 Source，不设计新增事件。','Source、Preanalysis 与 CreativeIntent。',1
+        WHERE NOT EXISTS(SELECT 1 FROM prompt_definitions WHERE kind='workflow_task' AND workflow_key='expansion' AND task_key='special_analysis' AND deleted_at IS NULL);
+        INSERT INTO prompt_definitions(name,description,kind,workflow_key,task_key,content,input_description,is_default)
+        SELECT '增加剧情 / 目标设计','生成局部 InsertionBlock','workflow_task','expansion','target_design',
+               '只设计 InsertionBlock：insert_after、insert_before、entry_state、new_events、exit_constraints。不要复制整份 Scene Skeleton；exit_constraints 必须明确可编辑。','Source、已确认桥接分析、用户要求与 plot_skeleton 素材。',1
+        WHERE NOT EXISTS(SELECT 1 FROM prompt_definitions WHERE kind='workflow_task' AND workflow_key='expansion' AND task_key='target_design' AND deleted_at IS NULL);
+        INSERT INTO prompt_definitions(name,description,kind,workflow_key,task_key,content,input_description,is_default)
+        SELECT '增加剧情 / 写作规划','把 InsertionBlock 映射到 Source 保留块','workflow_task','expansion','writing_plan',
+               'Source 原有 blocks 使用 preserve，在指定位置添加一个 insert block。不要无意义 transform 或 rewrite A/B/C。','Source、InsertionBlock 与桥接约束。',1
+        WHERE NOT EXISTS(SELECT 1 FROM prompt_definitions WHERE kind='workflow_task' AND workflow_key='expansion' AND task_key='writing_plan' AND deleted_at IS NULL);
+        INSERT INTO prompt_definitions(name,description,kind,workflow_key,task_key,content,input_description,is_default)
+        SELECT '增加剧情 / 插入正文','只生成 Insertion content','workflow_task','expansion','insert_block',
+               '只生成 new_events 对应的 insertion content，满足 entry_state 与 exit_constraints；不复述或重写相邻 Source。','InsertionBlock、前一 Current Draft 尾部与后一 Source 开头。',1
+        WHERE NOT EXISTS(SELECT 1 FROM prompt_definitions WHERE kind='workflow_task' AND workflow_key='expansion' AND task_key='insert_block' AND deleted_at IS NULL);
+        INSERT INTO prompt_definitions(name,description,kind,workflow_key,task_key,content,input_description,is_default)
+        SELECT '增加剧情 / 接缝修复','只修复插入内容接缝','workflow_task','expansion','seam_repair',
+               '只处理 Insert 与相邻 Preserve 的接缝附近，不得重写整个场景。','接缝两侧短上下文与 exit constraints。',1
+        WHERE NOT EXISTS(SELECT 1 FROM prompt_definitions WHERE kind='workflow_task' AND workflow_key='expansion' AND task_key='seam_repair' AND deleted_at IS NULL);
+        """
+    )
+
+
+def _migrate_to_v51(connection: sqlite3.Connection) -> None:
+    """Seed reimagination boundary, skeleton, planning, and full-scene prompts."""
+    connection.executescript(
+        """
+        INSERT INTO prompt_definitions(name,description,kind,workflow_key,task_key,content,input_description,is_default)
+        SELECT '重新构思 / 专项分析','提取必须继承的边界条件','workflow_task','reimagine','special_analysis',
+               '只提取 initial_state、required_characters、location、time、inherited_facts、required_end_state、downstream_constraints。不要设计新剧情。','Source、Preanalysis 与 CreativeIntent。',1
+        WHERE NOT EXISTS(SELECT 1 FROM prompt_definitions WHERE kind='workflow_task' AND workflow_key='reimagine' AND task_key='special_analysis' AND deleted_at IS NULL);
+        INSERT INTO prompt_definitions(name,description,kind,workflow_key,task_key,content,input_description,is_default)
+        SELECT '重新构思 / 目标设计','生成 BoundaryConditions + TargetSkeleton','workflow_task','reimagine','target_design',
+               '保留已确认 boundary conditions，并生成有序 TargetSkeleton。明确 required end state 与 downstream constraints，不生成正文。','Source、已确认边界分析、人物卡、素材与用户要求。',1
+        WHERE NOT EXISTS(SELECT 1 FROM prompt_definitions WHERE kind='workflow_task' AND workflow_key='reimagine' AND task_key='target_design' AND deleted_at IS NULL);
+        INSERT INTO prompt_definitions(name,description,kind,workflow_key,task_key,content,input_description,is_default)
+        SELECT '重新构思 / 写作规划','判断 Source 保留量并规划整场生成','workflow_task','reimagine','writing_plan',
+               '如果 Source 几乎不保留，返回覆盖完整 Source 的 rewrite block，使 Rusty 使用 full_scene_generation；不要伪造高 Preserve 比例。','Source、BoundaryConditions 与 TargetSkeleton。',1
+        WHERE NOT EXISTS(SELECT 1 FROM prompt_definitions WHERE kind='workflow_task' AND workflow_key='reimagine' AND task_key='writing_plan' AND deleted_at IS NULL);
+        INSERT INTO prompt_definitions(name,description,kind,workflow_key,task_key,content,input_description,is_default)
+        SELECT '重新构思 / 整场生成','按边界与目标骨架生成新场景','workflow_task','reimagine','full_scene_generation',
+               '生成完整场景正文，严格满足 BoundaryConditions、TargetSkeleton、人物卡、当前上下文和总提示词。只返回正文。','Source 参考、BoundaryConditions、TargetSkeleton、Writing Plan 与当前上下文。',1
+        WHERE NOT EXISTS(SELECT 1 FROM prompt_definitions WHERE kind='workflow_task' AND workflow_key='reimagine' AND task_key='full_scene_generation' AND deleted_at IS NULL);
+        """
+    )
+
+
 def _safe_json_list(value: object) -> list[dict[str, object]]:
     try:
         parsed = json.loads(str(value or "[]"))
@@ -4402,6 +4648,12 @@ MIGRATIONS = {
     43: _migrate_to_v43,
     44: _migrate_to_v44,
     45: _migrate_to_v45,
+    46: _migrate_to_v46,
+    47: _migrate_to_v47,
+    48: _migrate_to_v48,
+    49: _migrate_to_v49,
+    50: _migrate_to_v50,
+    51: _migrate_to_v51,
 }
 
 

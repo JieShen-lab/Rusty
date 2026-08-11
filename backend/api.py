@@ -1025,6 +1025,137 @@ def create_app(
         _require_scene(scene_service, scene_id)
         return creative_workflow_service.confirm_character_modification_analysis(scene_id)
 
+    @app.get("/api/scenes/{scene_id}/strategy-analysis", response_model=dict[str, Any] | None)
+    def get_strategy_analysis(scene_id: int) -> dict[str, Any] | None:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.get_strategy_analysis(scene_id)
+
+    @app.post("/api/scenes/{scene_id}/strategy-analysis/run", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def run_strategy_analysis(scene_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.run_strategy_analysis(scene_id, replace_existing=bool(payload.get("replace_existing", False)))
+
+    @app.put("/api/scenes/{scene_id}/strategy-analysis", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def save_strategy_analysis(scene_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.save_strategy_analysis(scene_id, payload)
+
+    @app.post("/api/scenes/{scene_id}/strategy-analysis/confirm", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def confirm_strategy_analysis(scene_id: int) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.confirm_strategy_analysis(scene_id)
+
+    @app.get("/api/scenes/{scene_id}/target", response_model=dict[str, Any] | None)
+    def get_scene_target(scene_id: int) -> dict[str, Any] | None:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.get_target(scene_id)
+
+    @app.post("/api/scenes/{scene_id}/target/run", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def run_scene_target(scene_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.run_target_design(scene_id, replace_existing=bool(payload.get("replace_existing", False)))
+
+    @app.put("/api/scenes/{scene_id}/target", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def save_scene_target(scene_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.save_target(scene_id, payload)
+
+    @app.post("/api/scenes/{scene_id}/target/confirm", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def confirm_scene_target(scene_id: int) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.confirm_target(scene_id)
+
+    @app.get("/api/scenes/{scene_id}/writing-plan", response_model=dict[str, Any] | None)
+    def get_writing_plan(scene_id: int) -> dict[str, Any] | None:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.get_writing_plan(scene_id)
+
+    @app.post("/api/scenes/{scene_id}/writing-plan/run", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def run_writing_plan(scene_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.run_writing_plan(scene_id, replace_existing=bool(payload.get("replace_existing", False)))
+
+    @app.put("/api/scenes/{scene_id}/writing-plan", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def save_writing_plan(scene_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.save_writing_plan(scene_id, payload)
+
+    @app.get("/api/scenes/{scene_id}/current-draft", response_model=dict[str, Any] | None)
+    def get_current_draft(scene_id: int) -> dict[str, Any] | None:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.get_current_draft(scene_id)
+
+    @app.post("/api/scenes/{scene_id}/current-draft/generate", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def generate_current_draft(scene_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.generate_current_draft(scene_id, replace_existing=bool(payload.get("replace_existing", False)))
+
+    @app.put("/api/scenes/{scene_id}/current-draft", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def save_current_draft(scene_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.save_current_draft(scene_id, payload)
+
+    @app.post("/api/scenes/{scene_id}/current-draft/selected-edit", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def edit_selected_draft(scene_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.edit_selected_draft_text(scene_id, start_offset=int(payload.get("start_offset") or 0), end_offset=int(payload.get("end_offset") or 0), user_instruction=str(payload.get("user_instruction") or ""))
+
+    @app.post("/api/scenes/{scene_id}/writing-blocks/{block_id}/regenerate", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def regenerate_writing_block(scene_id: int, block_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.regenerate_writing_block(scene_id, block_id, current_start_offset=int(payload.get("current_start_offset") or 0), current_end_offset=int(payload.get("current_end_offset") or 0))
+
+    @app.get("/api/scenes/{scene_id}/review-diff", response_model=dict[str, Any])
+    def get_review_diff(scene_id: int) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.get_review_diff(scene_id)
+
+    @app.post("/api/scenes/{scene_id}/review/start", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def start_scene_review(scene_id: int) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.start_review(scene_id)
+
+    @app.get("/api/scenes/{scene_id}/review-marks", response_model=list[dict[str, Any]])
+    def list_review_marks(scene_id: int) -> list[dict[str, Any]]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.list_review_marks(scene_id)
+
+    @app.post("/api/scenes/{scene_id}/review-marks", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def save_review_mark(scene_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.save_review_mark(scene_id, payload)
+
+    @app.delete("/api/scenes/{scene_id}/review-marks/{mark_id}", dependencies=[Depends(_require_token)])
+    def delete_review_mark(scene_id: int, mark_id: int) -> dict[str, bool]:
+        _require_scene(scene_service, scene_id)
+        creative_workflow_service.delete_review_mark(scene_id, mark_id)
+        return {"ok": True}
+
+    @app.post("/api/scenes/{scene_id}/review-marks/{mark_id}/restore", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def restore_review_source(scene_id: int, mark_id: int) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.restore_review_source(scene_id, mark_id)
+
+    @app.post("/api/scenes/{scene_id}/review/rework", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def rework_review_range(scene_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.rework_review_range(scene_id, target_start_offset=int(payload.get("target_start_offset") or 0), target_end_offset=int(payload.get("target_end_offset") or 0), source_start_offset=payload.get("source_start_offset"), source_end_offset=payload.get("source_end_offset"), user_instruction=str(payload.get("user_instruction") or ""), mark_id=int(payload["mark_id"]) if payload.get("mark_id") is not None else None)
+
+    @app.post("/api/scenes/{scene_id}/review/rework-all", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def rework_all_review_marks(scene_id: int) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.rework_all_review_marks(scene_id)
+
+    @app.post("/api/scenes/{scene_id}/review/adopt", response_model=list[dict[str, Any]], dependencies=[Depends(_require_token)])
+    def adopt_review_rework(scene_id: int, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.resolve_review_marks(scene_id, payload.get("mark_ids") or [])
+
+    @app.post("/api/scenes/{scene_id}/confirm", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def confirm_creative_scene(scene_id: int) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.confirm_scene(scene_id)
+
     @app.get("/api/projects/{project_id}/export-plan", response_model=list[ExportPlanItemOut])
     def get_project_export_plan(project_id: int) -> list[ExportPlanItemOut]:
         _require_project(project_service, project_id)

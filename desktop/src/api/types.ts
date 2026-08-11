@@ -1243,6 +1243,50 @@ export type CharacterModificationAnalysis = {
   confirmed_at: string | null;
   updated_at: string;
 };
+export type StrategySceneAnalysis = { id: number; scene_id: number; strategy: Exclude<CreativeStrategy, 'faithful'>; analysis: Record<string, unknown>; status: 'draft' | 'confirmed' | 'stale'; user_edited: boolean; confirmed_at: string | null; created_at: string; updated_at: string };
+
+export type ChangeOperation = 'preserve' | 'adapt' | 'modify';
+export type ChangeSetItem = {
+  id: string;
+  label: string;
+  operation: ChangeOperation;
+  source_value: string;
+  target_value: string;
+  source_start_offset: number;
+  source_end_offset: number;
+};
+export type SceneTarget = {
+  id: number;
+  scene_id: number;
+  strategy: CreativeStrategy;
+  user_instruction: string;
+  design: { items?: ChangeSetItem[]; summary?: string[]; [key: string]: unknown };
+  status: 'draft' | 'confirmed' | 'stale';
+  created_at: string;
+  updated_at: string;
+  confirmed_at: string | null;
+};
+
+export type WritingOperation = 'preserve' | 'transform' | 'rewrite' | 'insert' | 'delete';
+export type WritingBlock = {
+  id: number; plan_id: number; scene_id: number; order: number; title: string;
+  source_start_offset: number; source_end_offset: number; source_text_snapshot: string;
+  operation: WritingOperation; instruction: string; preserve_constraints: string[];
+  target_requirements: string[]; resource_refs: number[];
+};
+export type WritingPlan = {
+  id: number; scene_id: number; target_id: number; strategy: CreativeStrategy;
+  status: 'draft' | 'ready' | 'stale'; coverage: Record<WritingOperation, number>;
+  blocks: WritingBlock[]; created_at: string; updated_at: string;
+};
+export type SceneDraft = {
+  scene_id: number; text: string; based_on_target_id: number; based_on_plan_id: number;
+  block_spans: Array<{ block_id: number; start_offset: number; end_offset: number }>;
+  status: 'draft' | 'confirmed' | 'stale'; created_at: string; updated_at: string;
+};
+export type DiffChunk = { tag: 'equal' | 'replace' | 'delete' | 'insert'; source_start_offset: number; source_end_offset: number; target_start_offset: number; target_end_offset: number; source_text: string; target_text: string };
+export type SceneReviewDiff = { scene_id: number; source_text: string; target_text: string; chunks: DiffChunk[] };
+export type ReviewMark = { id: number; scene_id: number; source_start_offset: number; source_end_offset: number; source_text: string; target_start_offset: number; target_end_offset: number; user_note: string; resolved: boolean; created_at: string; updated_at: string };
 
 export type SceneBoundaryItem = {
   start_offset: number;

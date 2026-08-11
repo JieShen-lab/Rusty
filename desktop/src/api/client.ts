@@ -1243,6 +1243,48 @@ export function saveCharacterModificationAnalysis(sceneId: number, value: Charac
 export function confirmCharacterModificationAnalysis(sceneId: number) {
   return request<CharacterModificationAnalysis>(`/api/scenes/${sceneId}/character-modification-analysis/confirm`, { method: 'POST' });
 }
+export function getStrategyAnalysis(sceneId: number) { return request<import('./types').StrategySceneAnalysis | null>(`/api/scenes/${sceneId}/strategy-analysis`); }
+export function runStrategyAnalysis(sceneId: number, replaceExisting = false) { return request<import('./types').StrategySceneAnalysis>(`/api/scenes/${sceneId}/strategy-analysis/run`, { method: 'POST', body: JSON.stringify({ replace_existing: replaceExisting }) }); }
+export function saveStrategyAnalysis(sceneId: number, value: import('./types').StrategySceneAnalysis) { return request<import('./types').StrategySceneAnalysis>(`/api/scenes/${sceneId}/strategy-analysis`, { method: 'PUT', body: JSON.stringify(value) }); }
+export function confirmStrategyAnalysis(sceneId: number) { return request<import('./types').StrategySceneAnalysis>(`/api/scenes/${sceneId}/strategy-analysis/confirm`, { method: 'POST' }); }
+
+export function getSceneTarget(sceneId: number) {
+  return request<import('./types').SceneTarget | null>(`/api/scenes/${sceneId}/target`);
+}
+
+export function runSceneTarget(sceneId: number, replaceExisting = false) {
+  return request<import('./types').SceneTarget>(`/api/scenes/${sceneId}/target/run`, {
+    method: 'POST', body: JSON.stringify({ replace_existing: replaceExisting }),
+  });
+}
+
+export function saveSceneTarget(sceneId: number, value: import('./types').SceneTarget) {
+  return request<import('./types').SceneTarget>(`/api/scenes/${sceneId}/target`, {
+    method: 'PUT', body: JSON.stringify(value),
+  });
+}
+
+export function confirmSceneTarget(sceneId: number) {
+  return request<import('./types').SceneTarget>(`/api/scenes/${sceneId}/target/confirm`, { method: 'POST' });
+}
+
+export function getWritingPlan(sceneId: number) { return request<import('./types').WritingPlan | null>(`/api/scenes/${sceneId}/writing-plan`); }
+export function runWritingPlan(sceneId: number, replaceExisting = false) { return request<import('./types').WritingPlan>(`/api/scenes/${sceneId}/writing-plan/run`, { method: 'POST', body: JSON.stringify({ replace_existing: replaceExisting }) }); }
+export function saveWritingPlan(sceneId: number, value: import('./types').WritingPlan) { return request<import('./types').WritingPlan>(`/api/scenes/${sceneId}/writing-plan`, { method: 'PUT', body: JSON.stringify(value) }); }
+export function getCurrentDraft(sceneId: number) { return request<import('./types').SceneDraft | null>(`/api/scenes/${sceneId}/current-draft`); }
+export function generateCurrentDraft(sceneId: number, replaceExisting = false) { return request<import('./types').SceneDraft>(`/api/scenes/${sceneId}/current-draft/generate`, { method: 'POST', body: JSON.stringify({ replace_existing: replaceExisting }) }); }
+export function saveCurrentDraft(sceneId: number, value: import('./types').SceneDraft) { return request<import('./types').SceneDraft>(`/api/scenes/${sceneId}/current-draft`, { method: 'PUT', body: JSON.stringify(value) }); }
+export function editSelectedDraft(sceneId: number, value: { start_offset: number; end_offset: number; user_instruction: string }) { return request<import('./types').SceneDraft>(`/api/scenes/${sceneId}/current-draft/selected-edit`, { method: 'POST', body: JSON.stringify(value) }); }
+export function startSceneReview(sceneId: number) { return request<import('./types').SceneReviewDiff>(`/api/scenes/${sceneId}/review/start`, { method: 'POST' }); }
+export function getReviewDiff(sceneId: number) { return request<import('./types').SceneReviewDiff>(`/api/scenes/${sceneId}/review-diff`); }
+export function getReviewMarks(sceneId: number) { return request<import('./types').ReviewMark[]>(`/api/scenes/${sceneId}/review-marks`); }
+export function createReviewMark(sceneId: number, value: Partial<import('./types').ReviewMark>) { return request<import('./types').ReviewMark>(`/api/scenes/${sceneId}/review-marks`, { method: 'POST', body: JSON.stringify(value) }); }
+export function removeReviewMark(sceneId: number, markId: number) { return request<{ok:boolean}>(`/api/scenes/${sceneId}/review-marks/${markId}`, { method: 'DELETE' }); }
+export function restoreReviewSource(sceneId: number, markId: number) { return request<import('./types').SceneDraft>(`/api/scenes/${sceneId}/review-marks/${markId}/restore`, { method: 'POST' }); }
+export function reworkReviewRange(sceneId: number, value: Record<string, unknown>) { return request<{draft: import('./types').SceneDraft; before_text: string; after_text: string; start_offset: number; end_offset: number; mark_ids: number[]}>(`/api/scenes/${sceneId}/review/rework`, { method: 'POST', body: JSON.stringify(value) }); }
+export function reworkAllReviewMarks(sceneId: number) { return request<{draft: import('./types').SceneDraft; before_text: string; processed: number; mark_ids: number[]}>(`/api/scenes/${sceneId}/review/rework-all`, { method: 'POST' }); }
+export function adoptReviewRework(sceneId: number, markIds: number[]) { return request<import('./types').ReviewMark[]>(`/api/scenes/${sceneId}/review/adopt`, { method: 'POST', body: JSON.stringify({ mark_ids: markIds }) }); }
+export function confirmCreativeScene(sceneId: number) { return request<{draft: import('./types').SceneDraft; unresolved_marks: number}>(`/api/scenes/${sceneId}/confirm`, { method: 'POST' }); }
 
 export function analyzeChapterScenes(
   chapterId: number,

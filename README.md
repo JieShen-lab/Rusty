@@ -16,7 +16,7 @@ Rusty 是本地优先的小说资料管理、文档整理与 AI 辅助改写桌�
 - “新建角色”提供互不依赖的手动创建和 AI 文本提取模式；AI 提取采用 preview/apply 两阶段接口。
 - 公共角色添加到工程时创建带公共基线快照的独立副本并自动绑定；工程角色可只导出勾选的稳定字段为新的公共角色，项目动态状态仍留在事实账本和场景人物状态中。
 - 配置 OpenAI 兼容模型，执行可追踪的章节分析、情节扩展和改写流程。
-- 普通小说工程使用统一的章节中心三栏工作台，完成轻量预分析、四种创作方向选择，以及“贴合原文 → 人物修改”专项分析。
+- 普通小说工程使用统一的章节中心三栏工作台，完成预分析、四种 strategy 的专项分析与目标设计、block 写作规划、Current Draft 生成/编辑，以及 Source ↔ Current Draft 传统 Diff 审查。
 
 ## Development
 
@@ -78,10 +78,10 @@ python -m rusty.db.schema rusty.db
 - `src/rusty/services/model_service.py`: model CRUD and keyring-backed API key references
 - `src/rusty/services/prompt_service.py`: legacy prompt package CRUD and project-level overrides
 - `src/rusty/services/prompt_definition_service.py`: master/workflow/common prompt CRUD and project master copies
-- `src/rusty/services/creative_workflow_service.py`: phase-one chapter creative workflow
+- `src/rusty/services/creative_workflow_service.py`: scene-authoritative creative target, planning, draft generation and review workflow
 - `src/rusty/services/pipeline_service.py`: AI summary, scene detection, rewrite, retry, pause, and merge workflow
 - `src/rusty/db/connection.py`: SQLite connection defaults
-- `src/rusty/db/schema.py`: v45 schema, migrations, indexes, and seed data
+- `src/rusty/db/schema.py`: v51 schema, migrations, indexes, and seed data
 - `tests/`: database, service, API, pipeline, importer/exporter, and UI tests
 
 旧版 PySide6 入口仍可通过 `.\.venv\Scripts\rusty` 启动，但新增功能以 Electron 桌面端为准。

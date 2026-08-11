@@ -111,6 +111,10 @@ async function mockWorkspace(page: Page, projectKind: 'rewrite' | 'branch' | 'le
     } else if (path === '/api/scenes/801/character-modification-analysis') {
       if (route.request().method() === 'PUT') characterAnalysis = { ...(route.request().postDataJSON() as Record<string, unknown>), status: 'draft', user_edited: true, updated_at: '2026-08-11T10:05:30' };
       body = characterAnalysis;
+    } else if (['/api/scenes/801/strategy-analysis', '/api/scenes/801/target', '/api/scenes/801/writing-plan', '/api/scenes/801/current-draft'].includes(path)) {
+      body = null;
+    } else if (path === '/api/scenes/801/review-marks') {
+      body = [];
     } else if (path === '/api/chapters/901') {
       body = { chapter: { id: 901, project_id: 99, index: 1, title: '第一章', original_text: '张三退到了墙边。\n要不是因为他挡在这里，王五早已经走了。\n刚刚挡下攻击的人握紧了长刀。', rewritten_text: null, word_count: 42, status: 'imported', start_line: 1, end_line: 3 }, ai_outputs: { plot_summary: '', plot_characters: [], style_analysis: null, reviewed_style_analysis: null, style_analysis_status: null }, stage_statuses: [], errors: [] };
     } else if (path === '/api/chapters/901/rewrite-versions') {
@@ -286,7 +290,7 @@ test('预分析、方向和人物专项分析形成可确认纵向流程', async
   await expect(page.locator('input[value="存在差异"]')).toBeVisible();
   await page.getByRole('button', { name: '确认分析' }).click();
   await expect(page.getByRole('heading', { name: '目标设计' })).toBeVisible();
-  await expect(page.getByText(/第二阶段实现/)).toBeVisible();
+  await expect(page.getByText(/可编辑 ChangeSet/)).toBeVisible();
   await page.getByRole('button', { name: '方向选择', exact: true }).click();
   await page.getByRole('button', { name: '进入专项分析' }).click();
   await expect(page.getByRole('button', { name: '目标设计', exact: true })).toBeEnabled();
@@ -344,6 +348,8 @@ test('快速切换场景会先按 loaded scene 身份保存三类 dirty 草稿',
     else if (path === '/api/chapters/901/scenes') body = scenes;
     else if (path === '/api/projects/99/characters') body = { character_cards: [{ id: 501, name: '李四', aliases: [], description: '', priority: 1, is_main: true, relationship_notes: '', personality: '', speech_style: '', action_constraints: '', anti_ooc_rules: '', profile: {}, source_metadata: {}, import_metadata: {}, scope: 'project', project_id: 99, source_character_card_id: null, source_version: null, version: 1, sort_order: 0, identity: '', age: '', setting_text: '', custom_fields: [], raw_text: '', analysis_status: 'analyzed', cover_path: null, cover_updated_at: null, tags: [], category_ids: [], categories: [], source_summary: {}, created_at: '', updated_at: '' }] };
     else if (path === '/api/projects/99/materials') body = [];
+    else if (/^\/api\/scenes\/\d+\/(strategy-analysis|target|writing-plan|current-draft)$/.test(path)) body = null;
+    else if (/^\/api\/scenes\/\d+\/review-marks$/.test(path)) body = [];
     else if (path.match(/^\/api\/scenes\/(\d+)\/creative-workflow\/activate$/)) {
       activeSceneId = Number(path.split('/')[3]);
       body = { chapter_id: 901, chapter_index: 1, title: '第一章', active_scene_id: activeSceneId, current_stage: stages[activeSceneId], updated_at: '' };

@@ -167,15 +167,20 @@ Rusty 以本地优先方式管理小说项目。当前主界面采用 Electron +
 - `tests/test_pipeline_service.py`
 - `examples/xianxia/`
 
-### 2.8 章节中心创作工作流（第一阶段）
+### 2.8 章节中心创作工作流
 
 - `rewrite` 与历史 `branch` 普通工程进入同一三栏工作台；`legacy_extract` 保持独立只读兼容路径。新建普通小说工程不再要求用户先选择“改写/扩写”。
 - 左栏只显示章节及持久化阶段状态。`scene_workflow_state` 独立保存每个场景的阶段；章节状态只记录上次活动场景并同步显示该场景阶段。场景列表位于中央章节工作区，状态不再按列表索引推断。
-- 当前步骤为“预分析 → 方向 → 专项分析 → 目标设计 → 写作 → 审查”。已到达步骤可回看，未到达步骤禁用；目标设计仅提供已解锁占位。
+- 顶部步骤固定为“预分析 → 方向 → 专项分析 → 目标设计 → 写作 → 审查”；写作规划与 Current Draft 是“写作”的内部子视图，不增加新的顶级阶段。
 - 预分析保存摘要、人物、地点、时间、场景类型和基础事件，继续复用现有场景及原文 offset。场景切分可在工作台内轻量调整和确认，确认后才运行 scene-specific 预分析。人工编辑自动保存；切换场景/章节会先 flush 绑定到 loaded scene 的 dirty 草稿，避免丢失或串写；已有人工修改时，重新分析必须先确认覆盖。
 - 创作方向保存稳定 key：`faithful`、`plot_adjust`、`expansion`、`reimagine`，以及本次具体要求和选中的角色/素材 ID；选择方向不会生成正文。
-- 第一条完整专项分析是“贴合原文 → 人物修改”。结果区分显式关联、隐式指代、行为、对白、状态、持有物、空间关系、关联事件和目标角色差异，并保存可回到 Source Layer 的文本范围。用户可增删改、重新分析和整体确认。
-- 修改预分析或方向会把专项分析标为 stale，并立即把 scene/chapter 阶段回退到对应上游阶段。stale 专项分析不能确认，必须重新分析生成 draft；修改专项分析为未来目标设计/写作规划预留失效边界。任何上游修改都不会删除未来已经生成的正文。
+- Source 是永久源层。任何 Target、Plan 或 Draft 生成都不会覆盖场景原文；下游对象继续保存可回到 Source 的 range/snapshot。
+- 专项分析按 strategy 使用不同结构：faithful 人物修改分析、plot_adjust 事件/因果依赖、expansion 状态桥接、reimagine 边界条件。专项分析只回答 Source 是什么，不替用户决定改法。
+- `SceneTarget` 是统一持久化外壳，但 design 按 strategy 分别保存 ChangeSet、TargetSkeleton、InsertionBlock、BoundaryConditions + TargetSkeleton。所有 AI 目标结果都是可编辑草案，必须由用户整体确认。
+- `WritingPlan` 把已确认 Target 映射为语义正文区块操作：Preserve、Transform、Rewrite、Insert、Delete。coverage 是规划结果统计，不是用户可调的保留度 slider。Faithful 按 block 生成；Preserve 直接复制 Source 且不调用 AI。
+- `scene_current_drafts` 是当前正文权威，正文编辑器自动保存。选区 AI 编辑和 block 重生成只替换指定 range，并使用用户当前编辑后的前文。Expansion 只生成插入内容；Reimagine 在 Preserve 低于 10% 时允许 full scene generation。
+- 审查直接本地计算 Source ↔ Current Draft 传统红绿 Diff，不调用 AI。ReviewMark 仅保存 Source range/text、Draft range、用户备注和 resolved；恢复原文是本地替换，AI 局部/全部备注重改按 range 执行，仍有备注时用户可确认继续。
+- stale 沿依赖链传播：预分析/方向修改使专项分析 stale，专项分析修改使 Target stale，Target 修改使 Plan stale。任何上游修改都不会删除或静默覆盖 Current Draft，UI 会提示正文基于旧目标/旧规划。
 
 主要实现：
 
@@ -185,6 +190,7 @@ Rusty 以本地优先方式管理小说项目。当前主界面采用 Electron +
 - `desktop/src/pages/CreativeWorkspacePage.tsx`
 - `desktop/src/pages/PromptManagePage.tsx`
 - `tests/test_creative_workspace.py`
+- `tests/test_creative_phase_two.py`
 - `tests/test_prompt_definitions.py`
 
 ### 2.9 导出
@@ -245,7 +251,7 @@ SQLite + OS keyring + 本地文件
 
 ## 5. 数据实现
 
-数据库当前架构版本为 44。主要数据域包括：
+数据库当前架构版本为 51。主要数据域包括：
 
 - 项目、书籍元数据、导入来源、分章规则和章节；
 - AI 模型、提示词模板、项目提示词和项目设置；
@@ -255,7 +261,7 @@ SQLite + OS keyring + 本地文件
 - 导出计划和导出记录；
 - 文档库文档、分类、标签、处理模板、修订版本、卷、章节、草稿和存储设置。
 - 剧情运行状态、草稿生成进度、独立分支路线和不可变章节/场景版本快照。
-- 章节创作阶段、轻量场景预分析、创作方向、简单提示词定义、工程总提示词和人物修改专项分析。
+- 章节/场景创作阶段、预分析、创作方向、strategy 专项分析、SceneTarget、WritingPlan/blocks、Current Draft 和 ReviewMark。
 
 v14 将旧素材类型 `snippet` 映射为 `scene_reference`，将 `outline` 映射为 `plot_skeleton` 并保留旧类型元数据；旧素材分类和文档分类迁移为标签。角色卡旧固定字段迁移为身份、年龄、设定及有序自定义字段。v19 新增文档卷层级；v20 新增仅适用于公共角色的 `character_categories` / `character_category_links`，并幂等补齐历史工程角色的有效 `project_character_bindings`；v21 新增单例 `character_extraction_settings`；v22 新增素材分类、标签组、工程素材筛选和三任务 `material_ai_settings`。v22 会原地保留历史工程素材 ID，把 `scope` 统一为 `public`、清空 `project_id`，并在来源元数据记录 `legacy_scope` / `legacy_project_id` / `migrated_to_unified_library`；已有标签会转为对应工程的素材筛选，未打标签的旧素材不会生成伪标签。v23 为三个素材 AI 任务分别增加用户提示词模板、JSON 分析维度、通用标签开关和适用场景标签开关；v22 的 `generate_tags` 会迁移到两个新开关。迁移和关系写入均可幂等重放。
 
@@ -307,7 +313,9 @@ SQLite trigger 禁止业务 UPDATE/DELETE rewrite version 及其 semantic map。
 
 v41 增加 `chapter_workflow_state`；v42 增加 `scene_preanalyses` 和 `creative_intents`；v43 增加
 `prompt_definitions` 和 `project_master_prompts`；v44 增加
-`character_modification_analyses`；v45 增加 `scene_workflow_state`。迁移按现有版本链顺序追加，不删除旧表或旧数据。
+`character_modification_analyses`；v45 增加 `scene_workflow_state`；v46 增加 `scene_targets`；v47 增加
+`writing_plans`、`writing_plan_blocks` 和 `scene_current_drafts`；v48 增加 `review_marks`；v49 增加
+`strategy_scene_analyses` 与 plot_adjust tasks；v50/v51 分别增加 expansion/reimagine tasks。迁移按现有版本链顺序追加，不删除旧表或旧数据。
 
 ## 6. 桌面端与安全边界
 
@@ -381,8 +389,8 @@ npm run test:e2e:electron # 实际 Electron + preload + FastAPI + SQLite + FakeL
 
 ## 9. 当前边界
 
-- 当前只完整接通“贴合原文 → 人物修改”专项分析；其他三个方向的专项分析仍是下一阶段接口。
-- 目标设计在确认专项分析后解锁，但本阶段没有实现 Target ChangeSet、Writing Plan、正文 block generation、Diff review 或自动漏改校验。
+- 四种方向已复用 SceneTarget → WritingPlan → Current Draft → traditional Diff 主链；strategy 差异集中在专项分析、Target 结构和 reimagine 的 full-scene generation 决策。
+- 当前不提供 AI 自动审查、人物漏改 validator、fidelity score、ReviewMark severity/type、复杂版本树、Prompt snapshot UI、拖拽节点图或保留度 slider。
 - 旧 `SceneRewritePanel`、`RewriteOperationPanel`、提示词包 API 和历史 Plot/Prose 服务仍为兼容代码；普通创作主路径不再通过大型 Scene Rewrite modal 进入。
 
 - 应用定位为单机本地工具，没有多用户、云同步和远程服务端部署。
