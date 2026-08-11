@@ -10,6 +10,15 @@ import {
   confirmCharacterModificationAnalysis,
   confirmSceneTarget,
   editSelectedDraft,
+  startSceneReview,
+  getReviewDiff,
+  getReviewMarks,
+  createReviewMark,
+  removeReviewMark,
+  restoreReviewSource,
+  reworkReviewRange,
+  reworkAllReviewMarks,
+  confirmCreativeScene,
   generateCurrentDraft,
   getChapter,
   getChapterScenes,
@@ -63,6 +72,8 @@ import type {
   WritingPlan,
   WritingBlock,
   SceneDraft,
+  SceneReviewDiff,
+  ReviewMark,
 } from '../api/types';
 import { registerNavigationFlush } from '../navigationFlush';
 
@@ -142,6 +153,11 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
   const [currentDraftDirty, setCurrentDraftDirty] = useState(false);
   const [writingView, setWritingView] = useState<'plan' | 'draft'>('plan');
   const draftEditorRef = useRef<HTMLTextAreaElement | null>(null);
+  const reviewSourceRef = useRef<HTMLTextAreaElement | null>(null);
+  const reviewTargetRef = useRef<HTMLTextAreaElement | null>(null);
+  const [reviewDiff, setReviewDiff] = useState<SceneReviewDiff | null>(null);
+  const [reviewMarks, setReviewMarks] = useState<ReviewMark[]>([]);
+  const [reviewUndo, setReviewUndo] = useState<string | null>(null);
   const [sourceCharacter, setSourceCharacter] = useState('');
   const [targetCharacterId, setTargetCharacterId] = useState<number | null>(null);
   const [focusedEvidence, setFocusedEvidence] = useState('');
@@ -300,14 +316,16 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
   const loadSceneContext = useCallback(async (chapterId: number, sceneId: number) => {
     const sequence = ++sceneLoadSequenceRef.current;
     setSceneContextLoading(true);
-    const [analysis, creativeIntent, specialized, sceneTarget, plan, draftText] = await Promise.all([
+    const [analysis, creativeIntent, specialized, sceneTarget, plan, draftText, marks] = await Promise.all([
       getScenePreanalysis(sceneId),
       getSceneCreativeIntent(sceneId),
       getCharacterModificationAnalysis(sceneId),
       getSceneTarget(sceneId),
       getWritingPlan(sceneId),
       getCurrentDraft(sceneId),
+      getReviewMarks(sceneId),
     ]);
+    const diff = draftText ? await getReviewDiff(sceneId) : null;
     if (sequence !== sceneLoadSequenceRef.current || selectedChapterIdRef.current !== chapterId) return;
     loadedDraftRef.current = {
       chapterId,
@@ -338,6 +356,9 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
     setTarget(sceneTarget);
     setWritingPlan(plan);
     setCurrentDraft(draftText);
+    setReviewMarks(marks);
+    setReviewDiff(diff);
+    setReviewUndo(null);
     setWritingView(draftText ? 'draft' : 'plan');
     setSourceCharacter(specialized?.source_character ?? analysis?.characters[0] ?? '');
     setTargetCharacterId(specialized?.target_character_card_id ?? creativeIntent?.selected_character_ids[0] ?? null);
@@ -374,6 +395,8 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
       setTarget(null);
       setWritingPlan(null);
       setCurrentDraft(null);
+      setReviewDiff(null);
+      setReviewMarks([]);
       return;
     }
     if (loadedDraftRef.current?.sceneId === activeSceneId) return;
@@ -730,6 +753,113 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
     });
   }
 
+  async function beginReview() {
+    if (!activeSceneId) return;
+    await perform(async () => {
+      await flushLoadedScene();
+      const [diff, marks] = await Promise.all([startSceneReview(activeSceneId), getReviewMarks(activeSceneId)]);
+      setReviewDiff(diff); setReviewMarks(marks); setReviewUndo(null); setViewStage('review');
+      await refreshStates();
+    });
+  }
+
+  async function addReviewNote() {
+    if (!activeSceneId || !reviewDiff || !reviewTargetRef.current || !reviewSourceRef.current) return;
+    const targetStart = reviewTargetRef.current.selectionStart, targetEnd = reviewTargetRef.current.selectionEnd;
+    let sourceStart = reviewSourceRef.current.selectionStart, sourceEnd = reviewSourceRef.current.selectionEnd;
+    if (sourceStart === sourceEnd && targetStart !== targetEnd) {
+      sourceStart = Math.min(targetStart, reviewDiff.source_text.length);
+      sourceEnd = Math.min(Math.max(sourceStart + 1, targetEnd), reviewDiff.source_text.length);
+    }
+    if (targetStart === targetEnd && sourceStart === sourceEnd) { setError('请先在原文或当前稿中选择范围。'); return; }
+    const note = window.prompt('添加备注', '这里的动作不能删除。');
+    if (!note?.trim()) return;
+    await perform(async () => {
+      const saved = await createReviewMark(activeSceneId, { source_start_offset: sourceStart, source_end_offset: sourceEnd,
+        target_start_offset: targetStart, target_end_offset: targetEnd, user_note: note.trim() });
+      setReviewMarks((items) => [...items, saved]);
+    });
+  }
+
+  function selectedReviewRanges() {
+    if (!reviewDiff || !reviewTargetRef.current || !reviewSourceRef.current) return null;
+    const targetStart = reviewTargetRef.current.selectionStart, targetEnd = reviewTargetRef.current.selectionEnd;
+    let sourceStart = reviewSourceRef.current.selectionStart, sourceEnd = reviewSourceRef.current.selectionEnd;
+    if (sourceStart === sourceEnd && targetStart !== targetEnd) { sourceStart = Math.min(targetStart, reviewDiff.source_text.length); sourceEnd = Math.min(targetEnd, reviewDiff.source_text.length); }
+    return { targetStart, targetEnd, sourceStart, sourceEnd };
+  }
+
+  async function restoreSelectedReview() {
+    if (!activeSceneId || !currentDraft || !reviewDiff) return;
+    const range = selectedReviewRanges();
+    if (!range || range.targetStart === range.targetEnd || range.sourceStart === range.sourceEnd) { setError('请在原文和当前稿中选择对应范围。'); return; }
+    const nextText = currentDraft.text.slice(0, range.targetStart) + reviewDiff.source_text.slice(range.sourceStart, range.sourceEnd) + currentDraft.text.slice(range.targetEnd);
+    await perform(async () => { const saved = await saveCurrentDraft(activeSceneId, { ...currentDraft, text: nextText }); const draft = loadedDraftRef.current; if (draft?.sceneId === activeSceneId) draft.currentDraft = saved; setCurrentDraft(saved); setReviewDiff(await getReviewDiff(activeSceneId)); });
+  }
+
+  async function aiReworkSelected() {
+    if (!activeSceneId) return;
+    const range = selectedReviewRanges();
+    if (!range || range.targetStart === range.targetEnd) { setError('请先在当前稿中选择需要重改的范围。'); return; }
+    const instruction = window.prompt('重改要求', '') ?? '';
+    await perform(async () => { const result = await reworkReviewRange(activeSceneId, { target_start_offset: range.targetStart, target_end_offset: range.targetEnd, source_start_offset: range.sourceStart, source_end_offset: range.sourceEnd, user_instruction: instruction }); const draft = loadedDraftRef.current; if (draft?.sceneId === activeSceneId) draft.currentDraft = result.draft; setReviewUndo(result.before_text); setCurrentDraft(result.draft); setReviewDiff(await getReviewDiff(activeSceneId)); });
+  }
+
+  async function deleteMark(markId: number) {
+    if (!activeSceneId) return;
+    await perform(async () => { await removeReviewMark(activeSceneId, markId); setReviewMarks((items) => items.filter((item) => item.id !== markId)); });
+  }
+
+  async function restoreMark(mark: ReviewMark) {
+    if (!activeSceneId) return;
+    await perform(async () => {
+      const saved = await restoreReviewSource(activeSceneId, mark.id);
+      const draft = loadedDraftRef.current;
+      if (draft?.sceneId === activeSceneId) draft.currentDraft = saved;
+      setCurrentDraft(saved); setReviewMarks(await getReviewMarks(activeSceneId)); setReviewDiff(await getReviewDiff(activeSceneId));
+    });
+  }
+
+  async function aiReworkMark(mark: ReviewMark) {
+    if (!activeSceneId) return;
+    const instruction = window.prompt('重改要求（可留空使用备注）', mark.user_note) ?? '';
+    await perform(async () => {
+      const result = await reworkReviewRange(activeSceneId, { target_start_offset: mark.target_start_offset,
+        target_end_offset: mark.target_end_offset, mark_id: mark.id, user_instruction: instruction });
+      const draft = loadedDraftRef.current;
+      if (draft?.sceneId === activeSceneId) draft.currentDraft = result.draft;
+      setReviewUndo(result.before_text); setCurrentDraft(result.draft); setReviewMarks(await getReviewMarks(activeSceneId)); setReviewDiff(await getReviewDiff(activeSceneId));
+    });
+  }
+
+  async function reworkAllMarks() {
+    if (!activeSceneId) return;
+    await perform(async () => {
+      const result = await reworkAllReviewMarks(activeSceneId);
+      if (!result.draft) return;
+      const draft = loadedDraftRef.current;
+      if (draft?.sceneId === activeSceneId) draft.currentDraft = result.draft;
+      setReviewUndo(result.before_text); setCurrentDraft(result.draft); setReviewMarks(await getReviewMarks(activeSceneId)); setReviewDiff(await getReviewDiff(activeSceneId));
+    });
+  }
+
+  async function undoReviewRework() {
+    if (!activeSceneId || reviewUndo === null || !currentDraft) return;
+    await perform(async () => {
+      const saved = await saveCurrentDraft(activeSceneId, { ...currentDraft, text: reviewUndo });
+      const draft = loadedDraftRef.current;
+      if (draft?.sceneId === activeSceneId) draft.currentDraft = saved;
+      setCurrentDraft(saved); setReviewUndo(null); setReviewDiff(await getReviewDiff(activeSceneId));
+    });
+  }
+
+  async function confirmSceneFromReview() {
+    if (!activeSceneId) return;
+    const unresolved = reviewMarks.filter((item) => !item.resolved).length;
+    if (unresolved && !window.confirm(`当前还有 ${unresolved} 条备注，仍然确认？`)) return;
+    await perform(async () => { await confirmCreativeScene(activeSceneId); setViewStage('confirmed'); await refreshStates(); });
+  }
+
   async function applyBoundaries() {
     if (!selectedChapterId || !boundaryDrafts.length) return;
     await perform(async () => {
@@ -843,19 +973,19 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
           ) : null}
           {viewStage === 'special_analysis' ? <CharacterAnalysisEditor analysis={characterAnalysis} busy={busy || sceneContextLoading} characters={characters} dirty={characterAnalysisDirty} intent={intent} onAnalyze={() => void analyzeCharacterModification()} onChange={patchCharacterAnalysis} onConfirm={() => void confirmCharacterAnalysis()} onEvidence={setFocusedEvidence} onSourceCharacter={setSourceCharacter} onTargetCharacter={setTargetCharacterId} sourceCharacter={sourceCharacter} targetCharacterId={targetCharacterId} /> : null}
           {viewStage === 'target_design' ? <TargetDesignEditor busy={busy || sceneContextLoading} dirty={targetDirty} intent={intent} onChange={patchTarget} onConfirm={() => void confirmTargetDesign()} onGenerate={() => void generateTarget()} target={target} /> : null}
-          {viewStage === 'writing' ? <WritingStage busy={busy || sceneContextLoading} currentDraft={currentDraft} draftDirty={currentDraftDirty} draftEditorRef={draftEditorRef} onDraftText={patchCurrentDraftText} onGenerate={() => void generateDraft()} onPlan={patchWritingPlan} onPlanWriting={() => void planWriting()} onSelectedEdit={() => void aiEditSelection()} onView={setWritingView} plan={writingPlan} planDirty={writingPlanDirty} target={target} view={writingView} /> : null}
-          {!['preanalysis', 'direction', 'special_analysis', 'target_design', 'writing'].includes(viewStage) ? <section className="stage-placeholder"><h2>{stageLabels[viewStage]}</h2><p>该阶段将在后续阶段接入。</p></section> : null}
+          {viewStage === 'writing' ? <WritingStage busy={busy || sceneContextLoading} currentDraft={currentDraft} draftDirty={currentDraftDirty} draftEditorRef={draftEditorRef} onDraftText={patchCurrentDraftText} onGenerate={() => void generateDraft()} onPlan={patchWritingPlan} onPlanWriting={() => void planWriting()} onReview={() => void beginReview()} onSelectedEdit={() => void aiEditSelection()} onView={setWritingView} plan={writingPlan} planDirty={writingPlanDirty} target={target} view={writingView} /> : null}
+          {viewStage === 'review' ? <ReviewStage busy={busy || sceneContextLoading} currentDraft={currentDraft} diff={reviewDiff} onAccept={() => setReviewUndo(null)} onAddNote={() => void addReviewNote()} onConfirm={() => void confirmSceneFromReview()} onRestore={() => void restoreSelectedReview()} onRework={() => void aiReworkSelected()} onReworkAll={() => void reworkAllMarks()} onUndo={() => void undoReviewRework()} sourceRef={reviewSourceRef} targetRef={reviewTargetRef} undoAvailable={reviewUndo !== null} /> : null}
+          {!['preanalysis', 'direction', 'special_analysis', 'target_design', 'writing', 'review'].includes(viewStage) ? <section className="stage-placeholder"><h2>{stageLabels[viewStage]}</h2><p>场景已确认。</p></section> : null}
         </main>
 
         <aside className="creative-context-panel">
-          <h2>当前上下文</h2>
+          <h2>{viewStage === 'review' ? '备注' : '当前上下文'}</h2>
           {viewStage === 'direction' ? <ContextResources characters={characters} intent={intent} materials={materials} onIntent={patchIntent} /> : null}
           {viewStage === 'special_analysis' ? <CharacterContext characters={characters} targetId={characterAnalysis?.target_character_card_id ?? targetCharacterId} /> : null}
           {viewStage === 'target_design' ? <><CharacterContext characters={characters} targetId={characterAnalysis?.target_character_card_id ?? targetCharacterId} /><SelectedMaterials intent={intent} materials={materials} /></> : null}
           {viewStage === 'writing' ? <><CharacterContext characters={characters} targetId={characterAnalysis?.target_character_card_id ?? targetCharacterId} /><SelectedMaterials intent={intent} materials={materials} /><TargetContext target={target} /></> : null}
-          <h3>原文</h3>
-          {focusedEvidence ? <div className="focused-evidence"><strong>当前证据</strong><p>{focusedEvidence}</p></div> : null}
-          <div className="source-context">{scenes.find((item) => item.id === activeSceneId)?.original_text || selectedChapter?.original_text || '暂无原文'}</div>
+          {viewStage === 'review' ? <ReviewMarksPanel marks={reviewMarks} onDelete={(mark) => void deleteMark(mark.id)} onRestore={(mark) => void restoreMark(mark)} onRework={(mark) => void aiReworkMark(mark)} /> : null}
+          {viewStage !== 'review' ? <><h3>原文</h3>{focusedEvidence ? <div className="focused-evidence"><strong>当前证据</strong><p>{focusedEvidence}</p></div> : null}<div className="source-context">{scenes.find((item) => item.id === activeSceneId)?.original_text || selectedChapter?.original_text || '暂无原文'}</div></> : null}
         </aside>
       </div>
       {settingsOpen ? <div className="settings-backdrop" role="presentation"><section aria-label="工程设置" className="creative-settings-panel" role="dialog"><header><div><h2>工程设置</h2><p>AI 配置</p></div><button className="button ghost" onClick={() => setSettingsOpen(false)} type="button">关闭</button></header><label><span>默认模型</span><select value={settingsModelId ?? ''} onChange={(event) => setSettingsModelId(event.target.value ? Number(event.target.value) : null)}><option value="">使用全局默认模型</option>{models.map((model) => <option key={model.id} value={model.id}>{model.display_name}</option>)}</select></label><label className="settings-master-field"><span>总提示词</span><textarea value={masterPrompt} onChange={(event) => { setMasterPrompt(event.target.value); setMasterDirty(true); }} /></label><footer><button className="button secondary" onClick={() => void exportMaster()} type="button">导出到提示词库</button><button className="button primary" disabled={busy || (!masterDirty && settingsModelId === null)} onClick={() => void saveSettings()} type="button">保存设置</button></footer></section></div> : null}
@@ -930,9 +1060,9 @@ function TargetDesignEditor({ busy, dirty, intent, onChange, onConfirm, onGenera
 
 const writingOperationLabels = { preserve: '保留', transform: '局部修改', rewrite: '重写', insert: '新增', delete: '删除' } as const;
 
-function WritingStage({ busy, currentDraft, draftDirty, draftEditorRef, onDraftText, onGenerate, onPlan, onPlanWriting, onSelectedEdit, onView, plan, planDirty, target, view }: { busy: boolean; currentDraft: SceneDraft | null; draftDirty: boolean; draftEditorRef: RefObject<HTMLTextAreaElement>; onDraftText: (text: string) => void; onGenerate: () => void; onPlan: (value: WritingPlan) => void; onPlanWriting: () => void; onSelectedEdit: () => void; onView: (view: 'plan' | 'draft') => void; plan: WritingPlan | null; planDirty: boolean; target: SceneTarget | null; view: 'plan' | 'draft' }) {
+function WritingStage({ busy, currentDraft, draftDirty, draftEditorRef, onDraftText, onGenerate, onPlan, onPlanWriting, onReview, onSelectedEdit, onView, plan, planDirty, target, view }: { busy: boolean; currentDraft: SceneDraft | null; draftDirty: boolean; draftEditorRef: RefObject<HTMLTextAreaElement>; onDraftText: (text: string) => void; onGenerate: () => void; onPlan: (value: WritingPlan) => void; onPlanWriting: () => void; onReview: () => void; onSelectedEdit: () => void; onView: (view: 'plan' | 'draft') => void; plan: WritingPlan | null; planDirty: boolean; target: SceneTarget | null; view: 'plan' | 'draft' }) {
   const staleDraft = Boolean(currentDraft && (plan?.status === 'stale' || currentDraft.based_on_plan_id !== plan?.id || currentDraft.based_on_target_id !== target?.id));
-  return <section className="writing-stage"><nav><button aria-pressed={view === 'plan'} onClick={() => onView('plan')} type="button">写作规划</button><button aria-pressed={view === 'draft'} disabled={!currentDraft} onClick={() => onView('draft')} type="button">当前正文</button></nav>{view === 'plan' ? <WritingPlanEditor busy={busy} dirty={planDirty} onChange={onPlan} onGenerate={onGenerate} onPlan={onPlanWriting} plan={plan} /> : <div className="current-draft-editor"><header><div><h2>当前正文</h2><p>{draftDirty ? '正在自动保存…' : '已自动保存'}{staleDraft ? ' · 当前正文基于旧目标/旧规划生成' : ''}</p></div><div><button className="button secondary" disabled={busy || !currentDraft} onClick={onSelectedEdit} type="button"><Sparkles size={15} />AI 修改选中内容</button><button className="button secondary" disabled={busy || !plan || plan.status === 'stale'} onClick={onGenerate} type="button">重新生成</button></div></header>{currentDraft ? <textarea aria-label="当前正文" ref={draftEditorRef} value={currentDraft.text} onChange={(event) => onDraftText(event.target.value)} /> : <div className="stage-action-empty"><p>尚未生成当前正文。</p></div>}</div>}</section>;
+  return <section className="writing-stage"><nav><button aria-pressed={view === 'plan'} onClick={() => onView('plan')} type="button">写作规划</button><button aria-pressed={view === 'draft'} disabled={!currentDraft} onClick={() => onView('draft')} type="button">当前正文</button></nav>{view === 'plan' ? <WritingPlanEditor busy={busy} dirty={planDirty} onChange={onPlan} onGenerate={onGenerate} onPlan={onPlanWriting} plan={plan} /> : <div className="current-draft-editor"><header><div><h2>当前正文</h2><p>{draftDirty ? '正在自动保存…' : '已自动保存'}{staleDraft ? ' · 当前正文基于旧目标/旧规划生成' : ''}</p></div><div><button className="button secondary" disabled={busy || !currentDraft} onClick={onSelectedEdit} type="button"><Sparkles size={15} />AI 修改选中内容</button><button className="button secondary" disabled={busy || !plan || plan.status === 'stale'} onClick={onGenerate} type="button">重新生成</button><button className="button primary" disabled={busy || !currentDraft || draftDirty} onClick={onReview} type="button">进入审查</button></div></header>{currentDraft ? <textarea aria-label="当前正文" ref={draftEditorRef} value={currentDraft.text} onChange={(event) => onDraftText(event.target.value)} /> : <div className="stage-action-empty"><p>尚未生成当前正文。</p></div>}</div>}</section>;
 }
 
 function WritingPlanEditor({ busy, dirty, onChange, onGenerate, onPlan, plan }: { busy: boolean; dirty: boolean; onChange: (value: WritingPlan) => void; onGenerate: () => void; onPlan: () => void; plan: WritingPlan | null }) {
@@ -944,6 +1074,15 @@ function WritingPlanEditor({ busy, dirty, onChange, onGenerate, onPlan, plan }: 
 
 function TargetContext({ target }: { target: SceneTarget | null }) {
   return <><h3>目标</h3>{target ? <div className="target-context-summary">{(target.design.summary ?? []).map((item) => <p key={item}>{item}</p>)}</div> : <div className="creative-empty">暂无目标</div>}</>;
+}
+
+function ReviewStage({ busy, currentDraft, diff, onAccept, onAddNote, onConfirm, onRestore, onRework, onReworkAll, onUndo, sourceRef, targetRef, undoAvailable }: { busy: boolean; currentDraft: SceneDraft | null; diff: SceneReviewDiff | null; onAccept: () => void; onAddNote: () => void; onConfirm: () => void; onRestore: () => void; onRework: () => void; onReworkAll: () => void; onUndo: () => void; sourceRef: RefObject<HTMLTextAreaElement>; targetRef: RefObject<HTMLTextAreaElement>; undoAvailable: boolean }) {
+  if (!diff || !currentDraft) return <section className="stage-placeholder"><h2>审查</h2><p>正在读取 Source 与 Current Draft…</p></section>;
+  return <section className="review-stage"><header><div><h2>Source ↔ Current Draft</h2><p>传统文本 Diff；进入本页不会调用 AI。</p></div><div><button className="button secondary" disabled={busy} onClick={onAddNote} type="button">添加备注</button><button className="button secondary" disabled={busy} onClick={onRestore} type="button">恢复原文</button><button className="button secondary" disabled={busy} onClick={onRework} type="button">AI 重改此处</button><button className="button secondary" disabled={busy} onClick={onReworkAll} type="button"><Sparkles size={15} />AI 根据全部备注修改</button>{undoAvailable ? <><button className="button secondary" disabled={busy} onClick={onAccept} type="button">采用新版</button><button className="button secondary" disabled={busy} onClick={onUndo} type="button">撤销</button></> : null}<button className="button primary" disabled={busy} onClick={onConfirm} type="button">确认场景</button></div></header><div className="diff-head"><strong>原文</strong><strong>当前稿</strong></div><div className="traditional-diff">{diff.chunks.map((chunk, index) => <div className={`diff-row ${chunk.tag}`} key={`${chunk.tag}-${index}`}><pre>{chunk.source_text || ' '}</pre><pre>{chunk.target_text || ' '}</pre></div>)}</div><details className="review-range-picker"><summary>选择原文与当前稿范围</summary><div><label><span>原文范围</span><textarea ref={sourceRef} value={diff.source_text} readOnly /></label><label><span>当前稿范围</span><textarea ref={targetRef} value={diff.target_text} readOnly /></label></div></details></section>;
+}
+
+function ReviewMarksPanel({ marks, onDelete, onRestore, onRework }: { marks: ReviewMark[]; onDelete: (mark: ReviewMark) => void; onRestore: (mark: ReviewMark) => void; onRework: (mark: ReviewMark) => void }) {
+  return <><h3>审查备注</h3>{marks.length ? <div className="review-mark-list">{marks.map((mark, index) => <article className={mark.resolved ? 'resolved' : ''} key={mark.id}><strong>{index + 1}{mark.resolved ? ' · 已处理' : ''}</strong><small>原文：“{mark.source_text.slice(0, 70)}”</small><p>{mark.user_note}</p><div><button className="button ghost" onClick={() => onRestore(mark)} type="button">恢复原文</button><button className="button ghost" onClick={() => onRework(mark)} type="button">AI 重改此处</button><button className="button ghost danger-quiet" onClick={() => onDelete(mark)} type="button">删除</button></div></article>)}</div> : <div className="creative-empty">暂无备注</div>}</>;
 }
 
 function SelectedMaterials({ intent, materials }: { intent: CreativeIntent | null; materials: Material[] }) {

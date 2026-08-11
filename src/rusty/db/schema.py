@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .connection import session
 
-CURRENT_SCHEMA_VERSION = 47
+CURRENT_SCHEMA_VERSION = 48
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -4126,6 +4126,35 @@ def _migrate_to_v47(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_to_v48(connection: sqlite3.Connection) -> None:
+    """Add user-authored review marks for traditional Source-to-Draft review."""
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS review_marks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scene_id INTEGER NOT NULL,
+            source_start_offset INTEGER NOT NULL,
+            source_end_offset INTEGER NOT NULL,
+            source_text TEXT NOT NULL DEFAULT '',
+            target_start_offset INTEGER NOT NULL,
+            target_end_offset INTEGER NOT NULL,
+            user_note TEXT NOT NULL DEFAULT '',
+            resolved INTEGER NOT NULL DEFAULT 0 CHECK (resolved IN (0,1)),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_review_marks_scene ON review_marks(scene_id, resolved, created_at);
+
+        INSERT INTO prompt_definitions (name, description, kind, task_key, content, input_description, is_default)
+        SELECT '通用 / 审查局部重改', '按 ReviewMark 定向处理正文区间', 'common_task', 'review_rework',
+               '只返回当前选中区间的新版本。使用对应 Source、当前 Draft 区间、前后文、Target、Writing Plan 和用户备注；不要重写整场景。',
+               'Source 对应区间、Current Draft 当前区间与前后文、Target、Writing Plan、用户要求或备注。', 1
+        WHERE NOT EXISTS (SELECT 1 FROM prompt_definitions WHERE kind='common_task' AND task_key='review_rework' AND deleted_at IS NULL);
+        """
+    )
+
+
 def _safe_json_list(value: object) -> list[dict[str, object]]:
     try:
         parsed = json.loads(str(value or "[]"))
@@ -4523,6 +4552,7 @@ MIGRATIONS = {
     45: _migrate_to_v45,
     46: _migrate_to_v46,
     47: _migrate_to_v47,
+    48: _migrate_to_v48,
 }
 
 

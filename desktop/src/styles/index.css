@@ -2319,3 +2319,27 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .current-draft-editor > textarea { box-sizing: border-box; width: 100%; min-height: 520px; padding: 24px 30px; border: 0; border-top: 1px solid #edf0f3; resize: vertical; outline: none; color: #252c39; font: 15px/1.9 inherit; }
 .target-context-summary { padding: 12px; border-radius: 6px; background: #fff; }
 .target-context-summary p { margin: 0 0 7px; color: #4b5565; font-size: 12px; }
+.review-stage { margin: 22px 34px 40px; border: 1px solid #dfe3e9; border-radius: 8px; background: #fff; overflow: hidden; }
+.review-stage > header { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 18px 22px; border-bottom: 1px solid #e4e7ec; }
+.review-stage > header > div:last-child { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.review-stage h2 { margin: 0; font-size: 16px; }
+.review-stage header p { margin: 5px 0 0; color: #7b8390; font-size: 12px; }
+.diff-head, .diff-row { display: grid; grid-template-columns: 1fr 1fr; }
+.diff-head { border-bottom: 1px solid #e4e7ec; background: #f7f8fa; }
+.diff-head strong { padding: 10px 16px; color: #616a79; font-size: 12px; }
+.diff-head strong + strong, .diff-row pre + pre { border-left: 1px solid #e4e7ec; }
+.diff-row pre { min-height: 24px; margin: 0; padding: 8px 16px; white-space: pre-wrap; overflow-wrap: anywhere; color: #343c4a; font: 13px/1.65 ui-monospace, "Cascadia Mono", monospace; }
+.diff-row.delete pre:first-child, .diff-row.replace pre:first-child { background: #fff0f0; color: #9f2f37; }
+.diff-row.insert pre:last-child, .diff-row.replace pre:last-child { background: #ecf9ef; color: #226b3b; }
+.diff-row.delete pre:last-child, .diff-row.insert pre:first-child { background: #fafbfc; }
+.review-range-picker { border-top: 1px solid #e5e8ed; }
+.review-range-picker summary { padding: 12px 18px; cursor: pointer; color: #6c7482; font-size: 12px; }
+.review-range-picker > div { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 0 18px 18px; }
+.review-range-picker label { display: grid; gap: 6px; color: #687181; font-size: 12px; }
+.review-range-picker textarea { min-height: 160px; padding: 10px; border: 1px solid #ccd2dc; border-radius: 6px; resize: vertical; font: 12px/1.6 ui-monospace, monospace; }
+.review-mark-list { display: grid; gap: 10px; }
+.review-mark-list article { padding: 12px; border: 1px solid #e0e4ea; border-radius: 6px; background: #fff; }
+.review-mark-list article.resolved { opacity: .58; }
+.review-mark-list small { display: block; margin-top: 7px; color: #7c8492; line-height: 1.45; }
+.review-mark-list p { margin: 8px 0; color: #3e4757; font-size: 12px; line-height: 1.55; }
+.review-mark-list article > div { display: flex; flex-wrap: wrap; gap: 3px; }

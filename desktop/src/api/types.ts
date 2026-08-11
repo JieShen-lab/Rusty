@@ -1283,6 +1283,9 @@ export type SceneDraft = {
   block_spans: Array<{ block_id: number; start_offset: number; end_offset: number }>;
   status: 'draft' | 'confirmed' | 'stale'; created_at: string; updated_at: string;
 };
+export type DiffChunk = { tag: 'equal' | 'replace' | 'delete' | 'insert'; source_start_offset: number; source_end_offset: number; target_start_offset: number; target_end_offset: number; source_text: string; target_text: string };
+export type SceneReviewDiff = { scene_id: number; source_text: string; target_text: string; chunks: DiffChunk[] };
+export type ReviewMark = { id: number; scene_id: number; source_start_offset: number; source_end_offset: number; source_text: string; target_start_offset: number; target_end_offset: number; user_note: string; resolved: boolean; created_at: string; updated_at: string };
 
 export type SceneBoundaryItem = {
   start_offset: number;

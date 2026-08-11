@@ -1271,6 +1271,15 @@ export function getCurrentDraft(sceneId: number) { return request<import('./type
 export function generateCurrentDraft(sceneId: number, replaceExisting = false) { return request<import('./types').SceneDraft>(`/api/scenes/${sceneId}/current-draft/generate`, { method: 'POST', body: JSON.stringify({ replace_existing: replaceExisting }) }); }
 export function saveCurrentDraft(sceneId: number, value: import('./types').SceneDraft) { return request<import('./types').SceneDraft>(`/api/scenes/${sceneId}/current-draft`, { method: 'PUT', body: JSON.stringify(value) }); }
 export function editSelectedDraft(sceneId: number, value: { start_offset: number; end_offset: number; user_instruction: string }) { return request<import('./types').SceneDraft>(`/api/scenes/${sceneId}/current-draft/selected-edit`, { method: 'POST', body: JSON.stringify(value) }); }
+export function startSceneReview(sceneId: number) { return request<import('./types').SceneReviewDiff>(`/api/scenes/${sceneId}/review/start`, { method: 'POST' }); }
+export function getReviewDiff(sceneId: number) { return request<import('./types').SceneReviewDiff>(`/api/scenes/${sceneId}/review-diff`); }
+export function getReviewMarks(sceneId: number) { return request<import('./types').ReviewMark[]>(`/api/scenes/${sceneId}/review-marks`); }
+export function createReviewMark(sceneId: number, value: Partial<import('./types').ReviewMark>) { return request<import('./types').ReviewMark>(`/api/scenes/${sceneId}/review-marks`, { method: 'POST', body: JSON.stringify(value) }); }
+export function removeReviewMark(sceneId: number, markId: number) { return request<{ok:boolean}>(`/api/scenes/${sceneId}/review-marks/${markId}`, { method: 'DELETE' }); }
+export function restoreReviewSource(sceneId: number, markId: number) { return request<import('./types').SceneDraft>(`/api/scenes/${sceneId}/review-marks/${markId}/restore`, { method: 'POST' }); }
+export function reworkReviewRange(sceneId: number, value: Record<string, unknown>) { return request<{draft: import('./types').SceneDraft; before_text: string; after_text: string; start_offset: number; end_offset: number}>(`/api/scenes/${sceneId}/review/rework`, { method: 'POST', body: JSON.stringify(value) }); }
+export function reworkAllReviewMarks(sceneId: number) { return request<{draft: import('./types').SceneDraft; before_text: string; processed: number}>(`/api/scenes/${sceneId}/review/rework-all`, { method: 'POST' }); }
+export function confirmCreativeScene(sceneId: number) { return request<{draft: import('./types').SceneDraft; unresolved_marks: number}>(`/api/scenes/${sceneId}/confirm`, { method: 'POST' }); }
 
 export function analyzeChapterScenes(
   chapterId: number,

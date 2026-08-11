@@ -1085,6 +1085,52 @@ def create_app(
         _require_scene(scene_service, scene_id)
         return creative_workflow_service.regenerate_writing_block(scene_id, block_id, current_start_offset=int(payload.get("current_start_offset") or 0), current_end_offset=int(payload.get("current_end_offset") or 0))
 
+    @app.get("/api/scenes/{scene_id}/review-diff", response_model=dict[str, Any])
+    def get_review_diff(scene_id: int) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.get_review_diff(scene_id)
+
+    @app.post("/api/scenes/{scene_id}/review/start", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def start_scene_review(scene_id: int) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.start_review(scene_id)
+
+    @app.get("/api/scenes/{scene_id}/review-marks", response_model=list[dict[str, Any]])
+    def list_review_marks(scene_id: int) -> list[dict[str, Any]]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.list_review_marks(scene_id)
+
+    @app.post("/api/scenes/{scene_id}/review-marks", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def save_review_mark(scene_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.save_review_mark(scene_id, payload)
+
+    @app.delete("/api/scenes/{scene_id}/review-marks/{mark_id}", dependencies=[Depends(_require_token)])
+    def delete_review_mark(scene_id: int, mark_id: int) -> dict[str, bool]:
+        _require_scene(scene_service, scene_id)
+        creative_workflow_service.delete_review_mark(scene_id, mark_id)
+        return {"ok": True}
+
+    @app.post("/api/scenes/{scene_id}/review-marks/{mark_id}/restore", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def restore_review_source(scene_id: int, mark_id: int) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.restore_review_source(scene_id, mark_id)
+
+    @app.post("/api/scenes/{scene_id}/review/rework", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def rework_review_range(scene_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.rework_review_range(scene_id, target_start_offset=int(payload.get("target_start_offset") or 0), target_end_offset=int(payload.get("target_end_offset") or 0), source_start_offset=payload.get("source_start_offset"), source_end_offset=payload.get("source_end_offset"), user_instruction=str(payload.get("user_instruction") or ""), mark_id=int(payload["mark_id"]) if payload.get("mark_id") is not None else None)
+
+    @app.post("/api/scenes/{scene_id}/review/rework-all", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def rework_all_review_marks(scene_id: int) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.rework_all_review_marks(scene_id)
+
+    @app.post("/api/scenes/{scene_id}/confirm", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def confirm_creative_scene(scene_id: int) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.confirm_scene(scene_id)
+
     @app.get("/api/projects/{project_id}/export-plan", response_model=list[ExportPlanItemOut])
     def get_project_export_plan(project_id: int) -> list[ExportPlanItemOut]:
         _require_project(project_service, project_id)

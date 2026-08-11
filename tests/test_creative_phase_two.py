@@ -9,7 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from rusty.db.schema import CURRENT_SCHEMA_VERSION, _migrate_to_v47
+from rusty.db.schema import CURRENT_SCHEMA_VERSION, _migrate_to_v47, _migrate_to_v48
 from rusty.services.anchor_service import AnchorService
 from rusty.services.creative_workflow_service import CreativeWorkflowService
 from rusty.services.project_service import ProjectService
@@ -40,6 +40,8 @@ class RecordingAI:
             return {"text": "李四拔剑借墙反冲。"}
         if stage == "selected_text_edit":
             return {"text": "李四迅速拔剑"}
+        if stage == "review_rework":
+            return {"text": "李四贴墙避开刀锋。"}
         raise AssertionError(stage)
 
 
@@ -59,7 +61,22 @@ class CreativePhaseTwoTests(unittest.TestCase):
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertTrue({"writing_plans", "writing_plan_blocks", "scene_current_drafts"}.issubset(tables))
         self.assertEqual(5, connection.execute("SELECT COUNT(*) FROM prompt_definitions").fetchone()[0])
-        self.assertEqual(47, CURRENT_SCHEMA_VERSION)
+        self.assertGreaterEqual(CURRENT_SCHEMA_VERSION, 47)
+
+    def test_v48_migration_adds_minimal_review_marks(self) -> None:
+        connection = sqlite3.connect(":memory:")
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.executescript("""
+          CREATE TABLE scenes(id INTEGER PRIMARY KEY);
+          CREATE TABLE prompt_definitions(id INTEGER PRIMARY KEY, name TEXT, description TEXT, kind TEXT,
+            workflow_key TEXT, task_key TEXT, content TEXT, input_description TEXT, is_default INTEGER, deleted_at TEXT);
+        """)
+        _migrate_to_v48(connection); _migrate_to_v48(connection)
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(review_marks)")}
+        self.assertEqual({"id","scene_id","source_start_offset","source_end_offset","source_text","target_start_offset","target_end_offset","user_note","resolved","created_at","updated_at"}, columns)
+        self.assertEqual(1, connection.execute("SELECT COUNT(*) FROM prompt_definitions WHERE task_key='review_rework'").fetchone()[0])
+        self.assertEqual(48, CURRENT_SCHEMA_VERSION)
 
     def test_block_generation_preserves_source_without_ai_and_uses_manual_draft_context(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd(), ignore_cleanup_errors=True) as directory:
@@ -99,6 +116,37 @@ class CreativePhaseTwoTests(unittest.TestCase):
             edited = service.edit_selected_draft_text(scene_id, start_offset=start, end_offset=end, user_instruction="动作更快，不增加攻击")
             self.assertEqual(draft["text"][:start], edited["text"][:start])
             self.assertEqual(draft["text"][end:], edited["text"][start + len("李四迅速拔剑"):])
+
+    def test_traditional_diff_review_marks_restore_local_rework_undo_and_confirm(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd(), ignore_cleanup_errors=True) as directory:
+            service, scene_id, ai = self._prepared(Path(directory))
+            service.run_writing_plan(scene_id)
+            draft = service.generate_current_draft(scene_id)
+            calls_before_review = len(ai.calls)
+            diff = service.start_review(scene_id)
+            self.assertEqual(calls_before_review, len(ai.calls))
+            self.assertTrue(any(chunk["tag"] != "equal" for chunk in diff["chunks"]))
+
+            source_piece = "张三被王五逼到墙边。"
+            target_end = draft["text"].index("\n")
+            mark = service.save_review_mark(scene_id, {"source_start_offset": 0, "source_end_offset": len(source_piece),
+                "target_start_offset": 0, "target_end_offset": target_end, "user_note": "这里贴墙动作不能删除。"})
+            restored = service.restore_review_source(scene_id, mark["id"])
+            self.assertTrue(restored["text"].startswith(source_piece))
+
+            second = service.save_review_mark(scene_id, {"source_start_offset": 0, "source_end_offset": len(source_piece),
+                "target_start_offset": 0, "target_end_offset": len(source_piece), "user_note": "换成李四但保留贴墙。"})
+            result = service.rework_review_range(scene_id, target_start_offset=0, target_end_offset=len(source_piece), mark_id=second["id"])
+            self.assertTrue(result["draft"]["text"].startswith("李四贴墙避开刀锋。"))
+            undone = service.save_current_draft(scene_id, {**result["draft"], "text": result["before_text"]})
+            self.assertEqual(result["before_text"], undone["text"])
+
+            unresolved = service.save_review_mark(scene_id, {"source_start_offset": 0, "source_end_offset": 2,
+                "target_start_offset": 0, "target_end_offset": 2, "user_note": "仍需人工查看"})
+            confirmed = service.confirm_scene(scene_id)
+            self.assertGreaterEqual(confirmed["unresolved_marks"], 1)
+            self.assertEqual("confirmed", confirmed["draft"]["status"])
+            self.assertFalse(next(item for item in service.list_review_marks(scene_id) if item["id"] == unresolved["id"])["resolved"])
 
     @staticmethod
     def _prepared(root: Path) -> tuple[CreativeWorkflowService, int, RecordingAI]:

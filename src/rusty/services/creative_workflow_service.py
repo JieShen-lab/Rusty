@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import difflib
 from pathlib import Path
 from typing import Any
 
@@ -827,6 +828,137 @@ class CreativeWorkflowService:
         replacement = self._generate_block_text(scene, target, plan, block, draft["text"][max(0,current_start_offset-800):current_start_offset], next_source)
         updated = draft["text"][:current_start_offset] + replacement + draft["text"][current_end_offset:]
         return self.save_current_draft(scene_id, {**draft, "text": updated})
+
+    def get_review_diff(self, scene_id: int) -> dict[str, Any]:
+        scene = self.scenes.get_scene(scene_id)
+        draft = self.get_current_draft(scene_id)
+        if scene is None or draft is None:
+            raise ValueError("Review requires Source and Current Draft.")
+        source_lines = scene.original_text.splitlines(keepends=True)
+        target_lines = draft["text"].splitlines(keepends=True)
+        source_offsets = self._line_offsets(source_lines)
+        target_offsets = self._line_offsets(target_lines)
+        chunks = []
+        for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, source_lines, target_lines, autojunk=False).get_opcodes():
+            chunks.append({"tag": tag, "source_start_offset": source_offsets[i1], "source_end_offset": source_offsets[i2],
+                           "target_start_offset": target_offsets[j1], "target_end_offset": target_offsets[j2],
+                           "source_text": "".join(source_lines[i1:i2]), "target_text": "".join(target_lines[j1:j2])})
+        return {"scene_id": scene_id, "source_text": scene.original_text, "target_text": draft["text"], "chunks": chunks}
+
+    def start_review(self, scene_id: int) -> dict[str, Any]:
+        result = self.get_review_diff(scene_id)
+        self.set_scene_stage(scene_id, "review")
+        return result
+
+    def list_review_marks(self, scene_id: int) -> list[dict[str, Any]]:
+        with session(self.database_path) as connection:
+            rows = connection.execute("SELECT * FROM review_marks WHERE scene_id=? ORDER BY resolved, created_at, id", (scene_id,)).fetchall()
+        return [self._review_mark_from_row(row) for row in rows]
+
+    def save_review_mark(self, scene_id: int, value: dict[str, Any]) -> dict[str, Any]:
+        scene = self.scenes.get_scene(scene_id)
+        draft = self.get_current_draft(scene_id)
+        if scene is None or draft is None:
+            raise ValueError("Review mark requires Source and Current Draft.")
+        source_start, source_end = int(value.get("source_start_offset") or 0), int(value.get("source_end_offset") or 0)
+        if source_start < scene.original_start_offset:
+            source_start += scene.original_start_offset; source_end += scene.original_start_offset
+        local_start, local_end = source_start - scene.original_start_offset, source_end - scene.original_start_offset
+        if not (0 <= local_start <= local_end <= len(scene.original_text)):
+            raise ValueError("Review Source range is invalid.")
+        target_start, target_end = int(value.get("target_start_offset") or 0), int(value.get("target_end_offset") or 0)
+        if not (0 <= target_start <= target_end <= len(draft["text"])):
+            raise ValueError("Review target range is invalid.")
+        mark_id = int(value.get("id") or 0)
+        with session(self.database_path) as connection:
+            if mark_id:
+                connection.execute("""UPDATE review_marks SET source_start_offset=?,source_end_offset=?,source_text=?,target_start_offset=?,target_end_offset=?,user_note=?,resolved=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND scene_id=?""",
+                                   (source_start, source_end, scene.original_text[local_start:local_end], target_start, target_end, str(value.get("user_note") or ""), 1 if value.get("resolved") else 0, mark_id, scene_id))
+            else:
+                cursor = connection.execute("""INSERT INTO review_marks(scene_id,source_start_offset,source_end_offset,source_text,target_start_offset,target_end_offset,user_note,resolved) VALUES(?,?,?,?,?,?,?,?)""",
+                                            (scene_id, source_start, source_end, scene.original_text[local_start:local_end], target_start, target_end, str(value.get("user_note") or ""), 1 if value.get("resolved") else 0))
+                mark_id = int(cursor.lastrowid)
+            row = connection.execute("SELECT * FROM review_marks WHERE id=?", (mark_id,)).fetchone()
+        return self._review_mark_from_row(row)
+
+    def delete_review_mark(self, scene_id: int, mark_id: int) -> None:
+        with session(self.database_path) as connection:
+            connection.execute("DELETE FROM review_marks WHERE id=? AND scene_id=?", (mark_id, scene_id))
+
+    def restore_review_source(self, scene_id: int, mark_id: int) -> dict[str, Any]:
+        draft = self.get_current_draft(scene_id)
+        mark = next((item for item in self.list_review_marks(scene_id) if item["id"] == mark_id), None)
+        if draft is None or mark is None:
+            raise ValueError("Review mark or Current Draft not found.")
+        start, end = mark["target_start_offset"], mark["target_end_offset"]
+        updated = draft["text"][:start] + mark["source_text"] + draft["text"][end:]
+        saved = self.save_current_draft(scene_id, {**draft, "text": updated})
+        self._resolve_mark(mark_id)
+        return saved
+
+    def rework_review_range(self, scene_id: int, *, target_start_offset: int, target_end_offset: int,
+                            source_start_offset: int | None = None, source_end_offset: int | None = None,
+                            user_instruction: str = "", mark_id: int | None = None) -> dict[str, Any]:
+        scene, draft, target, plan = self.scenes.get_scene(scene_id), self.get_current_draft(scene_id), self.get_target(scene_id), self.get_writing_plan(scene_id)
+        if scene is None or draft is None or target is None or plan is None:
+            raise ValueError("Review rework requires Source, Current Draft, Target, and Writing Plan.")
+        if not (0 <= target_start_offset <= target_end_offset <= len(draft["text"])):
+            raise ValueError("Review target range is invalid.")
+        mark = next((item for item in self.list_review_marks(scene_id) if item["id"] == mark_id), None) if mark_id else None
+        if mark:
+            source_text, note = mark["source_text"], mark["user_note"]
+        else:
+            raw_start, raw_end = int(source_start_offset or 0), int(source_end_offset or 0)
+            local_start = raw_start if raw_start < scene.original_start_offset else raw_start - scene.original_start_offset
+            local_end = raw_end if raw_end < scene.original_start_offset else raw_end - scene.original_start_offset
+            local_start, local_end = max(0, local_start), max(local_start, local_end)
+            source_text, note = scene.original_text[local_start:local_end], ""
+        value = self.ai.generate_json(
+            project_id=scene.project_id, stage="review_rework", task_key="review_rework", user_instruction=user_instruction or note,
+            payload={"source_range_text": source_text, "current_draft_range": draft["text"][target_start_offset:target_end_offset],
+                     "previous_context": draft["text"][max(0,target_start_offset-800):target_start_offset],
+                     "next_context": draft["text"][target_end_offset:target_end_offset+800], "target": target, "writing_plan": plan,
+                     "review_note": note}, output_contract="Return {text:string}. text contains only the selected range replacement.")
+        replacement = str(value.get("text") or "")
+        before = draft["text"]
+        saved = self.save_current_draft(scene_id, {**draft, "text": before[:target_start_offset] + replacement + before[target_end_offset:]})
+        if mark_id: self._resolve_mark(mark_id)
+        return {"draft": saved, "before_text": before, "after_text": saved["text"],
+                "start_offset": target_start_offset, "end_offset": target_start_offset + len(replacement)}
+
+    def rework_all_review_marks(self, scene_id: int) -> dict[str, Any]:
+        marks = sorted((item for item in self.list_review_marks(scene_id) if not item["resolved"]), key=lambda item: item["target_start_offset"], reverse=True)
+        before = self.get_current_draft(scene_id)
+        for mark in marks:
+            self.rework_review_range(scene_id, target_start_offset=mark["target_start_offset"], target_end_offset=mark["target_end_offset"], mark_id=mark["id"])
+        return {"draft": self.get_current_draft(scene_id), "before_text": before["text"] if before else "", "processed": len(marks)}
+
+    def confirm_scene(self, scene_id: int) -> dict[str, Any]:
+        draft = self.get_current_draft(scene_id)
+        if draft is None:
+            raise ValueError("Confirming a scene requires a Current Draft.")
+        with session(self.database_path) as connection:
+            connection.execute("UPDATE scene_current_drafts SET status='confirmed',updated_at=CURRENT_TIMESTAMP WHERE scene_id=?", (scene_id,))
+        self.set_scene_stage(scene_id, "confirmed")
+        return {"draft": self.get_current_draft(scene_id), "unresolved_marks": sum(not item["resolved"] for item in self.list_review_marks(scene_id))}
+
+    @staticmethod
+    def _line_offsets(lines: list[str]) -> list[int]:
+        result, total = [0], 0
+        for line in lines: total += len(line); result.append(total)
+        return result
+
+    @staticmethod
+    def _review_mark_from_row(row: Any) -> dict[str, Any]:
+        return {"id": int(row["id"]), "scene_id": int(row["scene_id"]), "source_start_offset": int(row["source_start_offset"]),
+                "source_end_offset": int(row["source_end_offset"]), "source_text": str(row["source_text"]),
+                "target_start_offset": int(row["target_start_offset"]), "target_end_offset": int(row["target_end_offset"]),
+                "user_note": str(row["user_note"]), "resolved": bool(row["resolved"]),
+                "created_at": str(row["created_at"]), "updated_at": str(row["updated_at"])}
+
+    def _resolve_mark(self, mark_id: int) -> None:
+        with session(self.database_path) as connection:
+            connection.execute("UPDATE review_marks SET resolved=1,updated_at=CURRENT_TIMESTAMP WHERE id=?", (mark_id,))
 
     def _generate_block_text(self, scene: Any, target: dict[str, Any], plan: dict[str, Any], block: dict[str, Any], previous_tail: str, next_source: str) -> str:
         operation = str(block["operation"])
