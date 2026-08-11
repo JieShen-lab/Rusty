@@ -816,6 +816,27 @@ class CreativeWorkflowService:
             raise ValueError("Replan against the confirmed current target before generating.")
         if self.get_current_draft(scene_id) is not None and not replace_existing:
             raise ValueError("Generating again would replace the current draft.")
+        if target["strategy"] == "reimagine" and float(plan["coverage"].get("preserve", 0)) < 10:
+            intent = self.get_intent(scene_id) or {}
+            character_cards = []
+            for card_id in intent.get("selected_character_ids", []):
+                card = self.characters.get_character_card(card_id)
+                if card:
+                    character_cards.append({"id": card.id, "name": card.name, "setting_text": card.setting_text,
+                                            "personality": card.personality, "action_constraints": card.action_constraints})
+            value = self.ai.generate_json(
+                project_id=scene.project_id, stage="full_scene_generation", workflow_key="reimagine", task_key="full_scene_generation",
+                user_instruction=target["user_instruction"],
+                payload={"source_reference": scene.original_text, "boundary_conditions": target["design"].get("boundary_conditions", {}),
+                         "target_skeleton": target["design"].get("nodes", []), "writing_plan": plan,
+                         "character_cards": character_cards, "preanalysis": self.get_preanalysis(scene_id)},
+                output_contract="Return {text:string}. text is the complete new scene only.",
+            )
+            text = str(value.get("text") or "")
+            return self.save_current_draft(scene_id, {"text": text, "based_on_target_id": target["id"],
+                                                      "based_on_plan_id": plan["id"],
+                                                      "block_spans": [{"block_id": plan["blocks"][0]["id"] if plan["blocks"] else 0,
+                                                                       "start_offset": 0, "end_offset": len(text)}]})
         assembled = ""
         spans: list[dict[str, Any]] = []
         blocks = plan["blocks"]

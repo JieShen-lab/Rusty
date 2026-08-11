@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .connection import session
 
-CURRENT_SCHEMA_VERSION = 50
+CURRENT_SCHEMA_VERSION = 51
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -4229,6 +4229,30 @@ def _migrate_to_v50(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_to_v51(connection: sqlite3.Connection) -> None:
+    """Seed reimagination boundary, skeleton, planning, and full-scene prompts."""
+    connection.executescript(
+        """
+        INSERT INTO prompt_definitions(name,description,kind,workflow_key,task_key,content,input_description,is_default)
+        SELECT '重新构思 / 专项分析','提取必须继承的边界条件','workflow_task','reimagine','special_analysis',
+               '只提取 initial_state、required_characters、location、time、inherited_facts、required_end_state、downstream_constraints。不要设计新剧情。','Source、Preanalysis 与 CreativeIntent。',1
+        WHERE NOT EXISTS(SELECT 1 FROM prompt_definitions WHERE kind='workflow_task' AND workflow_key='reimagine' AND task_key='special_analysis' AND deleted_at IS NULL);
+        INSERT INTO prompt_definitions(name,description,kind,workflow_key,task_key,content,input_description,is_default)
+        SELECT '重新构思 / 目标设计','生成 BoundaryConditions + TargetSkeleton','workflow_task','reimagine','target_design',
+               '保留已确认 boundary conditions，并生成有序 TargetSkeleton。明确 required end state 与 downstream constraints，不生成正文。','Source、已确认边界分析、人物卡、素材与用户要求。',1
+        WHERE NOT EXISTS(SELECT 1 FROM prompt_definitions WHERE kind='workflow_task' AND workflow_key='reimagine' AND task_key='target_design' AND deleted_at IS NULL);
+        INSERT INTO prompt_definitions(name,description,kind,workflow_key,task_key,content,input_description,is_default)
+        SELECT '重新构思 / 写作规划','判断 Source 保留量并规划整场生成','workflow_task','reimagine','writing_plan',
+               '如果 Source 几乎不保留，返回覆盖完整 Source 的 rewrite block，使 Rusty 使用 full_scene_generation；不要伪造高 Preserve 比例。','Source、BoundaryConditions 与 TargetSkeleton。',1
+        WHERE NOT EXISTS(SELECT 1 FROM prompt_definitions WHERE kind='workflow_task' AND workflow_key='reimagine' AND task_key='writing_plan' AND deleted_at IS NULL);
+        INSERT INTO prompt_definitions(name,description,kind,workflow_key,task_key,content,input_description,is_default)
+        SELECT '重新构思 / 整场生成','按边界与目标骨架生成新场景','workflow_task','reimagine','full_scene_generation',
+               '生成完整场景正文，严格满足 BoundaryConditions、TargetSkeleton、人物卡、当前上下文和总提示词。只返回正文。','Source 参考、BoundaryConditions、TargetSkeleton、Writing Plan 与当前上下文。',1
+        WHERE NOT EXISTS(SELECT 1 FROM prompt_definitions WHERE kind='workflow_task' AND workflow_key='reimagine' AND task_key='full_scene_generation' AND deleted_at IS NULL);
+        """
+    )
+
+
 def _safe_json_list(value: object) -> list[dict[str, object]]:
     try:
         parsed = json.loads(str(value or "[]"))
@@ -4629,6 +4653,7 @@ MIGRATIONS = {
     48: _migrate_to_v48,
     49: _migrate_to_v49,
     50: _migrate_to_v50,
+    51: _migrate_to_v51,
 }
 
 

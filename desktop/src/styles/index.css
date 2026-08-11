@@ -2367,3 +2367,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .insertion-event-list article > span { color: #a8502d; font: 12px ui-monospace,monospace; }
 .insertion-exit { padding: 18px 22px; background: #f8f9fb; }
 .insertion-exit textarea { min-height: 100px; resize: vertical; background: #fff; }
+.boundary-condition-grid { display: grid; grid-template-columns: repeat(2,1fr); gap: 12px; padding: 18px 22px; border-bottom: 1px solid #e5e8ed; background: #f8f9fb; }
+.boundary-condition-grid label { display: grid; gap: 7px; color: #5f6878; font-size: 12px; }
+.boundary-condition-grid textarea { min-height: 76px; padding: 8px; border: 1px solid #ccd2dc; border-radius: 5px; resize: vertical; background: #fff; }
