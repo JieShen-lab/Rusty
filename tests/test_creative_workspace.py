@@ -295,15 +295,32 @@ class CreativeWorkspaceTests(unittest.TestCase):
                 "user_instruction": "改为李四，但保留事件。",
             })
             stale = service.get_character_modification_analysis(scene.id)
+            manually_edited_stale = service.save_character_modification_analysis(scene.id, stale)
             with self.assertRaisesRegex(ValueError, "Re-run stale"):
                 service.confirm_character_modification_analysis(scene.id)
-            regenerated = service.run_character_modification_analysis(
-                scene.id,
-                source_character="张三",
-                target_character_card_id=target_id,
-                replace_existing=True,
-            )
-            reconfirmed = service.confirm_character_modification_analysis(scene.id)
+            os.environ["RUSTY_API_TOKEN"] = "test-token"
+            from backend.api import create_app
+            with TestClient(create_app(database, workflow_ai_client=self.FakeWorkflowAI())) as client:
+                headers = {"X-Rusty-Token": "test-token"}
+                rejected = client.post(
+                    f"/api/scenes/{scene.id}/character-modification-analysis/confirm",
+                    headers=headers,
+                )
+                regenerated_response = client.post(
+                    f"/api/scenes/{scene.id}/character-modification-analysis/run",
+                    headers=headers,
+                    json={
+                        "source_character": "张三",
+                        "target_character_card_id": target_id,
+                        "replace_existing": True,
+                    },
+                )
+                reconfirmed_response = client.post(
+                    f"/api/scenes/{scene.id}/character-modification-analysis/confirm",
+                    headers=headers,
+                )
+            regenerated = regenerated_response.json()
+            reconfirmed = reconfirmed_response.json()
 
         implicit = generated["implicit_references"][0]
         weapon = generated["objects"][0]
@@ -314,6 +331,11 @@ class CreativeWorkspaceTests(unittest.TestCase):
         self.assertEqual("confirmed", confirmed["status"])
         self.assertEqual("target_design", unlocked["current_stage"])
         self.assertEqual("stale", stale["status"])
+        self.assertEqual("stale", manually_edited_stale["status"])
+        self.assertEqual(400, rejected.status_code)
+        self.assertIn("Re-run stale", rejected.json()["message"])
+        self.assertEqual(200, regenerated_response.status_code)
+        self.assertEqual(200, reconfirmed_response.status_code)
         self.assertEqual("draft", regenerated["status"])
         self.assertEqual("confirmed", reconfirmed["status"])
 

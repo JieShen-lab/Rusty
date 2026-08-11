@@ -1,13 +1,17 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, Check, Download, RefreshCw, Settings2, Sparkles } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ArrowLeft, Check, RefreshCw, Settings2, Sparkles } from 'lucide-react';
 import {
+  activateCreativeScene,
+  adjustChapterScenes,
   analyzeChapterScenes,
+  confirmChapterScenes,
   confirmScenePreanalysis,
   confirmCharacterModificationAnalysis,
   getChapter,
   getChapterScenes,
   getChapters,
   getCreativeWorkflowStates,
+  getCreativeSceneStates,
   getProjectCharacters,
   getProject,
   getProjectMasterPrompt,
@@ -40,6 +44,8 @@ import type {
   Material,
   ModelConfig,
   SceneRecord,
+  SceneWorkflowState,
+  SceneBoundaryItem,
 } from '../api/types';
 
 type Props = {
@@ -63,9 +69,24 @@ const stageLabels: Record<CreativeWorkflowStage, string> = {
   confirmed: '已确认',
 };
 
+type LoadedSceneDraft = {
+  chapterId: number;
+  sceneId: number;
+  preanalysis: BaseSceneAnalysis | null;
+  intent: CreativeIntent | null;
+  characterAnalysis: CharacterModificationAnalysis | null;
+  analysisDirty: boolean;
+  intentDirty: boolean;
+  characterAnalysisDirty: boolean;
+  analysisRevision: number;
+  intentRevision: number;
+  characterAnalysisRevision: number;
+};
+
 export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Props) {
   const [chapters, setChapters] = useState<Chapter[]>([]);
   const [states, setStates] = useState<ChapterWorkflowState[]>([]);
+  const [sceneStates, setSceneStates] = useState<SceneWorkflowState[]>([]);
   const [selectedChapterId, setSelectedChapterId] = useState<number | null>(null);
   const [detail, setDetail] = useState<ChapterDetail | null>(null);
   const [scenes, setScenes] = useState<SceneRecord[]>([]);
@@ -89,12 +110,24 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
   const [sourceCharacter, setSourceCharacter] = useState('');
   const [targetCharacterId, setTargetCharacterId] = useState<number | null>(null);
   const [focusedEvidence, setFocusedEvidence] = useState('');
+  const [loadedSceneId, setLoadedSceneId] = useState<number | null>(null);
+  const [boundaryEditing, setBoundaryEditing] = useState(false);
+  const [boundaryDrafts, setBoundaryDrafts] = useState<SceneBoundaryItem[]>([]);
+  const loadedDraftRef = useRef<LoadedSceneDraft | null>(null);
+  const selectedChapterIdRef = useRef<number | null>(null);
+  const sceneLoadSequenceRef = useRef(0);
+  const switchQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const flushPromiseRef = useRef<Promise<void> | null>(null);
 
   const stateByChapter = useMemo(
     () => new Map(states.map((item) => [item.chapter_id, item])),
     [states],
   );
   const selectedState = selectedChapterId ? stateByChapter.get(selectedChapterId) ?? null : null;
+  const sceneStateById = useMemo(
+    () => new Map(sceneStates.map((item) => [item.scene_id, item])),
+    [sceneStates],
+  );
   const selectedChapter = detail?.chapter ?? chapters.find((item) => item.id === selectedChapterId) ?? null;
 
   const loadProject = useCallback(async () => {
@@ -108,79 +141,154 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
     setStates(workflowStates);
     setCharacters(characterBindings.character_cards);
     setMaterials(materialItems);
-    setSelectedChapterId((current) => (
-      current && chapterItems.some((item) => item.id === current) ? current : chapterItems[0]?.id ?? null
-    ));
+    setSelectedChapterId((current) => {
+      const next = current && chapterItems.some((item) => item.id === current) ? current : chapterItems[0]?.id ?? null;
+      selectedChapterIdRef.current = next;
+      return next;
+    });
   }, [projectId]);
 
   const loadChapter = useCallback(async (chapterId: number) => {
-    const [chapterDetail, sceneItems] = await Promise.all([
+    const [chapterDetail, sceneItems, workflowItems] = await Promise.all([
       getChapter(chapterId),
       getChapterScenes(chapterId),
+      getCreativeSceneStates(chapterId),
     ]);
+    if (selectedChapterIdRef.current !== chapterId) return;
     setDetail(chapterDetail);
     setScenes(sceneItems);
+    setSceneStates(workflowItems);
+    setBoundaryDrafts(boundariesFromScenes(sceneItems));
   }, []);
 
   const activeSceneId = selectedState?.active_scene_id ?? null;
 
+  const refreshWorkflowStates = useCallback(async (chapterId?: number) => {
+    const chapterStates = await getCreativeWorkflowStates(projectId);
+    setStates(chapterStates);
+    const targetChapterId = chapterId ?? selectedChapterIdRef.current;
+    if (targetChapterId && selectedChapterIdRef.current === targetChapterId) {
+      setSceneStates(await getCreativeSceneStates(targetChapterId));
+    }
+  }, [projectId]);
+
+  const flushLoadedScene = useCallback(async () => {
+    if (flushPromiseRef.current) return flushPromiseRef.current;
+    const pending = (async () => {
+      while (true) {
+        const draft = loadedDraftRef.current;
+        if (!draft || (!draft.analysisDirty && !draft.intentDirty && !draft.characterAnalysisDirty)) return;
+        const snapshot = { ...draft };
+        if (snapshot.analysisDirty && snapshot.preanalysis) {
+          const saved = await saveScenePreanalysis(snapshot.sceneId, analysisWrite(snapshot.preanalysis));
+          const current = loadedDraftRef.current;
+          if (current?.sceneId === snapshot.sceneId && current.analysisRevision === snapshot.analysisRevision) {
+            current.preanalysis = saved;
+            current.analysisDirty = false;
+            setPreanalysis(saved);
+            setAnalysisDirty(false);
+          }
+        }
+        if (snapshot.intentDirty && snapshot.intent) {
+          const saved = await saveSceneCreativeIntent(snapshot.sceneId, snapshot.intent);
+          const current = loadedDraftRef.current;
+          if (current?.sceneId === snapshot.sceneId && current.intentRevision === snapshot.intentRevision) {
+            current.intent = saved;
+            current.intentDirty = false;
+            setIntent(saved);
+            setIntentDirty(false);
+          }
+        }
+        if (snapshot.characterAnalysisDirty && snapshot.characterAnalysis) {
+          const saved = await saveCharacterModificationAnalysis(snapshot.sceneId, snapshot.characterAnalysis);
+          const current = loadedDraftRef.current;
+          if (current?.sceneId === snapshot.sceneId && current.characterAnalysisRevision === snapshot.characterAnalysisRevision) {
+            current.characterAnalysis = saved;
+            current.characterAnalysisDirty = false;
+            setCharacterAnalysis(saved);
+            setCharacterAnalysisDirty(false);
+          }
+        }
+        if (snapshot.analysisDirty || snapshot.intentDirty) {
+          const latestAnalysis = await getCharacterModificationAnalysis(snapshot.sceneId);
+          const current = loadedDraftRef.current;
+          if (current?.sceneId === snapshot.sceneId && !current.characterAnalysisDirty) {
+            current.characterAnalysis = latestAnalysis;
+            setCharacterAnalysis(latestAnalysis);
+          }
+        }
+        await refreshWorkflowStates(snapshot.chapterId);
+      }
+    })().catch((reason) => {
+      setError(messageOf(reason));
+      throw reason;
+    }).finally(() => {
+      flushPromiseRef.current = null;
+    });
+    flushPromiseRef.current = pending;
+    await pending;
+  }, [refreshWorkflowStates]);
+
+  const loadSceneContext = useCallback(async (chapterId: number, sceneId: number) => {
+    const sequence = ++sceneLoadSequenceRef.current;
+    setSceneContextLoading(true);
+    const [analysis, creativeIntent, specialized] = await Promise.all([
+      getScenePreanalysis(sceneId),
+      getSceneCreativeIntent(sceneId),
+      getCharacterModificationAnalysis(sceneId),
+    ]);
+    if (sequence !== sceneLoadSequenceRef.current || selectedChapterIdRef.current !== chapterId) return;
+    loadedDraftRef.current = {
+      chapterId,
+      sceneId,
+      preanalysis: analysis,
+      intent: creativeIntent,
+      characterAnalysis: specialized,
+      analysisDirty: false,
+      intentDirty: false,
+      characterAnalysisDirty: false,
+      analysisRevision: 0,
+      intentRevision: 0,
+      characterAnalysisRevision: 0,
+    };
+    setLoadedSceneId(sceneId);
+    setPreanalysis(analysis);
+    setIntent(creativeIntent);
+    setCharacterAnalysis(specialized);
+    setSourceCharacter(specialized?.source_character ?? analysis?.characters[0] ?? '');
+    setTargetCharacterId(specialized?.target_character_card_id ?? creativeIntent?.selected_character_ids[0] ?? null);
+    setAnalysisDirty(false);
+    setIntentDirty(false);
+    setCharacterAnalysisDirty(false);
+    setFocusedEvidence('');
+    setSceneContextLoading(false);
+  }, []);
+
   useEffect(() => {
-    if (!activeSceneId) {
+    if (!activeSceneId || !selectedChapterId) {
+      sceneLoadSequenceRef.current += 1;
+      loadedDraftRef.current = null;
+      setLoadedSceneId(null);
       setSceneContextLoading(false);
       setPreanalysis(null);
       setIntent(null);
       setCharacterAnalysis(null);
       return;
     }
-    let cancelled = false;
-    setSceneContextLoading(true);
-    void Promise.all([getScenePreanalysis(activeSceneId), getSceneCreativeIntent(activeSceneId), getCharacterModificationAnalysis(activeSceneId)])
-      .then(([analysis, creativeIntent, specialized]) => {
-        if (cancelled) return;
-        setPreanalysis(analysis);
-        setIntent(creativeIntent);
-        setCharacterAnalysis(specialized);
-        setSourceCharacter(specialized?.source_character ?? analysis?.characters[0] ?? '');
-        setTargetCharacterId(specialized?.target_character_card_id ?? creativeIntent?.selected_character_ids[0] ?? null);
-        setAnalysisDirty(false);
-        setIntentDirty(false);
-        setCharacterAnalysisDirty(false);
-        setFocusedEvidence('');
-      })
-      .catch((reason) => { if (!cancelled) setError(messageOf(reason)); })
-      .finally(() => { if (!cancelled) setSceneContextLoading(false); });
-    return () => { cancelled = true; };
-  }, [activeSceneId]);
+    if (loadedDraftRef.current?.sceneId === activeSceneId) return;
+    void loadSceneContext(selectedChapterId, activeSceneId).catch((reason) => {
+      setSceneContextLoading(false);
+      setError(messageOf(reason));
+    });
+  }, [activeSceneId, loadSceneContext, selectedChapterId]);
 
   useEffect(() => {
-    if (!activeSceneId || !preanalysis || !analysisDirty) return;
+    if (!loadedSceneId || (!analysisDirty && !intentDirty && !characterAnalysisDirty)) return;
     const timeout = window.setTimeout(() => {
-      void saveScenePreanalysis(activeSceneId, analysisWrite(preanalysis))
-        .then((saved) => { setPreanalysis(saved); setAnalysisDirty(false); })
-        .catch((reason) => setError(messageOf(reason)));
+      void flushLoadedScene().catch(() => undefined);
     }, 650);
     return () => window.clearTimeout(timeout);
-  }, [activeSceneId, analysisDirty, preanalysis]);
-
-  useEffect(() => {
-    if (!activeSceneId || !intent || !intentDirty) return;
-    const timeout = window.setTimeout(() => {
-      void saveSceneCreativeIntent(activeSceneId, intent)
-        .then((saved) => { setIntent(saved); setIntentDirty(false); })
-        .catch((reason) => setError(messageOf(reason)));
-    }, 650);
-    return () => window.clearTimeout(timeout);
-  }, [activeSceneId, intent, intentDirty]);
-
-  useEffect(() => {
-    if (!activeSceneId || !characterAnalysis || !characterAnalysisDirty) return;
-    const timeout = window.setTimeout(() => {
-      void saveCharacterModificationAnalysis(activeSceneId, characterAnalysis)
-        .then((saved) => { setCharacterAnalysis(saved); setCharacterAnalysisDirty(false); })
-        .catch((reason) => setError(messageOf(reason)));
-    }, 650);
-    return () => window.clearTimeout(timeout);
-  }, [activeSceneId, characterAnalysis, characterAnalysisDirty]);
+  }, [analysisDirty, characterAnalysisDirty, flushLoadedScene, intentDirty, loadedSceneId, preanalysis, intent, characterAnalysis]);
 
   useEffect(() => {
     void loadProject().catch((reason) => setError(messageOf(reason)));
@@ -201,22 +309,45 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
     void chooseScene(scenes[0].id);
   }, [busy, scenes, selectedChapterId, selectedState?.active_scene_id, selectedState?.chapter_id]);
 
-  const reachedIndex = workflowIndex(selectedState?.current_stage ?? 'not_started');
+  const activeSceneState = activeSceneId ? sceneStateById.get(activeSceneId) ?? null : null;
+  const reachedIndex = workflowIndex(activeSceneState?.current_stage ?? 'not_started');
 
-  async function chooseScene(sceneId: number) {
-    if (!selectedChapterId || !selectedState) return;
+  async function chooseChapter(chapterId: number) {
+    if (chapterId === selectedChapterIdRef.current) return;
     setBusy(true);
     setError(null);
-    try {
-      const currentStage = selectedState.current_stage === 'not_started' ? 'preanalysis' : selectedState.current_stage;
-      const updated = await updateCreativeWorkflowState(selectedChapterId, currentStage, sceneId);
+    const operation = switchQueueRef.current.then(async () => {
+      await flushLoadedScene();
+      sceneLoadSequenceRef.current += 1;
+      loadedDraftRef.current = null;
+      setLoadedSceneId(null);
+      selectedChapterIdRef.current = chapterId;
+      setSelectedChapterId(chapterId);
+    });
+    switchQueueRef.current = operation.catch(() => undefined);
+    try { await operation; }
+    catch (reason) { setError(messageOf(reason)); }
+    finally { setBusy(false); }
+  }
+
+  async function chooseScene(sceneId: number) {
+    if (!selectedChapterId || sceneId === activeSceneId) return;
+    const chapterId = selectedChapterId;
+    setBusy(true);
+    setError(null);
+    const operation = switchQueueRef.current.then(async () => {
+      await flushLoadedScene();
+      if (selectedChapterIdRef.current !== chapterId) return;
+      const updated = await activateCreativeScene(sceneId);
+      const ownState = sceneStateById.get(sceneId) ?? (await getCreativeSceneStates(chapterId)).find((item) => item.scene_id === sceneId);
       setStates((items) => items.map((item) => item.chapter_id === updated.chapter_id ? updated : item));
-      setViewStage(currentStage);
-    } catch (reason) {
-      setError(messageOf(reason));
-    } finally {
-      setBusy(false);
-    }
+      setSceneStates(await getCreativeSceneStates(chapterId));
+      setViewStage(ownState?.current_stage === 'not_started' || !ownState ? 'preanalysis' : ownState.current_stage);
+    });
+    switchQueueRef.current = operation.catch(() => undefined);
+    try { await operation; }
+    catch (reason) { setError(messageOf(reason)); }
+    finally { setBusy(false); }
   }
 
   async function createScenes() {
@@ -224,7 +355,8 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
     await perform(async () => {
       const items = await analyzeChapterScenes(selectedChapterId, { source: 'heuristic', confirm: false });
       setScenes(items);
-      if (items[0]) await chooseScene(items[0].id);
+      setBoundaryDrafts(boundariesFromScenes(items));
+      await refreshWorkflowStates(selectedChapterId);
     });
   }
 
@@ -234,6 +366,10 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
     if (replace && !window.confirm('重新分析会替换当前预分析结果。')) return;
     await perform(async () => {
       const saved = await runScenePreanalysis(activeSceneId, replace);
+      if (loadedDraftRef.current?.sceneId === activeSceneId) {
+        loadedDraftRef.current.preanalysis = saved;
+        loadedDraftRef.current.analysisDirty = false;
+      }
       setPreanalysis(saved);
       setSourceCharacter((current) => current || saved.characters[0] || '');
       setAnalysisDirty(false);
@@ -246,6 +382,7 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
     if (!activeSceneId) return;
     await perform(async () => {
       const saved = await confirmScenePreanalysis(activeSceneId);
+      if (loadedDraftRef.current?.sceneId === activeSceneId) loadedDraftRef.current.preanalysis = saved;
       setPreanalysis(saved);
       setViewStage('direction');
       await refreshStates();
@@ -256,7 +393,15 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
     if (!activeSceneId || !selectedChapterId || !intent) return;
     await perform(async () => {
       const savedIntent = await saveSceneCreativeIntent(activeSceneId, intent);
+      const latestAnalysis = await getCharacterModificationAnalysis(activeSceneId);
+      if (loadedDraftRef.current?.sceneId === activeSceneId) {
+        loadedDraftRef.current.intent = savedIntent;
+        loadedDraftRef.current.intentDirty = false;
+        loadedDraftRef.current.characterAnalysis = latestAnalysis;
+      }
       setIntent(savedIntent);
+      setCharacterAnalysis(latestAnalysis);
+      setIntentDirty(false);
       setTargetCharacterId((current) => current ?? savedIntent.selected_character_ids[0] ?? null);
       const updated = await updateCreativeWorkflowState(selectedChapterId, 'special_analysis', activeSceneId);
       setStates((items) => items.map((item) => item.chapter_id === updated.chapter_id ? updated : item));
@@ -265,7 +410,7 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
   }
 
   async function refreshStates() {
-    setStates(await getCreativeWorkflowStates(projectId));
+    await refreshWorkflowStates(selectedChapterId ?? undefined);
   }
 
   async function perform(action: () => Promise<void>) {
@@ -277,12 +422,24 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
   }
 
   function patchAnalysis(patch: Partial<BaseSceneAnalysis>) {
-    setPreanalysis((current) => current ? { ...current, ...patch } : current);
+    const draft = loadedDraftRef.current;
+    if (!draft || draft.sceneId !== loadedSceneId || !draft.preanalysis) return;
+    const next = { ...draft.preanalysis, ...patch };
+    draft.preanalysis = next;
+    draft.analysisDirty = true;
+    draft.analysisRevision += 1;
+    setPreanalysis(next);
     setAnalysisDirty(true);
   }
 
   function patchIntent(patch: Partial<CreativeIntent>) {
-    setIntent((current) => current ? { ...current, ...patch } : current);
+    const draft = loadedDraftRef.current;
+    if (!draft || draft.sceneId !== loadedSceneId || !draft.intent) return;
+    const next = { ...draft.intent, ...patch };
+    draft.intent = next;
+    draft.intentDirty = true;
+    draft.intentRevision += 1;
+    setIntent(next);
     setIntentDirty(true);
   }
 
@@ -290,7 +447,7 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
     if (!activeSceneId) return;
     if (intent) patchIntent({ strategy });
     else {
-      setIntent({
+      const next: CreativeIntent = {
         scene_id: activeSceneId,
         strategy,
         user_instruction: '',
@@ -299,7 +456,13 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
         selected_scene_material_ids: [],
         status: 'draft',
         updated_at: new Date().toISOString(),
-      });
+      };
+      const draft = loadedDraftRef.current;
+      if (!draft || draft.sceneId !== activeSceneId) return;
+      draft.intent = next;
+      draft.intentDirty = true;
+      draft.intentRevision += 1;
+      setIntent(next);
       setIntentDirty(true);
     }
   }
@@ -343,6 +506,10 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
         target_character_card_id: targetCharacterId,
         replace_existing: replace,
       });
+      if (loadedDraftRef.current?.sceneId === activeSceneId) {
+        loadedDraftRef.current.characterAnalysis = saved;
+        loadedDraftRef.current.characterAnalysisDirty = false;
+      }
       setCharacterAnalysis(saved);
       setCharacterAnalysisDirty(false);
       await refreshStates();
@@ -353,6 +520,7 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
     if (!activeSceneId) return;
     await perform(async () => {
       const saved = await confirmCharacterModificationAnalysis(activeSceneId);
+      if (loadedDraftRef.current?.sceneId === activeSceneId) loadedDraftRef.current.characterAnalysis = saved;
       setCharacterAnalysis(saved);
       setCharacterAnalysisDirty(false);
       setViewStage('target_design');
@@ -361,8 +529,39 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
   }
 
   function patchCharacterAnalysis(value: CharacterModificationAnalysis) {
+    const draft = loadedDraftRef.current;
+    if (!draft || draft.sceneId !== loadedSceneId) return;
+    draft.characterAnalysis = value;
+    draft.characterAnalysisDirty = true;
+    draft.characterAnalysisRevision += 1;
     setCharacterAnalysis(value);
     setCharacterAnalysisDirty(true);
+  }
+
+  async function applyBoundaries() {
+    if (!selectedChapterId || !boundaryDrafts.length) return;
+    await perform(async () => {
+      await flushLoadedScene();
+      const items = await adjustChapterScenes(selectedChapterId, boundaryDrafts);
+      sceneLoadSequenceRef.current += 1;
+      loadedDraftRef.current = null;
+      setLoadedSceneId(null);
+      setScenes(items);
+      setBoundaryDrafts(boundariesFromScenes(items));
+      await refreshWorkflowStates(selectedChapterId);
+      setBoundaryEditing(false);
+    });
+  }
+
+  async function confirmBoundaries() {
+    if (!selectedChapterId) return;
+    await perform(async () => {
+      await flushLoadedScene();
+      const items = await confirmChapterScenes(selectedChapterId);
+      setScenes(items);
+      setBoundaryDrafts(boundariesFromScenes(items));
+      await refreshWorkflowStates(selectedChapterId);
+    });
   }
 
   return (
@@ -374,7 +573,6 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
         <div className="creative-project-title"><strong>{projectName}</strong><span>/</span><span>{selectedChapter?.title ?? '暂无章节'}</span></div>
         <div className="creative-top-actions">
           <button className="button ghost" onClick={() => void openSettings()} type="button"><Settings2 size={17} />工程设置</button>
-          <button className="button ghost" type="button"><Download size={17} />导出</button>
         </div>
       </header>
 
@@ -390,8 +588,9 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
                 <button
                   aria-current={chapter.id === selectedChapterId ? 'page' : undefined}
                   className={chapter.id === selectedChapterId ? 'active' : ''}
+                  disabled={busy}
                   key={chapter.id}
-                  onClick={() => setSelectedChapterId(chapter.id)}
+                  onClick={() => void chooseChapter(chapter.id)}
                   type="button"
                 >
                   <span>{chapter.title}</span>
@@ -426,24 +625,26 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
           </header>
 
           <section className="scene-list-section">
-            <div className="section-title"><h2>场景</h2><span>{scenes.length} 个工作对象</span></div>
+            <div className="section-title"><h2>场景</h2><span>{scenes.length} 个工作对象</span><button className="button ghost" disabled={!scenes.length || busy} onClick={() => setBoundaryEditing((value) => !value)} type="button">调整场景边界</button></div>
             <div className="creative-scene-list">
               {scenes.map((scene, index) => {
                 const active = scene.id === selectedState?.active_scene_id;
+                const sceneState = sceneStateById.get(scene.id);
                 return (
                   <button className={active ? 'active' : ''} disabled={busy} key={scene.id} onClick={() => void chooseScene(scene.id)} type="button">
                     <span className="scene-number">{String(index + 1).padStart(2, '0')}</span>
                     <span className="scene-name">{scene.title}</span>
-                    <small>{active ? '当前' : index < scenes.findIndex((item) => item.id === selectedState?.active_scene_id) ? '已完成' : '待处理'}</small>
+                    <small>{sceneProgressLabel(sceneState?.current_stage ?? 'not_started')}{active ? ' · 当前' : ''}</small>
                   </button>
                 );
               })}
               {!scenes.length ? <div className="creative-empty"><p>本章尚未生成场景工作对象。</p><button className="button secondary" disabled={busy} onClick={() => void createScenes()} type="button"><Sparkles size={15} />分析并切分</button></div> : null}
             </div>
+            {boundaryEditing ? <SceneBoundaryEditor boundaries={boundaryDrafts} busy={busy} onApply={() => void applyBoundaries()} onChange={setBoundaryDrafts} onConfirm={() => void confirmBoundaries()} scenes={scenes} /> : null}
           </section>
 
           {viewStage === 'preanalysis' ? (
-            <PreanalysisEditor analysis={preanalysis} busy={busy || sceneContextLoading} dirty={analysisDirty} onAnalyze={() => void analyzeScene()} onChange={patchAnalysis} onConfirm={() => void confirmAnalysis()} />
+            <PreanalysisEditor analysis={preanalysis} boundariesConfirmed={scenes.find((item) => item.id === activeSceneId)?.user_confirmed ?? false} busy={busy || sceneContextLoading} dirty={analysisDirty} onAnalyze={() => void analyzeScene()} onChange={patchAnalysis} onConfirm={() => void confirmAnalysis()} />
           ) : null}
           {viewStage === 'direction' ? (
             <DirectionEditor intent={intent} busy={busy || sceneContextLoading} onContinue={() => void continueToSpecialAnalysis()} onInstruction={(value) => patchIntent({ user_instruction: value })} onStrategy={chooseStrategy} />
@@ -467,8 +668,8 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
   );
 }
 
-function PreanalysisEditor({ analysis, busy, dirty, onAnalyze, onChange, onConfirm }: { analysis: BaseSceneAnalysis | null; busy: boolean; dirty: boolean; onAnalyze: () => void; onChange: (patch: Partial<BaseSceneAnalysis>) => void; onConfirm: () => void }) {
-  if (!analysis) return <section className="stage-placeholder stage-action-empty"><h2>预分析</h2><p>轻量判断这是什么场景，不在这里生成完整人物状态或改写方案。</p><button className="button primary" disabled={busy} onClick={onAnalyze} type="button"><Sparkles size={16} />运行预分析</button></section>;
+function PreanalysisEditor({ analysis, boundariesConfirmed, busy, dirty, onAnalyze, onChange, onConfirm }: { analysis: BaseSceneAnalysis | null; boundariesConfirmed: boolean; busy: boolean; dirty: boolean; onAnalyze: () => void; onChange: (patch: Partial<BaseSceneAnalysis>) => void; onConfirm: () => void }) {
+  if (!analysis) return <section className="stage-placeholder stage-action-empty"><h2>预分析</h2><p>轻量判断这是什么场景，不在这里生成完整人物状态或改写方案。</p>{!boundariesConfirmed ? <p className="inline-hint">请先确认场景切分，再运行预分析。</p> : null}<button className="button primary" disabled={busy || !boundariesConfirmed} onClick={onAnalyze} type="button"><Sparkles size={16} />运行预分析</button></section>;
   return <section className="analysis-editor"><div className="analysis-editor-head"><div><h2>预分析</h2><span>{dirty ? '正在自动保存…' : analysis.status === 'confirmed' ? '已确认' : '已自动保存'}</span></div><button className="button secondary" disabled={busy} onClick={onAnalyze} type="button"><RefreshCw size={15} />重新分析</button></div><label><span>摘要</span><textarea value={analysis.summary} onChange={(event) => onChange({ summary: event.target.value })} /></label><div className="analysis-fields"><label><span>人物（每行一个）</span><textarea value={analysis.characters.join('\n')} onChange={(event) => onChange({ characters: lines(event.target.value) })} /></label><label><span>基础事件（每行一个）</span><textarea value={analysis.basic_events.join('\n')} onChange={(event) => onChange({ basic_events: lines(event.target.value) })} /></label></div><div className="analysis-meta-fields"><label><span>地点</span><input value={analysis.location} onChange={(event) => onChange({ location: event.target.value })} /></label><label><span>时间</span><input value={analysis.time} onChange={(event) => onChange({ time: event.target.value })} /></label><label><span>场景类型</span><input value={analysis.scene_type} onChange={(event) => onChange({ scene_type: event.target.value })} /></label></div><div className="analysis-actions"><button className="button primary" disabled={busy || dirty} onClick={onConfirm} type="button"><Check size={16} />确认预分析</button></div></section>;
 }
 
@@ -509,7 +710,7 @@ function CharacterAnalysisEditor({ analysis, busy, characters, dirty, intent, on
     onChange({ ...analysis, [category]: [...analysis[category], { id: `${category}-${Date.now()}`, summary: '', source_text: '', start_offset: 0, end_offset: 0, inferred: category === 'implicit_references' }] });
   }
 
-  return <section className="character-analysis-editor"><header><div><h2>贴合原文 / 人物修改</h2><p>{analysis.source_character} → {analysis.target_character_name}</p></div><span>{dirty ? '正在自动保存…' : analysis.status === 'stale' ? '上游已修改，需要重新确认' : analysis.status === 'confirmed' ? '已确认' : '已自动保存'}</span></header>{analysisCategories.map(([category, label]) => <details key={category} open={analysis[category].length > 0}><summary><span>{label}</span><small>{analysis[category].length} 项</small></summary><div className="analysis-item-list">{analysis[category].map((item) => <article key={item.id}><div className="analysis-item-toolbar"><label><input checked={item.inferred} onChange={(event) => updateItem(category, item.id, { inferred: event.target.checked })} type="checkbox" />推断</label><button className="button ghost" onClick={() => onEvidence(item.source_text)} type="button">查看原文</button><button className="button ghost danger-quiet" onClick={() => removeItem(category, item.id)} type="button">删除</button></div><label><span>结论</span><input value={item.summary} onChange={(event) => updateItem(category, item.id, { summary: event.target.value })} /></label><label><span>对应原文</span><textarea value={item.source_text} onChange={(event) => updateItem(category, item.id, { source_text: event.target.value, start_offset: 0, end_offset: 0 })} /></label>{category === 'target_character_conflicts' ? <div className="conflict-fields"><label><span>原文状态</span><input value={item.source_state ?? ''} onChange={(event) => updateItem(category, item.id, { source_state: event.target.value })} /></label><label><span>目标人物卡</span><input value={item.target_state ?? ''} onChange={(event) => updateItem(category, item.id, { target_state: event.target.value })} /></label><label><span>差异</span><input value={item.difference ?? ''} onChange={(event) => updateItem(category, item.id, { difference: event.target.value })} /></label></div> : null}</article>)}<button className="button secondary add-analysis-item" onClick={() => addItem(category)} type="button"><PlusIcon />补充一项</button></div></details>)}<footer><button className="button secondary" disabled={busy} onClick={onAnalyze} type="button"><RefreshCw size={15} />重新分析</button><button className="button primary" disabled={busy || dirty} onClick={onConfirm} type="button"><Check size={16} />确认分析</button></footer></section>;
+  return <section className="character-analysis-editor"><header><div><h2>贴合原文 / 人物修改</h2><p>{analysis.source_character} → {analysis.target_character_name}</p></div><span>{dirty ? '正在自动保存…' : analysis.status === 'stale' ? '上游已修改，需要重新分析' : analysis.status === 'confirmed' ? '已确认' : '已自动保存'}</span></header>{analysisCategories.map(([category, label]) => <details key={category} open={analysis[category].length > 0}><summary><span>{label}</span><small>{analysis[category].length} 项</small></summary><div className="analysis-item-list">{analysis[category].map((item) => <article key={item.id}><div className="analysis-item-toolbar"><label><input checked={item.inferred} onChange={(event) => updateItem(category, item.id, { inferred: event.target.checked })} type="checkbox" />推断</label><button className="button ghost" onClick={() => onEvidence(item.source_text)} type="button">查看原文</button><button className="button ghost danger-quiet" onClick={() => removeItem(category, item.id)} type="button">删除</button></div><label><span>结论</span><input value={item.summary} onChange={(event) => updateItem(category, item.id, { summary: event.target.value })} /></label><label><span>对应原文</span><textarea value={item.source_text} onChange={(event) => updateItem(category, item.id, { source_text: event.target.value, start_offset: 0, end_offset: 0 })} /></label>{category === 'target_character_conflicts' ? <div className="conflict-fields"><label><span>原文状态</span><input value={item.source_state ?? ''} onChange={(event) => updateItem(category, item.id, { source_state: event.target.value })} /></label><label><span>目标人物卡</span><input value={item.target_state ?? ''} onChange={(event) => updateItem(category, item.id, { target_state: event.target.value })} /></label><label><span>差异</span><input value={item.difference ?? ''} onChange={(event) => updateItem(category, item.id, { difference: event.target.value })} /></label></div> : null}</article>)}<button className="button secondary add-analysis-item" onClick={() => addItem(category)} type="button"><PlusIcon />补充一项</button></div></details>)}<footer><button className="button secondary" disabled={busy} onClick={onAnalyze} type="button"><RefreshCw size={15} />重新分析</button><button className="button primary" disabled={busy || dirty || analysis.status === 'stale'} onClick={onConfirm} type="button"><Check size={16} />确认分析</button></footer></section>;
 }
 
 function CharacterContext({ characters, targetId }: { characters: CharacterCard[]; targetId: number | null }) {
@@ -527,6 +728,30 @@ function ContextResources({ characters, intent, materials, onIntent }: { charact
     onIntent({ [key]: ids.includes(id) ? ids.filter((item) => item !== id) : [...ids, id] });
   }
   return <><h3>人物</h3><div className="context-choice-list">{characters.map((item) => <label key={item.id}><input checked={intent?.selected_character_ids.includes(item.id) ?? false} disabled={!intent} onChange={() => toggle('selected_character_ids', item.id)} type="checkbox" /><span>{item.name}</span></label>)}</div><h3>素材</h3><div className="context-choice-list">{materials.map((item) => { const key = item.material_type === 'plot_skeleton' ? 'selected_plot_material_ids' : 'selected_scene_material_ids'; return <label key={item.id}><input checked={intent?.[key].includes(item.id) ?? false} disabled={!intent} onChange={() => toggle(key, item.id)} type="checkbox" /><span>{item.name}</span><small>{item.material_type === 'plot_skeleton' ? '剧情' : '场景'}</small></label>; })}</div></>;
+}
+
+function SceneBoundaryEditor({ boundaries, busy, onApply, onChange, onConfirm, scenes }: { boundaries: SceneBoundaryItem[]; busy: boolean; onApply: () => void; onChange: (items: SceneBoundaryItem[]) => void; onConfirm: () => void; scenes: SceneRecord[] }) {
+  const allConfirmed = scenes.length > 0 && scenes.every((scene) => scene.user_confirmed);
+  function patch(index: number, value: Partial<SceneBoundaryItem>) {
+    onChange(boundaries.map((item, itemIndex) => itemIndex === index ? { ...item, ...value } : item));
+  }
+  return <div className="scene-boundary-editor"><div className="scene-boundary-editor-head"><div><strong>场景切分</strong><span>调整 Source 范围后会创建新的场景工作对象。</span></div><div><button className="button secondary" disabled={busy || !boundaries.length} onClick={onApply} type="button">应用边界</button><button className="button primary" disabled={busy || !scenes.length || allConfirmed} onClick={onConfirm} type="button">{allConfirmed ? '切分已确认' : '确认场景切分'}</button></div></div>{boundaries.map((item, index) => <div className="scene-boundary-edit-row" key={`${index}-${item.start_offset}`}><span>{String(index + 1).padStart(2, '0')}</span><input aria-label={`场景 ${index + 1} 标题`} value={item.title} onChange={(event) => patch(index, { title: event.target.value })} /><label>起始<input aria-label={`场景 ${index + 1} 起始位置`} min={0} type="number" value={item.start_offset} onChange={(event) => patch(index, { start_offset: Number(event.target.value) })} /></label><label>结束<input aria-label={`场景 ${index + 1} 结束位置`} min={0} type="number" value={item.end_offset} onChange={(event) => patch(index, { end_offset: Number(event.target.value) })} /></label><small>{item.start_offset}–{item.end_offset}</small></div>)}</div>;
+}
+
+function boundariesFromScenes(scenes: SceneRecord[]): SceneBoundaryItem[] {
+  return scenes.map((scene) => ({
+    start_offset: scene.original_start_offset,
+    end_offset: scene.original_end_offset,
+    title: scene.title,
+    reasons: scene.boundary_reasons,
+  }));
+}
+
+function sceneProgressLabel(stage: CreativeWorkflowStage) {
+  if (stage === 'not_started') return '未开始';
+  if (stage === 'confirmed') return '已完成';
+  if (stage === 'target_design' || stage === 'writing' || stage === 'review') return '待确认';
+  return '进行中';
 }
 
 function workflowIndex(stage: CreativeWorkflowStage) {

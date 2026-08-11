@@ -57,7 +57,7 @@ test('Electron 新建统一普通小说工程且没有改写扩写选择', async
 
 test('Electron 完成预分析到人物专项分析的第一阶段闭环', async () => {
   await openSeedProject('真实 E2E 1');
-  await expect(page.getByRole('button', { name: /场景 1 当前/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /场景 1.*当前/ })).toBeVisible();
   await page.getByRole('button', { name: '运行预分析' }).click();
   await expect(page.getByLabel('摘要')).toHaveValue('人物进入院子并检查院门。');
   await page.getByRole('button', { name: '确认预分析' }).click();

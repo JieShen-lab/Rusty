@@ -78,6 +78,27 @@ const extractStages = ['原文', '章节风格分析', '人工审查', '全书�
 
 export function ProjectWorkspacePage({ onNavigate, projectId }: Props) {
   const [project, setProject] = useState<ProjectDetail | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setError(null);
+    void getProject(projectId)
+      .then((value) => { if (!cancelled) setProject(value); })
+      .catch((reason) => { if (!cancelled) setError(messageOf(reason)); });
+    return () => { cancelled = true; };
+  }, [projectId]);
+
+  if (error) return <div className="workspace-message"><h2>无法打开工程</h2><p>{error}</p></div>;
+  if (!project?.project) return <div className="workspace-message"><h2>正在打开工程…</h2></div>;
+  if (project.project.project_kind === 'legacy_extract') {
+    return <LegacyProjectWorkspacePage onNavigate={onNavigate} projectId={projectId} />;
+  }
+  return <CreativeWorkspacePage onNavigate={onNavigate} projectId={projectId} projectName={project.project.name} />;
+}
+
+function LegacyProjectWorkspacePage({ onNavigate, projectId }: Props) {
+  const [project, setProject] = useState<ProjectDetail | null>(null);
   const [chapters, setChapters] = useState<Chapter[]>([]);
   const [detail, setDetail] = useState<ChapterDetail | null>(null);
   const [selectedChapterId, setSelectedChapterId] = useState<number | null>(null);

@@ -6,6 +6,7 @@ import type {
   ChapterSplitOptions,
   ChapterDetail,
   ChapterWorkflowState,
+  SceneWorkflowState,
   CreativeWorkflowStage,
   CreativeIntent,
   CreativeStrategy,
@@ -487,6 +488,20 @@ export function getCreativeWorkflowStates(projectId: number) {
 
 export function getCreativeWorkflowState(chapterId: number) {
   return request<ChapterWorkflowState>(`/api/chapters/${chapterId}/creative-workflow`);
+}
+
+export function getCreativeSceneStates(chapterId: number) {
+  return request<SceneWorkflowState[]>(`/api/chapters/${chapterId}/creative-scene-states`);
+}
+
+export function getCreativeSceneState(sceneId: number) {
+  return request<SceneWorkflowState>(`/api/scenes/${sceneId}/creative-workflow`);
+}
+
+export function activateCreativeScene(sceneId: number) {
+  return request<ChapterWorkflowState>(`/api/scenes/${sceneId}/creative-workflow/activate`, {
+    method: 'POST',
+  });
 }
 
 export function updateCreativeWorkflowState(

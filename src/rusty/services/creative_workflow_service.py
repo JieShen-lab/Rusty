@@ -535,6 +535,8 @@ class CreativeWorkflowService:
         if target is None:
             raise FileNotFoundError(f"Character card not found: {target_id}")
         normalized = self._normalize_character_analysis(scene, value)
+        current = self.get_character_modification_analysis(scene_id)
+        saved_status = "stale" if user_edited and current and current["status"] == "stale" else "draft"
         columns = ", ".join(f"{category}_json" for category in CHARACTER_ANALYSIS_CATEGORIES)
         placeholders = ", ".join("?" for _ in CHARACTER_ANALYSIS_CATEGORIES)
         updates = ", ".join(f"{category}_json = excluded.{category}_json" for category in CHARACTER_ANALYSIS_CATEGORIES)
@@ -545,17 +547,17 @@ class CreativeWorkflowService:
                 INSERT INTO character_modification_analyses (
                     scene_id, source_character, target_character_card_id, target_character_name,
                     {columns}, status, user_edited, confirmed_at, updated_at
-                ) VALUES (?, ?, ?, ?, {placeholders}, 'draft', ?, NULL, CURRENT_TIMESTAMP)
+                ) VALUES (?, ?, ?, ?, {placeholders}, ?, ?, NULL, CURRENT_TIMESTAMP)
                 ON CONFLICT(scene_id) DO UPDATE SET
                     source_character = excluded.source_character,
                     target_character_card_id = excluded.target_character_card_id,
                     target_character_name = excluded.target_character_name,
-                    {updates}, status = 'draft', user_edited = excluded.user_edited,
+                    {updates}, status = excluded.status, user_edited = excluded.user_edited,
                     confirmed_at = NULL, updated_at = CURRENT_TIMESTAMP
                 """,
                 (
                     scene_id, str(value.get("source_character") or "").strip(), target.id,
-                    target.name, *category_values, 1 if user_edited else 0,
+                    target.name, *category_values, saved_status, 1 if user_edited else 0,
                 ),
             )
         self.set_scene_stage(scene_id, "special_analysis")

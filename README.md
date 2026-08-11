@@ -81,7 +81,7 @@ python -m rusty.db.schema rusty.db
 - `src/rusty/services/creative_workflow_service.py`: phase-one chapter creative workflow
 - `src/rusty/services/pipeline_service.py`: AI summary, scene detection, rewrite, retry, pause, and merge workflow
 - `src/rusty/db/connection.py`: SQLite connection defaults
-- `src/rusty/db/schema.py`: v44 schema, migrations, indexes, and seed data
+- `src/rusty/db/schema.py`: v45 schema, migrations, indexes, and seed data
 - `tests/`: database, service, API, pipeline, importer/exporter, and UI tests
 
 旧版 PySide6 入口仍可通过 `.\.venv\Scripts\rusty` 启动，但新增功能以 Electron 桌面端为准。

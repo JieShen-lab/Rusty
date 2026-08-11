@@ -28,7 +28,7 @@ A project has `project_kind` `rewrite`, `branch` or the read-only compatibility 
 
 The product-facing ordinary-project entry is now unified: both `rewrite` and historical `branch` projects enter `CreativeWorkspacePage`. `project_kind` remains a compatibility/storage field; `legacy_extract` retains its dedicated read-only route.
 
-`chapter_workflow_state` persists the active scene, reached stage and update time. `scene_preanalyses`, `creative_intents` and `character_modification_analyses` are deliberately separate small models. They reuse existing scene identities and Source Layer offsets instead of introducing a second scene table.
+`scene_workflow_state` is the authority for each scene's reached stage. `chapter_workflow_state` is the chapter-navigation projection: it remembers the active scene and mirrors that scene's stage for the chapter rail. `scene_preanalyses`, `creative_intents` and `character_modification_analyses` are deliberately separate small models. They reuse existing scene identities and Source Layer offsets instead of introducing a second scene table.
 
 Original chapter text and `chapter_source_versions` are immutable source history. Compatibility columns such as `chapters.rewritten_text` are current projections, not version authority.
 
@@ -102,7 +102,7 @@ Compatibility code needs an owning test or documented upgrade reason. Lack of a 
 - Routes do not update workflow run status directly.
 - A run uses one frozen content/version/map source snapshot.
 - Final output and terminal run state share a visible transaction boundary.
-- Schema version 44 is append-only: v41 chapter state, v42 preanalysis/intent, v43 prompt definitions/project master, and v44 character-modification analysis.
+- Schema version 45 is append-only: v41 chapter state, v42 preanalysis/intent, v43 prompt definitions/project master, v44 character-modification analysis, and v45 authoritative per-scene workflow state.
 - Source text and scene offsets remain authoritative evidence; preanalysis and special-analysis records never replace Source Layer content.
 - Upstream edits stale downstream analysis/design/planning state but never delete generated prose.
 

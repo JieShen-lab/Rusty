@@ -2152,6 +2152,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .scene-list-section { padding: 24px 34px 8px; }
 .section-title { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 10px; }
 .section-title span { color: #7b8390; font-size: 12px; }
+.scene-list-section .section-title { gap: 10px; }
+.scene-list-section .section-title span { margin-right: auto; }
 .creative-scene-list { border-top: 1px solid #e2e5ea; }
 .creative-scene-list button { width: 100%; min-height: 46px; display: grid; grid-template-columns: 40px minmax(0,1fr) 64px; align-items: center; border: 0; border-bottom: 1px solid #eceef2; background: #fff; color: #2b3343; text-align: left; cursor: pointer; font: inherit; }
 .creative-scene-list button:hover { background: #fafafa; }
@@ -2159,6 +2161,15 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .creative-scene-list .scene-number, .creative-scene-list small { color: #7b8390; font-size: 12px; }
 .creative-scene-list small { justify-self: end; }
 .creative-scene-list button.active small { color: #aa512d; }
+.scene-boundary-editor { margin-top: 14px; padding: 14px; border: 1px solid #dfe3e9; border-radius: 8px; background: #fafbfc; }
+.scene-boundary-editor-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
+.scene-boundary-editor-head > div { display: flex; align-items: center; gap: 8px; }
+.scene-boundary-editor-head > div:first-child { display: grid; gap: 3px; }
+.scene-boundary-editor-head span { color: #747d8c; font-size: 12px; }
+.scene-boundary-edit-row { display: grid; grid-template-columns: 30px minmax(150px, 1fr) 130px 130px 85px; align-items: end; gap: 9px; padding: 8px 0; border-top: 1px solid #e4e7ec; }
+.scene-boundary-edit-row label { display: grid; gap: 3px; color: #707887; font-size: 11px; }
+.scene-boundary-edit-row input { min-width: 0; box-sizing: border-box; padding: 7px 8px; border: 1px solid #ccd2dc; border-radius: 5px; background: #fff; color: #293143; }
+.scene-boundary-edit-row small { align-self: center; color: #78808e; text-align: right; }
 .creative-empty { padding: 30px 12px; color: #7b8390; font-size: 13px; text-align: center; }
 .stage-placeholder { margin: 22px 34px 40px; padding: 24px; border: 1px solid #dfe3e9; border-radius: 8px; }
 .stage-placeholder p { margin: 12px 0 0; color: #697181; font-size: 14px; }
@@ -2208,6 +2219,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .prompt-kind-tree section > button { width: 100%; min-height: 32px; padding: 0 10px; border: 0; border-radius: 5px; background: transparent; color: #555e6e; text-align: left; cursor: pointer; font: 12px inherit; }
 .prompt-kind-tree section > button.active { background: #f4e9e4; color: #a6502e; }
 .prompt-workflow-group > strong { display: block; padding: 0 8px 5px; font-size: 13px; }
+.prompt-kind-tree .category-button { width: 100%; min-height: 34px; margin: 2px 0; padding: 0 10px; border: 0; border-radius: 5px; background: transparent; color: #555e6e; text-align: left; cursor: pointer; font: 13px inherit; }
+.prompt-kind-tree .category-button.nested { padding-left: 20px; font-size: 12px; }
+.prompt-kind-tree .category-button.active { background: #f4e9e4; color: #a6502e; }
+.prompt-workflow-group { margin: 16px 0; }
 .prompt-item-list .panel-heading { padding: 0 6px 12px; }
 .prompt-item-list > button { width: 100%; display: grid; gap: 5px; padding: 12px; border: 0; border-radius: 6px; background: transparent; text-align: left; cursor: pointer; }
 .prompt-item-list > button:hover { background: #f0f2f5; }

@@ -193,6 +193,14 @@ export type ChapterWorkflowState = {
   updated_at: string;
 };
 
+export type SceneWorkflowState = {
+  scene_id: number;
+  scene_index?: number;
+  title?: string;
+  current_stage: CreativeWorkflowStage;
+  updated_at: string;
+};
+
 export type ChapterAIOutputs = {
   plot_summary: string | null;
   plot_characters: Array<Record<string, unknown>> | null;

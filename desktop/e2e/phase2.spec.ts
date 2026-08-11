@@ -240,8 +240,13 @@ async function mockApi(page: Page) {
         ? { document_id: documentId, revision_id: extraChapter.revision_id, chapter_id: 999, title: extraChapter.title, text: `${extraChapter.title}\n\n新增正文`, body_text: '新增正文', section_start_offset: extraChapter.start_offset, body_start_offset: extraChapter.start_offset + extraChapter.title.length + 2, start_offset: extraChapter.start_offset, end_offset: extraChapter.end_offset }
         : { document_id: documentId, revision_id: documentId * 10 + documentRevisionNumber, chapter_id: documentId * 100 + documentRevisionNumber, title: documentChapterTitle, text: `${documentChapterTitle}\n\n${documentBody}`, body_text: documentBody, section_start_offset: 0, body_start_offset: documentChapterTitle.length + 2, start_offset: 0, end_offset: documentBody.length + documentChapterTitle.length + 2 };
     }
-    else if (path === '/api/projects/1') body = { id: 1, name: '示例工程', author: '', purpose: 'rewrite', status: 'ready', source_path: '', workspace_path: '', total_chapters: 1, total_words: 16, processed_chapters: 0, settings: { processing_mode: 'rewrite' }, created_at: '', updated_at: '' };
+    else if (path === '/api/projects/1') body = { project: { id: 1, name: '示例工程', author: '', project_kind: 'rewrite', purpose: 'rewrite', status: 'ready', source_path: '', workspace_path: '', total_chapters: 1, total_words: 16, processed_chapters: 0, created_at: '', updated_at: '' }, metadata: {}, settings: { processing_mode: 'rewrite' }, exports: [] };
     else if (path === '/api/projects/1/chapters') body = [{ id: 1, project_id: 1, index: 1, title: '第一章', original_text: '林舟推门而入，看见桌上的钥匙。', rewritten_text: '', word_count: 16, status: 'pending', created_at: '', updated_at: '' }];
+    else if (path === '/api/projects/1/creative-workflow') body = [{ chapter_id: 1, chapter_index: 1, title: '第一章', active_scene_id: 1, current_stage: 'preanalysis', updated_at: '' }];
+    else if (path === '/api/chapters/1/creative-scene-states') body = [{ scene_id: 1, scene_index: 1, title: '发现钥匙', current_stage: 'preanalysis', updated_at: '' }];
+    else if (path === '/api/projects/1/characters') body = { character_cards: [] };
+    else if (path === '/api/projects/1/materials') body = [];
+    else if (path === '/api/scenes/1/preanalysis' || path === '/api/scenes/1/creative-intent' || path === '/api/scenes/1/character-modification-analysis') body = null;
     else if (path === '/api/chapters/1') body = { chapter: { id: 1, project_id: 1, index: 1, title: '第一章', original_text: '林舟推门而入，看见桌上的钥匙。', rewritten_text: '', word_count: 16, status: 'pending', created_at: '', updated_at: '' }, ai_outputs: { plot_summary: '', expanded_plot: '', plot_characters: [], style_analysis: {}, reviewed_style_analysis: {}, style_analysis_status: '' } };
     else if (path.includes('/prompt-preview')) body = { ruleset_id: 'test', provenance: {}, expected_output: 'text', messages: [] };
     else if (path.includes('/generation-attempts')) body = [];
@@ -307,8 +312,15 @@ test('提示词管理使用总提示词、工作流和公共任务三类对象',
   await expect(page.getByText('总提示词', { exact: true }).first()).toBeVisible();
   await expect(page.getByText('工作流', { exact: true })).toBeVisible();
   await expect(page.getByText('公共任务提示词', { exact: true }).first()).toBeVisible();
-  await expect(page.getByRole('button', { name: '小说总规则', exact: true }).first()).toBeVisible();
+  await expect(page.getByRole('button', { name: /小说总规则/ }).first()).toBeVisible();
   await expect(page.getByLabel('名称')).toHaveValue('小说总规则');
+  await page.getByRole('button', { name: '贴合原文', exact: true }).click();
+  await expect(page.getByRole('button', { name: /人物专项分析/ })).toBeVisible();
+  await expect(page.getByLabel('名称')).toHaveValue('人物专项分析');
+  await expect(page.getByRole('button', { name: /小说总规则/ })).toHaveCount(0);
+  await page.getByRole('button', { name: '公共任务提示词', exact: true }).click();
+  await expect(page.getByRole('button', { name: /场景预分析/ })).toBeVisible();
+  await expect(page.getByLabel('名称')).toHaveValue('场景预分析');
   await expect(page.getByText('版本历史')).toHaveCount(0);
   await expect(page.getByText('同步状态')).toHaveCount(0);
   expect(analysisPromptRequests).toHaveLength(0);
@@ -855,56 +867,29 @@ test('卷目录在深色主题和桌面宽度下无横向溢出', async ({ page 
   }
 });
 
-test('场景改写完成三段确认流程', async ({ page }) => {
-  page.on('dialog', (dialog) => dialog.accept());
+test('普通工程不再通过旧场景改写 modal 开始工作', async ({ page }) => {
   await page.goto('/workspace/1');
-  await page.getByRole('button', { name: '场景改写' }).click();
-  await page.getByRole('button', { name: /1\. 分析并提取骨架/ }).click();
-  await expect(page.getByText(/等待确认骨架/)).toBeVisible();
-  await page.getByRole('button', { name: /2\. 确认骨架并生成规划/ }).click();
-  await expect(page.getByText(/等待确认/)).toBeVisible();
-  await page.getByRole('button', { name: /3\. 确认规划并执行/ }).click();
-  await expect(page.getByText(/一致性检查/)).toBeVisible();
-  await expect(page.getByText('版本历史（原文不被覆盖）')).toBeVisible();
-  await page.getByText(/版本 1/).click();
-  await page.getByRole('button', { name: '恢复为新版本' }).click();
-  await expect(page.getByText(/已从所选历史内容创建新的恢复版本/)).toBeVisible();
-  await expect(page.getByText(/版本 2/)).toBeVisible();
+  await expect(page.getByLabel('章节导航')).toBeVisible();
+  await expect(page.getByRole('heading', { name: '场景' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '场景改写' })).toHaveCount(0);
+  await expect(page.getByRole('dialog')).toHaveCount(0);
 });
 
-test('编辑骨架后插入位置实时使用新节点 ID', async ({ page }) => {
+test('普通工作台启动不发送旧场景规划或执行请求', async ({ page }) => {
+  const legacyWorkflowRequests: string[] = [];
+  page.on('request', (request) => {
+    const path = new URL(request.url()).pathname;
+    if (path.includes('/workflow/start') || path.includes('/scene-workflows/') || path.includes('/rewrite-plans/')) legacyWorkflowRequests.push(path);
+  });
   await page.goto('/workspace/1');
-  await page.getByRole('button', { name: '场景改写' }).click();
-  await page.locator('.scene-workflow-form label').filter({ hasText: '模式' }).locator('select').selectOption('expansion');
-  await page.getByText('误会解除', { exact: true }).click();
-  await page.getByRole('button', { name: /1\. 分析并提取骨架/ }).click();
-  const editor = page.getByRole('heading', { name: '骨架编辑器' }).locator('..').locator('textarea');
-  await editor.fill(JSON.stringify([{ id: 'NEW-NODE-ID', event: '新的事件节点' }], null, 2));
-  const insertion = page.locator('.scene-workflow-form label').filter({ hasText: '插入位置' }).locator('select');
-  await expect(insertion.locator('option[value="n1"]')).toHaveCount(0);
-  await expect(insertion.locator('option[value="NEW-NODE-ID"]')).toHaveText(/新的事件节点/);
-  await insertion.selectOption('NEW-NODE-ID');
-  await page.getByRole('button', { name: /2\. 确认骨架并生成规划/ }).click();
-  await expect.poll(() => workflowPlanRequests.length).toBe(1);
-  const mappings = workflowPlanRequests[0].material_mappings as Array<Record<string, unknown>>;
-  expect(mappings[0].insertion_after_node).toBe('NEW-NODE-ID');
+  await expect(page.getByRole('button', { name: /发现钥匙/ })).toBeVisible();
+  expect(legacyWorkflowRequests).toHaveLength(0);
+  expect(workflowPlanRequests).toHaveLength(0);
 });
 
-test('非法骨架不会发送规划请求', async ({ page }) => {
+test('预分析阶段不会提前解锁目标设计', async ({ page }) => {
   await page.goto('/workspace/1');
-  await page.getByRole('button', { name: '场景改写' }).click();
-  await page.locator('.scene-workflow-form label').filter({ hasText: '模式' }).locator('select').selectOption('expansion');
-  await page.getByText('误会解除', { exact: true }).click();
-  await page.getByRole('button', { name: /1\. 分析并提取骨架/ }).click();
-  const editor = page.getByRole('heading', { name: '骨架编辑器' }).locator('..').locator('textarea');
-  for (const [value, error] of [
-    ['[{', '骨架 JSON 格式无效'],
-    [JSON.stringify([{ id: 'DUP', event: 'A' }, { id: 'DUP', event: 'B' }]), '骨架节点 id 重复'],
-    [JSON.stringify([{ id: 'NO-EVENT' }]), '缺少非空 event'],
-  ]) {
-    await editor.fill(value);
-    await expect(page.getByRole('heading', { name: '骨架编辑器' }).locator('..').getByRole('alert')).toContainText(error);
-    await page.getByRole('button', { name: /2\. 确认骨架并生成规划/ }).click();
-    expect(workflowPlanRequests).toHaveLength(0);
-  }
+  await expect(page.getByRole('button', { name: /发现钥匙/ })).toContainText('进行中');
+  await expect(page.getByRole('button', { name: '目标设计' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: '写作' })).toBeDisabled();
 });

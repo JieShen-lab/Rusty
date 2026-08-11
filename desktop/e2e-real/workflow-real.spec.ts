@@ -16,21 +16,21 @@ async function openProject(page: Page, id: number) {
 
 test('1. rewrite 与历史 branch 使用同一章节中心工作台并恢复活动场景', async ({ page, request }) => {
   await openProject(page, 1);
-  await expect(page.getByRole('button', { name: /场景 1 当前/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /场景 1.*当前/ })).toBeVisible();
   await expect(page.getByLabel('章节导航')).not.toContainText('场景 1');
   await expect(page.getByRole('button', { name: '场景改写' })).toHaveCount(0);
   const rewriteState = await (await request.get(`${backend}/api/projects/1/creative-workflow`)).json();
   expect(rewriteState[0].active_scene_id).toBeTruthy();
-  expect(rewriteState[0].current_stage).toBe('preanalysis');
+  expect(rewriteState[0].current_stage).toBe('not_started');
 
   await openProject(page, 4);
-  await expect(page.getByRole('button', { name: /场景 1 当前/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /场景 1.*当前/ })).toBeVisible();
   await expect(page.getByRole('button', { name: '继续写' })).toHaveCount(0);
 });
 
 test('2. 真后端完成预分析、方向和贴合原文人物专项分析', async ({ page, request }) => {
   await openProject(page, 2);
-  await expect(page.getByRole('button', { name: /场景 1 当前/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /场景 1.*当前/ })).toBeVisible();
   await page.getByRole('button', { name: '运行预分析' }).click();
   await expect(page.getByLabel('摘要')).toHaveValue('人物进入院子并检查院门。');
   await page.getByRole('button', { name: '确认预分析' }).click();
