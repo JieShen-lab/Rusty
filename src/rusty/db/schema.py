@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .connection import session
 
-CURRENT_SCHEMA_VERSION = 46
+CURRENT_SCHEMA_VERSION = 47
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -4045,6 +4045,87 @@ def _migrate_to_v46(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_to_v47(connection: sqlite3.Connection) -> None:
+    """Add semantic writing plans and a Source-separated authoritative current draft."""
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS writing_plans (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scene_id INTEGER NOT NULL UNIQUE,
+            target_id INTEGER NOT NULL,
+            strategy TEXT NOT NULL CHECK (strategy IN ('faithful','plot_adjust','expansion','reimagine')),
+            status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','ready','stale')),
+            coverage_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE,
+            FOREIGN KEY (target_id) REFERENCES scene_targets(id) ON DELETE RESTRICT
+        );
+        CREATE INDEX IF NOT EXISTS idx_writing_plans_status ON writing_plans(status, updated_at);
+
+        CREATE TABLE IF NOT EXISTS writing_plan_blocks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            plan_id INTEGER NOT NULL,
+            scene_id INTEGER NOT NULL,
+            block_order INTEGER NOT NULL,
+            title TEXT NOT NULL DEFAULT '',
+            source_start_offset INTEGER NOT NULL,
+            source_end_offset INTEGER NOT NULL,
+            source_text_snapshot TEXT NOT NULL DEFAULT '',
+            operation TEXT NOT NULL CHECK (operation IN ('preserve','transform','rewrite','insert','delete')),
+            instruction TEXT NOT NULL DEFAULT '',
+            preserve_constraints_json TEXT NOT NULL DEFAULT '[]',
+            target_requirements_json TEXT NOT NULL DEFAULT '[]',
+            resource_refs_json TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(plan_id, block_order),
+            FOREIGN KEY (plan_id) REFERENCES writing_plans(id) ON DELETE CASCADE,
+            FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_writing_blocks_source ON writing_plan_blocks(scene_id, source_start_offset, source_end_offset);
+
+        CREATE TABLE IF NOT EXISTS scene_current_drafts (
+            scene_id INTEGER PRIMARY KEY,
+            text TEXT NOT NULL DEFAULT '',
+            based_on_target_id INTEGER NOT NULL,
+            based_on_plan_id INTEGER NOT NULL,
+            block_spans_json TEXT NOT NULL DEFAULT '[]',
+            status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','confirmed','stale')),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE,
+            FOREIGN KEY (based_on_target_id) REFERENCES scene_targets(id) ON DELETE RESTRICT,
+            FOREIGN KEY (based_on_plan_id) REFERENCES writing_plans(id) ON DELETE RESTRICT
+        );
+
+        INSERT INTO prompt_definitions (name, description, kind, workflow_key, task_key, content, input_description, is_default)
+        SELECT '贴合原文 / 写作规划', '将 Target 映射到语义 Source blocks', 'workflow_task', 'faithful', 'writing_plan',
+               '把已确认 Target 映射为语义正文区块操作。不要重复设计剧情目标；覆盖完整 Source，合理使用 preserve、transform、rewrite、insert、delete。',
+               'Source、已确认 Target、专项分析、人物卡与素材。', 1
+        WHERE NOT EXISTS (SELECT 1 FROM prompt_definitions WHERE kind='workflow_task' AND workflow_key='faithful' AND task_key='writing_plan' AND deleted_at IS NULL);
+        INSERT INTO prompt_definitions (name, description, kind, workflow_key, task_key, content, input_description, is_default)
+        SELECT '贴合原文 / 局部修改', '以 Source block 为主体执行明确修改', 'workflow_task', 'faithful', 'transform_block',
+               '使用 Source block 作为正文主体，只修改本 block 明确指定内容；不要写一个意义类似的新段落，只返回当前 block。',
+               'Source block、Target、当前 block、人物卡和邻接上下文。', 1
+        WHERE NOT EXISTS (SELECT 1 FROM prompt_definitions WHERE kind='workflow_task' AND workflow_key='faithful' AND task_key='transform_block' AND deleted_at IS NULL);
+        INSERT INTO prompt_definitions (name, description, kind, workflow_key, task_key, content, input_description, is_default)
+        SELECT '贴合原文 / 区块重写', '保留事件功能与硬约束的局部重写', 'workflow_task', 'faithful', 'rewrite_block',
+               '只重写当前 Source block；保留列出的剧情功能、事件、空间关系、对手行为、结果和 Target constraints。',
+               'Source block、Target、preserve constraints、target requirements 和邻接上下文。', 1
+        WHERE NOT EXISTS (SELECT 1 FROM prompt_definitions WHERE kind='workflow_task' AND workflow_key='faithful' AND task_key='rewrite_block' AND deleted_at IS NULL);
+        INSERT INTO prompt_definitions (name, description, kind, workflow_key, task_key, content, input_description, is_default)
+        SELECT '通用 / 插入区块', '只生成 insertion content', 'common_task', NULL, 'insert_block',
+               '只生成指定 insertion block，不要复述或重写相邻 Source。', 'Target、当前 block 与邻接上下文。', 1
+        WHERE NOT EXISTS (SELECT 1 FROM prompt_definitions WHERE kind='common_task' AND task_key='insert_block' AND deleted_at IS NULL);
+        INSERT INTO prompt_definitions (name, description, kind, workflow_key, task_key, content, input_description, is_default)
+        SELECT '通用 / 选中文本修改', '只修改 Current Draft 选中区间', 'common_task', NULL, 'selected_text_edit',
+               '按用户要求只返回选中区间的新文本，不要返回前后文。', '选中文本、Current Draft 前后文、Target、人物与用户要求。', 1
+        WHERE NOT EXISTS (SELECT 1 FROM prompt_definitions WHERE kind='common_task' AND task_key='selected_text_edit' AND deleted_at IS NULL);
+        """
+    )
+
+
 def _safe_json_list(value: object) -> list[dict[str, object]]:
     try:
         parsed = json.loads(str(value or "[]"))
@@ -4441,6 +4522,7 @@ MIGRATIONS = {
     44: _migrate_to_v44,
     45: _migrate_to_v45,
     46: _migrate_to_v46,
+    47: _migrate_to_v47,
 }
 
 

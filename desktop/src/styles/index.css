@@ -2298,3 +2298,24 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .target-summary h3 { margin-bottom: 10px; font-size: 13px; }
 .target-summary textarea { min-height: 90px; padding: 9px 11px; resize: vertical; }
 .add-target-item { margin: 14px 22px 0; }
+.writing-stage { margin: 22px 34px 40px; border: 1px solid #dfe3e9; border-radius: 8px; background: #fff; overflow: hidden; }
+.writing-stage > nav { display: flex; gap: 4px; padding: 8px; border-bottom: 1px solid #e5e8ed; background: #f7f8fa; }
+.writing-stage > nav button { padding: 8px 14px; border: 0; border-radius: 5px; background: transparent; color: #626b7b; cursor: pointer; }
+.writing-stage > nav button[aria-pressed="true"] { background: #fff; color: #a8502d; box-shadow: 0 1px 3px rgb(31 39 51 / 12%); }
+.writing-plan-editor > header, .current-draft-editor > header, .writing-plan-editor > footer { display: flex; align-items: center; justify-content: space-between; padding: 18px 22px; }
+.writing-plan-editor header p, .current-draft-editor header p { margin: 5px 0 0; color: #7b8390; font-size: 12px; }
+.writing-plan-editor h2, .current-draft-editor h2 { margin: 0; font-size: 16px; }
+.coverage-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; border-block: 1px solid #e6e9ee; background: #e6e9ee; }
+.coverage-row span { display: flex; justify-content: space-between; padding: 12px 16px; background: #fafbfc; color: #7b8390; font-size: 12px; }
+.writing-block-list article { display: grid; grid-template-columns: 32px minmax(150px,.8fr) 110px minmax(220px,1.6fr); gap: 12px; align-items: start; padding: 14px 20px; border-bottom: 1px solid #edf0f3; }
+.block-number { padding-top: 9px; color: #9ca3af; font: 12px ui-monospace, monospace; }
+.writing-block-list input, .writing-block-list select, .writing-block-list textarea { box-sizing: border-box; width: 100%; border: 1px solid #ccd2dc; border-radius: 5px; background: #fff; color: #202839; font: 12px/1.45 inherit; }
+.writing-block-list input, .writing-block-list select { height: 34px; padding: 0 8px; }
+.writing-block-list small { display: block; margin-top: 6px; color: #8a92a0; line-height: 1.4; }
+.block-instructions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; }
+.block-instructions textarea { min-height: 62px; padding: 7px; resize: vertical; }
+.writing-plan-editor > footer { justify-content: flex-end; }
+.current-draft-editor > header > div:last-child { display: flex; gap: 8px; }
+.current-draft-editor > textarea { box-sizing: border-box; width: 100%; min-height: 520px; padding: 24px 30px; border: 0; border-top: 1px solid #edf0f3; resize: vertical; outline: none; color: #252c39; font: 15px/1.9 inherit; }
+.target-context-summary { padding: 12px; border-radius: 6px; background: #fff; }
+.target-context-summary p { margin: 0 0 7px; color: #4b5565; font-size: 12px; }

@@ -1264,6 +1264,14 @@ export function confirmSceneTarget(sceneId: number) {
   return request<import('./types').SceneTarget>(`/api/scenes/${sceneId}/target/confirm`, { method: 'POST' });
 }
 
+export function getWritingPlan(sceneId: number) { return request<import('./types').WritingPlan | null>(`/api/scenes/${sceneId}/writing-plan`); }
+export function runWritingPlan(sceneId: number, replaceExisting = false) { return request<import('./types').WritingPlan>(`/api/scenes/${sceneId}/writing-plan/run`, { method: 'POST', body: JSON.stringify({ replace_existing: replaceExisting }) }); }
+export function saveWritingPlan(sceneId: number, value: import('./types').WritingPlan) { return request<import('./types').WritingPlan>(`/api/scenes/${sceneId}/writing-plan`, { method: 'PUT', body: JSON.stringify(value) }); }
+export function getCurrentDraft(sceneId: number) { return request<import('./types').SceneDraft | null>(`/api/scenes/${sceneId}/current-draft`); }
+export function generateCurrentDraft(sceneId: number, replaceExisting = false) { return request<import('./types').SceneDraft>(`/api/scenes/${sceneId}/current-draft/generate`, { method: 'POST', body: JSON.stringify({ replace_existing: replaceExisting }) }); }
+export function saveCurrentDraft(sceneId: number, value: import('./types').SceneDraft) { return request<import('./types').SceneDraft>(`/api/scenes/${sceneId}/current-draft`, { method: 'PUT', body: JSON.stringify(value) }); }
+export function editSelectedDraft(sceneId: number, value: { start_offset: number; end_offset: number; user_instruction: string }) { return request<import('./types').SceneDraft>(`/api/scenes/${sceneId}/current-draft/selected-edit`, { method: 'POST', body: JSON.stringify(value) }); }
+
 export function analyzeChapterScenes(
   chapterId: number,
   payload: {

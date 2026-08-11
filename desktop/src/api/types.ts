@@ -1266,6 +1266,24 @@ export type SceneTarget = {
   confirmed_at: string | null;
 };
 
+export type WritingOperation = 'preserve' | 'transform' | 'rewrite' | 'insert' | 'delete';
+export type WritingBlock = {
+  id: number; plan_id: number; scene_id: number; order: number; title: string;
+  source_start_offset: number; source_end_offset: number; source_text_snapshot: string;
+  operation: WritingOperation; instruction: string; preserve_constraints: string[];
+  target_requirements: string[]; resource_refs: number[];
+};
+export type WritingPlan = {
+  id: number; scene_id: number; target_id: number; strategy: CreativeStrategy;
+  status: 'draft' | 'ready' | 'stale'; coverage: Record<WritingOperation, number>;
+  blocks: WritingBlock[]; created_at: string; updated_at: string;
+};
+export type SceneDraft = {
+  scene_id: number; text: string; based_on_target_id: number; based_on_plan_id: number;
+  block_spans: Array<{ block_id: number; start_offset: number; end_offset: number }>;
+  status: 'draft' | 'confirmed' | 'stale'; created_at: string; updated_at: string;
+};
+
 export type SceneBoundaryItem = {
   start_offset: number;
   end_offset: number;

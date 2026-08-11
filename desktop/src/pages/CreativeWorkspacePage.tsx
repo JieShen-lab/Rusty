@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { RefObject } from 'react';
 import { ArrowLeft, Check, RefreshCw, Settings2, Sparkles } from 'lucide-react';
 import {
   activateCreativeScene,
@@ -8,6 +9,8 @@ import {
   confirmScenePreanalysis,
   confirmCharacterModificationAnalysis,
   confirmSceneTarget,
+  editSelectedDraft,
+  generateCurrentDraft,
   getChapter,
   getChapterScenes,
   getChapters,
@@ -22,13 +25,18 @@ import {
   getScenePreanalysis,
   getCharacterModificationAnalysis,
   getSceneTarget,
+  getWritingPlan,
+  getCurrentDraft,
   runScenePreanalysis,
   runCharacterModificationAnalysis,
   runSceneTarget,
+  runWritingPlan,
   saveSceneCreativeIntent,
   saveScenePreanalysis,
   saveCharacterModificationAnalysis,
   saveSceneTarget,
+  saveWritingPlan,
+  saveCurrentDraft,
   saveProjectMasterPrompt,
   exportProjectMasterPrompt,
   updateProjectSettings,
@@ -52,6 +60,9 @@ import type {
   SceneBoundaryItem,
   SceneTarget,
   ChangeSetItem,
+  WritingPlan,
+  WritingBlock,
+  SceneDraft,
 } from '../api/types';
 import { registerNavigationFlush } from '../navigationFlush';
 
@@ -83,14 +94,20 @@ type LoadedSceneDraft = {
   intent: CreativeIntent | null;
   characterAnalysis: CharacterModificationAnalysis | null;
   target: SceneTarget | null;
+  writingPlan: WritingPlan | null;
+  currentDraft: SceneDraft | null;
   analysisDirty: boolean;
   intentDirty: boolean;
   characterAnalysisDirty: boolean;
   targetDirty: boolean;
+  writingPlanDirty: boolean;
+  currentDraftDirty: boolean;
   analysisRevision: number;
   intentRevision: number;
   characterAnalysisRevision: number;
   targetRevision: number;
+  writingPlanRevision: number;
+  currentDraftRevision: number;
 };
 
 export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Props) {
@@ -119,6 +136,12 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
   const [characterAnalysisDirty, setCharacterAnalysisDirty] = useState(false);
   const [target, setTarget] = useState<SceneTarget | null>(null);
   const [targetDirty, setTargetDirty] = useState(false);
+  const [writingPlan, setWritingPlan] = useState<WritingPlan | null>(null);
+  const [writingPlanDirty, setWritingPlanDirty] = useState(false);
+  const [currentDraft, setCurrentDraft] = useState<SceneDraft | null>(null);
+  const [currentDraftDirty, setCurrentDraftDirty] = useState(false);
+  const [writingView, setWritingView] = useState<'plan' | 'draft'>('plan');
+  const draftEditorRef = useRef<HTMLTextAreaElement | null>(null);
   const [sourceCharacter, setSourceCharacter] = useState('');
   const [targetCharacterId, setTargetCharacterId] = useState<number | null>(null);
   const [focusedEvidence, setFocusedEvidence] = useState('');
@@ -189,7 +212,7 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
     const pending = (async () => {
       while (true) {
         const draft = loadedDraftRef.current;
-        if (!draft || (!draft.analysisDirty && !draft.intentDirty && !draft.characterAnalysisDirty && !draft.targetDirty)) return;
+        if (!draft || (!draft.analysisDirty && !draft.intentDirty && !draft.characterAnalysisDirty && !draft.targetDirty && !draft.writingPlanDirty && !draft.currentDraftDirty)) return;
         const snapshot = { ...draft };
         if (snapshot.analysisDirty && snapshot.preanalysis) {
           const saved = await saveScenePreanalysis(snapshot.sceneId, analysisWrite(snapshot.preanalysis));
@@ -231,9 +254,23 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
             setTargetDirty(false);
           }
         }
-        if (snapshot.analysisDirty || snapshot.intentDirty || snapshot.characterAnalysisDirty) {
-          const [latestAnalysis, latestTarget] = await Promise.all([
-            getCharacterModificationAnalysis(snapshot.sceneId), getSceneTarget(snapshot.sceneId),
+        if (snapshot.writingPlanDirty && snapshot.writingPlan) {
+          const saved = await saveWritingPlan(snapshot.sceneId, snapshot.writingPlan);
+          const current = loadedDraftRef.current;
+          if (current?.sceneId === snapshot.sceneId && current.writingPlanRevision === snapshot.writingPlanRevision) {
+            current.writingPlan = saved; current.writingPlanDirty = false; setWritingPlan(saved); setWritingPlanDirty(false);
+          }
+        }
+        if (snapshot.currentDraftDirty && snapshot.currentDraft) {
+          const saved = await saveCurrentDraft(snapshot.sceneId, snapshot.currentDraft);
+          const current = loadedDraftRef.current;
+          if (current?.sceneId === snapshot.sceneId && current.currentDraftRevision === snapshot.currentDraftRevision) {
+            current.currentDraft = saved; current.currentDraftDirty = false; setCurrentDraft(saved); setCurrentDraftDirty(false);
+          }
+        }
+        if (snapshot.analysisDirty || snapshot.intentDirty || snapshot.characterAnalysisDirty || snapshot.targetDirty) {
+          const [latestAnalysis, latestTarget, latestPlan] = await Promise.all([
+            getCharacterModificationAnalysis(snapshot.sceneId), getSceneTarget(snapshot.sceneId), getWritingPlan(snapshot.sceneId),
           ]);
           const current = loadedDraftRef.current;
           if (current?.sceneId === snapshot.sceneId && !current.characterAnalysisDirty) {
@@ -243,6 +280,9 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
           if (current?.sceneId === snapshot.sceneId && !current.targetDirty) {
             current.target = latestTarget;
             setTarget(latestTarget);
+          }
+          if (current?.sceneId === snapshot.sceneId && !current.writingPlanDirty) {
+            current.writingPlan = latestPlan; setWritingPlan(latestPlan);
           }
         }
         await refreshWorkflowStates(snapshot.chapterId);
@@ -260,11 +300,13 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
   const loadSceneContext = useCallback(async (chapterId: number, sceneId: number) => {
     const sequence = ++sceneLoadSequenceRef.current;
     setSceneContextLoading(true);
-    const [analysis, creativeIntent, specialized, sceneTarget] = await Promise.all([
+    const [analysis, creativeIntent, specialized, sceneTarget, plan, draftText] = await Promise.all([
       getScenePreanalysis(sceneId),
       getSceneCreativeIntent(sceneId),
       getCharacterModificationAnalysis(sceneId),
       getSceneTarget(sceneId),
+      getWritingPlan(sceneId),
+      getCurrentDraft(sceneId),
     ]);
     if (sequence !== sceneLoadSequenceRef.current || selectedChapterIdRef.current !== chapterId) return;
     loadedDraftRef.current = {
@@ -274,26 +316,37 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
       intent: creativeIntent,
       characterAnalysis: specialized,
       target: sceneTarget,
+      writingPlan: plan,
+      currentDraft: draftText,
       analysisDirty: false,
       intentDirty: false,
       characterAnalysisDirty: false,
       targetDirty: false,
+      writingPlanDirty: false,
+      currentDraftDirty: false,
       analysisRevision: 0,
       intentRevision: 0,
       characterAnalysisRevision: 0,
       targetRevision: 0,
+      writingPlanRevision: 0,
+      currentDraftRevision: 0,
     };
     setLoadedSceneId(sceneId);
     setPreanalysis(analysis);
     setIntent(creativeIntent);
     setCharacterAnalysis(specialized);
     setTarget(sceneTarget);
+    setWritingPlan(plan);
+    setCurrentDraft(draftText);
+    setWritingView(draftText ? 'draft' : 'plan');
     setSourceCharacter(specialized?.source_character ?? analysis?.characters[0] ?? '');
     setTargetCharacterId(specialized?.target_character_card_id ?? creativeIntent?.selected_character_ids[0] ?? null);
     setAnalysisDirty(false);
     setIntentDirty(false);
     setCharacterAnalysisDirty(false);
     setTargetDirty(false);
+    setWritingPlanDirty(false);
+    setCurrentDraftDirty(false);
     setFocusedEvidence('');
     setSceneContextLoading(false);
   }, []);
@@ -319,6 +372,8 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
       setIntent(null);
       setCharacterAnalysis(null);
       setTarget(null);
+      setWritingPlan(null);
+      setCurrentDraft(null);
       return;
     }
     if (loadedDraftRef.current?.sceneId === activeSceneId) return;
@@ -329,12 +384,12 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
   }, [activeSceneId, loadSceneContext, selectedChapterId]);
 
   useEffect(() => {
-    if (!loadedSceneId || (!analysisDirty && !intentDirty && !characterAnalysisDirty && !targetDirty)) return;
+    if (!loadedSceneId || (!analysisDirty && !intentDirty && !characterAnalysisDirty && !targetDirty && !writingPlanDirty && !currentDraftDirty)) return;
     const timeout = window.setTimeout(() => {
       void flushLoadedScene().catch(() => undefined);
     }, 650);
     return () => window.clearTimeout(timeout);
-  }, [analysisDirty, characterAnalysisDirty, flushLoadedScene, intentDirty, loadedSceneId, preanalysis, intent, characterAnalysis, target, targetDirty]);
+  }, [analysisDirty, characterAnalysisDirty, flushLoadedScene, intentDirty, loadedSceneId, preanalysis, intent, characterAnalysis, target, targetDirty, writingPlan, writingPlanDirty, currentDraft, currentDraftDirty]);
 
   useEffect(() => {
     void loadProject().catch((reason) => setError(messageOf(reason)));
@@ -618,6 +673,63 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
     });
   }
 
+  async function planWriting() {
+    if (!activeSceneId) return;
+    const replace = Boolean(writingPlan);
+    if (replace && writingPlan?.status !== 'stale' && !window.confirm('重新规划会替换当前写作规划，但不会删除当前正文。')) return;
+    await perform(async () => {
+      await flushLoadedScene();
+      const saved = await runWritingPlan(activeSceneId, replace || writingPlan?.status === 'stale');
+      const draft = loadedDraftRef.current;
+      if (draft?.sceneId === activeSceneId) { draft.writingPlan = saved; draft.writingPlanDirty = false; }
+      setWritingPlan(saved); setWritingPlanDirty(false); setWritingView('plan');
+    });
+  }
+
+  function patchWritingPlan(value: WritingPlan) {
+    const draft = loadedDraftRef.current;
+    if (!draft || draft.sceneId !== loadedSceneId) return;
+    draft.writingPlan = value; draft.writingPlanDirty = true; draft.writingPlanRevision += 1;
+    setWritingPlan(value); setWritingPlanDirty(true);
+  }
+
+  async function generateDraft() {
+    if (!activeSceneId) return;
+    const replace = Boolean(currentDraft);
+    if (replace && !window.confirm('重新生成会替换当前正文及人工修改，是否继续？')) return;
+    await perform(async () => {
+      await flushLoadedScene();
+      const saved = await generateCurrentDraft(activeSceneId, replace);
+      const draft = loadedDraftRef.current;
+      if (draft?.sceneId === activeSceneId) { draft.currentDraft = saved; draft.currentDraftDirty = false; }
+      setCurrentDraft(saved); setCurrentDraftDirty(false); setWritingView('draft');
+    });
+  }
+
+  function patchCurrentDraftText(text: string) {
+    const draft = loadedDraftRef.current;
+    if (!draft || draft.sceneId !== loadedSceneId || !draft.currentDraft) return;
+    const next = { ...draft.currentDraft, text };
+    draft.currentDraft = next; draft.currentDraftDirty = true; draft.currentDraftRevision += 1;
+    setCurrentDraft(next); setCurrentDraftDirty(true);
+  }
+
+  async function aiEditSelection() {
+    if (!activeSceneId || !currentDraft || !draftEditorRef.current) return;
+    const start = draftEditorRef.current.selectionStart;
+    const end = draftEditorRef.current.selectionEnd;
+    if (start === end) { setError('请先选择需要修改的正文。'); return; }
+    const instruction = window.prompt('修改要求', '动作更快一些，但不要增加新的攻击。');
+    if (!instruction?.trim()) return;
+    await perform(async () => {
+      await flushLoadedScene();
+      const saved = await editSelectedDraft(activeSceneId, { start_offset: start, end_offset: end, user_instruction: instruction.trim() });
+      const draft = loadedDraftRef.current;
+      if (draft?.sceneId === activeSceneId) { draft.currentDraft = saved; draft.currentDraftDirty = false; }
+      setCurrentDraft(saved); setCurrentDraftDirty(false);
+    });
+  }
+
   async function applyBoundaries() {
     if (!selectedChapterId || !boundaryDrafts.length) return;
     await perform(async () => {
@@ -731,7 +843,8 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
           ) : null}
           {viewStage === 'special_analysis' ? <CharacterAnalysisEditor analysis={characterAnalysis} busy={busy || sceneContextLoading} characters={characters} dirty={characterAnalysisDirty} intent={intent} onAnalyze={() => void analyzeCharacterModification()} onChange={patchCharacterAnalysis} onConfirm={() => void confirmCharacterAnalysis()} onEvidence={setFocusedEvidence} onSourceCharacter={setSourceCharacter} onTargetCharacter={setTargetCharacterId} sourceCharacter={sourceCharacter} targetCharacterId={targetCharacterId} /> : null}
           {viewStage === 'target_design' ? <TargetDesignEditor busy={busy || sceneContextLoading} dirty={targetDirty} intent={intent} onChange={patchTarget} onConfirm={() => void confirmTargetDesign()} onGenerate={() => void generateTarget()} target={target} /> : null}
-          {!['preanalysis', 'direction', 'special_analysis', 'target_design'].includes(viewStage) ? <section className="stage-placeholder"><h2>{stageLabels[viewStage]}</h2><p>该阶段将在后续阶段接入。</p></section> : null}
+          {viewStage === 'writing' ? <WritingStage busy={busy || sceneContextLoading} currentDraft={currentDraft} draftDirty={currentDraftDirty} draftEditorRef={draftEditorRef} onDraftText={patchCurrentDraftText} onGenerate={() => void generateDraft()} onPlan={patchWritingPlan} onPlanWriting={() => void planWriting()} onSelectedEdit={() => void aiEditSelection()} onView={setWritingView} plan={writingPlan} planDirty={writingPlanDirty} target={target} view={writingView} /> : null}
+          {!['preanalysis', 'direction', 'special_analysis', 'target_design', 'writing'].includes(viewStage) ? <section className="stage-placeholder"><h2>{stageLabels[viewStage]}</h2><p>该阶段将在后续阶段接入。</p></section> : null}
         </main>
 
         <aside className="creative-context-panel">
@@ -739,6 +852,7 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
           {viewStage === 'direction' ? <ContextResources characters={characters} intent={intent} materials={materials} onIntent={patchIntent} /> : null}
           {viewStage === 'special_analysis' ? <CharacterContext characters={characters} targetId={characterAnalysis?.target_character_card_id ?? targetCharacterId} /> : null}
           {viewStage === 'target_design' ? <><CharacterContext characters={characters} targetId={characterAnalysis?.target_character_card_id ?? targetCharacterId} /><SelectedMaterials intent={intent} materials={materials} /></> : null}
+          {viewStage === 'writing' ? <><CharacterContext characters={characters} targetId={characterAnalysis?.target_character_card_id ?? targetCharacterId} /><SelectedMaterials intent={intent} materials={materials} /><TargetContext target={target} /></> : null}
           <h3>原文</h3>
           {focusedEvidence ? <div className="focused-evidence"><strong>当前证据</strong><p>{focusedEvidence}</p></div> : null}
           <div className="source-context">{scenes.find((item) => item.id === activeSceneId)?.original_text || selectedChapter?.original_text || '暂无原文'}</div>
@@ -812,6 +926,24 @@ function TargetDesignEditor({ busy, dirty, intent, onChange, onConfirm, onGenera
     onChange({ ...currentTarget, design: { ...currentTarget.design, items: [...items, { id: `change-${Date.now()}`, label: '', operation: 'preserve', source_value: '', target_value: '', source_start_offset: 0, source_end_offset: 0 }] } });
   }
   return <section className="target-editor"><header><div><h2>贴合原文 / ChangeSet</h2><p>{target.status === 'stale' ? '专项分析已修改，需要重新生成目标草案' : dirty ? '正在自动保存…' : target.status === 'confirmed' ? '已确认' : '草案已自动保存'}</p></div><button className="button secondary" disabled={busy} onClick={onGenerate} type="button"><RefreshCw size={15} />重新生成目标草案</button></header><div className="target-item-list">{items.map((item) => <article key={item.id}><input aria-label="目标项名称" placeholder="目标项" value={item.label} onChange={(event) => replaceItem(item.id, { label: event.target.value })} /><select aria-label={`${item.label || '目标项'}操作`} value={item.operation} onChange={(event) => replaceItem(item.id, { operation: event.target.value as ChangeSetItem['operation'] })}><option value="preserve">保持</option><option value="adapt">适配</option><option value="modify">修改</option></select><input aria-label={`${item.label || '目标项'}原值`} placeholder="Source" value={item.source_value} onChange={(event) => replaceItem(item.id, { source_value: event.target.value })} /><span>→</span><input aria-label={`${item.label || '目标项'}目标值`} disabled={item.operation === 'preserve'} placeholder={item.operation === 'adapt' ? '适配要求' : '目标值'} value={item.target_value} onChange={(event) => replaceItem(item.id, { target_value: event.target.value })} /><button className="button ghost danger-quiet" onClick={() => onChange({ ...target, design: { ...target.design, items: items.filter((entry) => entry.id !== item.id) } })} type="button">删除</button></article>)}</div><button className="button secondary add-target-item" onClick={addItem} type="button">＋ 添加目标项</button><div className="target-summary"><h3>本次目标</h3><textarea value={(target.design.summary ?? []).join('\n')} onChange={(event) => onChange({ ...target, design: { ...target.design, summary: lines(event.target.value) } })} /></div><footer><button className="button primary" disabled={busy || dirty || target.status === 'stale' || items.length === 0} onClick={onConfirm} type="button"><Check size={16} />确认目标</button></footer></section>;
+}
+
+const writingOperationLabels = { preserve: '保留', transform: '局部修改', rewrite: '重写', insert: '新增', delete: '删除' } as const;
+
+function WritingStage({ busy, currentDraft, draftDirty, draftEditorRef, onDraftText, onGenerate, onPlan, onPlanWriting, onSelectedEdit, onView, plan, planDirty, target, view }: { busy: boolean; currentDraft: SceneDraft | null; draftDirty: boolean; draftEditorRef: RefObject<HTMLTextAreaElement>; onDraftText: (text: string) => void; onGenerate: () => void; onPlan: (value: WritingPlan) => void; onPlanWriting: () => void; onSelectedEdit: () => void; onView: (view: 'plan' | 'draft') => void; plan: WritingPlan | null; planDirty: boolean; target: SceneTarget | null; view: 'plan' | 'draft' }) {
+  const staleDraft = Boolean(currentDraft && (plan?.status === 'stale' || currentDraft.based_on_plan_id !== plan?.id || currentDraft.based_on_target_id !== target?.id));
+  return <section className="writing-stage"><nav><button aria-pressed={view === 'plan'} onClick={() => onView('plan')} type="button">写作规划</button><button aria-pressed={view === 'draft'} disabled={!currentDraft} onClick={() => onView('draft')} type="button">当前正文</button></nav>{view === 'plan' ? <WritingPlanEditor busy={busy} dirty={planDirty} onChange={onPlan} onGenerate={onGenerate} onPlan={onPlanWriting} plan={plan} /> : <div className="current-draft-editor"><header><div><h2>当前正文</h2><p>{draftDirty ? '正在自动保存…' : '已自动保存'}{staleDraft ? ' · 当前正文基于旧目标/旧规划生成' : ''}</p></div><div><button className="button secondary" disabled={busy || !currentDraft} onClick={onSelectedEdit} type="button"><Sparkles size={15} />AI 修改选中内容</button><button className="button secondary" disabled={busy || !plan || plan.status === 'stale'} onClick={onGenerate} type="button">重新生成</button></div></header>{currentDraft ? <textarea aria-label="当前正文" ref={draftEditorRef} value={currentDraft.text} onChange={(event) => onDraftText(event.target.value)} /> : <div className="stage-action-empty"><p>尚未生成当前正文。</p></div>}</div>}</section>;
+}
+
+function WritingPlanEditor({ busy, dirty, onChange, onGenerate, onPlan, plan }: { busy: boolean; dirty: boolean; onChange: (value: WritingPlan) => void; onGenerate: () => void; onPlan: () => void; plan: WritingPlan | null }) {
+  if (!plan) return <div className="stage-placeholder stage-action-empty"><h2>写作规划</h2><p>规划 Source 正文的语义区块操作；Target 已回答“改成什么”，此处只决定具体位置怎么操作。</p><button className="button primary" disabled={busy} onClick={onPlan} type="button"><Sparkles size={16} />生成写作规划</button></div>;
+  const currentPlan = plan;
+  function patchBlock(id: number, patch: Partial<WritingBlock>) { onChange({ ...currentPlan, blocks: currentPlan.blocks.map((block) => block.id === id ? { ...block, ...patch } : block) }); }
+  return <div className="writing-plan-editor"><header><div><h2>写作规划</h2><p>{plan.status === 'stale' ? 'Target 已修改，需要重新规划' : dirty ? '正在自动保存…' : '规划已就绪'}</p></div><button className="button secondary" disabled={busy} onClick={onPlan} type="button"><RefreshCw size={15} />重新规划</button></header><div className="coverage-row">{(['preserve','transform','rewrite','insert'] as const).map((operation) => <span key={operation}><strong>{writingOperationLabels[operation]}</strong>{plan.coverage[operation] ?? 0}%</span>)}</div><div className="writing-block-list">{plan.blocks.map((block) => <article key={block.id}><span className="block-number">{String(block.order).padStart(2, '0')}</span><div><input aria-label={`区块 ${block.order} 标题`} value={block.title} onChange={(event) => patchBlock(block.id, { title: event.target.value })} /><small>{block.source_text_snapshot.slice(0, 80) || '插入点'}</small></div><select aria-label={`区块 ${block.order} 操作`} value={block.operation} onChange={(event) => patchBlock(block.id, { operation: event.target.value as WritingBlock['operation'] })}>{Object.entries(writingOperationLabels).map(([key,label]) => <option key={key} value={key}>{label}</option>)}</select><div className="block-instructions"><textarea aria-label={`区块 ${block.order} 指令`} placeholder="操作指令" value={block.instruction} onChange={(event) => patchBlock(block.id, { instruction: event.target.value })} /><textarea aria-label={`区块 ${block.order} 保留约束`} placeholder="保持（每行一项）" value={block.preserve_constraints.join('\n')} onChange={(event) => patchBlock(block.id, { preserve_constraints: lines(event.target.value) })} /><textarea aria-label={`区块 ${block.order} 目标要求`} placeholder="目标要求（每行一项）" value={block.target_requirements.join('\n')} onChange={(event) => patchBlock(block.id, { target_requirements: lines(event.target.value) })} /></div></article>)}</div><footer><button className="button primary" disabled={busy || dirty || plan.status === 'stale' || !plan.blocks.length} onClick={onGenerate} type="button">开始生成</button></footer></div>;
+}
+
+function TargetContext({ target }: { target: SceneTarget | null }) {
+  return <><h3>目标</h3>{target ? <div className="target-context-summary">{(target.design.summary ?? []).map((item) => <p key={item}>{item}</p>)}</div> : <div className="creative-empty">暂无目标</div>}</>;
 }
 
 function SelectedMaterials({ intent, materials }: { intent: CreativeIntent | null; materials: Material[] }) {

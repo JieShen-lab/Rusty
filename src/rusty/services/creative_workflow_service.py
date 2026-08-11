@@ -666,6 +666,234 @@ class CreativeWorkflowService:
         self.set_scene_stage(scene_id, "writing")
         return self.get_target(scene_id) or {}
 
+    def get_writing_plan(self, scene_id: int) -> dict[str, Any] | None:
+        with session(self.database_path) as connection:
+            row = connection.execute("SELECT * FROM writing_plans WHERE scene_id=?", (scene_id,)).fetchone()
+            if row is None:
+                return None
+            blocks = connection.execute("SELECT * FROM writing_plan_blocks WHERE plan_id=? ORDER BY block_order", (row["id"],)).fetchall()
+        return {
+            "id": int(row["id"]), "scene_id": int(row["scene_id"]), "target_id": int(row["target_id"]),
+            "strategy": str(row["strategy"]), "status": str(row["status"]),
+            "coverage": self._json_object(row["coverage_json"]),
+            "blocks": [self._block_from_row(block) for block in blocks],
+            "created_at": str(row["created_at"]), "updated_at": str(row["updated_at"]),
+        }
+
+    def run_writing_plan(self, scene_id: int, *, replace_existing: bool = False) -> dict[str, Any]:
+        scene = self.scenes.get_scene(scene_id)
+        if scene is None:
+            raise FileNotFoundError(f"Scene not found: {scene_id}")
+        target = self.get_target(scene_id)
+        if not target or target["status"] != "confirmed":
+            raise ValueError("Confirm the current target before writing planning.")
+        current = self.get_writing_plan(scene_id)
+        if current and current["status"] != "stale" and not replace_existing:
+            raise ValueError("Replanning would replace the current writing plan.")
+        value = self.ai.generate_json(
+            project_id=scene.project_id, stage="writing_plan", workflow_key=target["strategy"], task_key="writing_plan",
+            user_instruction=target["user_instruction"],
+            payload={"source_text": scene.original_text, "scene_source_range": {"start_offset": scene.original_start_offset, "end_offset": scene.original_end_offset},
+                     "target": target, "special_analysis": self.get_character_modification_analysis(scene_id)},
+            output_contract=("Return {blocks:[{title,source_start_offset,source_end_offset,source_text_snapshot,operation,instruction,preserve_constraints,target_requirements,resource_refs}]}. "
+                             "Use semantic blocks and cover Source in order. Operations: preserve, transform, rewrite, insert, delete."),
+        )
+        return self.save_writing_plan(scene_id, {"target_id": target["id"], "strategy": target["strategy"], "blocks": value.get("blocks", [])})
+
+    def save_writing_plan(self, scene_id: int, value: dict[str, Any]) -> dict[str, Any]:
+        scene = self.scenes.get_scene(scene_id)
+        if scene is None:
+            raise FileNotFoundError(f"Scene not found: {scene_id}")
+        target = self.get_target(scene_id)
+        if target is None:
+            raise ValueError("Writing plan requires a scene target.")
+        target_id = int(value.get("target_id") or target["id"])
+        blocks = self._normalize_writing_blocks(scene, value.get("blocks"))
+        coverage = self._coverage(blocks)
+        with session(self.database_path) as connection:
+            connection.execute(
+                """INSERT INTO writing_plans(scene_id,target_id,strategy,status,coverage_json,updated_at)
+                   VALUES(?,?,?,'ready',?,CURRENT_TIMESTAMP)
+                   ON CONFLICT(scene_id) DO UPDATE SET target_id=excluded.target_id,strategy=excluded.strategy,
+                     status='ready',coverage_json=excluded.coverage_json,updated_at=CURRENT_TIMESTAMP""",
+                (scene_id, target_id, str(value.get("strategy") or target["strategy"]), json.dumps(coverage)),
+            )
+            plan_id = int(connection.execute("SELECT id FROM writing_plans WHERE scene_id=?", (scene_id,)).fetchone()["id"])
+            connection.execute("DELETE FROM writing_plan_blocks WHERE plan_id=?", (plan_id,))
+            for order, block in enumerate(blocks, 1):
+                connection.execute(
+                    """INSERT INTO writing_plan_blocks(plan_id,scene_id,block_order,title,source_start_offset,source_end_offset,
+                       source_text_snapshot,operation,instruction,preserve_constraints_json,target_requirements_json,resource_refs_json)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (plan_id, scene_id, order, block["title"], block["source_start_offset"], block["source_end_offset"],
+                     block["source_text_snapshot"], block["operation"], block["instruction"],
+                     json.dumps(block["preserve_constraints"], ensure_ascii=False), json.dumps(block["target_requirements"], ensure_ascii=False),
+                     json.dumps(block["resource_refs"], ensure_ascii=False)),
+                )
+        self.set_scene_stage(scene_id, "writing")
+        return self.get_writing_plan(scene_id) or {}
+
+    def get_current_draft(self, scene_id: int) -> dict[str, Any] | None:
+        with session(self.database_path) as connection:
+            row = connection.execute("SELECT * FROM scene_current_drafts WHERE scene_id=?", (scene_id,)).fetchone()
+        if row is None:
+            return None
+        return {"scene_id": int(row["scene_id"]), "text": str(row["text"]),
+                "based_on_target_id": int(row["based_on_target_id"]), "based_on_plan_id": int(row["based_on_plan_id"]),
+                "block_spans": self._json_items(row["block_spans_json"]), "status": str(row["status"]),
+                "created_at": str(row["created_at"]), "updated_at": str(row["updated_at"])}
+
+    def generate_current_draft(self, scene_id: int, *, replace_existing: bool = False) -> dict[str, Any]:
+        scene = self.scenes.get_scene(scene_id)
+        plan = self.get_writing_plan(scene_id)
+        target = self.get_target(scene_id)
+        if scene is None or plan is None or target is None:
+            raise ValueError("Current draft generation requires Source, Target, and Writing Plan.")
+        if plan["status"] != "ready" or plan["target_id"] != target["id"] or target["status"] != "confirmed":
+            raise ValueError("Replan against the confirmed current target before generating.")
+        if self.get_current_draft(scene_id) is not None and not replace_existing:
+            raise ValueError("Generating again would replace the current draft.")
+        assembled = ""
+        spans: list[dict[str, Any]] = []
+        blocks = plan["blocks"]
+        for index, block in enumerate(blocks):
+            operation = block["operation"]
+            source_block = block["source_text_snapshot"]
+            if operation == "preserve":
+                generated = source_block
+            elif operation == "delete":
+                generated = ""
+            else:
+                next_source = blocks[index + 1]["source_text_snapshot"][:500] if index + 1 < len(blocks) else ""
+                generated = self._generate_block_text(scene, target, plan, block, assembled[-800:], next_source)
+            start = len(assembled)
+            assembled += generated
+            spans.append({"block_id": block["id"], "start_offset": start, "end_offset": len(assembled)})
+        return self.save_current_draft(scene_id, {"text": assembled, "based_on_target_id": target["id"], "based_on_plan_id": plan["id"], "block_spans": spans})
+
+    def save_current_draft(self, scene_id: int, value: dict[str, Any]) -> dict[str, Any]:
+        current = self.get_current_draft(scene_id)
+        target = self.get_target(scene_id)
+        plan = self.get_writing_plan(scene_id)
+        if target is None or plan is None:
+            raise ValueError("Current draft requires Target and Writing Plan.")
+        with session(self.database_path) as connection:
+            connection.execute(
+                """INSERT INTO scene_current_drafts(scene_id,text,based_on_target_id,based_on_plan_id,block_spans_json,status,updated_at)
+                   VALUES(?,?,?,?,?,'draft',CURRENT_TIMESTAMP)
+                   ON CONFLICT(scene_id) DO UPDATE SET text=excluded.text,based_on_target_id=excluded.based_on_target_id,
+                     based_on_plan_id=excluded.based_on_plan_id,block_spans_json=excluded.block_spans_json,
+                     status='draft',updated_at=CURRENT_TIMESTAMP""",
+                (scene_id, str(value.get("text") or ""), int(value.get("based_on_target_id") or (current or {}).get("based_on_target_id") or target["id"]),
+                 int(value.get("based_on_plan_id") or (current or {}).get("based_on_plan_id") or plan["id"]),
+                 json.dumps(value.get("block_spans") if isinstance(value.get("block_spans"), list) else (current or {}).get("block_spans", []))),
+            )
+        self.set_scene_stage(scene_id, "writing")
+        return self.get_current_draft(scene_id) or {}
+
+    def edit_selected_draft_text(self, scene_id: int, *, start_offset: int, end_offset: int, user_instruction: str) -> dict[str, Any]:
+        draft = self.get_current_draft(scene_id)
+        target = self.get_target(scene_id)
+        scene = self.scenes.get_scene(scene_id)
+        if draft is None or target is None or scene is None:
+            raise ValueError("Selected text editing requires a current draft and target.")
+        if not (0 <= start_offset <= end_offset <= len(draft["text"])):
+            raise ValueError("Selected draft range is invalid.")
+        value = self.ai.generate_json(
+            project_id=scene.project_id, stage="selected_text_edit", task_key="selected_text_edit",
+            user_instruction=user_instruction,
+            payload={"selected_text": draft["text"][start_offset:end_offset], "previous_context": draft["text"][max(0,start_offset-800):start_offset],
+                     "next_context": draft["text"][end_offset:end_offset+800], "target": target},
+            output_contract="Return {text:string}. text must contain only the replacement for the selected range.",
+        )
+        replacement = str(value.get("text") or "")
+        updated = draft["text"][:start_offset] + replacement + draft["text"][end_offset:]
+        return self.save_current_draft(scene_id, {**draft, "text": updated})
+
+    def regenerate_writing_block(self, scene_id: int, block_id: int, *, current_start_offset: int, current_end_offset: int) -> dict[str, Any]:
+        draft = self.get_current_draft(scene_id)
+        plan = self.get_writing_plan(scene_id)
+        target = self.get_target(scene_id)
+        scene = self.scenes.get_scene(scene_id)
+        if draft is None or plan is None or target is None or scene is None:
+            raise ValueError("Block regeneration requires a current draft, plan, and target.")
+        block = next((item for item in plan["blocks"] if item["id"] == block_id), None)
+        if block is None or block["operation"] in {"preserve", "delete"}:
+            raise ValueError("Only AI-backed writing blocks can be regenerated.")
+        if not (0 <= current_start_offset <= current_end_offset <= len(draft["text"])):
+            raise ValueError("Current block range is invalid.")
+        index = plan["blocks"].index(block)
+        next_source = plan["blocks"][index + 1]["source_text_snapshot"][:500] if index + 1 < len(plan["blocks"]) else ""
+        replacement = self._generate_block_text(scene, target, plan, block, draft["text"][max(0,current_start_offset-800):current_start_offset], next_source)
+        updated = draft["text"][:current_start_offset] + replacement + draft["text"][current_end_offset:]
+        return self.save_current_draft(scene_id, {**draft, "text": updated})
+
+    def _generate_block_text(self, scene: Any, target: dict[str, Any], plan: dict[str, Any], block: dict[str, Any], previous_tail: str, next_source: str) -> str:
+        operation = str(block["operation"])
+        task_key = "insert_block" if operation == "insert" else f"{operation}_block"
+        value = self.ai.generate_json(
+            project_id=scene.project_id, stage=task_key,
+            workflow_key=None if operation == "insert" else target["strategy"], task_key=task_key,
+            user_instruction=target["user_instruction"],
+            payload={"previous_current_draft_tail": previous_tail, "current_source_block": block["source_text_snapshot"],
+                     "next_source_block_beginning": next_source, "target": target, "writing_block": block,
+                     "preserve_constraints": block["preserve_constraints"], "target_requirements": block["target_requirements"]},
+            output_contract="Return {text:string}. text must contain only the current block, never adjacent blocks.",
+        )
+        return str(value.get("text") or "")
+
+    @staticmethod
+    def _block_from_row(row: Any) -> dict[str, Any]:
+        return {"id": int(row["id"]), "plan_id": int(row["plan_id"]), "scene_id": int(row["scene_id"]),
+                "order": int(row["block_order"]), "title": str(row["title"]),
+                "source_start_offset": int(row["source_start_offset"]), "source_end_offset": int(row["source_end_offset"]),
+                "source_text_snapshot": str(row["source_text_snapshot"]), "operation": str(row["operation"]),
+                "instruction": str(row["instruction"]),
+                "preserve_constraints": CreativeWorkflowService._json_string_list(row["preserve_constraints_json"]),
+                "target_requirements": CreativeWorkflowService._json_string_list(row["target_requirements_json"]),
+                "resource_refs": CreativeWorkflowService._json_int_list(row["resource_refs_json"])}
+
+    @staticmethod
+    def _normalize_writing_blocks(scene: Any, value: Any) -> list[dict[str, Any]]:
+        raw_blocks = value if isinstance(value, list) else []
+        result = []
+        for index, raw in enumerate(raw_blocks):
+            if not isinstance(raw, dict): continue
+            operation = str(raw.get("operation") or "preserve").lower()
+            if operation not in {"preserve","transform","rewrite","insert","delete"}:
+                raise ValueError(f"Unsupported writing operation: {operation}")
+            start, end = int(raw.get("source_start_offset") or 0), int(raw.get("source_end_offset") or 0)
+            snapshot = str(raw.get("source_text_snapshot") or "")
+            if operation != "insert":
+                local_start, local_end = start, end
+                if not (0 <= local_start <= local_end <= len(scene.original_text)) or (snapshot and scene.original_text[local_start:local_end] != snapshot):
+                    local_start, local_end = start - scene.original_start_offset, end - scene.original_start_offset
+                if not (0 <= local_start <= local_end <= len(scene.original_text)) or (snapshot and scene.original_text[local_start:local_end] != snapshot):
+                    local_start = scene.original_text.find(snapshot) if snapshot else -1
+                    if local_start < 0: raise ValueError("Writing block snapshot is not present in Source.")
+                    local_end = local_start + len(snapshot)
+                start, end, snapshot = scene.original_start_offset + local_start, scene.original_start_offset + local_end, scene.original_text[local_start:local_end]
+            result.append({"title": str(raw.get("title") or f"区块 {index+1}"), "source_start_offset": start,
+                           "source_end_offset": end, "source_text_snapshot": snapshot, "operation": operation,
+                           "instruction": str(raw.get("instruction") or ""),
+                           "preserve_constraints": [str(x) for x in raw.get("preserve_constraints", [])] if isinstance(raw.get("preserve_constraints"), list) else [],
+                           "target_requirements": [str(x) for x in raw.get("target_requirements", [])] if isinstance(raw.get("target_requirements"), list) else [],
+                           "resource_refs": CreativeWorkflowService._normalize_ids(raw.get("resource_refs"))})
+        return result
+
+    @staticmethod
+    def _coverage(blocks: list[dict[str, Any]]) -> dict[str, float]:
+        sizes = {key: 0 for key in ("preserve","transform","rewrite","insert","delete")}
+        for block in blocks: sizes[block["operation"]] += max(0, block["source_end_offset"] - block["source_start_offset"])
+        total = sum(sizes.values()) or 1
+        return {key: round(value * 100 / total, 1) for key, value in sizes.items()}
+
+    @staticmethod
+    def _json_string_list(value: Any) -> list[str]:
+        try: parsed = json.loads(str(value or "[]"))
+        except (TypeError, ValueError): return []
+        return [str(item) for item in parsed] if isinstance(parsed, list) else []
+
     @staticmethod
     def _normalize_target_design(strategy: str, value: Any) -> dict[str, Any]:
         design = value if isinstance(value, dict) else {}

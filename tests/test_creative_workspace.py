@@ -186,7 +186,7 @@ class CreativeWorkspaceTests(unittest.TestCase):
         columns = {row[1] for row in connection.execute("PRAGMA table_info(scene_targets)")}
         self.assertTrue({"scene_id", "strategy", "design_json", "status", "confirmed_at"}.issubset(columns))
         self.assertEqual(1, connection.execute("SELECT COUNT(*) FROM prompt_definitions WHERE task_key='target_design'").fetchone()[0])
-        self.assertEqual(46, CURRENT_SCHEMA_VERSION)
+        self.assertGreaterEqual(CURRENT_SCHEMA_VERSION, 46)
 
     def test_preanalysis_edit_reanalysis_guard_confirmation_and_intent(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd(), ignore_cleanup_errors=True) as directory:

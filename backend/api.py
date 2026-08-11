@@ -1045,6 +1045,46 @@ def create_app(
         _require_scene(scene_service, scene_id)
         return creative_workflow_service.confirm_target(scene_id)
 
+    @app.get("/api/scenes/{scene_id}/writing-plan", response_model=dict[str, Any] | None)
+    def get_writing_plan(scene_id: int) -> dict[str, Any] | None:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.get_writing_plan(scene_id)
+
+    @app.post("/api/scenes/{scene_id}/writing-plan/run", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def run_writing_plan(scene_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.run_writing_plan(scene_id, replace_existing=bool(payload.get("replace_existing", False)))
+
+    @app.put("/api/scenes/{scene_id}/writing-plan", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def save_writing_plan(scene_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.save_writing_plan(scene_id, payload)
+
+    @app.get("/api/scenes/{scene_id}/current-draft", response_model=dict[str, Any] | None)
+    def get_current_draft(scene_id: int) -> dict[str, Any] | None:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.get_current_draft(scene_id)
+
+    @app.post("/api/scenes/{scene_id}/current-draft/generate", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def generate_current_draft(scene_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.generate_current_draft(scene_id, replace_existing=bool(payload.get("replace_existing", False)))
+
+    @app.put("/api/scenes/{scene_id}/current-draft", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def save_current_draft(scene_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.save_current_draft(scene_id, payload)
+
+    @app.post("/api/scenes/{scene_id}/current-draft/selected-edit", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def edit_selected_draft(scene_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.edit_selected_draft_text(scene_id, start_offset=int(payload.get("start_offset") or 0), end_offset=int(payload.get("end_offset") or 0), user_instruction=str(payload.get("user_instruction") or ""))
+
+    @app.post("/api/scenes/{scene_id}/writing-blocks/{block_id}/regenerate", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def regenerate_writing_block(scene_id: int, block_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.regenerate_writing_block(scene_id, block_id, current_start_offset=int(payload.get("current_start_offset") or 0), current_end_offset=int(payload.get("current_end_offset") or 0))
+
     @app.get("/api/projects/{project_id}/export-plan", response_model=list[ExportPlanItemOut])
     def get_project_export_plan(project_id: int) -> list[ExportPlanItemOut]:
         _require_project(project_service, project_id)
