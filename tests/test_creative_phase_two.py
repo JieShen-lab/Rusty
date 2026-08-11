@@ -359,18 +359,29 @@ class CreativePhaseTwoTests(unittest.TestCase):
                 "blocks":[block(0, 4), block(4, 4, "insert"), block(4, len(SOURCE))]})
             self.assertEqual(["preserve","insert","preserve"], [item["operation"] for item in valid["blocks"]])
 
+    def test_target_change_invalidates_ready_plan_and_fresh_draft(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd(), ignore_cleanup_errors=True) as directory:
+            service, scene_id, _ = self._prepared(Path(directory))
+            service.run_writing_plan(scene_id); service.generate_current_draft(scene_id)
+            target = service.get_target(scene_id)
+            service.save_target(scene_id, {**target, "design": {**target["design"], "summary": ["独立修改 Target"]}})
+            self.assertEqual("stale", service.get_writing_plan(scene_id)["status"])
+            self.assertEqual("stale", service.get_current_draft(scene_id)["status"])
+
     def test_review_offsets_are_scene_local_and_marks_follow_replacements(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd(), ignore_cleanup_errors=True) as directory:
             root = Path(directory)
             long_source = SOURCE * 6
-            source = root / "book.txt"; source.write_text("第一章\n" + ("前" * 100) + long_source, encoding="utf-8")
+            source = root / "book.txt"; source.write_text("第一章\n" + ("前" * 100) + long_source + long_source, encoding="utf-8")
             database = root / "rusty.db"; projects = ProjectService(database)
             project_id = projects.create_project(projects.preview_book(source), root)
             chapter = projects.list_chapters(project_id)[0]; scenes = SceneService(database)
-            scene = scenes.split_chapter(chapter.id, proposed_boundaries=[
+            created_scenes = scenes.split_chapter(chapter.id, proposed_boundaries=[
                 {"start_offset":0,"end_offset":100,"title":"前场","reasons":[]},
                 {"start_offset":100,"end_offset":100 + len(long_source),"title":"后场","reasons":[]},
-            ])[1]
+                {"start_offset":100 + len(long_source),"end_offset":100 + 2 * len(long_source),"title":"更后场","reasons":[]},
+            ])
+            scene = created_scenes[1]
             scenes.confirm_boundaries(chapter.id)
             card_id = AnchorService(database).create_character_card(name="李四",scope="project",project_id=project_id,setting_text="惯用剑。")
             service = CreativeWorkflowService(database, ai_client=RecordingAI()); scene_id = scene.id
@@ -399,6 +410,24 @@ class CreativePhaseTwoTests(unittest.TestCase):
             self.assertEqual((0, len("LONGER")), (marks[first["id"]]["target_start_offset"], marks[first["id"]]["target_end_offset"]))
             self.assertEqual((5 + len("LONGER") - 2, 7 + len("LONGER") - 2),
                              (marks[second["id"]]["target_start_offset"], marks[second["id"]]["target_end_offset"]))
+
+            later_scene = created_scenes[2]
+            service.save_preanalysis(later_scene.id,{"summary":"更后部场景","characters":["张三"],"basic_events":["战斗"]}); service.confirm_preanalysis(later_scene.id)
+            service.save_intent(later_scene.id,{"strategy":"faithful","user_instruction":"替换人物","selected_character_ids":[card_id]})
+            service.save_character_modification_analysis(later_scene.id,{"source_character":"张三","target_character_card_id":card_id,
+                "explicit_mentions":[],"implicit_references":[],"actions":[],"dialogue":[],"states":[],"objects":[],
+                "spatial_relations":[],"related_events":[],"target_character_conflicts":[]})
+            service.confirm_character_modification_analysis(later_scene.id)
+            service.save_target(later_scene.id,{"strategy":"faithful","design":{"items":[{"label":"人物","operation":"adapt","source_value":"张三","target_value":"李四"}],"summary":["适配"]}}); service.confirm_target(later_scene.id)
+            later_target = service.get_target(later_scene.id)
+            service.save_writing_plan(later_scene.id,{"target_id":later_target["id"],"strategy":"faithful","blocks":[{
+                "title":"all","source_start_offset":0,"source_end_offset":len(long_source),"source_text_snapshot":long_source,"operation":"preserve"}]})
+            service.generate_current_draft(later_scene.id)
+            later_mark = service.save_review_mark(later_scene.id,{"source_start_offset":150,"source_end_offset":160,
+                "target_start_offset":10,"target_end_offset":20,"user_note":"later"})
+            self.assertGreater(service.scenes.get_scene(later_scene.id).original_start_offset, 100)
+            self.assertEqual((150,160),(later_mark["source_start_offset"],later_mark["source_end_offset"]))
+            self.assertEqual(long_source[150:160],later_mark["source_text"])
 
     def test_review_rework_undo_and_adopt_control_resolution(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd(), ignore_cleanup_errors=True) as directory:
