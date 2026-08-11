@@ -77,6 +77,7 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
   const [intentDirty, setIntentDirty] = useState(false);
   const [viewStage, setViewStage] = useState<CreativeWorkflowStage>('preanalysis');
   const [busy, setBusy] = useState(false);
+  const [sceneContextLoading, setSceneContextLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [models, setModels] = useState<ModelConfig[]>([]);
@@ -125,13 +126,17 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
 
   useEffect(() => {
     if (!activeSceneId) {
+      setSceneContextLoading(false);
       setPreanalysis(null);
       setIntent(null);
       setCharacterAnalysis(null);
       return;
     }
+    let cancelled = false;
+    setSceneContextLoading(true);
     void Promise.all([getScenePreanalysis(activeSceneId), getSceneCreativeIntent(activeSceneId), getCharacterModificationAnalysis(activeSceneId)])
       .then(([analysis, creativeIntent, specialized]) => {
+        if (cancelled) return;
         setPreanalysis(analysis);
         setIntent(creativeIntent);
         setCharacterAnalysis(specialized);
@@ -142,7 +147,9 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
         setCharacterAnalysisDirty(false);
         setFocusedEvidence('');
       })
-      .catch((reason) => setError(messageOf(reason)));
+      .catch((reason) => { if (!cancelled) setError(messageOf(reason)); })
+      .finally(() => { if (!cancelled) setSceneContextLoading(false); });
+    return () => { cancelled = true; };
   }, [activeSceneId]);
 
   useEffect(() => {
@@ -189,6 +196,11 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
     setViewStage(selectedState.current_stage === 'not_started' ? 'preanalysis' : selectedState.current_stage);
   }, [selectedState?.chapter_id, selectedState?.current_stage]);
 
+  useEffect(() => {
+    if (!selectedChapterId || !selectedState || selectedState.active_scene_id || !scenes[0] || busy) return;
+    void chooseScene(scenes[0].id);
+  }, [busy, scenes, selectedChapterId, selectedState?.active_scene_id, selectedState?.chapter_id]);
+
   const reachedIndex = workflowIndex(selectedState?.current_stage ?? 'not_started');
 
   async function chooseScene(sceneId: number) {
@@ -223,6 +235,7 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
     await perform(async () => {
       const saved = await runScenePreanalysis(activeSceneId, replace);
       setPreanalysis(saved);
+      setSourceCharacter((current) => current || saved.characters[0] || '');
       setAnalysisDirty(false);
       setViewStage('preanalysis');
       await refreshStates();
@@ -244,6 +257,7 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
     await perform(async () => {
       const savedIntent = await saveSceneCreativeIntent(activeSceneId, intent);
       setIntent(savedIntent);
+      setTargetCharacterId((current) => current ?? savedIntent.selected_character_ids[0] ?? null);
       const updated = await updateCreativeWorkflowState(selectedChapterId, 'special_analysis', activeSceneId);
       setStates((items) => items.map((item) => item.chapter_id === updated.chapter_id ? updated : item));
       setViewStage('special_analysis');
@@ -429,12 +443,12 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
           </section>
 
           {viewStage === 'preanalysis' ? (
-            <PreanalysisEditor analysis={preanalysis} busy={busy} dirty={analysisDirty} onAnalyze={() => void analyzeScene()} onChange={patchAnalysis} onConfirm={() => void confirmAnalysis()} />
+            <PreanalysisEditor analysis={preanalysis} busy={busy || sceneContextLoading} dirty={analysisDirty} onAnalyze={() => void analyzeScene()} onChange={patchAnalysis} onConfirm={() => void confirmAnalysis()} />
           ) : null}
           {viewStage === 'direction' ? (
-            <DirectionEditor intent={intent} busy={busy} onContinue={() => void continueToSpecialAnalysis()} onInstruction={(value) => patchIntent({ user_instruction: value })} onStrategy={chooseStrategy} />
+            <DirectionEditor intent={intent} busy={busy || sceneContextLoading} onContinue={() => void continueToSpecialAnalysis()} onInstruction={(value) => patchIntent({ user_instruction: value })} onStrategy={chooseStrategy} />
           ) : null}
-          {viewStage === 'special_analysis' ? <CharacterAnalysisEditor analysis={characterAnalysis} busy={busy} characters={characters} dirty={characterAnalysisDirty} intent={intent} onAnalyze={() => void analyzeCharacterModification()} onChange={patchCharacterAnalysis} onConfirm={() => void confirmCharacterAnalysis()} onEvidence={setFocusedEvidence} onSourceCharacter={setSourceCharacter} onTargetCharacter={setTargetCharacterId} sourceCharacter={sourceCharacter} targetCharacterId={targetCharacterId} /> : null}
+          {viewStage === 'special_analysis' ? <CharacterAnalysisEditor analysis={characterAnalysis} busy={busy || sceneContextLoading} characters={characters} dirty={characterAnalysisDirty} intent={intent} onAnalyze={() => void analyzeCharacterModification()} onChange={patchCharacterAnalysis} onConfirm={() => void confirmCharacterAnalysis()} onEvidence={setFocusedEvidence} onSourceCharacter={setSourceCharacter} onTargetCharacter={setTargetCharacterId} sourceCharacter={sourceCharacter} targetCharacterId={targetCharacterId} /> : null}
           {viewStage === 'target_design' ? <section className="stage-placeholder target-design-shell"><h2>目标设计</h2><p>专项分析已确认。目标设计将在第二阶段实现；本阶段不会生成正文。</p></section> : null}
           {!['preanalysis', 'direction', 'special_analysis', 'target_design'].includes(viewStage) ? <section className="stage-placeholder"><h2>{stageLabels[viewStage]}</h2><p>该阶段将在后续阶段接入。</p></section> : null}
         </main>

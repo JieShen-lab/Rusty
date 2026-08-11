@@ -245,6 +245,11 @@ async function mockApi(page: Page) {
     else if (path === '/api/chapters/1') body = { chapter: { id: 1, project_id: 1, index: 1, title: '第一章', original_text: '林舟推门而入，看见桌上的钥匙。', rewritten_text: '', word_count: 16, status: 'pending', created_at: '', updated_at: '' }, ai_outputs: { plot_summary: '', expanded_plot: '', plot_characters: [], style_analysis: {}, reviewed_style_analysis: {}, style_analysis_status: '' } };
     else if (path.includes('/prompt-preview')) body = { ruleset_id: 'test', provenance: {}, expected_output: 'text', messages: [] };
     else if (path.includes('/generation-attempts')) body = [];
+    else if (path === '/api/prompt-definitions') body = [
+      { id: 101, name: '小说总规则', description: '工程通用创作要求', kind: 'master', workflow_key: null, task_key: null, content: '保持人物一致。', input_description: '工程级规则', is_default: true, created_at: '', updated_at: '' },
+      { id: 102, name: '人物专项分析', description: '贴合原文人物修改', kind: 'workflow_task', workflow_key: 'faithful', task_key: 'character_modification_analysis', content: '识别人物关联。', input_description: '场景原文、人物卡、具体要求', is_default: true, created_at: '', updated_at: '' },
+      { id: 103, name: '场景预分析', description: '轻量识别场景', kind: 'common_task', workflow_key: null, task_key: 'scene_preanalysis', content: '只提取基础事实。', input_description: '场景原文', is_default: true, created_at: '', updated_at: '' },
+    ];
     else if (path === '/api/prompts' || path === '/api/analysis-prompts' || path === '/api/projects/1/export-plan') body = [];
     else if (path === '/api/projects/1/style-synthesis') body = { prompt_template_id: null };
     else if (path === '/api/chapters/1/scenes') body = [{ id: 1, project_id: 1, chapter_id: 1, parent_scene_id: null, scene_index: 1, title: '发现钥匙', original_start_offset: 0, original_end_offset: 16, original_text: '林舟推门而入，看见桌上的钥匙。', source_version: 1, boundary_reasons: [], boundary_status: 'confirmed', scene_type: 'discovery', user_confirmed: true, confirmed_at: '' }];
@@ -284,7 +289,7 @@ test.beforeEach(async ({ page }) => {
   await mockApi(page);
 });
 
-test('提示词管理只保留改写提示词', async ({ page }) => {
+test('提示词管理使用总提示词、工作流和公共任务三类对象', async ({ page }) => {
   const analysisPromptRequests: string[] = [];
   const consoleErrors: string[] = [];
   const pageErrors: string[] = [];
@@ -299,16 +304,13 @@ test('提示词管理只保留改写提示词', async ({ page }) => {
   await page.goto('/prompts');
 
   await expect(page.getByRole('heading', { name: '提示词', exact: true })).toBeVisible();
-  await expect(page.getByRole('tablist', { name: '提示词类型' })).toHaveCount(0);
-  await expect(page.getByRole('tab', { name: '分析', exact: true })).toHaveCount(0);
-  await expect(page.getByPlaceholder('改写提示词名称')).toBeVisible();
-  await expect(page.getByRole('tab', { name: '基础规则', exact: true })).toBeVisible();
-  await expect(page.getByRole('tab', { name: '识别规则', exact: true })).toBeVisible();
-  await expect(page.getByRole('tab', { name: '改写规则', exact: true })).toBeVisible();
-  await page.getByRole('tab', { name: '识别规则', exact: true }).click();
-  await expect(page.getByRole('button', { name: '添加类别', exact: true })).toBeVisible();
-  await page.getByRole('tab', { name: '改写规则', exact: true }).click();
-  await expect(page.getByText('通用改写规则', { exact: true })).toBeVisible();
+  await expect(page.getByText('总提示词', { exact: true }).first()).toBeVisible();
+  await expect(page.getByText('工作流', { exact: true })).toBeVisible();
+  await expect(page.getByText('公共任务提示词', { exact: true }).first()).toBeVisible();
+  await expect(page.getByRole('button', { name: '小说总规则', exact: true }).first()).toBeVisible();
+  await expect(page.getByLabel('名称')).toHaveValue('小说总规则');
+  await expect(page.getByText('版本历史')).toHaveCount(0);
+  await expect(page.getByText('同步状态')).toHaveCount(0);
   expect(analysisPromptRequests).toHaveLength(0);
   expect(consoleErrors).toHaveLength(0);
   expect(pageErrors).toHaveLength(0);
