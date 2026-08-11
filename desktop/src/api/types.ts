@@ -1243,6 +1243,7 @@ export type CharacterModificationAnalysis = {
   confirmed_at: string | null;
   updated_at: string;
 };
+export type StrategySceneAnalysis = { id: number; scene_id: number; strategy: Exclude<CreativeStrategy, 'faithful'>; analysis: Record<string, unknown>; status: 'draft' | 'confirmed' | 'stale'; user_edited: boolean; confirmed_at: string | null; created_at: string; updated_at: string };
 
 export type ChangeOperation = 'preserve' | 'adapt' | 'modify';
 export type ChangeSetItem = {

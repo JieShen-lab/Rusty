@@ -9,7 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from rusty.db.schema import CURRENT_SCHEMA_VERSION, _migrate_to_v47, _migrate_to_v48
+from rusty.db.schema import CURRENT_SCHEMA_VERSION, _migrate_to_v47, _migrate_to_v48, _migrate_to_v49
 from rusty.services.anchor_service import AnchorService
 from rusty.services.creative_workflow_service import CreativeWorkflowService
 from rusty.services.project_service import ProjectService
@@ -45,6 +45,28 @@ class RecordingAI:
         raise AssertionError(stage)
 
 
+class PlotAdjustAI:
+    def __init__(self) -> None: self.calls: list[tuple[str, dict]] = []
+    def generate_json(self, stage: str, payload: dict) -> dict:
+        self.calls.append((stage, payload))
+        if stage == "special_analysis": return {"source_events": ["A","B","C","D"], "causal_links": ["A→B"], "participants": ["李四","王五"], "preconditions": [], "downstream_dependencies": ["D"], "affected_events": ["B","C"]}
+        if stage == "target_design": return {"nodes": [
+            {"id":"a","order":1,"summary":"A","participants":[],"outcome":"","source_relation":"inherited"},
+            {"id":"b","order":2,"summary":"B2","participants":["李四"],"outcome":"","source_relation":"modified"},
+            {"id":"x","order":3,"summary":"X","participants":["王五"],"outcome":"","source_relation":"inserted"},
+            {"id":"d","order":4,"summary":"D2","participants":[],"outcome":"","source_relation":"modified"}], "source_mapping": [], "summary": ["保留 A，改写 B，删除 C，插入 X，调整 D"]}
+        if stage == "writing_plan": return {"blocks": [
+            {"title":"A","source_start_offset":0,"source_end_offset":2,"source_text_snapshot":"A\n","operation":"preserve"},
+            {"title":"B","source_start_offset":2,"source_end_offset":4,"source_text_snapshot":"B\n","operation":"rewrite","preserve_constraints":["承接 A"]},
+            {"title":"C","source_start_offset":4,"source_end_offset":6,"source_text_snapshot":"C\n","operation":"delete"},
+            {"title":"X","source_start_offset":6,"source_end_offset":6,"source_text_snapshot":"","operation":"insert","target_requirements":["新增 X"]},
+            {"title":"D","source_start_offset":6,"source_end_offset":7,"source_text_snapshot":"D","operation":"transform"}]}
+        if stage == "rewrite_block": return {"text":"B2\n"}
+        if stage == "insert_block": return {"text":"X\n"}
+        if stage == "transform_block": return {"text":"D2"}
+        raise AssertionError(stage)
+
+
 class CreativePhaseTwoTests(unittest.TestCase):
     def test_v47_migration_adds_plan_blocks_and_current_drafts(self) -> None:
         connection = sqlite3.connect(":memory:")
@@ -76,7 +98,15 @@ class CreativePhaseTwoTests(unittest.TestCase):
         columns = {row[1] for row in connection.execute("PRAGMA table_info(review_marks)")}
         self.assertEqual({"id","scene_id","source_start_offset","source_end_offset","source_text","target_start_offset","target_end_offset","user_note","resolved","created_at","updated_at"}, columns)
         self.assertEqual(1, connection.execute("SELECT COUNT(*) FROM prompt_definitions WHERE task_key='review_rework'").fetchone()[0])
-        self.assertEqual(48, CURRENT_SCHEMA_VERSION)
+        self.assertGreaterEqual(CURRENT_SCHEMA_VERSION, 48)
+
+    def test_v49_migration_adds_strategy_analysis_and_plot_prompts(self) -> None:
+        connection = sqlite3.connect(":memory:"); connection.row_factory = sqlite3.Row; connection.execute("PRAGMA foreign_keys=ON")
+        connection.executescript("""CREATE TABLE scenes(id INTEGER PRIMARY KEY); CREATE TABLE prompt_definitions(id INTEGER PRIMARY KEY,name TEXT,description TEXT,kind TEXT,workflow_key TEXT,task_key TEXT,content TEXT,input_description TEXT,is_default INTEGER,deleted_at TEXT);""")
+        _migrate_to_v49(connection); _migrate_to_v49(connection)
+        self.assertIsNotNone(connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='strategy_scene_analyses'").fetchone())
+        self.assertEqual(6, connection.execute("SELECT COUNT(*) FROM prompt_definitions WHERE workflow_key='plot_adjust'").fetchone()[0])
+        self.assertEqual(49, CURRENT_SCHEMA_VERSION)
 
     def test_block_generation_preserves_source_without_ai_and_uses_manual_draft_context(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd(), ignore_cleanup_errors=True) as directory:
@@ -147,6 +177,23 @@ class CreativePhaseTwoTests(unittest.TestCase):
             self.assertGreaterEqual(confirmed["unresolved_marks"], 1)
             self.assertEqual("confirmed", confirmed["draft"]["status"])
             self.assertFalse(next(item for item in service.list_review_marks(scene_id) if item["id"] == unresolved["id"])["resolved"])
+
+    def test_plot_adjust_reuses_target_plan_draft_and_expresses_all_mappings(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd(), ignore_cleanup_errors=True) as directory:
+            root = Path(directory); source = root / "book.txt"; source.write_text("第一章\nA\nB\nC\nD", encoding="utf-8")
+            database = root / "rusty.db"; projects = ProjectService(database); project_id = projects.create_project(projects.preview_book(source), root)
+            chapter = projects.list_chapters(project_id)[0]; scenes = SceneService(database); scene = scenes.split_chapter(chapter.id)[0]; scenes.confirm_boundaries(chapter.id)
+            ai = PlotAdjustAI(); service = CreativeWorkflowService(database, ai_client=ai)
+            service.save_preanalysis(scene.id, {"summary":"四个事件","characters":[],"basic_events":["A","B","C","D"]}); service.confirm_preanalysis(scene.id)
+            service.save_intent(scene.id, {"strategy":"plot_adjust","user_instruction":"修改 B，删除 C，增加 X。"})
+            service.run_strategy_analysis(scene.id); analysis = service.confirm_strategy_analysis(scene.id)
+            target = service.run_target_design(scene.id); service.confirm_target(scene.id)
+            plan = service.run_writing_plan(scene.id); ai.calls.clear(); draft = service.generate_current_draft(scene.id)
+            self.assertEqual(["preserve","rewrite","delete","insert","transform"], [block["operation"] for block in plan["blocks"]])
+            self.assertEqual("A\nB2\nX\nD2", draft["text"])
+            self.assertEqual(["rewrite_block","insert_block","transform_block"], [stage for stage, _ in ai.calls])
+            self.assertEqual("confirmed", analysis["status"])
+            self.assertEqual("modified", target["design"]["nodes"][1]["source_relation"])
 
     @staticmethod
     def _prepared(root: Path) -> tuple[CreativeWorkflowService, int, RecordingAI]:

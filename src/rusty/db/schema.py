@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .connection import session
 
-CURRENT_SCHEMA_VERSION = 48
+CURRENT_SCHEMA_VERSION = 49
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -4155,6 +4155,52 @@ def _migrate_to_v48(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_to_v49(connection: sqlite3.Connection) -> None:
+    """Add strategy-specific analysis persistence and plot-adjustment prompts."""
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS strategy_scene_analyses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scene_id INTEGER NOT NULL UNIQUE,
+            strategy TEXT NOT NULL CHECK (strategy IN ('plot_adjust','expansion','reimagine')),
+            analysis_json TEXT NOT NULL DEFAULT '{}',
+            status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','confirmed','stale')),
+            user_edited INTEGER NOT NULL DEFAULT 0 CHECK (user_edited IN (0,1)),
+            confirmed_at TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_strategy_scene_analyses ON strategy_scene_analyses(strategy,status,updated_at);
+
+        INSERT INTO prompt_definitions(name,description,kind,workflow_key,task_key,content,input_description,is_default)
+        SELECT '调整剧情 / 专项分析','分析当前事件结构及受影响事件','workflow_task','plot_adjust','special_analysis',
+               '只分析 Source 当前剧情结构：source_events、causal_links、participants、preconditions、downstream_dependencies、affected_events。不要提出目标剧情。',
+               'Source、Preanalysis、CreativeIntent 和用户资源。',1
+        WHERE NOT EXISTS(SELECT 1 FROM prompt_definitions WHERE kind='workflow_task' AND workflow_key='plot_adjust' AND task_key='special_analysis' AND deleted_at IS NULL);
+        INSERT INTO prompt_definitions(name,description,kind,workflow_key,task_key,content,input_description,is_default)
+        SELECT '调整剧情 / 目标设计','生成结构化 TargetSkeleton','workflow_task','plot_adjust','target_design',
+               '根据已确认分析与用户要求生成有序 TargetSkeleton。节点包含 id、order、summary、participants、outcome、source_relation；source_relation 只能是 inherited、modified、inserted。',
+               'Source、已确认剧情分析、CreativeIntent 与 plot_skeleton 素材。',1
+        WHERE NOT EXISTS(SELECT 1 FROM prompt_definitions WHERE kind='workflow_task' AND workflow_key='plot_adjust' AND task_key='target_design' AND deleted_at IS NULL);
+        INSERT INTO prompt_definitions(name,description,kind,workflow_key,task_key,content,input_description,is_default)
+        SELECT '调整剧情 / 写作规划','把 Source 与 TargetSkeleton 映射为统一 blocks','workflow_task','plot_adjust','writing_plan',
+               '把 Source→Target mapping 表达为 preserve、rewrite、delete、insert、transform 的语义 blocks，覆盖 Source 并按目标节点插入。',
+               'Source、TargetSkeleton 与专项分析。',1
+        WHERE NOT EXISTS(SELECT 1 FROM prompt_definitions WHERE kind='workflow_task' AND workflow_key='plot_adjust' AND task_key='writing_plan' AND deleted_at IS NULL);
+        INSERT INTO prompt_definitions(name,description,kind,workflow_key,task_key,content,input_description,is_default)
+        SELECT '调整剧情 / 局部修改','执行 plot_adjust transform block','workflow_task','plot_adjust','transform_block','以 Source block 为主体执行已确认的局部变化，只返回当前 block。','当前 block、TargetSkeleton 与邻接上下文。',1
+        WHERE NOT EXISTS(SELECT 1 FROM prompt_definitions WHERE kind='workflow_task' AND workflow_key='plot_adjust' AND task_key='transform_block' AND deleted_at IS NULL);
+        INSERT INTO prompt_definitions(name,description,kind,workflow_key,task_key,content,input_description,is_default)
+        SELECT '调整剧情 / 区块重写','执行 plot_adjust rewrite block','workflow_task','plot_adjust','rewrite_block','按 TargetSkeleton 重写当前 block，并保留列出的 Source constraints；只返回当前 block。','当前 Source block、目标节点与约束。',1
+        WHERE NOT EXISTS(SELECT 1 FROM prompt_definitions WHERE kind='workflow_task' AND workflow_key='plot_adjust' AND task_key='rewrite_block' AND deleted_at IS NULL);
+        INSERT INTO prompt_definitions(name,description,kind,workflow_key,task_key,content,input_description,is_default)
+        SELECT '调整剧情 / 插入区块','生成 TargetSkeleton 插入节点','workflow_task','plot_adjust','insert_block','只生成指定插入节点的正文，不重写相邻 Source。','目标节点与邻接上下文。',1
+        WHERE NOT EXISTS(SELECT 1 FROM prompt_definitions WHERE kind='workflow_task' AND workflow_key='plot_adjust' AND task_key='insert_block' AND deleted_at IS NULL);
+        """
+    )
+
+
 def _safe_json_list(value: object) -> list[dict[str, object]]:
     try:
         parsed = json.loads(str(value or "[]"))
@@ -4553,6 +4599,7 @@ MIGRATIONS = {
     46: _migrate_to_v46,
     47: _migrate_to_v47,
     48: _migrate_to_v48,
+    49: _migrate_to_v49,
 }
 
 

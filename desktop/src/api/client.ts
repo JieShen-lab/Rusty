@@ -1243,6 +1243,10 @@ export function saveCharacterModificationAnalysis(sceneId: number, value: Charac
 export function confirmCharacterModificationAnalysis(sceneId: number) {
   return request<CharacterModificationAnalysis>(`/api/scenes/${sceneId}/character-modification-analysis/confirm`, { method: 'POST' });
 }
+export function getStrategyAnalysis(sceneId: number) { return request<import('./types').StrategySceneAnalysis | null>(`/api/scenes/${sceneId}/strategy-analysis`); }
+export function runStrategyAnalysis(sceneId: number, replaceExisting = false) { return request<import('./types').StrategySceneAnalysis>(`/api/scenes/${sceneId}/strategy-analysis/run`, { method: 'POST', body: JSON.stringify({ replace_existing: replaceExisting }) }); }
+export function saveStrategyAnalysis(sceneId: number, value: import('./types').StrategySceneAnalysis) { return request<import('./types').StrategySceneAnalysis>(`/api/scenes/${sceneId}/strategy-analysis`, { method: 'PUT', body: JSON.stringify(value) }); }
+export function confirmStrategyAnalysis(sceneId: number) { return request<import('./types').StrategySceneAnalysis>(`/api/scenes/${sceneId}/strategy-analysis/confirm`, { method: 'POST' }); }
 
 export function getSceneTarget(sceneId: number) {
   return request<import('./types').SceneTarget | null>(`/api/scenes/${sceneId}/target`);
