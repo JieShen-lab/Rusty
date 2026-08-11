@@ -1152,6 +1152,33 @@ export type SceneRecord = {
   confirmed_at: string | null;
 };
 
+export type BaseSceneAnalysis = {
+  scene_id: number;
+  summary: string;
+  characters: string[];
+  location: string;
+  time: string;
+  scene_type: string;
+  basic_events: string[];
+  status: 'draft' | 'confirmed' | 'stale';
+  user_edited: boolean;
+  confirmed_at: string | null;
+  updated_at: string;
+};
+
+export type CreativeStrategy = 'faithful' | 'plot_adjust' | 'expansion' | 'reimagine';
+
+export type CreativeIntent = {
+  scene_id: number;
+  strategy: CreativeStrategy;
+  user_instruction: string;
+  selected_character_ids: number[];
+  selected_plot_material_ids: number[];
+  selected_scene_material_ids: number[];
+  status: 'draft' | 'confirmed';
+  updated_at: string;
+};
+
 export type SceneBoundaryItem = {
   start_offset: number;
   end_offset: number;

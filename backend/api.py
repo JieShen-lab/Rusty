@@ -255,7 +255,7 @@ def create_app(
     scene_service = SceneService(db_path)
     scene_boundary_ai_service = SceneBoundaryAIService(db_path)
     context_service = ContextService(db_path)
-    creative_workflow_service = CreativeWorkflowService(db_path)
+    creative_workflow_service = CreativeWorkflowService(db_path, ai_client=workflow_ai_client)
     rewrite_workflow_service = RewriteWorkflowService(db_path)
     resource_analysis_service = ResourceAnalysisService(db_path)
     scene_rewrite_orchestrator = SceneRewriteOrchestrator(db_path)
@@ -911,6 +911,54 @@ def create_app(
             active_scene_id=(int(payload["active_scene_id"]) if payload.get("active_scene_id") is not None else None),
             current_stage=str(payload.get("current_stage") or "not_started"),
         )
+
+    @app.get("/api/scenes/{scene_id}/preanalysis", response_model=dict[str, Any] | None)
+    def get_scene_preanalysis(scene_id: int) -> dict[str, Any] | None:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.get_preanalysis(scene_id)
+
+    @app.post(
+        "/api/scenes/{scene_id}/preanalysis/run",
+        response_model=dict[str, Any],
+        dependencies=[Depends(_require_token)],
+    )
+    def run_scene_preanalysis(scene_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.run_preanalysis(
+            scene_id, replace_existing=bool(payload.get("replace_existing", False))
+        )
+
+    @app.put(
+        "/api/scenes/{scene_id}/preanalysis",
+        response_model=dict[str, Any],
+        dependencies=[Depends(_require_token)],
+    )
+    def save_scene_preanalysis(scene_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.save_preanalysis(scene_id, payload, user_edited=True)
+
+    @app.post(
+        "/api/scenes/{scene_id}/preanalysis/confirm",
+        response_model=dict[str, Any],
+        dependencies=[Depends(_require_token)],
+    )
+    def confirm_scene_preanalysis(scene_id: int) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.confirm_preanalysis(scene_id)
+
+    @app.get("/api/scenes/{scene_id}/creative-intent", response_model=dict[str, Any] | None)
+    def get_scene_creative_intent(scene_id: int) -> dict[str, Any] | None:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.get_intent(scene_id)
+
+    @app.put(
+        "/api/scenes/{scene_id}/creative-intent",
+        response_model=dict[str, Any],
+        dependencies=[Depends(_require_token)],
+    )
+    def save_scene_creative_intent(scene_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.save_intent(scene_id, payload)
 
     @app.get("/api/projects/{project_id}/export-plan", response_model=list[ExportPlanItemOut])
     def get_project_export_plan(project_id: int) -> list[ExportPlanItemOut]:
@@ -2622,6 +2670,13 @@ def _require_existing_chapter(service: ProjectService, chapter_id: int) -> Chapt
     if chapter is None:
         raise _http_error(404, "chapter_not_found", f"Chapter not found: {chapter_id}")
     return chapter
+
+
+def _require_scene(service: SceneService, scene_id: int):
+    scene = service.get_scene(scene_id)
+    if scene is None:
+        raise _http_error(404, "scene_not_found", f"Scene not found: {scene_id}")
+    return scene
 
 
 def _validate_source_path(source_path: str) -> Path:

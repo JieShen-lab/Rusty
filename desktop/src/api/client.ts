@@ -1,11 +1,14 @@
 import type {
   AnalysisPromptTemplate,
+  BaseSceneAnalysis,
   AnalysisPromptTemplateWrite,
   Chapter,
   ChapterSplitOptions,
   ChapterDetail,
   ChapterWorkflowState,
   CreativeWorkflowStage,
+  CreativeIntent,
+  CreativeStrategy,
   CompiledPromptPreview,
   CharacterCard,
   CharacterCardWrite,
@@ -1115,6 +1118,45 @@ export function confirmChapterRewrite(chapterId: number) {
 
 export function getChapterScenes(chapterId: number) {
   return request<import('./types').SceneRecord[]>(`/api/chapters/${chapterId}/scenes`);
+}
+
+export function getScenePreanalysis(sceneId: number) {
+  return request<BaseSceneAnalysis | null>(`/api/scenes/${sceneId}/preanalysis`);
+}
+
+export function runScenePreanalysis(sceneId: number, replaceExisting = false) {
+  return request<BaseSceneAnalysis>(`/api/scenes/${sceneId}/preanalysis/run`, {
+    method: 'POST',
+    body: JSON.stringify({ replace_existing: replaceExisting }),
+  });
+}
+
+export function saveScenePreanalysis(sceneId: number, value: Omit<BaseSceneAnalysis, 'scene_id' | 'status' | 'user_edited' | 'confirmed_at' | 'updated_at'>) {
+  return request<BaseSceneAnalysis>(`/api/scenes/${sceneId}/preanalysis`, {
+    method: 'PUT',
+    body: JSON.stringify(value),
+  });
+}
+
+export function confirmScenePreanalysis(sceneId: number) {
+  return request<BaseSceneAnalysis>(`/api/scenes/${sceneId}/preanalysis/confirm`, { method: 'POST' });
+}
+
+export function getSceneCreativeIntent(sceneId: number) {
+  return request<CreativeIntent | null>(`/api/scenes/${sceneId}/creative-intent`);
+}
+
+export function saveSceneCreativeIntent(sceneId: number, value: {
+  strategy: CreativeStrategy;
+  user_instruction: string;
+  selected_character_ids?: number[];
+  selected_plot_material_ids?: number[];
+  selected_scene_material_ids?: number[];
+}) {
+  return request<CreativeIntent>(`/api/scenes/${sceneId}/creative-intent`, {
+    method: 'PUT',
+    body: JSON.stringify(value),
+  });
 }
 
 export function analyzeChapterScenes(

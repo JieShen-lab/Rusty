@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .connection import session
 
-CURRENT_SCHEMA_VERSION = 41
+CURRENT_SCHEMA_VERSION = 42
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -3797,6 +3797,46 @@ def _migrate_to_v41(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_to_v42(connection: sqlite3.Connection) -> None:
+    """Add lightweight scene preanalysis and per-scene creative intent."""
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS scene_preanalyses (
+            scene_id INTEGER PRIMARY KEY,
+            summary TEXT NOT NULL DEFAULT '',
+            characters_json TEXT NOT NULL DEFAULT '[]',
+            location TEXT NOT NULL DEFAULT '',
+            time_text TEXT NOT NULL DEFAULT '',
+            scene_type TEXT NOT NULL DEFAULT '',
+            basic_events_json TEXT NOT NULL DEFAULT '[]',
+            status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'confirmed', 'stale')),
+            user_edited INTEGER NOT NULL DEFAULT 0 CHECK (user_edited IN (0, 1)),
+            confirmed_at TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS creative_intents (
+            scene_id INTEGER PRIMARY KEY,
+            strategy TEXT NOT NULL CHECK (strategy IN (
+                'faithful', 'plot_adjust', 'expansion', 'reimagine'
+            )),
+            user_instruction TEXT NOT NULL DEFAULT '',
+            selected_character_ids_json TEXT NOT NULL DEFAULT '[]',
+            selected_plot_material_ids_json TEXT NOT NULL DEFAULT '[]',
+            selected_scene_material_ids_json TEXT NOT NULL DEFAULT '[]',
+            status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'confirmed')),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_creative_intents_strategy
+            ON creative_intents(strategy, updated_at);
+        """
+    )
+
+
 def _safe_json_list(value: object) -> list[dict[str, object]]:
     try:
         parsed = json.loads(str(value or "[]"))
@@ -4188,6 +4228,7 @@ MIGRATIONS = {
     39: _migrate_to_v39,
     40: _migrate_to_v40,
     41: _migrate_to_v41,
+    42: _migrate_to_v42,
 }
 
 
