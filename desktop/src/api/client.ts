@@ -11,6 +11,7 @@ import type {
   CreativeStrategy,
   CompiledPromptPreview,
   CharacterCard,
+  CharacterModificationAnalysis,
   CharacterCardWrite,
   CharacterCategory,
   CharacterExtractionApplyResult,
@@ -1202,6 +1203,30 @@ export function saveSceneCreativeIntent(sceneId: number, value: {
     method: 'PUT',
     body: JSON.stringify(value),
   });
+}
+
+export function getCharacterModificationAnalysis(sceneId: number) {
+  return request<CharacterModificationAnalysis | null>(`/api/scenes/${sceneId}/character-modification-analysis`);
+}
+
+export function runCharacterModificationAnalysis(sceneId: number, value: {
+  source_character: string;
+  target_character_card_id: number;
+  replace_existing?: boolean;
+}) {
+  return request<CharacterModificationAnalysis>(`/api/scenes/${sceneId}/character-modification-analysis/run`, {
+    method: 'POST', body: JSON.stringify(value),
+  });
+}
+
+export function saveCharacterModificationAnalysis(sceneId: number, value: CharacterModificationAnalysis) {
+  return request<CharacterModificationAnalysis>(`/api/scenes/${sceneId}/character-modification-analysis`, {
+    method: 'PUT', body: JSON.stringify(value),
+  });
+}
+
+export function confirmCharacterModificationAnalysis(sceneId: number) {
+  return request<CharacterModificationAnalysis>(`/api/scenes/${sceneId}/character-modification-analysis/confirm`, { method: 'POST' });
 }
 
 export function analyzeChapterScenes(

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .connection import session
 
-CURRENT_SCHEMA_VERSION = 43
+CURRENT_SCHEMA_VERSION = 44
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -3908,6 +3908,38 @@ def _migrate_to_v43(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_to_v44(connection: sqlite3.Connection) -> None:
+    """Add the faithful character-modification analysis vertical slice."""
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS character_modification_analyses (
+            scene_id INTEGER PRIMARY KEY,
+            source_character TEXT NOT NULL,
+            target_character_card_id INTEGER NOT NULL,
+            target_character_name TEXT NOT NULL,
+            explicit_mentions_json TEXT NOT NULL DEFAULT '[]',
+            implicit_references_json TEXT NOT NULL DEFAULT '[]',
+            actions_json TEXT NOT NULL DEFAULT '[]',
+            dialogue_json TEXT NOT NULL DEFAULT '[]',
+            states_json TEXT NOT NULL DEFAULT '[]',
+            objects_json TEXT NOT NULL DEFAULT '[]',
+            spatial_relations_json TEXT NOT NULL DEFAULT '[]',
+            related_events_json TEXT NOT NULL DEFAULT '[]',
+            target_character_conflicts_json TEXT NOT NULL DEFAULT '[]',
+            status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'confirmed', 'stale')),
+            user_edited INTEGER NOT NULL DEFAULT 0 CHECK (user_edited IN (0, 1)),
+            confirmed_at TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE,
+            FOREIGN KEY (target_character_card_id) REFERENCES character_cards(id) ON DELETE RESTRICT
+        );
+        CREATE INDEX IF NOT EXISTS idx_character_modification_status
+            ON character_modification_analyses(status, updated_at);
+        """
+    )
+
+
 def _safe_json_list(value: object) -> list[dict[str, object]]:
     try:
         parsed = json.loads(str(value or "[]"))
@@ -4301,6 +4333,7 @@ MIGRATIONS = {
     41: _migrate_to_v41,
     42: _migrate_to_v42,
     43: _migrate_to_v43,
+    44: _migrate_to_v44,
 }
 
 

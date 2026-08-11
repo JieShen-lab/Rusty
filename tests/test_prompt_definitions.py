@@ -29,7 +29,7 @@ class PromptDefinitionTests(unittest.TestCase):
         _migrate_to_v43(connection)
         kinds = {row[0] for row in connection.execute("SELECT kind FROM prompt_definitions")}
         self.assertEqual({"master", "workflow_task", "common_task"}, kinds)
-        self.assertEqual(43, CURRENT_SCHEMA_VERSION)
+        self.assertGreaterEqual(CURRENT_SCHEMA_VERSION, 43)
 
     def test_crud_project_copy_and_export_have_no_sync_layer(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd(), ignore_cleanup_errors=True) as directory:

@@ -7,6 +7,7 @@ from typing import Any
 from rusty.db import default_database_path, initialize_database, session
 from rusty.services.scene_service import SceneService
 from rusty.services.workflow_ai import WorkflowAI
+from rusty.services.anchor_service import AnchorService
 
 
 WORKFLOW_STAGES = (
@@ -20,6 +21,11 @@ WORKFLOW_STAGES = (
     "confirmed",
 )
 
+CHARACTER_ANALYSIS_CATEGORIES = (
+    "explicit_mentions", "implicit_references", "actions", "dialogue", "states",
+    "objects", "spatial_relations", "related_events", "target_character_conflicts",
+)
+
 
 class CreativeWorkflowService:
     """Persistence boundary for the chapter-centric creative workflow."""
@@ -29,6 +35,7 @@ class CreativeWorkflowService:
         with session(self.database_path) as connection:
             initialize_database(connection)
         self.scenes = SceneService(self.database_path)
+        self.characters = AnchorService(self.database_path)
         self.ai = WorkflowAI(self.database_path, ai_client=ai_client)
 
     def list_chapter_states(self, project_id: int) -> list[dict[str, Any]]:
@@ -184,6 +191,15 @@ class CreativeWorkflowService:
                     1 if user_edited else 0,
                 ),
             )
+            if self._table_exists(connection, "character_modification_analyses"):
+                connection.execute(
+                    """
+                    UPDATE character_modification_analyses
+                    SET status = 'stale', confirmed_at = NULL, updated_at = CURRENT_TIMESTAMP
+                    WHERE scene_id = ?
+                    """,
+                    (scene_id,),
+                )
         self.update_chapter_state(
             scene.chapter_id, active_scene_id=scene_id, current_stage="preanalysis"
         )
@@ -263,8 +279,224 @@ class CreativeWorkflowService:
                     json.dumps(selected_scene_material_ids),
                 ),
             )
+            if self._table_exists(connection, "character_modification_analyses"):
+                connection.execute(
+                    """
+                    UPDATE character_modification_analyses
+                    SET status = 'stale', confirmed_at = NULL, updated_at = CURRENT_TIMESTAMP
+                    WHERE scene_id = ?
+                    """,
+                    (scene_id,),
+                )
         self.update_chapter_state(scene.chapter_id, active_scene_id=scene_id, current_stage="direction")
         return self.get_intent(scene_id) or {}
+
+    def get_character_modification_analysis(self, scene_id: int) -> dict[str, Any] | None:
+        with session(self.database_path) as connection:
+            row = connection.execute(
+                "SELECT * FROM character_modification_analyses WHERE scene_id = ?", (scene_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        result: dict[str, Any] = {
+            "scene_id": int(row["scene_id"]),
+            "source_character": str(row["source_character"]),
+            "target_character_card_id": int(row["target_character_card_id"]),
+            "target_character_name": str(row["target_character_name"]),
+            "status": str(row["status"]),
+            "user_edited": bool(row["user_edited"]),
+            "confirmed_at": row["confirmed_at"],
+            "updated_at": str(row["updated_at"]),
+        }
+        for category in CHARACTER_ANALYSIS_CATEGORIES:
+            result[category] = self._json_items(row[f"{category}_json"])
+        return result
+
+    def run_character_modification_analysis(
+        self,
+        scene_id: int,
+        *,
+        source_character: str,
+        target_character_card_id: int,
+        replace_existing: bool = False,
+    ) -> dict[str, Any]:
+        scene = self.scenes.get_scene(scene_id)
+        if scene is None:
+            raise FileNotFoundError(f"Scene not found: {scene_id}")
+        preanalysis = self.get_preanalysis(scene_id)
+        if not preanalysis or preanalysis["status"] != "confirmed":
+            raise ValueError("Confirm scene preanalysis before specialized analysis.")
+        intent = self.get_intent(scene_id)
+        if not intent or intent["strategy"] != "faithful":
+            raise ValueError("Character modification analysis requires the faithful strategy.")
+        target = self.characters.get_character_card(target_character_card_id)
+        if target is None:
+            raise FileNotFoundError(f"Character card not found: {target_character_card_id}")
+        current = self.get_character_modification_analysis(scene_id)
+        if current and current["user_edited"] and not replace_existing:
+            raise ValueError("Reanalysis would replace the user-edited character analysis.")
+        value = self.ai.generate_json(
+            project_id=scene.project_id,
+            stage="character_modification_analysis",
+            workflow_key="faithful",
+            task_key="character_modification_analysis",
+            user_instruction=intent["user_instruction"],
+            payload={
+                "source_text": scene.original_text,
+                "scene_source_range": {
+                    "start_offset": scene.original_start_offset,
+                    "end_offset": scene.original_end_offset,
+                },
+                "preanalysis": preanalysis,
+                "creative_intent": intent,
+                "source_character": source_character.strip(),
+                "target_character": {
+                    "id": target.id,
+                    "name": target.name,
+                    "description": target.description,
+                    "setting_text": target.setting_text,
+                    "personality": target.personality,
+                    "action_constraints": target.action_constraints,
+                    "profile": target.profile,
+                    "custom_fields": target.custom_fields,
+                },
+            },
+            output_contract=(
+                "Return arrays explicit_mentions, implicit_references, actions, dialogue, states, "
+                "objects, spatial_relations, related_events, target_character_conflicts. Each item "
+                "must contain id, summary, source_text, start_offset, end_offset, inferred. Offsets "
+                "are relative to the supplied scene. Conflict items may also contain source_state, "
+                "target_state, and difference. Do not propose the replacement action."
+            ),
+        )
+        normalized = self._normalize_character_analysis(scene, value)
+        normalized.update({
+            "source_character": source_character.strip(),
+            "target_character_card_id": target.id,
+            "target_character_name": target.name,
+        })
+        return self.save_character_modification_analysis(scene_id, normalized, user_edited=False)
+
+    def save_character_modification_analysis(
+        self,
+        scene_id: int,
+        value: dict[str, Any],
+        *,
+        user_edited: bool = True,
+    ) -> dict[str, Any]:
+        scene = self.scenes.get_scene(scene_id)
+        if scene is None:
+            raise FileNotFoundError(f"Scene not found: {scene_id}")
+        target_id = int(value.get("target_character_card_id") or 0)
+        target = self.characters.get_character_card(target_id)
+        if target is None:
+            raise FileNotFoundError(f"Character card not found: {target_id}")
+        normalized = self._normalize_character_analysis(scene, value)
+        columns = ", ".join(f"{category}_json" for category in CHARACTER_ANALYSIS_CATEGORIES)
+        placeholders = ", ".join("?" for _ in CHARACTER_ANALYSIS_CATEGORIES)
+        updates = ", ".join(f"{category}_json = excluded.{category}_json" for category in CHARACTER_ANALYSIS_CATEGORIES)
+        category_values = [json.dumps(normalized[category], ensure_ascii=False) for category in CHARACTER_ANALYSIS_CATEGORIES]
+        with session(self.database_path) as connection:
+            connection.execute(
+                f"""
+                INSERT INTO character_modification_analyses (
+                    scene_id, source_character, target_character_card_id, target_character_name,
+                    {columns}, status, user_edited, confirmed_at, updated_at
+                ) VALUES (?, ?, ?, ?, {placeholders}, 'draft', ?, NULL, CURRENT_TIMESTAMP)
+                ON CONFLICT(scene_id) DO UPDATE SET
+                    source_character = excluded.source_character,
+                    target_character_card_id = excluded.target_character_card_id,
+                    target_character_name = excluded.target_character_name,
+                    {updates}, status = 'draft', user_edited = excluded.user_edited,
+                    confirmed_at = NULL, updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    scene_id, str(value.get("source_character") or "").strip(), target.id,
+                    target.name, *category_values, 1 if user_edited else 0,
+                ),
+            )
+        self.update_chapter_state(
+            scene.chapter_id, active_scene_id=scene_id, current_stage="special_analysis"
+        )
+        return self.get_character_modification_analysis(scene_id) or {}
+
+    def confirm_character_modification_analysis(self, scene_id: int) -> dict[str, Any]:
+        scene = self.scenes.get_scene(scene_id)
+        if scene is None:
+            raise FileNotFoundError(f"Scene not found: {scene_id}")
+        if self.get_character_modification_analysis(scene_id) is None:
+            raise ValueError("Run character modification analysis before confirming it.")
+        with session(self.database_path) as connection:
+            connection.execute(
+                """
+                UPDATE character_modification_analyses
+                SET status = 'confirmed', confirmed_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE scene_id = ?
+                """,
+                (scene_id,),
+            )
+        self.update_chapter_state(
+            scene.chapter_id, active_scene_id=scene_id, current_stage="target_design"
+        )
+        return self.get_character_modification_analysis(scene_id) or {}
+
+    @staticmethod
+    def _normalize_character_analysis(scene: Any, value: dict[str, Any]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for category in CHARACTER_ANALYSIS_CATEGORIES:
+            raw_items = value.get(category)
+            normalized: list[dict[str, Any]] = []
+            if not isinstance(raw_items, list):
+                result[category] = normalized
+                continue
+            for index, raw in enumerate(raw_items):
+                if not isinstance(raw, dict):
+                    continue
+                source_text = str(raw.get("source_text") or "")
+                start = int(raw.get("start_offset") or 0)
+                end = int(raw.get("end_offset") or start)
+                local_start, local_end = start, end
+                if not (0 <= local_start <= local_end <= len(scene.original_text)) or (
+                    source_text and scene.original_text[local_start:local_end] != source_text
+                ):
+                    local_start = start - scene.original_start_offset
+                    local_end = end - scene.original_start_offset
+                if not (0 <= local_start <= local_end <= len(scene.original_text)) or (
+                    source_text and scene.original_text[local_start:local_end] != source_text
+                ):
+                    local_start = scene.original_text.find(source_text) if source_text else 0
+                    if local_start < 0:
+                        raise ValueError(f"Analysis evidence is not present in Source: {source_text[:40]}")
+                    local_end = local_start + len(source_text)
+                item = {
+                    "id": str(raw.get("id") or f"{category}-{index + 1}"),
+                    "summary": str(raw.get("summary") or ""),
+                    "source_text": source_text,
+                    "start_offset": scene.original_start_offset + local_start,
+                    "end_offset": scene.original_start_offset + local_end,
+                    "inferred": bool(raw.get("inferred", False)),
+                }
+                for key in ("source_state", "target_state", "difference"):
+                    if key in raw:
+                        item[key] = str(raw.get(key) or "")
+                normalized.append(item)
+            result[category] = normalized
+        return result
+
+    @staticmethod
+    def _json_items(value: Any) -> list[dict[str, Any]]:
+        try:
+            parsed = json.loads(str(value or "[]"))
+        except (TypeError, ValueError):
+            return []
+        return [item for item in parsed if isinstance(item, dict)] if isinstance(parsed, list) else []
+
+    @staticmethod
+    def _table_exists(connection: Any, name: str) -> bool:
+        return connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)
+        ).fetchone() is not None
 
     @staticmethod
     def _normalize_preanalysis(value: dict[str, Any]) -> dict[str, Any]:

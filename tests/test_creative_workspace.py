@@ -12,7 +12,8 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from rusty.db.schema import CURRENT_SCHEMA_VERSION, _migrate_to_v41, _migrate_to_v42
+from rusty.db.schema import CURRENT_SCHEMA_VERSION, _migrate_to_v41, _migrate_to_v42, _migrate_to_v44
+from rusty.services.anchor_service import AnchorService
 from rusty.services.creative_workflow_service import CreativeWorkflowService
 from rusty.services.project_service import ProjectService
 from rusty.services.scene_service import SceneService
@@ -21,8 +22,30 @@ from rusty.services.scene_service import SceneService
 class CreativeWorkspaceTests(unittest.TestCase):
     class FakeWorkflowAI:
         def generate_json(self, stage: str, payload: dict) -> dict:
-            if stage != "scene_preanalysis":
-                raise AssertionError(stage)
+            if stage == "character_modification_analysis":
+                text = payload["source_text"]
+                return {
+                    "explicit_mentions": [{
+                        "id": "explicit-1", "summary": "张三退到墙边", "source_text": "张三退到了墙边。",
+                        "start_offset": text.index("张三"), "end_offset": text.index("张三") + len("张三退到了墙边。"), "inferred": False,
+                    }],
+                    "implicit_references": [{
+                        "id": "implicit-1", "summary": "他指张三", "source_text": "他",
+                        "start_offset": text.index("他"), "end_offset": text.index("他") + 1, "inferred": True,
+                    }],
+                    "actions": [], "dialogue": [], "states": [],
+                    "objects": [{
+                        "id": "object-1", "summary": "张三握有长刀", "source_text": "长刀",
+                        "start_offset": text.index("长刀"), "end_offset": text.index("长刀") + 2, "inferred": True,
+                    }],
+                    "spatial_relations": [], "related_events": [],
+                    "target_character_conflicts": [{
+                        "id": "conflict-1", "summary": "武器存在差异", "source_text": "长刀",
+                        "start_offset": text.index("长刀"), "end_offset": text.index("长刀") + 2,
+                        "inferred": False, "source_state": "使用长刀", "target_state": "使用剑", "difference": "武器不同",
+                    }],
+                }
+            if stage != "scene_preanalysis": raise AssertionError(stage)
             return {
                 "summary": "王五袭击张三，张三退到墙边防守。",
                 "characters": ["张三", "王五"],
@@ -77,6 +100,23 @@ class CreativeWorkspaceTests(unittest.TestCase):
         self.assertIn("scene_preanalyses", tables)
         self.assertIn("creative_intents", tables)
         self.assertGreaterEqual(CURRENT_SCHEMA_VERSION, 42)
+
+    def test_v44_migration_adds_faithful_character_analysis(self) -> None:
+        connection = sqlite3.connect(":memory:")
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.executescript(
+            """
+            CREATE TABLE scenes (id INTEGER PRIMARY KEY);
+            CREATE TABLE character_cards (id INTEGER PRIMARY KEY);
+            """
+        )
+        _migrate_to_v44(connection)
+        _migrate_to_v44(connection)
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(character_modification_analyses)")}
+        self.assertIn("implicit_references_json", columns)
+        self.assertIn("target_character_conflicts_json", columns)
+        self.assertEqual(44, CURRENT_SCHEMA_VERSION)
 
     def test_preanalysis_edit_reanalysis_guard_confirmation_and_intent(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd(), ignore_cleanup_errors=True) as directory:
@@ -165,6 +205,64 @@ class CreativeWorkspaceTests(unittest.TestCase):
 
         self.assertEqual(409, response.status_code)
         self.assertEqual("legacy_extract_workflow", response.json()["error"])
+
+    def test_faithful_character_analysis_keeps_source_ranges_edit_confirm_and_stale(self) -> None:
+        fixture = (
+            "张三退到了墙边。\n"
+            "要不是因为他挡在这里，王五早已经走了。\n"
+            "刚刚挡下攻击的人握紧了长刀。"
+        )
+        with tempfile.TemporaryDirectory(dir=Path.cwd(), ignore_cleanup_errors=True) as directory:
+            root = Path(directory)
+            source = root / "book.txt"
+            source.write_text(f"第一章\n{fixture}", encoding="utf-8")
+            database = root / "rusty.db"
+            projects = ProjectService(database)
+            project_id = projects.create_project(projects.preview_book(source), root)
+            chapter = projects.list_chapters(project_id)[0]
+            scene = SceneService(database).split_chapter(chapter.id)[0]
+            target_id = AnchorService(database).create_character_card(
+                name="李四", scope="project", project_id=project_id,
+                setting_text="惯用剑，倾向速度与闪避。", action_constraints="避免硬接攻击。",
+            )
+            service = CreativeWorkflowService(database, ai_client=self.FakeWorkflowAI())
+            service.run_preanalysis(scene.id)
+            service.confirm_preanalysis(scene.id)
+            service.save_intent(scene.id, {
+                "strategy": "faithful",
+                "user_instruction": "把张三替换成李四，战斗过程尽量保留。",
+                "selected_character_ids": [target_id],
+            })
+            generated = service.run_character_modification_analysis(
+                scene.id, source_character="张三", target_character_card_id=target_id,
+            )
+            edited_payload = {
+                **generated,
+                "actions": [{
+                    "id": "manual-action", "summary": "张三挡下攻击",
+                    "source_text": "刚刚挡下攻击的人", "start_offset": 0, "end_offset": 0,
+                    "inferred": True,
+                }],
+                "explicit_mentions": [],
+            }
+            edited = service.save_character_modification_analysis(scene.id, edited_payload)
+            confirmed = service.confirm_character_modification_analysis(scene.id)
+            unlocked = service.get_chapter_state(chapter.id)
+            service.save_intent(scene.id, {
+                **service.get_intent(scene.id),
+                "user_instruction": "改为李四，但保留事件。",
+            })
+            stale = service.get_character_modification_analysis(scene.id)
+
+        implicit = generated["implicit_references"][0]
+        weapon = generated["objects"][0]
+        self.assertEqual("他", scene.original_text[implicit["start_offset"]:implicit["end_offset"]])
+        self.assertEqual("长刀", scene.original_text[weapon["start_offset"]:weapon["end_offset"]])
+        self.assertEqual([], edited["explicit_mentions"])
+        self.assertEqual("刚刚挡下攻击的人", edited["actions"][0]["source_text"])
+        self.assertEqual("confirmed", confirmed["status"])
+        self.assertEqual("target_design", unlocked["current_stage"])
+        self.assertEqual("stale", stale["status"])
 
 
 if __name__ == "__main__":

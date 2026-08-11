@@ -963,6 +963,46 @@ def create_app(
         _require_scene(scene_service, scene_id)
         return creative_workflow_service.save_intent(scene_id, payload)
 
+    @app.get(
+        "/api/scenes/{scene_id}/character-modification-analysis",
+        response_model=dict[str, Any] | None,
+    )
+    def get_character_modification_analysis(scene_id: int) -> dict[str, Any] | None:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.get_character_modification_analysis(scene_id)
+
+    @app.post(
+        "/api/scenes/{scene_id}/character-modification-analysis/run",
+        response_model=dict[str, Any],
+        dependencies=[Depends(_require_token)],
+    )
+    def run_character_modification_analysis(scene_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.run_character_modification_analysis(
+            scene_id,
+            source_character=str(payload.get("source_character") or ""),
+            target_character_card_id=int(payload.get("target_character_card_id") or 0),
+            replace_existing=bool(payload.get("replace_existing", False)),
+        )
+
+    @app.put(
+        "/api/scenes/{scene_id}/character-modification-analysis",
+        response_model=dict[str, Any],
+        dependencies=[Depends(_require_token)],
+    )
+    def save_character_modification_analysis(scene_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.save_character_modification_analysis(scene_id, payload)
+
+    @app.post(
+        "/api/scenes/{scene_id}/character-modification-analysis/confirm",
+        response_model=dict[str, Any],
+        dependencies=[Depends(_require_token)],
+    )
+    def confirm_character_modification_analysis(scene_id: int) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.confirm_character_modification_analysis(scene_id)
+
     @app.get("/api/projects/{project_id}/export-plan", response_model=list[ExportPlanItemOut])
     def get_project_export_plan(project_id: int) -> list[ExportPlanItemOut]:
         _require_project(project_service, project_id)

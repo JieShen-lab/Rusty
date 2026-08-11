@@ -1204,6 +1204,38 @@ export type CreativeIntent = {
   updated_at: string;
 };
 
+export type CharacterAnalysisItem = {
+  id: string;
+  summary: string;
+  source_text: string;
+  start_offset: number;
+  end_offset: number;
+  inferred: boolean;
+  source_state?: string;
+  target_state?: string;
+  difference?: string;
+};
+
+export type CharacterModificationAnalysis = {
+  scene_id: number;
+  source_character: string;
+  target_character_card_id: number;
+  target_character_name: string;
+  explicit_mentions: CharacterAnalysisItem[];
+  implicit_references: CharacterAnalysisItem[];
+  actions: CharacterAnalysisItem[];
+  dialogue: CharacterAnalysisItem[];
+  states: CharacterAnalysisItem[];
+  objects: CharacterAnalysisItem[];
+  spatial_relations: CharacterAnalysisItem[];
+  related_events: CharacterAnalysisItem[];
+  target_character_conflicts: CharacterAnalysisItem[];
+  status: 'draft' | 'confirmed' | 'stale';
+  user_edited: boolean;
+  confirmed_at: string | null;
+  updated_at: string;
+};
+
 export type SceneBoundaryItem = {
   start_offset: number;
   end_offset: number;
