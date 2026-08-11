@@ -290,8 +290,12 @@ class CreativeWorkspaceTests(unittest.TestCase):
             edited = service.save_character_modification_analysis(scene.id, edited_payload)
             confirmed = service.confirm_character_modification_analysis(scene.id)
             unlocked = service.get_chapter_state(chapter.id)
+            existing_intent = service.get_intent(scene.id)
+            unchanged_intent = service.save_intent(scene.id, existing_intent)
+            unchanged_analysis = service.get_character_modification_analysis(scene.id)
+            unchanged_state = service.get_chapter_state(chapter.id)
             service.save_intent(scene.id, {
-                **service.get_intent(scene.id),
+                **existing_intent,
                 "user_instruction": "改为李四，但保留事件。",
             })
             stale = service.get_character_modification_analysis(scene.id)
@@ -330,6 +334,9 @@ class CreativeWorkspaceTests(unittest.TestCase):
         self.assertEqual("刚刚挡下攻击的人", edited["actions"][0]["source_text"])
         self.assertEqual("confirmed", confirmed["status"])
         self.assertEqual("target_design", unlocked["current_stage"])
+        self.assertEqual(existing_intent, unchanged_intent)
+        self.assertEqual("confirmed", unchanged_analysis["status"])
+        self.assertEqual("target_design", unchanged_state["current_stage"])
         self.assertEqual("stale", stale["status"])
         self.assertEqual("stale", manually_edited_stale["status"])
         self.assertEqual(400, rejected.status_code)

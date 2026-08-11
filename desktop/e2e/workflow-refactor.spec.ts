@@ -33,6 +33,7 @@ async function mockWorkspace(page: Page, projectKind: 'rewrite' | 'branch' | 'le
   let preanalysis: Record<string, unknown> | null = null;
   let intent: Record<string, unknown> | null = null;
   let characterAnalysis: Record<string, unknown> | null = null;
+  const draftWrites: Array<{ sceneId: number; resource: string }> = [];
   await page.route('http://127.0.0.1:8765/api/**', async (route) => {
     const path = new URL(route.request().url()).pathname;
     const legacyStartupPaths = ['/api/prompts', '/api/analysis-prompts', '/api/projects/99/export-plan', '/api/projects/99/style-synthesis'];
@@ -77,10 +78,14 @@ async function mockWorkspace(page: Page, projectKind: 'rewrite' | 'branch' | 'le
       sceneWorkflowState = { ...sceneWorkflowState, current_stage: 'direction' };
       body = preanalysis;
     } else if (path === '/api/scenes/801/preanalysis') {
-      if (route.request().method() === 'PUT') preanalysis = { ...(route.request().postDataJSON() as Record<string, unknown>), scene_id: 801, status: 'draft', user_edited: true, confirmed_at: null, updated_at: '2026-08-11T10:02:30' };
+      if (route.request().method() === 'PUT') {
+        draftWrites.push({ sceneId: 801, resource: 'preanalysis' });
+        preanalysis = { ...(route.request().postDataJSON() as Record<string, unknown>), scene_id: 801, status: 'draft', user_edited: true, confirmed_at: null, updated_at: '2026-08-11T10:02:30' };
+      }
       body = preanalysis;
     } else if (path === '/api/scenes/801/creative-intent') {
       if (route.request().method() === 'PUT') {
+        draftWrites.push({ sceneId: 801, resource: 'intent' });
         intent = { ...(route.request().postDataJSON() as Record<string, unknown>), scene_id: 801, status: 'draft', updated_at: '2026-08-11T10:04:00' };
         workflowState = { ...workflowState, current_stage: 'direction' };
         sceneWorkflowState = { ...sceneWorkflowState, current_stage: 'direction' };
@@ -180,7 +185,7 @@ async function mockWorkspace(page: Page, projectKind: 'rewrite' | 'branch' | 'le
     }
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
   });
-  return { getLastPlotPayload: () => lastPlotPayload };
+  return { getDraftWrites: () => draftWrites, getLastPlotPayload: () => lastPlotPayload };
 }
 
 test('新建页直接创建统一普通小说工程', async ({ page }) => {
@@ -224,6 +229,35 @@ test('新工作台提供轻量场景边界查看与应用控制', async ({ page 
   await expect(page.getByRole('button', { name: /墙边冲突/ })).toBeVisible();
 });
 
+test('离开工作区和 popstate 会先 flush 当前 scene 的 dirty 草稿', async ({ page }) => {
+  const workspace = await mockWorkspace(page, 'rewrite');
+  await page.goto('/workspace/99');
+  await page.getByRole('button', { name: '运行预分析' }).click();
+  await page.getByLabel('摘要').fill('离开前保存的摘要');
+  await page.getByRole('button', { name: '工程列表' }).click();
+  await expect(page.getByRole('heading', { name: '工程', exact: true })).toBeVisible();
+  await expect.poll(() => workspace.getDraftWrites()).toContainEqual({ sceneId: 801, resource: 'preanalysis' });
+
+  await page.goBack();
+  await expect(page.getByLabel('摘要')).toHaveValue('离开前保存的摘要');
+  await page.getByRole('button', { name: '确认预分析' }).click();
+  await page.getByRole('button', { name: /贴合原文/ }).click();
+  await page.getByPlaceholder(/把张三替换成李四/).fill('离开前保存的具体要求');
+  await page.getByRole('button', { name: '提示词', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '提示词', exact: true })).toBeVisible();
+  await expect.poll(() => workspace.getDraftWrites()).toContainEqual({ sceneId: 801, resource: 'intent' });
+
+  await page.goBack();
+  const instruction = page.getByPlaceholder(/把张三替换成李四/);
+  await expect(instruction).toHaveValue('离开前保存的具体要求');
+  await instruction.fill('popstate 保存的具体要求');
+  await page.goForward();
+  await expect(page.getByRole('heading', { name: '提示词', exact: true })).toBeVisible();
+  await expect.poll(() => workspace.getDraftWrites().filter((item) => item.resource === 'intent')).toHaveLength(2);
+  await page.goBack();
+  await expect(page.getByPlaceholder(/把张三替换成李四/)).toHaveValue('popstate 保存的具体要求');
+});
+
 test('历史 branch 工程也进入同一工作台', async ({ page }) => {
   await mockWorkspace(page, 'branch');
   await page.goto('/workspace/99');
@@ -234,7 +268,7 @@ test('历史 branch 工程也进入同一工作台', async ({ page }) => {
 });
 
 test('预分析、方向和人物专项分析形成可确认纵向流程', async ({ page }) => {
-  await mockWorkspace(page, 'rewrite');
+  const workspace = await mockWorkspace(page, 'rewrite');
   await page.goto('/workspace/99');
   await page.getByRole('button', { name: '运行预分析' }).click();
   await expect(page.getByLabel('摘要')).toHaveValue('张三在墙边挡下攻击。');
@@ -253,6 +287,10 @@ test('预分析、方向和人物专项分析形成可确认纵向流程', async
   await page.getByRole('button', { name: '确认分析' }).click();
   await expect(page.getByRole('heading', { name: '目标设计' })).toBeVisible();
   await expect(page.getByText(/第二阶段实现/)).toBeVisible();
+  await page.getByRole('button', { name: '方向选择', exact: true }).click();
+  await page.getByRole('button', { name: '进入专项分析' }).click();
+  await expect(page.getByRole('button', { name: '目标设计', exact: true })).toBeEnabled();
+  expect(workspace.getDraftWrites().filter((item) => item.resource === 'intent')).toHaveLength(1);
 });
 
 test('上游 intent 修改后 stale 专项分析必须重新分析才能确认', async ({ page }) => {

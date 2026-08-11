@@ -397,6 +397,16 @@ class CreativeWorkflowService:
         selected_character_ids = self._normalize_ids(value.get("selected_character_ids"))
         selected_plot_material_ids = self._normalize_ids(value.get("selected_plot_material_ids"))
         selected_scene_material_ids = self._normalize_ids(value.get("selected_scene_material_ids"))
+        normalized = {
+            "strategy": strategy,
+            "user_instruction": str(value.get("user_instruction") or ""),
+            "selected_character_ids": selected_character_ids,
+            "selected_plot_material_ids": selected_plot_material_ids,
+            "selected_scene_material_ids": selected_scene_material_ids,
+        }
+        existing = self.get_intent(scene_id)
+        if existing is not None and all(existing[key] == normalized[key] for key in normalized):
+            return existing
         with session(self.database_path) as connection:
             connection.execute(
                 """
@@ -416,7 +426,7 @@ class CreativeWorkflowService:
                 (
                     scene_id,
                     strategy,
-                    str(value.get("user_instruction") or ""),
+                    normalized["user_instruction"],
                     json.dumps(selected_character_ids),
                     json.dumps(selected_plot_material_ids),
                     json.dumps(selected_scene_material_ids),

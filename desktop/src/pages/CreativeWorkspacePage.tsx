@@ -47,6 +47,7 @@ import type {
   SceneWorkflowState,
   SceneBoundaryItem,
 } from '../api/types';
+import { registerNavigationFlush } from '../navigationFlush';
 
 type Props = {
   projectId: number;
@@ -265,6 +266,17 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
   }, []);
 
   useEffect(() => {
+    const unregister = registerNavigationFlush(flushLoadedScene);
+    const flushBestEffort = () => { void flushLoadedScene().catch(() => undefined); };
+    window.addEventListener('pagehide', flushBestEffort);
+    return () => {
+      window.removeEventListener('pagehide', flushBestEffort);
+      unregister();
+      flushBestEffort();
+    };
+  }, [flushLoadedScene]);
+
+  useEffect(() => {
     if (!activeSceneId || !selectedChapterId) {
       sceneLoadSequenceRef.current += 1;
       loadedDraftRef.current = null;
@@ -392,19 +404,14 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
   async function continueToSpecialAnalysis() {
     if (!activeSceneId || !selectedChapterId || !intent) return;
     await perform(async () => {
-      const savedIntent = await saveSceneCreativeIntent(activeSceneId, intent);
-      const latestAnalysis = await getCharacterModificationAnalysis(activeSceneId);
-      if (loadedDraftRef.current?.sceneId === activeSceneId) {
-        loadedDraftRef.current.intent = savedIntent;
-        loadedDraftRef.current.intentDirty = false;
-        loadedDraftRef.current.characterAnalysis = latestAnalysis;
+      await flushLoadedScene();
+      const loaded = loadedDraftRef.current;
+      if (!loaded || loaded.sceneId !== activeSceneId || !loaded.intent) return;
+      setTargetCharacterId((current) => current ?? loaded.intent?.selected_character_ids[0] ?? null);
+      if (!loaded.characterAnalysis || loaded.characterAnalysis.status === 'stale') {
+        await updateCreativeWorkflowState(selectedChapterId, 'special_analysis', activeSceneId);
+        await refreshWorkflowStates(selectedChapterId);
       }
-      setIntent(savedIntent);
-      setCharacterAnalysis(latestAnalysis);
-      setIntentDirty(false);
-      setTargetCharacterId((current) => current ?? savedIntent.selected_character_ids[0] ?? null);
-      const updated = await updateCreativeWorkflowState(selectedChapterId, 'special_analysis', activeSceneId);
-      setStates((items) => items.map((item) => item.chapter_id === updated.chapter_id ? updated : item));
       setViewStage('special_analysis');
     });
   }
