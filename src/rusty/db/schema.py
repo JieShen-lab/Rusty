@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .connection import session
 
-CURRENT_SCHEMA_VERSION = 40
+CURRENT_SCHEMA_VERSION = 41
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -3667,7 +3667,6 @@ def _migrate_to_v40(connection: sqlite3.Connection) -> None:
         );
         """
     )
-
     # v38 intentionally stored empty fact snapshots.  v40 performs a
     # best-effort compensation before immutability triggers are installed.
     versions = connection.execute(
@@ -3766,6 +3765,34 @@ def _migrate_to_v40(connection: sqlite3.Connection) -> None:
         BEGIN
             SELECT RAISE(ABORT, 'rewrite version semantic maps are immutable');
         END;
+        """
+    )
+
+
+def _migrate_to_v41(connection: sqlite3.Connection) -> None:
+    """Persist chapter-level progress for the chapter-centric creative workspace."""
+    scene_foreign_key = (
+        "FOREIGN KEY (active_scene_id) REFERENCES scenes(id) ON DELETE SET NULL"
+        if _table_exists(connection, "scenes")
+        else ""
+    )
+    connection.executescript(
+        f"""
+        CREATE TABLE IF NOT EXISTS chapter_workflow_state (
+            chapter_id INTEGER PRIMARY KEY,
+            active_scene_id INTEGER,
+            current_stage TEXT NOT NULL DEFAULT 'not_started' CHECK (current_stage IN (
+                'not_started', 'preanalysis', 'direction', 'special_analysis',
+                'target_design', 'writing', 'review', 'confirmed'
+            )),
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE
+            {',' if scene_foreign_key else ''} {scene_foreign_key}
+        );
+        CREATE INDEX IF NOT EXISTS idx_chapter_workflow_stage
+            ON chapter_workflow_state(current_stage, updated_at);
+        INSERT OR IGNORE INTO chapter_workflow_state (chapter_id)
+        SELECT id FROM chapters;
         """
     )
 
@@ -4160,6 +4187,7 @@ MIGRATIONS = {
     38: _migrate_to_v38,
     39: _migrate_to_v39,
     40: _migrate_to_v40,
+    41: _migrate_to_v41,
 }
 
 

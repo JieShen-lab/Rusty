@@ -174,6 +174,25 @@ export type Chapter = {
   end_line: number | null;
 };
 
+export type CreativeWorkflowStage =
+  | 'not_started'
+  | 'preanalysis'
+  | 'direction'
+  | 'special_analysis'
+  | 'target_design'
+  | 'writing'
+  | 'review'
+  | 'confirmed';
+
+export type ChapterWorkflowState = {
+  chapter_id: number;
+  chapter_index: number;
+  title: string;
+  active_scene_id: number | null;
+  current_stage: CreativeWorkflowStage;
+  updated_at: string;
+};
+
 export type ChapterAIOutputs = {
   plot_summary: string | null;
   plot_characters: Array<Record<string, unknown>> | null;

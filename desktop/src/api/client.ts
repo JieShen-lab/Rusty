@@ -4,6 +4,8 @@ import type {
   Chapter,
   ChapterSplitOptions,
   ChapterDetail,
+  ChapterWorkflowState,
+  CreativeWorkflowStage,
   CompiledPromptPreview,
   CharacterCard,
   CharacterCardWrite,
@@ -470,6 +472,25 @@ export function createProjectFromLegacy(
 
 export function getChapters(projectId: number) {
   return request<Chapter[]>(`/api/projects/${projectId}/chapters`);
+}
+
+export function getCreativeWorkflowStates(projectId: number) {
+  return request<ChapterWorkflowState[]>(`/api/projects/${projectId}/creative-workflow`);
+}
+
+export function getCreativeWorkflowState(chapterId: number) {
+  return request<ChapterWorkflowState>(`/api/chapters/${chapterId}/creative-workflow`);
+}
+
+export function updateCreativeWorkflowState(
+  chapterId: number,
+  currentStage: CreativeWorkflowStage,
+  activeSceneId: number | null,
+) {
+  return request<ChapterWorkflowState>(`/api/chapters/${chapterId}/creative-workflow`, {
+    method: 'PUT',
+    body: JSON.stringify({ current_stage: currentStage, active_scene_id: activeSceneId }),
+  });
 }
 
 export function getChapter(chapterId: number) {

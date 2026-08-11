@@ -42,6 +42,7 @@ from rusty.db import default_database_path
 from rusty.services.project_service import ProjectService
 from rusty.services.prompt_service import PromptService
 from rusty.services.context_service import ContextService
+from rusty.services.creative_workflow_service import CreativeWorkflowService
 from rusty.services.rewrite_workflow_service import RewriteWorkflowService
 from rusty.services.resource_analysis_service import ResourceAnalysisService
 from rusty.services.scene_service import SceneService
@@ -254,6 +255,7 @@ def create_app(
     scene_service = SceneService(db_path)
     scene_boundary_ai_service = SceneBoundaryAIService(db_path)
     context_service = ContextService(db_path)
+    creative_workflow_service = CreativeWorkflowService(db_path)
     rewrite_workflow_service = RewriteWorkflowService(db_path)
     resource_analysis_service = ResourceAnalysisService(db_path)
     scene_rewrite_orchestrator = SceneRewriteOrchestrator(db_path)
@@ -878,6 +880,37 @@ def create_app(
     def list_chapters(project_id: int) -> list[ChapterOut]:
         _require_project(project_service, project_id)
         return [_chapter_out(chapter) for chapter in project_service.list_chapters(project_id)]
+
+    @app.get("/api/projects/{project_id}/creative-workflow", response_model=list[dict[str, Any]])
+    def list_creative_workflow_states(project_id: int) -> list[dict[str, Any]]:
+        project = _require_project(project_service, project_id)
+        if project.project_kind == "legacy_extract":
+            raise _http_error(409, "legacy_extract_workflow", "Legacy extract projects use their dedicated workflow.")
+        return creative_workflow_service.list_chapter_states(project_id)
+
+    @app.get("/api/chapters/{chapter_id}/creative-workflow", response_model=dict[str, Any])
+    def get_creative_workflow_state(chapter_id: int) -> dict[str, Any]:
+        chapter = _require_existing_chapter(project_service, chapter_id)
+        project = _require_project(project_service, chapter.project_id)
+        if project.project_kind == "legacy_extract":
+            raise _http_error(409, "legacy_extract_workflow", "Legacy extract projects use their dedicated workflow.")
+        return creative_workflow_service.get_chapter_state(chapter_id)
+
+    @app.put(
+        "/api/chapters/{chapter_id}/creative-workflow",
+        response_model=dict[str, Any],
+        dependencies=[Depends(_require_token)],
+    )
+    def update_creative_workflow_state(chapter_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        chapter = _require_existing_chapter(project_service, chapter_id)
+        project = _require_project(project_service, chapter.project_id)
+        if project.project_kind == "legacy_extract":
+            raise _http_error(409, "legacy_extract_workflow", "Legacy extract projects use their dedicated workflow.")
+        return creative_workflow_service.update_chapter_state(
+            chapter_id,
+            active_scene_id=(int(payload["active_scene_id"]) if payload.get("active_scene_id") is not None else None),
+            current_stage=str(payload.get("current_stage") or "not_started"),
+        )
 
     @app.get("/api/projects/{project_id}/export-plan", response_model=list[ExportPlanItemOut])
     def get_project_export_plan(project_id: int) -> list[ExportPlanItemOut]:

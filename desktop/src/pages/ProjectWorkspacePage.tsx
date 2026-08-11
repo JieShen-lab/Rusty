@@ -66,6 +66,7 @@ import {
   LegacyExtractPanel,
   RewriteOperationPanel,
 } from '../components/WorkflowRefactorPanels';
+import { CreativeWorkspacePage } from './CreativeWorkspacePage';
 
 type Props = { onNavigate: (path: string, state?: unknown) => void; projectId: number };
 type SelectionKind = 'scene' | 'plot' | 'character';
@@ -313,6 +314,9 @@ export function ProjectWorkspacePage({ onNavigate, projectId }: Props) {
         projectName={project.project.name}
       />
     );
+  }
+  if (project?.project) {
+    return <CreativeWorkspacePage onNavigate={onNavigate} projectId={projectId} projectName={project.project.name} />;
   }
   if (project?.project?.project_kind === 'branch') {
     return <BranchWorkspacePanel chapters={chapters} projectId={projectId} projectName={project.project.name} />;
