@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .connection import session
 
-CURRENT_SCHEMA_VERSION = 40
+CURRENT_SCHEMA_VERSION = 45
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -3667,7 +3667,6 @@ def _migrate_to_v40(connection: sqlite3.Connection) -> None:
         );
         """
     )
-
     # v38 intentionally stored empty fact snapshots.  v40 performs a
     # best-effort compensation before immutability triggers are installed.
     versions = connection.execute(
@@ -3768,6 +3767,244 @@ def _migrate_to_v40(connection: sqlite3.Connection) -> None:
         END;
         """
     )
+
+
+def _migrate_to_v41(connection: sqlite3.Connection) -> None:
+    """Persist chapter-level progress for the chapter-centric creative workspace."""
+    scene_foreign_key = (
+        "FOREIGN KEY (active_scene_id) REFERENCES scenes(id) ON DELETE SET NULL"
+        if _table_exists(connection, "scenes")
+        else ""
+    )
+    connection.executescript(
+        f"""
+        CREATE TABLE IF NOT EXISTS chapter_workflow_state (
+            chapter_id INTEGER PRIMARY KEY,
+            active_scene_id INTEGER,
+            current_stage TEXT NOT NULL DEFAULT 'not_started' CHECK (current_stage IN (
+                'not_started', 'preanalysis', 'direction', 'special_analysis',
+                'target_design', 'writing', 'review', 'confirmed'
+            )),
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE
+            {',' if scene_foreign_key else ''} {scene_foreign_key}
+        );
+        CREATE INDEX IF NOT EXISTS idx_chapter_workflow_stage
+            ON chapter_workflow_state(current_stage, updated_at);
+        INSERT OR IGNORE INTO chapter_workflow_state (chapter_id)
+        SELECT id FROM chapters;
+        """
+    )
+
+
+def _migrate_to_v42(connection: sqlite3.Connection) -> None:
+    """Add lightweight scene preanalysis and per-scene creative intent."""
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS scene_preanalyses (
+            scene_id INTEGER PRIMARY KEY,
+            summary TEXT NOT NULL DEFAULT '',
+            characters_json TEXT NOT NULL DEFAULT '[]',
+            location TEXT NOT NULL DEFAULT '',
+            time_text TEXT NOT NULL DEFAULT '',
+            scene_type TEXT NOT NULL DEFAULT '',
+            basic_events_json TEXT NOT NULL DEFAULT '[]',
+            status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'confirmed', 'stale')),
+            user_edited INTEGER NOT NULL DEFAULT 0 CHECK (user_edited IN (0, 1)),
+            confirmed_at TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS creative_intents (
+            scene_id INTEGER PRIMARY KEY,
+            strategy TEXT NOT NULL CHECK (strategy IN (
+                'faithful', 'plot_adjust', 'expansion', 'reimagine'
+            )),
+            user_instruction TEXT NOT NULL DEFAULT '',
+            selected_character_ids_json TEXT NOT NULL DEFAULT '[]',
+            selected_plot_material_ids_json TEXT NOT NULL DEFAULT '[]',
+            selected_scene_material_ids_json TEXT NOT NULL DEFAULT '[]',
+            status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'confirmed')),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_creative_intents_strategy
+            ON creative_intents(strategy, updated_at);
+        """
+    )
+
+
+def _migrate_to_v43(connection: sqlite3.Connection) -> None:
+    """Introduce simple master, workflow-task, and common-task prompts."""
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS prompt_definitions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            kind TEXT NOT NULL CHECK (kind IN ('master', 'workflow_task', 'common_task')),
+            workflow_key TEXT,
+            task_key TEXT,
+            content TEXT NOT NULL DEFAULT '',
+            input_description TEXT NOT NULL DEFAULT '',
+            is_default INTEGER NOT NULL DEFAULT 0 CHECK (is_default IN (0, 1)),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            deleted_at TEXT
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_prompt_definition_default_master
+            ON prompt_definitions(kind)
+            WHERE kind = 'master' AND is_default = 1 AND deleted_at IS NULL;
+        CREATE INDEX IF NOT EXISTS idx_prompt_definition_lookup
+            ON prompt_definitions(kind, workflow_key, task_key, is_default, updated_at);
+
+        CREATE TABLE IF NOT EXISTS project_master_prompts (
+            project_id INTEGER PRIMARY KEY,
+            content TEXT NOT NULL DEFAULT '',
+            source_prompt_definition_id INTEGER,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (source_prompt_definition_id) REFERENCES prompt_definitions(id) ON DELETE SET NULL
+        );
+
+        INSERT INTO prompt_definitions (
+            name, description, kind, content, input_description, is_default
+        ) SELECT
+            '默认总提示词', '适用于普通小说创作的工程级规则', 'master',
+            '保持事实一致、人物行为可信、语言自然；遵守用户本次明确要求。',
+            '所有新工作流任务都会携带此文本。', 1
+        WHERE NOT EXISTS (
+            SELECT 1 FROM prompt_definitions WHERE kind = 'master' AND deleted_at IS NULL
+        );
+
+        INSERT INTO prompt_definitions (
+            name, description, kind, task_key, content, input_description, is_default
+        ) SELECT
+            '场景预分析', '轻量识别场景基础信息', 'common_task', 'scene_preanalysis',
+            '只判断场景摘要、人物、地点、时间、场景类型和基础事件；不要生成改写方案。',
+            '当前场景完整 Source 文本及其原文范围。', 1
+        WHERE NOT EXISTS (
+            SELECT 1 FROM prompt_definitions
+            WHERE kind = 'common_task' AND task_key = 'scene_preanalysis' AND deleted_at IS NULL
+        );
+
+        INSERT INTO prompt_definitions (
+            name, description, kind, workflow_key, task_key,
+            content, input_description, is_default
+        ) SELECT
+            '贴合原文 / 人物专项分析', '识别人物修改涉及的 Source 关联',
+            'workflow_task', 'faithful', 'character_modification_analysis',
+            '识别显式与隐式人物关联、动作、对白、状态、物品、空间关系和关联事件；只陈述 Source 事实与目标人物卡差异，不替用户设计修改方案。',
+            '当前场景 Source、CreativeIntent、源人物和目标人物卡。', 1
+        WHERE NOT EXISTS (
+            SELECT 1 FROM prompt_definitions
+            WHERE kind = 'workflow_task' AND workflow_key = 'faithful'
+              AND task_key = 'character_modification_analysis' AND deleted_at IS NULL
+        );
+        """
+    )
+
+
+def _migrate_to_v44(connection: sqlite3.Connection) -> None:
+    """Add the faithful character-modification analysis vertical slice."""
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS character_modification_analyses (
+            scene_id INTEGER PRIMARY KEY,
+            source_character TEXT NOT NULL,
+            target_character_card_id INTEGER NOT NULL,
+            target_character_name TEXT NOT NULL,
+            explicit_mentions_json TEXT NOT NULL DEFAULT '[]',
+            implicit_references_json TEXT NOT NULL DEFAULT '[]',
+            actions_json TEXT NOT NULL DEFAULT '[]',
+            dialogue_json TEXT NOT NULL DEFAULT '[]',
+            states_json TEXT NOT NULL DEFAULT '[]',
+            objects_json TEXT NOT NULL DEFAULT '[]',
+            spatial_relations_json TEXT NOT NULL DEFAULT '[]',
+            related_events_json TEXT NOT NULL DEFAULT '[]',
+            target_character_conflicts_json TEXT NOT NULL DEFAULT '[]',
+            status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'confirmed', 'stale')),
+            user_edited INTEGER NOT NULL DEFAULT 0 CHECK (user_edited IN (0, 1)),
+            confirmed_at TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE,
+            FOREIGN KEY (target_character_card_id) REFERENCES character_cards(id) ON DELETE RESTRICT
+        );
+        CREATE INDEX IF NOT EXISTS idx_character_modification_status
+            ON character_modification_analyses(status, updated_at);
+        """
+    )
+
+
+def _migrate_to_v45(connection: sqlite3.Connection) -> None:
+    """Persist authoritative progress independently for every active scene."""
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS scene_workflow_state (
+            scene_id INTEGER PRIMARY KEY,
+            current_stage TEXT NOT NULL DEFAULT 'not_started' CHECK (current_stage IN (
+                'not_started', 'preanalysis', 'direction', 'special_analysis',
+                'target_design', 'writing', 'review', 'confirmed'
+            )),
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_scene_workflow_stage
+            ON scene_workflow_state(current_stage, updated_at);
+        """
+    )
+    if not _table_exists(connection, "scenes"):
+        return
+    deleted_filter = "WHERE deleted_at IS NULL" if _column_exists(connection, "scenes", "deleted_at") else ""
+    connection.execute(
+        f"""
+        INSERT OR IGNORE INTO scene_workflow_state (scene_id, current_stage)
+        SELECT id, 'not_started' FROM scenes {deleted_filter}
+        """
+    )
+    if all(
+        _table_exists(connection, name)
+        for name in ("scene_preanalyses", "creative_intents", "character_modification_analyses")
+    ):
+        connection.execute(
+            f"""
+            UPDATE scene_workflow_state
+            SET current_stage = CASE
+                WHEN (SELECT status FROM character_modification_analyses WHERE scene_id = scene_workflow_state.scene_id) = 'confirmed'
+                    THEN 'target_design'
+                WHEN EXISTS (SELECT 1 FROM character_modification_analyses WHERE scene_id = scene_workflow_state.scene_id)
+                    THEN 'special_analysis'
+                WHEN EXISTS (SELECT 1 FROM creative_intents WHERE scene_id = scene_workflow_state.scene_id)
+                    THEN 'direction'
+                WHEN (SELECT status FROM scene_preanalyses WHERE scene_id = scene_workflow_state.scene_id) = 'confirmed'
+                    THEN 'direction'
+                WHEN EXISTS (SELECT 1 FROM scene_preanalyses WHERE scene_id = scene_workflow_state.scene_id)
+                    THEN 'preanalysis'
+                ELSE current_stage
+            END
+            WHERE scene_id IN (SELECT id FROM scenes {deleted_filter})
+            """
+        )
+    if _table_exists(connection, "chapter_workflow_state"):
+        connection.execute(
+            """
+            UPDATE scene_workflow_state
+            SET current_stage = COALESCE((
+                    SELECT chapter.current_stage
+                    FROM chapter_workflow_state chapter
+                    WHERE chapter.active_scene_id = scene_workflow_state.scene_id
+                ), current_stage),
+                updated_at = CURRENT_TIMESTAMP
+            WHERE EXISTS (
+                SELECT 1 FROM chapter_workflow_state chapter
+                WHERE chapter.active_scene_id = scene_workflow_state.scene_id
+            )
+            """
+        )
 
 
 def _safe_json_list(value: object) -> list[dict[str, object]]:
@@ -4160,6 +4397,11 @@ MIGRATIONS = {
     38: _migrate_to_v38,
     39: _migrate_to_v39,
     40: _migrate_to_v40,
+    41: _migrate_to_v41,
+    42: _migrate_to_v42,
+    43: _migrate_to_v43,
+    44: _migrate_to_v44,
+    45: _migrate_to_v45,
 }
 
 

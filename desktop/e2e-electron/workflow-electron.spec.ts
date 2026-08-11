@@ -51,68 +51,35 @@ test('Electron 启动、preload 桥接和后端连接正常', async () => {
   await expect(page.getByRole('heading', { name: '工程' })).toBeVisible();
 });
 
-test('Electron 新建改写和扩写工程且没有提取入口', async () => {
-  await createProject('rewrite');
-  await createProject('branch');
+test('Electron 新建统一普通小说工程且没有改写扩写选择', async () => {
+  await createProject();
 });
 
-test('Electron 改写工作流完成增加剧情最小闭环', async () => {
+test('Electron 完成预分析到人物专项分析的第一阶段闭环', async () => {
   await openSeedProject('真实 E2E 1');
-  await page.getByLabel('新增剧情目标').fill('增加一场伏击战');
-  await page.getByRole('button', { name: '启动分析' }).click();
-  await expect(page.getByLabel('模块化细纲编辑器')).toBeVisible();
-  await page.getByRole('button', { name: '确认目标细纲' }).click();
-  await page.getByRole('button', { name: '生成全部剩余场景' }).click();
-  await expect(page.getByText('新正文版本已经保存。')).toBeVisible();
-
-  await page.getByRole('button', { name: '开始新的创作' }).click();
-  await page.getByLabel('新增剧情目标').fill('再增加一场雨夜追逐');
-  await page.getByRole('button', { name: '启动分析' }).click();
-  await expect(page.getByLabel('模块化细纲编辑器')).toBeVisible();
-  await page.getByRole('button', { name: '确认目标细纲' }).click();
-  await page.getByRole('button', { name: '生成全部剩余场景' }).click();
-  await expect(page.getByText('新正文版本已经保存。')).toBeVisible();
-  await expect(page.getByLabel('rewrite versions').locator('li')).toHaveCount(2);
-  await page.getByLabel('rewrite versions').locator('li').first().getByRole('button', { name: '当前稿' }).click();
-  await expect(page.getByLabel('rewrite versions').locator('pre')).toContainText('增加一场伏击战');
-  await expect(page.getByLabel('rewrite versions').locator('pre')).toContainText('再增加一场雨夜追逐');
+  await expect(page.getByRole('button', { name: /场景 1.*当前/ })).toBeVisible();
+  await page.getByRole('button', { name: '运行预分析' }).click();
+  await expect(page.getByLabel('摘要')).toHaveValue('人物进入院子并检查院门。');
+  await page.getByRole('button', { name: '确认预分析' }).click();
+  await page.getByRole('button', { name: /贴合原文/ }).click();
+  await page.getByPlaceholder(/把张三替换成李四/).fill('把人物替换成李四，保留事件顺序。');
+  await page.getByRole('checkbox', { name: '李四' }).check();
+  await page.getByRole('button', { name: '进入专项分析' }).click();
+  await page.getByRole('button', { name: '运行人物专项分析' }).click();
+  await expect(page.locator('input[value="人物进入院子"]')).toBeVisible();
+  await expect(page.locator('input[value="“他”指人物"]')).toBeVisible();
+  await expect(page.locator('input[value="存在差异"]')).toBeVisible();
+  await page.getByRole('button', { name: '确认分析' }).click();
+  await expect(page.getByRole('heading', { name: '目标设计' })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole('heading', { name: '目标设计' })).toBeVisible();
 });
 
-test('Electron 从当前 Prose 版本预览语义场景锚点并继续 Plot', async () => {
-  await openSeedProject('真实 E2E 2');
-  await page.getByRole('button', { name: '重写正文' }).click();
-  await page.getByLabel('源细纲').click();
-  await page.getByRole('button', { name: '生成重写计划' }).click();
-  await page.getByRole('button', { name: '生成正文并检查' }).click();
-  await expect(page.getByRole('status')).toContainText('本次创作已完成');
-  await page.getByRole('button', { name: '开始新的运行' }).click();
-  await page.getByRole('button', { name: '增加剧情' }).click();
-  await page.getByLabel('插入点节点类型').selectOption('scene_end');
-  await expect(page.getByLabel('插入点场景')).not.toHaveValue('');
-  await page.getByRole('button', { name: '预览位置' }).first().click();
-  await expect(page.getByLabel('插入点锚点预览')).toContainText('人物');
-  await page.getByLabel('新增剧情目标').fill('Electron 语义锚点事件');
-  await page.getByRole('button', { name: '启动分析' }).click();
-  await page.getByRole('button', { name: '确认目标细纲' }).click();
-  await page.getByRole('button', { name: '生成全部剩余场景' }).click();
-  await expect(page.getByLabel('rewrite versions').locator('li')).toHaveCount(2);
-  const historicalVersion = page.getByLabel('rewrite versions').locator('li').nth(1);
-  await historicalVersion.getByRole('button', { name: '基于此版本继续' }).click();
-  await expect(page.getByText('本次来源：历史版本 v1')).toBeVisible();
-  await page.getByLabel('插入点节点类型').selectOption('scene_end');
-  await expect(page.getByLabel('插入点场景')).not.toHaveValue('');
-  await page.getByRole('button', { name: '预览位置' }).first().click();
-  await expect(page.getByLabel('插入点锚点预览')).toContainText('人物');
-});
-
-test('Electron 扩写工作流生成分支章节和场景', async () => {
+test('Electron 历史 branch 工程进入统一章节工作台', async () => {
   await openSeedProject('真实 E2E 4');
-  await page.getByLabel('剧情目标').fill('继续新的路线');
-  await page.getByRole('button', { name: '开始规划' }).click();
-  await page.getByRole('button', { name: '确认目标细纲' }).click();
-  await page.getByRole('button', { name: '生成全部剩余场景' }).click();
-  await expect(page.getByText('新内容已经保存到这条路线。')).toBeVisible();
-  await expect(page.getByLabel('创作路线').locator('li')).toHaveCount(2);
+  await expect(page.getByLabel('章节导航')).toContainText('第一章');
+  await expect(page.getByRole('heading', { name: '场景' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '继续写' })).toHaveCount(0);
 });
 
 test('Electron 旧提取工程可下载分析并创建派生工程', async () => {
@@ -124,17 +91,17 @@ test('Electron 旧提取工程可下载分析并创建派生工程', async () =>
   await page.getByRole('button', { name: '基于此项目创建新工程' }).click();
   await page.getByLabel('工程类型').selectOption('branch');
   await page.getByRole('button', { name: '创建并打开' }).click();
-  await expect(page.getByRole('button', { name: '继续写' })).toBeVisible();
+  await expect(page.getByLabel('章节导航')).toBeVisible();
+  await expect(page.getByRole('heading', { name: '场景' })).toBeVisible();
 });
 
-async function createProject(kind: 'rewrite' | 'branch') {
+async function createProject() {
   await page.evaluate(() => localStorage.clear());
   await goToProjectLibrary();
   await page.getByRole('button', { name: '新建工程' }).first().click();
-  await expect(page.getByRole('button', { name: /改写工程/ })).toBeVisible();
-  await expect(page.getByText('提取工程')).toHaveCount(0);
-  await page.getByRole('button', { name: kind === 'rewrite' ? /改写工程/ : /扩写工程/ }).click();
-  await page.getByRole('button', { name: '下一步' }).click();
+  await expect(page.getByRole('heading', { name: '导入文件' })).toBeVisible();
+  await expect(page.getByRole('button', { name: /改写工程/ })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /扩写工程/ })).toHaveCount(0);
   await page.getByRole('button', { name: '选择文件' }).click();
   await page.getByRole('button', { name: '选择目录' }).click();
   await page.getByRole('button', { name: '下一步' }).click();
@@ -145,7 +112,8 @@ async function createProject(kind: 'rewrite' | 'branch') {
   await page.getByRole('button', { name: '下一步' }).click();
   await page.getByRole('button', { name: '下一步' }).click();
   await page.getByRole('button', { name: '开始创建' }).click();
-  await expect(page.getByRole('button', { name: kind === 'rewrite' ? '增加剧情' : '继续写' })).toBeVisible();
+  await expect(page.getByLabel('章节导航')).toBeVisible();
+  await expect(page.getByRole('heading', { name: '场景' })).toBeVisible();
 }
 
 async function goToProjectLibrary() {
@@ -159,10 +127,5 @@ async function openSeedProject(name: string) {
   await page.getByRole('button', { name: new RegExp(name) }).first().click();
   await page.getByRole('button', { name: '进入工程' }).click();
   if (name.endsWith('8')) await expect(page.getByText('此项目属于旧版分析工程。')).toBeVisible();
-  else if (name.endsWith('4')) {
-    await expect(page.getByRole('button', { name: '继续写' })).toBeVisible();
-  } else {
-    await expect(page.getByRole('button', { name: '增加剧情' })).toBeVisible();
-    await expect(page.locator('.chapter-row.selected')).toBeVisible();
-  }
+  else await expect(page.getByLabel('章节导航')).toBeVisible();
 }

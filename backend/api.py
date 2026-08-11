@@ -41,7 +41,9 @@ from rusty.services.pipeline_service import PipelineService
 from rusty.db import default_database_path
 from rusty.services.project_service import ProjectService
 from rusty.services.prompt_service import PromptService
+from rusty.services.prompt_definition_service import PromptDefinitionService
 from rusty.services.context_service import ContextService
+from rusty.services.creative_workflow_service import CreativeWorkflowService
 from rusty.services.rewrite_workflow_service import RewriteWorkflowService
 from rusty.services.resource_analysis_service import ResourceAnalysisService
 from rusty.services.scene_service import SceneService
@@ -246,6 +248,7 @@ def create_app(
     pipeline_service = PipelineService(db_path)
     model_service = ModelService(db_path)
     prompt_service = PromptService(db_path)
+    prompt_definition_service = PromptDefinitionService(db_path)
     analysis_service = AnalysisService(db_path, ai_client=prompt_package_ai_client or style_ai_client)
     style_service = StyleTemplateService(db_path)
     style_extraction_service = StyleExtractionService(db_path, ai_client=style_ai_client)
@@ -254,6 +257,7 @@ def create_app(
     scene_service = SceneService(db_path)
     scene_boundary_ai_service = SceneBoundaryAIService(db_path)
     context_service = ContextService(db_path)
+    creative_workflow_service = CreativeWorkflowService(db_path, ai_client=workflow_ai_client)
     rewrite_workflow_service = RewriteWorkflowService(db_path)
     resource_analysis_service = ResourceAnalysisService(db_path)
     scene_rewrite_orchestrator = SceneRewriteOrchestrator(db_path)
@@ -818,8 +822,6 @@ def create_app(
             raise _http_error(400, "preview_mismatch", "源文件已变化，请重新预览后再创建工程。")
         workspace = _optional_workspace_path(payload.workspace_path) or state.workspace_path or state.source_path.parent
         parsed = state.parsed_book
-        if payload.project_kind == "rewrite" and payload.prompt_template_id is None:
-            raise _http_error(400, "rewrite_prompt_required", "创建改写工程前请选择改写提示词。")
         txt_split_rule_id = 1
         if parsed.source_format == "txt" and state.split_options.get("mode") != "auto":
             options = state.split_options
@@ -846,6 +848,9 @@ def create_app(
             model_id=payload.model_id,
         )
         document_library_service.ensure_project_document(project_id, state.source_path)
+        prompt_definition_service.initialize_project_master(
+            project_id, payload.master_prompt_definition_id
+        )
         return _project_out(_require_project(project_service, project_id))
 
     @app.get(
@@ -878,6 +883,147 @@ def create_app(
     def list_chapters(project_id: int) -> list[ChapterOut]:
         _require_project(project_service, project_id)
         return [_chapter_out(chapter) for chapter in project_service.list_chapters(project_id)]
+
+    @app.get("/api/projects/{project_id}/creative-workflow", response_model=list[dict[str, Any]])
+    def list_creative_workflow_states(project_id: int) -> list[dict[str, Any]]:
+        project = _require_project(project_service, project_id)
+        if project.project_kind == "legacy_extract":
+            raise _http_error(409, "legacy_extract_workflow", "Legacy extract projects use their dedicated workflow.")
+        return creative_workflow_service.list_chapter_states(project_id)
+
+    @app.get("/api/chapters/{chapter_id}/creative-workflow", response_model=dict[str, Any])
+    def get_creative_workflow_state(chapter_id: int) -> dict[str, Any]:
+        chapter = _require_existing_chapter(project_service, chapter_id)
+        project = _require_project(project_service, chapter.project_id)
+        if project.project_kind == "legacy_extract":
+            raise _http_error(409, "legacy_extract_workflow", "Legacy extract projects use their dedicated workflow.")
+        return creative_workflow_service.get_chapter_state(chapter_id)
+
+    @app.get("/api/chapters/{chapter_id}/creative-scene-states", response_model=list[dict[str, Any]])
+    def list_creative_scene_states(chapter_id: int) -> list[dict[str, Any]]:
+        chapter = _require_existing_chapter(project_service, chapter_id)
+        project = _require_project(project_service, chapter.project_id)
+        if project.project_kind == "legacy_extract":
+            raise _http_error(409, "legacy_extract_workflow", "Legacy extract projects use their dedicated workflow.")
+        return creative_workflow_service.list_scene_states(chapter_id)
+
+    @app.get("/api/scenes/{scene_id}/creative-workflow", response_model=dict[str, Any])
+    def get_creative_scene_state(scene_id: int) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.get_scene_state(scene_id)
+
+    @app.post(
+        "/api/scenes/{scene_id}/creative-workflow/activate",
+        response_model=dict[str, Any],
+        dependencies=[Depends(_require_token)],
+    )
+    def activate_creative_scene(scene_id: int) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.activate_scene(scene_id)
+
+    @app.put(
+        "/api/chapters/{chapter_id}/creative-workflow",
+        response_model=dict[str, Any],
+        dependencies=[Depends(_require_token)],
+    )
+    def update_creative_workflow_state(chapter_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        chapter = _require_existing_chapter(project_service, chapter_id)
+        project = _require_project(project_service, chapter.project_id)
+        if project.project_kind == "legacy_extract":
+            raise _http_error(409, "legacy_extract_workflow", "Legacy extract projects use their dedicated workflow.")
+        return creative_workflow_service.update_chapter_state(
+            chapter_id,
+            active_scene_id=(int(payload["active_scene_id"]) if payload.get("active_scene_id") is not None else None),
+            current_stage=str(payload.get("current_stage") or "not_started"),
+        )
+
+    @app.get("/api/scenes/{scene_id}/preanalysis", response_model=dict[str, Any] | None)
+    def get_scene_preanalysis(scene_id: int) -> dict[str, Any] | None:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.get_preanalysis(scene_id)
+
+    @app.post(
+        "/api/scenes/{scene_id}/preanalysis/run",
+        response_model=dict[str, Any],
+        dependencies=[Depends(_require_token)],
+    )
+    def run_scene_preanalysis(scene_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.run_preanalysis(
+            scene_id, replace_existing=bool(payload.get("replace_existing", False))
+        )
+
+    @app.put(
+        "/api/scenes/{scene_id}/preanalysis",
+        response_model=dict[str, Any],
+        dependencies=[Depends(_require_token)],
+    )
+    def save_scene_preanalysis(scene_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.save_preanalysis(scene_id, payload, user_edited=True)
+
+    @app.post(
+        "/api/scenes/{scene_id}/preanalysis/confirm",
+        response_model=dict[str, Any],
+        dependencies=[Depends(_require_token)],
+    )
+    def confirm_scene_preanalysis(scene_id: int) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.confirm_preanalysis(scene_id)
+
+    @app.get("/api/scenes/{scene_id}/creative-intent", response_model=dict[str, Any] | None)
+    def get_scene_creative_intent(scene_id: int) -> dict[str, Any] | None:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.get_intent(scene_id)
+
+    @app.put(
+        "/api/scenes/{scene_id}/creative-intent",
+        response_model=dict[str, Any],
+        dependencies=[Depends(_require_token)],
+    )
+    def save_scene_creative_intent(scene_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.save_intent(scene_id, payload)
+
+    @app.get(
+        "/api/scenes/{scene_id}/character-modification-analysis",
+        response_model=dict[str, Any] | None,
+    )
+    def get_character_modification_analysis(scene_id: int) -> dict[str, Any] | None:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.get_character_modification_analysis(scene_id)
+
+    @app.post(
+        "/api/scenes/{scene_id}/character-modification-analysis/run",
+        response_model=dict[str, Any],
+        dependencies=[Depends(_require_token)],
+    )
+    def run_character_modification_analysis(scene_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.run_character_modification_analysis(
+            scene_id,
+            source_character=str(payload.get("source_character") or ""),
+            target_character_card_id=int(payload.get("target_character_card_id") or 0),
+            replace_existing=bool(payload.get("replace_existing", False)),
+        )
+
+    @app.put(
+        "/api/scenes/{scene_id}/character-modification-analysis",
+        response_model=dict[str, Any],
+        dependencies=[Depends(_require_token)],
+    )
+    def save_character_modification_analysis(scene_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.save_character_modification_analysis(scene_id, payload)
+
+    @app.post(
+        "/api/scenes/{scene_id}/character-modification-analysis/confirm",
+        response_model=dict[str, Any],
+        dependencies=[Depends(_require_token)],
+    )
+    def confirm_character_modification_analysis(scene_id: int) -> dict[str, Any]:
+        _require_scene(scene_service, scene_id)
+        return creative_workflow_service.confirm_character_modification_analysis(scene_id)
 
     @app.get("/api/projects/{project_id}/export-plan", response_model=list[ExportPlanItemOut])
     def get_project_export_plan(project_id: int) -> list[ExportPlanItemOut]:
@@ -1161,6 +1307,7 @@ def create_app(
             )
         if payload.confirm:
             scenes = scene_service.confirm_boundaries(chapter_id)
+        creative_workflow_service.reconcile_chapter_scenes(chapter_id)
         return [scene.__dict__ for scene in scenes]
 
     @app.post(
@@ -1173,13 +1320,12 @@ def create_app(
         _require_project(project_service, chapter.project_id)
         if payload.boundaries is None:
             raise _http_error(400, "scene_boundaries_required", "Manual scene adjustment requires boundaries.")
-        return [
-            scene.__dict__
-            for scene in scene_service.adjust_boundaries(
-                chapter_id,
-                [item.model_dump() for item in payload.boundaries],
-            )
-        ]
+        scenes = scene_service.adjust_boundaries(
+            chapter_id,
+            [item.model_dump() for item in payload.boundaries],
+        )
+        creative_workflow_service.reconcile_chapter_scenes(chapter_id)
+        return [scene.__dict__ for scene in scenes]
 
     @app.post(
         "/api/chapters/{chapter_id}/scenes/confirm",
@@ -1189,7 +1335,9 @@ def create_app(
     def confirm_chapter_scenes(chapter_id: int) -> list[dict[str, Any]]:
         chapter = _require_existing_chapter(project_service, chapter_id)
         _require_project(project_service, chapter.project_id)
-        return [scene.__dict__ for scene in scene_service.confirm_boundaries(chapter_id)]
+        scenes = scene_service.confirm_boundaries(chapter_id)
+        creative_workflow_service.reconcile_chapter_scenes(chapter_id)
+        return [scene.__dict__ for scene in scenes]
 
     @app.get("/api/scenes/{scene_id}/facts", response_model=dict[str, Any])
     def get_scene_facts(scene_id: int) -> dict[str, Any]:
@@ -1464,6 +1612,86 @@ def create_app(
     @app.get("/api/analysis-prompts", response_model=list[AnalysisPromptTemplateOut])
     def list_analysis_prompts() -> list[AnalysisPromptTemplateOut]:
         return [AnalysisPromptTemplateOut(**template.__dict__) for template in analysis_service.list_templates()]
+
+    @app.get("/api/prompt-definitions", response_model=list[dict[str, Any]])
+    def list_prompt_definitions() -> list[dict[str, Any]]:
+        return [item.__dict__ for item in prompt_definition_service.list_definitions()]
+
+    @app.post(
+        "/api/prompt-definitions",
+        response_model=dict[str, Any],
+        dependencies=[Depends(_require_token)],
+    )
+    def create_prompt_definition(payload: dict[str, Any]) -> dict[str, Any]:
+        return prompt_definition_service.create_definition(**payload).__dict__
+
+    @app.put(
+        "/api/prompt-definitions/{definition_id}",
+        response_model=dict[str, Any],
+        dependencies=[Depends(_require_token)],
+    )
+    def update_prompt_definition(definition_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        return prompt_definition_service.update_definition(definition_id, **payload).__dict__
+
+    @app.post(
+        "/api/prompt-definitions/{definition_id}/copy",
+        response_model=dict[str, Any],
+        dependencies=[Depends(_require_token)],
+    )
+    def copy_prompt_definition(definition_id: int) -> dict[str, Any]:
+        return prompt_definition_service.duplicate_definition(definition_id).__dict__
+
+    @app.post(
+        "/api/prompt-definitions/{definition_id}/delete",
+        response_model=dict[str, bool],
+        dependencies=[Depends(_require_token)],
+    )
+    def delete_prompt_definition(definition_id: int) -> dict[str, bool]:
+        prompt_definition_service.delete_definition(definition_id)
+        return {"ok": True}
+
+    @app.post(
+        "/api/prompt-definitions/{definition_id}/export",
+        response_model=dict[str, str],
+        dependencies=[Depends(_require_token)],
+    )
+    def export_prompt_definition(definition_id: int) -> dict[str, str]:
+        return {"content": prompt_definition_service.export_definition(definition_id)}
+
+    @app.post(
+        "/api/prompt-definitions/import",
+        response_model=dict[str, Any],
+        dependencies=[Depends(_require_token)],
+    )
+    def import_prompt_definition(payload: dict[str, str]) -> dict[str, Any]:
+        return prompt_definition_service.import_definition(payload.get("content", "")).__dict__
+
+    @app.get("/api/projects/{project_id}/master-prompt", response_model=dict[str, Any])
+    def get_project_master_prompt(project_id: int) -> dict[str, Any]:
+        _require_project(project_service, project_id)
+        return prompt_definition_service.get_project_master(project_id)
+
+    @app.put(
+        "/api/projects/{project_id}/master-prompt",
+        response_model=dict[str, Any],
+        dependencies=[Depends(_require_token)],
+    )
+    def save_project_master_prompt(project_id: int, payload: dict[str, str]) -> dict[str, Any]:
+        _require_project(project_service, project_id)
+        return prompt_definition_service.save_project_master(project_id, payload.get("content", ""))
+
+    @app.post(
+        "/api/projects/{project_id}/master-prompt/export",
+        response_model=dict[str, Any],
+        dependencies=[Depends(_require_token)],
+    )
+    def export_project_master_prompt(project_id: int, payload: dict[str, str]) -> dict[str, Any]:
+        _require_project(project_service, project_id)
+        return prompt_definition_service.export_project_master(
+            project_id,
+            name=payload.get("name", "").strip() or "工程总提示词",
+            description=payload.get("description", ""),
+        ).__dict__
 
     @app.post(
         "/api/analysis-prompts",
@@ -2589,6 +2817,13 @@ def _require_existing_chapter(service: ProjectService, chapter_id: int) -> Chapt
     if chapter is None:
         raise _http_error(404, "chapter_not_found", f"Chapter not found: {chapter_id}")
     return chapter
+
+
+def _require_scene(service: SceneService, scene_id: int):
+    scene = service.get_scene(scene_id)
+    if scene is None:
+        raise _http_error(404, "scene_not_found", f"Scene not found: {scene_id}")
+    return scene
 
 
 def _validate_source_path(source_path: str) -> Path:

@@ -71,7 +71,13 @@ Rusty 以本地优先方式管理小说项目。当前主界面采用 Electron +
 - `src/rusty/secrets.py`
 - `desktop/src/pages/ModelManagePage.tsx`
 
-### 2.4 提示词包与风格模板
+### 2.4 提示词与风格模板
+
+- 新创作工作流使用三类简单提示词对象：总提示词 `master`、工作流任务提示词 `workflow_task`、公共任务提示词 `common_task`。
+- 工程总提示词是工程当前实际使用的文本；从库中选择时复制内容，工程内修改不会与库条目同步，并可再导出为新的库条目。
+- 新 AI 调用由 `PromptCompiler` 按“Rusty 内部规则 → 工程总提示词 → 当前任务提示词 → 动态上下文 → 本次要求 → 程序控制的输出契约”组装。JSON Schema 不依赖用户可编辑的 Prompt 正文。
+- 新提示词模型不实现版本历史、继承、模板/工程同步或执行快照 UI。
+- 旧提示词包继续服务仍可达的历史流水线，不是新创作工作流的核心依赖。
 
 - 管理摘要、情节扩写和改写所需的结构化提示词。
 - 支持项目级提示词覆盖，并在项目未绑定时回退到全局默认配置。
@@ -82,6 +88,7 @@ Rusty 以本地优先方式管理小说项目。当前主界面采用 Electron +
 主要实现：
 
 - `src/rusty/services/prompt_service.py`
+- `src/rusty/services/prompt_definition_service.py`
 - `src/rusty/services/prompt_compiler.py`
 - `src/rusty/services/prompt_package_extraction_service.py`
 - `src/rusty/services/style_service.py`
@@ -160,7 +167,27 @@ Rusty 以本地优先方式管理小说项目。当前主界面采用 Electron +
 - `tests/test_pipeline_service.py`
 - `examples/xianxia/`
 
-### 2.8 导出
+### 2.8 章节中心创作工作流（第一阶段）
+
+- `rewrite` 与历史 `branch` 普通工程进入同一三栏工作台；`legacy_extract` 保持独立只读兼容路径。新建普通小说工程不再要求用户先选择“改写/扩写”。
+- 左栏只显示章节及持久化阶段状态。`scene_workflow_state` 独立保存每个场景的阶段；章节状态只记录上次活动场景并同步显示该场景阶段。场景列表位于中央章节工作区，状态不再按列表索引推断。
+- 当前步骤为“预分析 → 方向 → 专项分析 → 目标设计 → 写作 → 审查”。已到达步骤可回看，未到达步骤禁用；目标设计仅提供已解锁占位。
+- 预分析保存摘要、人物、地点、时间、场景类型和基础事件，继续复用现有场景及原文 offset。场景切分可在工作台内轻量调整和确认，确认后才运行 scene-specific 预分析。人工编辑自动保存；切换场景/章节会先 flush 绑定到 loaded scene 的 dirty 草稿，避免丢失或串写；已有人工修改时，重新分析必须先确认覆盖。
+- 创作方向保存稳定 key：`faithful`、`plot_adjust`、`expansion`、`reimagine`，以及本次具体要求和选中的角色/素材 ID；选择方向不会生成正文。
+- 第一条完整专项分析是“贴合原文 → 人物修改”。结果区分显式关联、隐式指代、行为、对白、状态、持有物、空间关系、关联事件和目标角色差异，并保存可回到 Source Layer 的文本范围。用户可增删改、重新分析和整体确认。
+- 修改预分析或方向会把专项分析标为 stale，并立即把 scene/chapter 阶段回退到对应上游阶段。stale 专项分析不能确认，必须重新分析生成 draft；修改专项分析为未来目标设计/写作规划预留失效边界。任何上游修改都不会删除未来已经生成的正文。
+
+主要实现：
+
+- `src/rusty/services/creative_workflow_service.py`
+- `src/rusty/services/prompt_definition_service.py`
+- `src/rusty/services/prompt_compiler.py`
+- `desktop/src/pages/CreativeWorkspacePage.tsx`
+- `desktop/src/pages/PromptManagePage.tsx`
+- `tests/test_creative_workspace.py`
+- `tests/test_prompt_definitions.py`
+
+### 2.9 导出
 
 - 项目支持 TXT、EPUB 导出。
 - 文档库支持层级 TXT、EPUB 导出：卷是 EPUB 一级 TOC，章节是卷下二级 TOC，无卷章节保持一级。
@@ -218,7 +245,7 @@ SQLite + OS keyring + 本地文件
 
 ## 5. 数据实现
 
-数据库当前架构版本为 40。主要数据域包括：
+数据库当前架构版本为 44。主要数据域包括：
 
 - 项目、书籍元数据、导入来源、分章规则和章节；
 - AI 模型、提示词模板、项目提示词和项目设置；
@@ -228,6 +255,7 @@ SQLite + OS keyring + 本地文件
 - 导出计划和导出记录；
 - 文档库文档、分类、标签、处理模板、修订版本、卷、章节、草稿和存储设置。
 - 剧情运行状态、草稿生成进度、独立分支路线和不可变章节/场景版本快照。
+- 章节创作阶段、轻量场景预分析、创作方向、简单提示词定义、工程总提示词和人物修改专项分析。
 
 v14 将旧素材类型 `snippet` 映射为 `scene_reference`，将 `outline` 映射为 `plot_skeleton` 并保留旧类型元数据；旧素材分类和文档分类迁移为标签。角色卡旧固定字段迁移为身份、年龄、设定及有序自定义字段。v19 新增文档卷层级；v20 新增仅适用于公共角色的 `character_categories` / `character_category_links`，并幂等补齐历史工程角色的有效 `project_character_bindings`；v21 新增单例 `character_extraction_settings`；v22 新增素材分类、标签组、工程素材筛选和三任务 `material_ai_settings`。v22 会原地保留历史工程素材 ID，把 `scope` 统一为 `public`、清空 `project_id`，并在来源元数据记录 `legacy_scope` / `legacy_project_id` / `migrated_to_unified_library`；已有标签会转为对应工程的素材筛选，未打标签的旧素材不会生成伪标签。v23 为三个素材 AI 任务分别增加用户提示词模板、JSON 分析维度、通用标签开关和适用场景标签开关；v22 的 `generate_tags` 会迁移到两个新开关。迁移和关系写入均可幂等重放。
 
@@ -276,6 +304,10 @@ offset 解析 rewrite 锚点；任意 text offset 也只使用相邻 segment sta
 semantic-map hash 与 resolved anchor snapshot，最终 CAS 同时验证正文版本和 map 归属。
 SQLite trigger 禁止业务 UPDATE/DELETE rewrite version 及其 semantic map。锚点预览 API 和
 `StoryAnchorPicker` 会展示实际 rewrite excerpt、局部状态与低置信度提示。
+
+v41 增加 `chapter_workflow_state`；v42 增加 `scene_preanalyses` 和 `creative_intents`；v43 增加
+`prompt_definitions` 和 `project_master_prompts`；v44 增加
+`character_modification_analyses`；v45 增加 `scene_workflow_state`。迁移按现有版本链顺序追加，不删除旧表或旧数据。
 
 ## 6. 桌面端与安全边界
 
@@ -348,6 +380,10 @@ npm run test:e2e:electron # 实际 Electron + preload + FastAPI + SQLite + FakeL
 完整后端测试覆盖数据库迁移、导入导出、项目与文档库、卷章层级、草稿与 revision、模型密钥隔离、提示词兼容、素材与锚点、API 权限、流水线成功/失败/重试、结构化改写校验，以及 PySide6 基础 UI。
 
 ## 9. 当前边界
+
+- 当前只完整接通“贴合原文 → 人物修改”专项分析；其他三个方向的专项分析仍是下一阶段接口。
+- 目标设计在确认专项分析后解锁，但本阶段没有实现 Target ChangeSet、Writing Plan、正文 block generation、Diff review 或自动漏改校验。
+- 旧 `SceneRewritePanel`、`RewriteOperationPanel`、提示词包 API 和历史 Plot/Prose 服务仍为兼容代码；普通创作主路径不再通过大型 Scene Rewrite modal 进入。
 
 - 应用定位为单机本地工具，没有多用户、云同步和远程服务端部署。
 - AI 能力依赖用户配置可用的 OpenAI 兼容模型和 API 密钥。

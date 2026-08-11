@@ -26,6 +26,10 @@ FastAPI is the transport boundary. `backend/api.py` creates services and registe
 
 A project has `project_kind` `rewrite`, `branch` or the read-only compatibility kind `legacy_extract`. Chapters and original scenes describe the imported baseline. `processing_mode` is retained for execution and legacy data, not as the project-purpose authority.
 
+The product-facing ordinary-project entry is now unified: both `rewrite` and historical `branch` projects enter `CreativeWorkspacePage`. `project_kind` remains a compatibility/storage field; `legacy_extract` retains its dedicated read-only route.
+
+`scene_workflow_state` is the authority for each scene's reached stage. `chapter_workflow_state` is the chapter-navigation projection: it remembers the active scene and mirrors that scene's stage for the chapter rail. `scene_preanalyses`, `creative_intents` and `character_modification_analyses` are deliberately separate small models. They reuse existing scene identities and Source Layer offsets instead of introducing a second scene table.
+
 Original chapter text and `chapter_source_versions` are immutable source history. Compatibility columns such as `chapters.rewritten_text` are current projections, not version authority.
 
 ### Rewrite versions
@@ -52,15 +56,19 @@ Facts have explicit levels: chapter start/end, local semantic segment, scene led
 
 ## Workflow ownership
 
+`CreativeWorkflowService` owns chapter-stage restoration, lightweight preanalysis, scene intent, the faithful character-modification analysis slice, confirmation and upstream invalidation. Viewing an earlier stage is read-only; edits are the operations that stale downstream artifacts. Target design is an interface boundary in phase one, not a generation implementation.
+
+`PromptDefinitionService` owns editable `master`, `workflow_task` and `common_task` definitions and copy-based project master prompts. `PromptCompiler.compile_creative_json` is the sole compiler entry for new creative tasks: internal rules, project master and task instructions are separated from dynamic context, user intent and the program-owned output contract.
+
 `PlotGenerationOrchestrator` owns Plot lifecycle, target skeleton, incremental progress, consistency warnings, retry/cancel and final commit. Its status vocabulary comes from `rusty.domain.plot_workflow`. Source text, map and resolved anchors are frozen at start; source-head CAS prevents stale overwrite.
 
 `ProseRewriteOrchestrator` owns planning, generation, observed-skeleton extraction, drift checks and version finalization. Source text, structure and map belong to the same selected snapshot.
 
-Shared analysis services provide document, scene, skeleton, style, character and fact extraction to both project kinds. `ContextService` resolves sources and compiles context blocks; prompt/model strategy is outside cleanup scope.
+Shared analysis services provide document, scene, skeleton, style, character and fact extraction to both project kinds. `ContextService` resolves sources and compiles context blocks for legacy workflows; new phase-one creative tasks use narrowly scoped context builders in `CreativeWorkflowService`.
 
 ## Compatibility boundaries
 
-The following are intentional: v1-v40 migrations; `legacy_extract` read/export/derive; rewrite current projections; old summaries, expansion data, prompt packages and document revisions; the legacy pipeline/scene workflow while API/UI/tests remain reachable; and PySide UI until explicitly retired.
+The following are intentional: v1-v44 migrations; `legacy_extract` read/export/derive; rewrite current projections; old summaries, expansion data, prompt packages and document revisions; the legacy pipeline/scene services and panels while compatibility APIs/tests remain reachable; and PySide UI until explicitly retired. Ordinary creative projects no longer use the large scene-rewrite modal as their entry point.
 
 Compatibility code needs an owning test or documented upgrade reason. Lack of a new-workflow import is not evidence that it is dead.
 
@@ -76,8 +84,12 @@ Compatibility code needs an owning test or documented upgrade reason. Lack of a 
 | Plot lifecycle | `PlotGenerationOrchestrator` |
 | Prose lifecycle | `ProseRewriteOrchestrator` |
 | Shared skeleton/fact analysis | shared analysis/content services |
+| Chapter creative stage, preanalysis and faithful character analysis | `CreativeWorkflowService` |
+| Master/task prompt definitions and project copies | `PromptDefinitionService` |
+| New creative prompt assembly | `PromptCompiler.compile_creative_json` |
 | Workflow HTTP routes/contracts | `backend/routes/workflows.py` + `backend/workflow_schemas.py` |
-| Electron workflow UI | `WorkflowRefactorPanels`, `WorkflowPanelShared`, `StoryAnchorPicker` |
+| Phase-one Electron creative UI | `CreativeWorkspacePage` |
+| Legacy Plot/Prose Electron UI | `WorkflowRefactorPanels`, `WorkflowPanelShared`, `StoryAnchorPicker` |
 | Workflow browser client | `desktop/src/api/workflowClient.ts` |
 | Active-run restoration | `usePersistedWorkflowRun` |
 | Historical upgrade | `rusty.db.schema` (append only) |
@@ -90,4 +102,10 @@ Compatibility code needs an owning test or documented upgrade reason. Lack of a 
 - Routes do not update workflow run status directly.
 - A run uses one frozen content/version/map source snapshot.
 - Final output and terminal run state share a visible transaction boundary.
-- `DB_VERSION` remains 40 for behavior-preserving cleanup.
+- Schema version 45 is append-only: v41 chapter state, v42 preanalysis/intent, v43 prompt definitions/project master, v44 character-modification analysis, and v45 authoritative per-scene workflow state.
+- Source text and scene offsets remain authoritative evidence; preanalysis and special-analysis records never replace Source Layer content.
+- Upstream edits stale downstream analysis/design/planning state but never delete generated prose.
+
+## Phase-one boundary
+
+Implemented: preanalysis, creative direction and faithful character-modification analysis. Reserved for the next phase: Target ChangeSet, other strategy-specific analyses, Writing Plan, block generation, Diff review and automated omission validation.

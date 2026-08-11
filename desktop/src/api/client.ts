@@ -1,11 +1,18 @@
 import type {
   AnalysisPromptTemplate,
+  BaseSceneAnalysis,
   AnalysisPromptTemplateWrite,
   Chapter,
   ChapterSplitOptions,
   ChapterDetail,
+  ChapterWorkflowState,
+  SceneWorkflowState,
+  CreativeWorkflowStage,
+  CreativeIntent,
+  CreativeStrategy,
   CompiledPromptPreview,
   CharacterCard,
+  CharacterModificationAnalysis,
   CharacterCardWrite,
   CharacterCategory,
   CharacterExtractionApplyResult,
@@ -59,6 +66,9 @@ import type {
   ProjectStyleBinding,
   PromptTemplate,
   PromptTemplateWrite,
+  PromptDefinition,
+  PromptDefinitionWrite,
+  ProjectMasterPrompt,
   PipelineRunResult,
   StructuredSkeleton,
   StyleTemplateExtractWrite,
@@ -472,6 +482,39 @@ export function getChapters(projectId: number) {
   return request<Chapter[]>(`/api/projects/${projectId}/chapters`);
 }
 
+export function getCreativeWorkflowStates(projectId: number) {
+  return request<ChapterWorkflowState[]>(`/api/projects/${projectId}/creative-workflow`);
+}
+
+export function getCreativeWorkflowState(chapterId: number) {
+  return request<ChapterWorkflowState>(`/api/chapters/${chapterId}/creative-workflow`);
+}
+
+export function getCreativeSceneStates(chapterId: number) {
+  return request<SceneWorkflowState[]>(`/api/chapters/${chapterId}/creative-scene-states`);
+}
+
+export function getCreativeSceneState(sceneId: number) {
+  return request<SceneWorkflowState>(`/api/scenes/${sceneId}/creative-workflow`);
+}
+
+export function activateCreativeScene(sceneId: number) {
+  return request<ChapterWorkflowState>(`/api/scenes/${sceneId}/creative-workflow/activate`, {
+    method: 'POST',
+  });
+}
+
+export function updateCreativeWorkflowState(
+  chapterId: number,
+  currentStage: CreativeWorkflowStage,
+  activeSceneId: number | null,
+) {
+  return request<ChapterWorkflowState>(`/api/chapters/${chapterId}/creative-workflow`, {
+    method: 'PUT',
+    body: JSON.stringify({ current_stage: currentStage, active_scene_id: activeSceneId }),
+  });
+}
+
 export function getChapter(chapterId: number) {
   return request<ChapterDetail>(`/api/chapters/${chapterId}`);
 }
@@ -522,6 +565,7 @@ export function createProject(
   promptTemplateId?: number | null,
   analysisPromptTemplateId?: number | null,
   modelId?: number | null,
+  masterPromptDefinitionId?: number | null,
 ) {
   return request<Project>('/api/projects', {
     method: 'POST',
@@ -533,6 +577,7 @@ export function createProject(
       model_id: modelId ?? null,
       prompt_template_id: promptTemplateId ?? null,
       analysis_prompt_template_id: analysisPromptTemplateId ?? null,
+      master_prompt_definition_id: masterPromptDefinitionId ?? null,
     }),
   });
 }
@@ -1094,6 +1139,109 @@ export function confirmChapterRewrite(chapterId: number) {
 
 export function getChapterScenes(chapterId: number) {
   return request<import('./types').SceneRecord[]>(`/api/chapters/${chapterId}/scenes`);
+}
+
+export function getPromptDefinitions() {
+  return request<PromptDefinition[]>('/api/prompt-definitions');
+}
+
+export function createPromptDefinition(value: PromptDefinitionWrite) {
+  return request<PromptDefinition>('/api/prompt-definitions', { method: 'POST', body: JSON.stringify(value) });
+}
+
+export function updatePromptDefinition(id: number, value: PromptDefinitionWrite) {
+  return request<PromptDefinition>(`/api/prompt-definitions/${id}`, { method: 'PUT', body: JSON.stringify(value) });
+}
+
+export function copyPromptDefinition(id: number) {
+  return request<PromptDefinition>(`/api/prompt-definitions/${id}/copy`, { method: 'POST' });
+}
+
+export function deletePromptDefinition(id: number) {
+  return request<{ ok: boolean }>(`/api/prompt-definitions/${id}/delete`, { method: 'POST' });
+}
+
+export function exportPromptDefinition(id: number) {
+  return request<{ content: string }>(`/api/prompt-definitions/${id}/export`, { method: 'POST' });
+}
+
+export function importPromptDefinition(content: string) {
+  return request<PromptDefinition>('/api/prompt-definitions/import', { method: 'POST', body: JSON.stringify({ content }) });
+}
+
+export function getProjectMasterPrompt(projectId: number) {
+  return request<ProjectMasterPrompt>(`/api/projects/${projectId}/master-prompt`);
+}
+
+export function saveProjectMasterPrompt(projectId: number, content: string) {
+  return request<ProjectMasterPrompt>(`/api/projects/${projectId}/master-prompt`, { method: 'PUT', body: JSON.stringify({ content }) });
+}
+
+export function exportProjectMasterPrompt(projectId: number, name: string, description = '') {
+  return request<PromptDefinition>(`/api/projects/${projectId}/master-prompt/export`, { method: 'POST', body: JSON.stringify({ name, description }) });
+}
+
+export function getScenePreanalysis(sceneId: number) {
+  return request<BaseSceneAnalysis | null>(`/api/scenes/${sceneId}/preanalysis`);
+}
+
+export function runScenePreanalysis(sceneId: number, replaceExisting = false) {
+  return request<BaseSceneAnalysis>(`/api/scenes/${sceneId}/preanalysis/run`, {
+    method: 'POST',
+    body: JSON.stringify({ replace_existing: replaceExisting }),
+  });
+}
+
+export function saveScenePreanalysis(sceneId: number, value: Omit<BaseSceneAnalysis, 'scene_id' | 'status' | 'user_edited' | 'confirmed_at' | 'updated_at'>) {
+  return request<BaseSceneAnalysis>(`/api/scenes/${sceneId}/preanalysis`, {
+    method: 'PUT',
+    body: JSON.stringify(value),
+  });
+}
+
+export function confirmScenePreanalysis(sceneId: number) {
+  return request<BaseSceneAnalysis>(`/api/scenes/${sceneId}/preanalysis/confirm`, { method: 'POST' });
+}
+
+export function getSceneCreativeIntent(sceneId: number) {
+  return request<CreativeIntent | null>(`/api/scenes/${sceneId}/creative-intent`);
+}
+
+export function saveSceneCreativeIntent(sceneId: number, value: {
+  strategy: CreativeStrategy;
+  user_instruction: string;
+  selected_character_ids?: number[];
+  selected_plot_material_ids?: number[];
+  selected_scene_material_ids?: number[];
+}) {
+  return request<CreativeIntent>(`/api/scenes/${sceneId}/creative-intent`, {
+    method: 'PUT',
+    body: JSON.stringify(value),
+  });
+}
+
+export function getCharacterModificationAnalysis(sceneId: number) {
+  return request<CharacterModificationAnalysis | null>(`/api/scenes/${sceneId}/character-modification-analysis`);
+}
+
+export function runCharacterModificationAnalysis(sceneId: number, value: {
+  source_character: string;
+  target_character_card_id: number;
+  replace_existing?: boolean;
+}) {
+  return request<CharacterModificationAnalysis>(`/api/scenes/${sceneId}/character-modification-analysis/run`, {
+    method: 'POST', body: JSON.stringify(value),
+  });
+}
+
+export function saveCharacterModificationAnalysis(sceneId: number, value: CharacterModificationAnalysis) {
+  return request<CharacterModificationAnalysis>(`/api/scenes/${sceneId}/character-modification-analysis`, {
+    method: 'PUT', body: JSON.stringify(value),
+  });
+}
+
+export function confirmCharacterModificationAnalysis(sceneId: number) {
+  return request<CharacterModificationAnalysis>(`/api/scenes/${sceneId}/character-modification-analysis/confirm`, { method: 'POST' });
 }
 
 export function analyzeChapterScenes(

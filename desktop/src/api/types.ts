@@ -174,6 +174,33 @@ export type Chapter = {
   end_line: number | null;
 };
 
+export type CreativeWorkflowStage =
+  | 'not_started'
+  | 'preanalysis'
+  | 'direction'
+  | 'special_analysis'
+  | 'target_design'
+  | 'writing'
+  | 'review'
+  | 'confirmed';
+
+export type ChapterWorkflowState = {
+  chapter_id: number;
+  chapter_index: number;
+  title: string;
+  active_scene_id: number | null;
+  current_stage: CreativeWorkflowStage;
+  updated_at: string;
+};
+
+export type SceneWorkflowState = {
+  scene_id: number;
+  scene_index?: number;
+  title?: string;
+  current_stage: CreativeWorkflowStage;
+  updated_at: string;
+};
+
 export type ChapterAIOutputs = {
   plot_summary: string | null;
   plot_characters: Array<Record<string, unknown>> | null;
@@ -1131,6 +1158,90 @@ export type SceneRecord = {
   scene_type: string;
   user_confirmed: boolean;
   confirmed_at: string | null;
+};
+
+export type PromptDefinitionKind = 'master' | 'workflow_task' | 'common_task';
+
+export type PromptDefinition = {
+  id: number;
+  name: string;
+  description: string;
+  kind: PromptDefinitionKind;
+  workflow_key: CreativeStrategy | null;
+  task_key: string | null;
+  content: string;
+  input_description: string;
+  is_default: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type PromptDefinitionWrite = Omit<PromptDefinition, 'id' | 'created_at' | 'updated_at'>;
+
+export type ProjectMasterPrompt = {
+  project_id: number;
+  content: string;
+  source_prompt_definition_id: number | null;
+  updated_at: string;
+};
+
+export type BaseSceneAnalysis = {
+  scene_id: number;
+  summary: string;
+  characters: string[];
+  location: string;
+  time: string;
+  scene_type: string;
+  basic_events: string[];
+  status: 'draft' | 'confirmed' | 'stale';
+  user_edited: boolean;
+  confirmed_at: string | null;
+  updated_at: string;
+};
+
+export type CreativeStrategy = 'faithful' | 'plot_adjust' | 'expansion' | 'reimagine';
+
+export type CreativeIntent = {
+  scene_id: number;
+  strategy: CreativeStrategy;
+  user_instruction: string;
+  selected_character_ids: number[];
+  selected_plot_material_ids: number[];
+  selected_scene_material_ids: number[];
+  status: 'draft' | 'confirmed';
+  updated_at: string;
+};
+
+export type CharacterAnalysisItem = {
+  id: string;
+  summary: string;
+  source_text: string;
+  start_offset: number;
+  end_offset: number;
+  inferred: boolean;
+  source_state?: string;
+  target_state?: string;
+  difference?: string;
+};
+
+export type CharacterModificationAnalysis = {
+  scene_id: number;
+  source_character: string;
+  target_character_card_id: number;
+  target_character_name: string;
+  explicit_mentions: CharacterAnalysisItem[];
+  implicit_references: CharacterAnalysisItem[];
+  actions: CharacterAnalysisItem[];
+  dialogue: CharacterAnalysisItem[];
+  states: CharacterAnalysisItem[];
+  objects: CharacterAnalysisItem[];
+  spatial_relations: CharacterAnalysisItem[];
+  related_events: CharacterAnalysisItem[];
+  target_character_conflicts: CharacterAnalysisItem[];
+  status: 'draft' | 'confirmed' | 'stale';
+  user_edited: boolean;
+  confirmed_at: string | null;
+  updated_at: string;
 };
 
 export type SceneBoundaryItem = {

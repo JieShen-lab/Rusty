@@ -86,6 +86,51 @@ class PromptCompiler:
             ruleset_id="rusty.native.workflow.v1",
         )
 
+    def compile_creative_json(
+        self,
+        *,
+        stage: str,
+        master_prompt: str,
+        task_prompt: str,
+        payload: dict[str, Any],
+        user_instruction: str,
+        output_contract: str,
+        prompt_definition_id: int | None = None,
+    ) -> CompiledRequest:
+        """Compile new creative tasks while keeping the output contract program-owned."""
+        internal_rules = (
+            "You are Rusty's structured creative-workflow component. Treat Source text as "
+            "immutable evidence, distinguish facts from inference, and never invent facts "
+            "outside the supplied context. Return valid JSON only."
+        )
+        system = (
+            f"[RUSTY INTERNAL SYSTEM RULES]\n{internal_rules}\n\n"
+            f"[PROJECT MASTER PROMPT]\n{master_prompt.strip() or 'None'}\n\n"
+            f"[CURRENT TASK PROMPT]\n{task_prompt.strip() or 'None'}"
+        )
+        user = (
+            "[DYNAMIC CONTEXT]\n"
+            f"{json.dumps(payload, ensure_ascii=False, indent=2)}\n\n"
+            "[THIS REQUEST'S USER INSTRUCTION]\n"
+            f"{user_instruction.strip() or 'None'}\n\n"
+            "[PROGRAM-CONTROLLED OUTPUT CONTRACT]\n"
+            f"{output_contract}"
+        )
+        return CompiledRequest(
+            stage=stage,
+            messages=(
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ),
+            expected_output=output_contract,
+            provenance={
+                "compiler": "rusty-creative-task",
+                "workflow_stage": stage,
+                "prompt_definition_id": prompt_definition_id,
+            },
+            ruleset_id="rusty.native.creative.v1",
+        )
+
     def compile_summary(self, chapter, template) -> CompiledRequest:
         system = _system_message(
             RUSTY_SUMMARY_RULESET_ID,

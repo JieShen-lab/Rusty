@@ -18,6 +18,7 @@ from rusty.services.rewrite_workflow_service import RewriteWorkflowService
 from rusty.services.model_service import ModelService
 from rusty.services.prompt_service import PromptService
 from rusty.services.analysis_service import AnalysisService
+from rusty.services.anchor_service import AnchorService
 from rusty.services.scene_service import SceneService
 
 
@@ -61,6 +62,23 @@ class RealE2EFakeLLM:
         self.required_end = {}
 
     def generate_json(self, stage, payload):
+        if stage == "scene_preanalysis":
+            return {
+                "summary": "人物进入院子并检查院门。",
+                "characters": ["人物"],
+                "location": "院子",
+                "time": "当前",
+                "scene_type": "探索",
+                "basic_events": ["人物进入院子", "人物检查院门"],
+            }
+        if stage == "character_modification_analysis":
+            return {
+                "explicit_mentions": [{"id": "explicit-1", "summary": "人物进入院子", "source_text": "人物进入院子", "start_offset": 0, "end_offset": 6, "inferred": False}],
+                "implicit_references": [{"id": "implicit-1", "summary": "“他”指人物", "source_text": "他检查了院门", "start_offset": 9, "end_offset": 15, "inferred": True}],
+                "actions": [], "dialogue": [], "states": [], "objects": [],
+                "spatial_relations": [], "related_events": [],
+                "target_character_conflicts": [{"id": "conflict-1", "summary": "行动方式存在差异", "source_text": "检查了院门", "start_offset": 10, "end_offset": 15, "inferred": False, "source_state": "直接检查", "target_state": "谨慎观察", "difference": "存在差异"}],
+            }
         if stage == "propose_target_skeleton":
             target = deepcopy(SKELETON)
             target["event_nodes"][0]["summary"] = payload["user_direction"]
@@ -119,10 +137,20 @@ def seed(database: Path) -> None:
             project_name=f"真实 E2E {index}",
             project_kind=kind,
         )
+        AnchorService(database).create_character_card(
+            "李四",
+            description="谨慎的剑客",
+            personality="谨慎",
+            action_constraints="先观察再行动",
+            setting_text="李四使用剑。",
+            scope="project",
+            project_id=project_id,
+        )
         chapter = projects.list_chapters(project_id)[0]
         scene_service = SceneService(database)
         split_at = chapter.original_text.index("旧设定")
         scenes = scene_service.split_chapter(chapter.id, proposed_boundaries=[split_at])
+        scene_service.confirm_boundaries(chapter.id)
         scene_service.save_fact_ledger(
             scenes[0].id,
             {

@@ -10,6 +10,7 @@ import { ProjectWorkspacePage } from './pages/ProjectWorkspacePage';
 import { PromptManagePage } from './pages/PromptManagePage';
 import { WorkbenchPage } from './pages/WorkbenchPage';
 import { applyTheme, getInitialTheme, type UiTheme } from './theme';
+import { flushBeforeNavigation } from './navigationFlush';
 
 type Route = {
   key: RouteKey;
@@ -46,12 +47,24 @@ export default function App() {
       window.history.replaceState(null, '', '/library');
       setRoute(parseRoute('/library'));
     }
-    const onPop = () => setRoute(parseRoute(window.location.pathname));
+    const onPop = async () => {
+      try {
+        await flushBeforeNavigation();
+      } catch {
+        return;
+      }
+      setRoute(parseRoute(window.location.pathname));
+    };
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
   }, []);
 
-  function navigate(path: string, state?: unknown) {
+  async function navigate(path: string, state?: unknown) {
+    try {
+      await flushBeforeNavigation();
+    } catch {
+      return;
+    }
     window.history.pushState(state ?? null, '', path);
     setRoute(parseRoute(path));
   }
