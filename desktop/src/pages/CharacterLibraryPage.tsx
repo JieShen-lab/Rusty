@@ -58,7 +58,7 @@ import {
   type CharacterExtractionLaunch,
 } from '../components/CharacterCreationDialogs';
 import { DangerButton } from '../components/DangerButton';
-import { LibraryDialog, LibraryEmptyState, LibrarySidebarItem } from '../components/LibraryPrimitives';
+import { LibraryContextMenu, LibraryDialog, LibraryEmptyState, LibrarySidebarItem, LibrarySidebarSectionTitle } from '../components/LibraryPrimitives';
 import { PrimaryButton } from '../components/PrimaryButton';
 import { SecondaryButton } from '../components/SecondaryButton';
 import { TopBar } from '../components/TopBar';
@@ -90,6 +90,7 @@ export function CharacterLibraryPage() {
   const [tagManagerOpen, setTagManagerOpen] = useState(false);
   const [categoryManagerOpen, setCategoryManagerOpen] = useState(false);
   const [nameDialog, setNameDialog] = useState<NameDialogState | null>(null);
+  const [categoryContextMenu, setCategoryContextMenu] = useState<{ category: CharacterCategory; x: number; y: number } | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -339,7 +340,7 @@ export function CharacterLibraryPage() {
         actions={(
           <>
             <PrimaryButton disabled={busy} onClick={() => { setExtractionLaunch(null); setCreateDialogOpen(true); }}><Plus size={16} />新建角色</PrimaryButton>
-            <SecondaryButton aria-label="角色提取设置" disabled={busy} onClick={() => setSettingsOpen(true)}><Settings size={16} /></SecondaryButton>
+            <SecondaryButton aria-label="角色提取设置" className="icon-only" disabled={busy} onClick={() => setSettingsOpen(true)}><Settings size={16} /></SecondaryButton>
           </>
         )}
       />
@@ -349,7 +350,7 @@ export function CharacterLibraryPage() {
       <div className="document-library-layout character-browser-layout">
         <aside className="document-tag-panel character-range-panel">
           <nav aria-label="角色库范围">
-            <div className="character-nav-heading"><span>工程角色</span></div>
+            <LibrarySidebarSectionTitle>工程角色</LibrarySidebarSectionTitle>
             {recentProjects.map((project) => (
               <LibrarySidebarItem
                 active={selection.kind === 'project' && selection.projectId === project.project_id}
@@ -366,7 +367,7 @@ export function CharacterLibraryPage() {
               </button>
             ) : null}
 
-            <div className="character-nav-heading"><span>公共角色</span></div>
+            <LibrarySidebarSectionTitle>公共角色</LibrarySidebarSectionTitle>
             <LibrarySidebarItem
               active={selection.kind === 'public-all'}
               count={publicCount}
@@ -375,8 +376,7 @@ export function CharacterLibraryPage() {
               onClick={() => selectMainRange({ kind: 'public-all' })}
             />
 
-            <div className="character-nav-heading">
-              <span>我的分类</span>
+            <LibrarySidebarSectionTitle action={(
               <button
                 aria-label="新建角色分类"
                 className="document-add-tag"
@@ -384,7 +384,7 @@ export function CharacterLibraryPage() {
                 onClick={() => setNameDialog({ entity: 'category' })}
                 type="button"
               ><Plus size={15} /></button>
-            </div>
+            )}>我的分类</LibrarySidebarSectionTitle>
             {categories.map((category) => (
               <div className="character-category-row" key={category.id}>
                 <LibrarySidebarItem
@@ -393,11 +393,11 @@ export function CharacterLibraryPage() {
                   icon={<Folder size={15} />}
                   label={category.name}
                   onClick={() => selectMainRange({ kind: 'public-category', categoryId: category.id })}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    setCategoryContextMenu({ category, x: event.clientX, y: event.clientY });
+                  }}
                 />
-                <div className="character-row-actions">
-                  <button aria-label={`重命名分类 ${category.name}`} onClick={() => setNameDialog({ entity: 'category', item: category })} type="button"><Pencil size={12} /></button>
-                  <button aria-label={`删除分类 ${category.name}`} onClick={() => void removeCategory(category)} type="button"><Trash2 size={12} /></button>
-                </div>
               </div>
             ))}
           </nav>
@@ -622,6 +622,18 @@ export function CharacterLibraryPage() {
           title={`${nameDialog.item ? '重命名' : '新建'}${nameDialog.entity === 'tag' ? '标签' : '分类'}`}
           onClose={() => setNameDialog(null)}
           onSave={(name) => void saveName(name)}
+        />
+      ) : null}
+      {categoryContextMenu ? (
+        <LibraryContextMenu
+          actions={[
+            { icon: <Pencil size={14} />, label: '重命名', onSelect: () => setNameDialog({ entity: 'category', item: categoryContextMenu.category }) },
+            { danger: true, icon: <Trash2 size={14} />, label: '删除分类', onSelect: () => void removeCategory(categoryContextMenu.category) },
+          ]}
+          label={`${categoryContextMenu.category.name} 分类操作`}
+          onClose={() => setCategoryContextMenu(null)}
+          x={categoryContextMenu.x}
+          y={categoryContextMenu.y}
         />
       ) : null}
     </div>

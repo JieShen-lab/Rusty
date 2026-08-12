@@ -549,7 +549,8 @@ test('角色库按工程和公共分类导航，标签只在右侧筛选且摘�
   }
 });
 
-test('角色和素材分类使用文件夹语义且素材分类操作收进更多菜单', async ({ page }) => {
+test('文档角色素材自定义分类统一使用右键菜单且不会越出视口', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
   await page.route('http://127.0.0.1:8765/api/material-categories', async (route) => {
     await route.fulfill({
       contentType: 'application/json',
@@ -562,16 +563,66 @@ test('角色和素材分类使用文件夹语义且素材分类操作收进更�
   const characterCategory = page.locator('.character-category-row').filter({ hasText: '主要角色' });
   await expect(characterCategory.locator('svg.lucide-folder')).toHaveCount(1);
   await expect(page.locator('.character-browser-shelf > header').getByText('全部公共角色', { exact: true })).toHaveCount(0);
+  await expect(characterCategory.getByRole('button', { name: /重命名分类|删除分类/ })).toHaveCount(0);
+  await characterCategory.locator('.document-tag-item').click();
+  await expect(characterCategory.locator('.document-tag-item')).toHaveAttribute('aria-pressed', 'true');
+  await characterCategory.locator('.document-tag-item').click({ button: 'right' });
+  let menu = page.getByRole('menu', { name: '主要角色 分类操作' });
+  await expect(menu.getByRole('menuitem', { name: '重命名' })).toBeVisible();
+  await expect(menu.getByRole('menuitem', { name: '删除分类' })).toBeVisible();
+  if (process.env.RUSTY_E2E_SCREENSHOT_DIR) await page.screenshot({ path: `${process.env.RUSTY_E2E_SCREENSHOT_DIR}/characters-category-context-menu.png` });
+  await page.keyboard.press('Escape');
+  await expect(menu).toHaveCount(0);
+  await page.locator('.character-range-panel').getByRole('button', { name: /全部角色/ }).click({ button: 'right' });
+  await expect(page.getByRole('menu')).toHaveCount(0);
 
   await page.goto('/materials');
   const recent = page.locator('.material-library-sidebar').getByRole('button', { name: /最近导入/ }).first();
   await expect(recent.locator('svg.lucide-clock')).toHaveCount(1);
   const category = page.locator('.material-category-row').filter({ hasText: '动作场景' });
   await expect(category.locator('svg.lucide-folder')).toHaveCount(1);
-  await expect(category.getByRole('button', { name: /重命名分类/ })).toHaveCount(0);
-  await category.getByRole('button', { name: '管理分类 动作场景' }).click();
-  await expect(category.getByRole('menuitem', { name: '重命名' })).toBeVisible();
-  await expect(category.getByRole('menuitem', { name: '删除分类' })).toBeVisible();
+  await expect(category.getByRole('button', { name: /管理分类|重命名分类|删除分类/ })).toHaveCount(0);
+  await category.locator('.document-tag-item').click();
+  await expect(category.locator('.document-tag-item')).toHaveAttribute('aria-pressed', 'true');
+  await category.locator('.document-tag-item').click({ button: 'right' });
+  menu = page.getByRole('menu', { name: '动作场景 分类操作' });
+  await expect(menu).toBeVisible();
+  if (process.env.RUSTY_E2E_SCREENSHOT_DIR) await page.screenshot({ path: `${process.env.RUSTY_E2E_SCREENSHOT_DIR}/materials-category-context-menu.png` });
+  await page.locator('.page-topbar').click();
+  await category.locator('.document-tag-item').evaluate((element) => element.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 1438, clientY: 898 })));
+  menu = page.getByRole('menu', { name: '动作场景 分类操作' });
+  await expect(menu).toBeVisible();
+  const menuRect = await menu.boundingBox();
+  expect(menuRect).not.toBeNull();
+  expect(menuRect!.x).toBeGreaterThanOrEqual(8);
+  expect(menuRect!.y).toBeGreaterThanOrEqual(8);
+  expect(menuRect!.x + menuRect!.width).toBeLessThanOrEqual(1432);
+  expect(menuRect!.y + menuRect!.height).toBeLessThanOrEqual(892);
+  await page.locator('.page-topbar').click();
+  await expect(menu).toHaveCount(0);
+  await category.locator('.document-tag-item').click({ button: 'right' });
+  await page.locator('.material-library-sidebar nav').dispatchEvent('scroll');
+  await expect(menu).toHaveCount(0);
+  await recent.click({ button: 'right' });
+  await expect(page.getByRole('menu')).toHaveCount(0);
+
+  await page.goto('/documents');
+  const documentCategory = page.locator('.document-tag-panel').getByRole('button', { name: /研究/ }).first();
+  await documentCategory.click();
+  await expect(documentCategory).toHaveAttribute('aria-current', 'page');
+  await documentCategory.click({ button: 'right' });
+  menu = page.getByRole('menu', { name: '研究 分类操作' });
+  await expect(menu.getByRole('menuitem', { name: '重命名' })).toBeVisible();
+  await expect(menu.getByRole('menuitem', { name: '删除分类' })).toBeVisible();
+  if (process.env.RUSTY_E2E_SCREENSHOT_DIR) await page.screenshot({ path: `${process.env.RUSTY_E2E_SCREENSHOT_DIR}/documents-category-context-menu.png` });
+  await menu.getByRole('menuitem', { name: '重命名' }).click();
+  const renameDialog = page.getByRole('dialog', { name: '重命名分类' });
+  await expect(renameDialog.getByLabel('分类名称')).toHaveValue('研究');
+  await renameDialog.getByRole('button', { name: '取消' }).click();
+  await documentCategory.click({ button: 'right' });
+  await page.keyboard.press('Escape');
+  await page.locator('.document-tag-panel').getByRole('button', { name: /全部文档/ }).click({ button: 'right' });
+  await expect(page.getByRole('menu')).toHaveCount(0);
 });
 
 test('资源库和提示词在深浅主题中保持同层 Workspace surface', async ({ page }) => {
@@ -604,6 +655,38 @@ test('资源库和提示词在深浅主题中保持同层 Workspace surface', as
   }
 });
 
+test('文档角色素材使用同宽导航列和统一标题及导航行', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const cases = [
+    { path: '/documents', sidebar: '.document-library-layout > .document-tag-panel', title: '.document-tag-panel > header h2' },
+    { path: '/characters', sidebar: '.character-browser-layout > .character-range-panel', title: '.library-sidebar-section-title strong' },
+    { path: '/materials', sidebar: '.material-browser-layout > .material-library-sidebar', title: '.library-sidebar-section-title strong' },
+  ];
+  const measurements = [];
+  for (const item of cases) {
+    await page.goto(item.path);
+    measurements.push(await page.locator(item.sidebar).evaluate((sidebar, titleSelector) => {
+      const title = sidebar.querySelector(titleSelector)!;
+      const row = sidebar.querySelector('.document-tag-item')!;
+      const rowStyle = getComputedStyle(row);
+      const titleStyle = getComputedStyle(title);
+      return {
+        width: sidebar.getBoundingClientRect().width,
+        titleAlign: titleStyle.textAlign,
+        titleSize: titleStyle.fontSize,
+        titleWeight: titleStyle.fontWeight,
+        rowHeight: rowStyle.minHeight,
+        rowRadius: rowStyle.borderRadius,
+        rowColumns: rowStyle.gridTemplateColumns.split(' ').length,
+      };
+    }, item.title));
+  }
+  expect(new Set(measurements.map((item) => item.width))).toEqual(new Set([210]));
+  expect(new Set(measurements.map((item) => item.titleSize))).toEqual(new Set(['15px']));
+  expect(measurements.every((item) => Number(item.titleWeight) >= 700)).toBe(true);
+  expect(measurements.every((item) => item.rowHeight === '42px' && item.rowRadius === '7px' && item.rowColumns === 3)).toBe(true);
+});
+
 test('提示词使用统一 Header、分隔列表并保留编辑保存、导入和新建', async ({ page }) => {
   let savedName = '';
   let imported = false;
@@ -619,6 +702,21 @@ test('提示词使用统一 Header、分隔列表并保留编辑保存、导入�
 
   await page.goto('/prompts');
   await expect(page.locator('.prompt-definition-page > .page-topbar').getByRole('heading', { name: '提示词' })).toBeVisible();
+  const primaryCategories = await page.locator('.prompt-kind-tree .primary-category, .prompt-kind-tree .prompt-primary-category').evaluateAll((items) => items.map((element) => ({
+    fontSize: getComputedStyle(element).fontSize,
+    fontWeight: getComputedStyle(element).fontWeight,
+    height: getComputedStyle(element).minHeight,
+    textAlign: getComputedStyle(element).textAlign,
+  })));
+  expect(primaryCategories).toHaveLength(3);
+  expect(new Set(primaryCategories.map((item) => JSON.stringify(item))).size).toBe(1);
+  const workflowChild = await page.locator('.prompt-kind-tree .category-button.nested').first().evaluate((element) => ({
+    fontSize: getComputedStyle(element).fontSize,
+    fontWeight: getComputedStyle(element).fontWeight,
+    paddingLeft: getComputedStyle(element).paddingLeft,
+    textAlign: getComputedStyle(element).textAlign,
+  }));
+  expect(workflowChild).toEqual({ fontSize: '13px', fontWeight: '400', paddingLeft: '28px', textAlign: 'left' });
   const activeItem = page.locator('.prompt-item-list > button.active');
   const activeStyle = await activeItem.evaluate((element) => ({
     shadow: getComputedStyle(element).boxShadow,
@@ -626,6 +724,10 @@ test('提示词使用统一 Header、分隔列表并保留编辑保存、导入�
   }));
   expect(activeStyle.shadow).toBe('none');
   expect(activeStyle.divider).toBe('1px');
+  await expect(page.getByRole('button', { name: '复制', exact: true })).toHaveClass(/secondary/);
+  await expect(page.getByRole('button', { name: '导出', exact: true })).toHaveClass(/secondary/);
+  await expect(page.getByRole('button', { name: '删除', exact: true })).toHaveClass(/danger/);
+  await expect(page.getByRole('button', { name: '保存', exact: true })).toHaveClass(/primary/);
 
   await page.getByLabel('名称').fill('小说总规则（修订）');
   await page.getByRole('button', { name: '保存', exact: true }).click();
@@ -740,6 +842,31 @@ test('模型页保持原有双栏组件和主题交互', async ({ page }) => {
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
 });
 
+test('全局操作按钮沿用模型页 Primary Secondary Danger 视觉基准', async ({ page }) => {
+  const buttonStyle = (element: Element) => ({
+    background: getComputedStyle(element).backgroundColor,
+    border: getComputedStyle(element).borderColor,
+    color: getComputedStyle(element).color,
+    radius: getComputedStyle(element).borderRadius,
+    fontWeight: getComputedStyle(element).fontWeight,
+  });
+  await page.goto('/models');
+  const modelPrimary = await page.getByRole('button', { name: '保存', exact: true }).evaluate(buttonStyle);
+  const modelSecondary = await page.getByRole('button', { name: '测试连接', exact: true }).evaluate(buttonStyle);
+  const modelDanger = await page.getByRole('button', { name: '删除', exact: true }).evaluate(buttonStyle);
+
+  await page.goto('/prompts');
+  expect(await page.getByRole('button', { name: '保存', exact: true }).evaluate(buttonStyle)).toEqual(modelPrimary);
+  expect(await page.getByRole('button', { name: '导入', exact: true }).evaluate(buttonStyle)).toEqual(modelSecondary);
+  const promptDanger = await page.getByRole('button', { name: '删除', exact: true }).evaluate(buttonStyle);
+  expect(promptDanger).toEqual(modelDanger);
+
+  await page.goto('/characters');
+  const settings = page.getByRole('button', { name: '角色提取设置' });
+  const settingsSize = await settings.evaluate((element) => ({ width: getComputedStyle(element).width, height: getComputedStyle(element).minHeight }));
+  expect(settingsSize).toEqual({ width: '40px', height: '40px' });
+});
+
 test('主要 Workspace 可生成深浅主题视觉验收截图', async ({ page }) => {
   const screenshotDirectory = process.env.RUSTY_E2E_SCREENSHOT_DIR;
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -767,6 +894,14 @@ test('主要 Workspace 可生成深浅主题视觉验收截图', async ({ page }
     await page.waitForTimeout(200);
     if (screenshotDirectory) await page.screenshot({ path: `${screenshotDirectory}/${item.key}-dark-1440x900.png` });
   }
+
+  await page.goto('/documents');
+  if (await page.locator('html').getAttribute('data-theme') === 'dark') {
+    await page.getByRole('button', { name: '切换到浅色模式' }).click();
+  }
+  await page.getByRole('button', { name: '示例长篇，作者' }).dblclick();
+  await expect(page.locator('.document-workspace-layout')).toBeVisible();
+  if (screenshotDirectory) await page.screenshot({ path: `${screenshotDirectory}/document-editor-light-1440x900.png` });
 });
 
 test('统一新建入口先预览多个 AI 候选且手动编辑器使用紧凑资源布局', async ({ page }) => {

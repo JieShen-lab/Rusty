@@ -43,6 +43,13 @@
   --text-secondary: var(--ink-muted);
   --text-muted: var(--ink-soft);
   --danger-emphasis: var(--danger);
+  --library-sidebar-width: 210px;
+  --button-primary-bg: var(--accent);
+  --button-primary-hover: var(--accent-strong);
+  --button-secondary-bg: var(--surface-input);
+  --button-secondary-border: var(--border-strong);
+  --button-danger-text: var(--danger);
+  --button-danger-border: var(--danger-border);
 
   /* Shared workbench aliases used by the newer editor surfaces. */
   --line: var(--border);
@@ -125,6 +132,13 @@
   --text-secondary: var(--ink-muted);
   --text-muted: var(--ink-soft);
   --danger-emphasis: var(--danger);
+  --library-sidebar-width: 210px;
+  --button-primary-bg: var(--accent);
+  --button-primary-hover: var(--accent-strong);
+  --button-secondary-bg: var(--surface-input);
+  --button-secondary-border: var(--border-strong);
+  --button-danger-text: var(--danger);
+  --button-danger-border: var(--danger-border);
   --bg-ink: #101217;
   --accent-cyan: #65aee5;
   --accent-violet: #a99af0;
