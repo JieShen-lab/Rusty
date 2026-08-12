@@ -1,10 +1,10 @@
 import { expect, test, type Page } from '@playwright/test';
 
 const projects = [
-  { id: 1, name: '示例工程', author: '', status: 'ready', source_format: 'txt', total_chapters: 1, total_words: 100, processed_chapters: 0, progress_percent: 0, created_at: '', updated_at: '2026-07-29 12:00:00' },
-  { id: 2, name: '北境工程', author: '', status: 'ready', source_format: 'txt', total_chapters: 1, total_words: 100, processed_chapters: 0, progress_percent: 0, created_at: '', updated_at: '2026-07-28 12:00:00' },
-  { id: 3, name: '旧城工程', author: '', status: 'ready', source_format: 'txt', total_chapters: 1, total_words: 100, processed_chapters: 0, progress_percent: 0, created_at: '', updated_at: '2026-07-27 12:00:00' },
-  { id: 4, name: '海港工程', author: '', status: 'ready', source_format: 'txt', total_chapters: 1, total_words: 100, processed_chapters: 0, progress_percent: 0, created_at: '', updated_at: '2026-07-26 12:00:00' },
+  { id: 1, name: '示例工程', author: '', status: 'ready', current_stage: 'imported', progress: 0, source_format: 'txt', total_chapters: 1, total_words: 100, processed_chapters: 0, progress_percent: 0, created_at: '', updated_at: '2026-07-29 12:00:00' },
+  { id: 2, name: '北境工程', author: '', status: 'ready', current_stage: 'imported', progress: 0, source_format: 'txt', total_chapters: 1, total_words: 100, processed_chapters: 0, progress_percent: 0, created_at: '', updated_at: '2026-07-28 12:00:00' },
+  { id: 3, name: '旧城工程', author: '', status: 'ready', current_stage: 'imported', progress: 0, source_format: 'txt', total_chapters: 1, total_words: 100, processed_chapters: 0, progress_percent: 0, created_at: '', updated_at: '2026-07-27 12:00:00' },
+  { id: 4, name: '海港工程', author: '', status: 'ready', current_stage: 'imported', progress: 0, source_format: 'txt', total_chapters: 1, total_words: 100, processed_chapters: 0, progress_percent: 0, created_at: '', updated_at: '2026-07-26 12:00:00' },
 ];
 const tags = [{ id: 1, name: '主角', normalized_name: '主角', sort_order: 0, resource_count: 1 }];
 const characterCategories = [
@@ -639,6 +639,51 @@ test('提示词使用统一 Header、分隔列表并保留编辑保存、导入�
   await expect(page.getByLabel('名称')).toHaveValue('');
 });
 
+test('工程首页保留独立 Dashboard 卡片布局并可进入 Creative Workflow', async ({ page }) => {
+  await page.goto('/library');
+  await expect(page.locator('.project-library-header').getByRole('heading', { name: '工程', exact: true })).toBeVisible();
+  await expect(page.locator('.project-library-header')).toContainText('4 个工程');
+  await expect(page.locator('.project-library-page > .page-topbar')).toHaveCount(0);
+  await expect(page.locator('.project-list[aria-label="工程列表"]')).toBeVisible();
+
+  const light = await page.locator('.project-library-layout').evaluate((layout) => {
+    const detail = layout.querySelector('.project-detail-card')!;
+    return {
+      layoutBackground: getComputedStyle(layout).backgroundColor,
+      layoutBorder: getComputedStyle(layout).borderTopWidth,
+      layoutGap: getComputedStyle(layout).gap,
+      layoutPaddingTop: getComputedStyle(layout).paddingTop,
+      detailBackground: getComputedStyle(detail).backgroundColor,
+      detailBorder: getComputedStyle(detail).borderTopWidth,
+      detailRadius: getComputedStyle(detail).borderRadius,
+      detailAlign: getComputedStyle(detail).alignSelf,
+    };
+  });
+  expect(light).toMatchObject({
+    layoutBackground: 'rgba(0, 0, 0, 0)',
+    layoutBorder: '0px',
+    layoutGap: '20px',
+    layoutPaddingTop: '20px',
+    detailBorder: '1px',
+    detailRadius: '12px',
+    detailAlign: 'start',
+  });
+
+  for (const viewport of [{ width: 1280, height: 720 }, { width: 1440, height: 900 }, { width: 1920, height: 1080 }]) {
+    await page.setViewportSize(viewport);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)).toBe(false);
+  }
+
+  await page.getByRole('button', { name: '切换到深色模式' }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  const darkDetailBackground = await page.locator('.project-detail-card').evaluate((element) => getComputedStyle(element).backgroundColor);
+  expect(darkDetailBackground).not.toBe(light.detailBackground);
+
+  await page.getByRole('button', { name: '进入工程' }).click();
+  await expect(page).toHaveURL(/(?:#)?\/workspace\/1$/);
+  await expect(page.locator('.creative-topbar').getByRole('heading', { name: '示例工程' })).toBeVisible();
+});
+
 test('工程 Creative Workspace 使用统一 surface 并适配三种桌面尺寸', async ({ page }) => {
   await page.goto('/workspace/1');
   await expect(page.locator('.creative-topbar').getByRole('heading', { name: '示例工程' })).toBeVisible();
@@ -677,6 +722,7 @@ test('主要 Workspace 可生成深浅主题视觉验收截图', async ({ page }
   const screenshotDirectory = process.env.RUSTY_E2E_SCREENSHOT_DIR;
   await page.setViewportSize({ width: 1440, height: 900 });
   const pages = [
+    { key: 'project-home', path: '/library', heading: '工程' },
     { key: 'characters', path: '/characters', heading: '角色卡库' },
     { key: 'materials', path: '/materials', heading: '素材库' },
     { key: 'documents', path: '/documents', heading: '文档库' },

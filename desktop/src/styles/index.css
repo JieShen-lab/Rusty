@@ -2373,7 +2373,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 
 /* Unified Rusty workspace language. Scoped to libraries, prompts and creative workspaces. */
 .document-library-layout,
-.project-library-layout,
 .prompt-definition-layout,
 .creative-columns {
   border: 1px solid var(--border-default);
@@ -2534,24 +2533,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 }
 .prompt-definition-editor > footer { border-top-color: var(--border-default); }
 
-.project-library-page > .page-topbar { min-height: 72px; }
-.project-library-layout {
-  min-height: 0;
-  grid-template-columns: 300px minmax(0, 1fr);
-  gap: 0;
-  padding-top: 0;
-}
-.project-browser { gap: 14px; border-right: 1px solid var(--border-default); padding: 18px; }
-.project-detail-card {
-  min-height: 0;
-  align-self: stretch;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  padding: 28px;
-}
-.project-detail-empty { background: transparent; }
-
 .creative-workspace {
   height: 100%;
   min-height: 640px;
@@ -2643,5 +2624,4 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 
 @media (max-width: 900px) {
   .prompt-definition-layout { grid-template-columns: 180px minmax(220px, .72fr) minmax(420px, 1.28fr); overflow: auto; }
-  .project-library-layout { grid-template-columns: 260px minmax(460px, 1fr); overflow: auto; }
 }
