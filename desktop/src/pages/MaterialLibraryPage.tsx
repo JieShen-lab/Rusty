@@ -3,9 +3,12 @@ import {
   ArrowDown,
   ArrowUp,
   Boxes,
+  Clock,
   Filter,
+  Folder,
   FolderPlus,
   ListTree,
+  MoreHorizontal,
   Pencil,
   Plus,
   Search,
@@ -113,6 +116,7 @@ export function MaterialLibraryPage() {
     material: Material;
   } | null>(null);
   const [filterOpen, setFilterOpen] = useState(false);
+  const [categoryMenuId, setCategoryMenuId] = useState<number | null>(null);
   const [categoryDialog, setCategoryDialog] = useState<{
     materialType: MaterialType;
     category?: MaterialCategory;
@@ -276,7 +280,7 @@ export function MaterialLibraryPage() {
                   <LibrarySidebarItem
                     active={selection.materialType === section.type && selection.kind === 'pending'}
                     count={materials.filter((item) => item.material_type === section.type && isPendingImport(item)).length}
-                    icon={<Sparkles size={16} />}
+                    icon={<Clock size={16} />}
                     label="最近导入"
                     onClick={() => setSelection({ materialType: section.type, kind: 'pending' })}
                   />
@@ -296,7 +300,7 @@ export function MaterialLibraryPage() {
                       <LibrarySidebarItem
                         active={selection.kind === 'category' && selection.categoryId === category.id}
                         count={category.resource_count}
-                        icon={<Tag size={15} />}
+                        icon={<Folder size={15} />}
                         label={category.name}
                         onClick={() => setSelection({
                           materialType: section.type,
@@ -304,8 +308,19 @@ export function MaterialLibraryPage() {
                           categoryId: category.id,
                         })}
                       />
-                      <button aria-label={`重命名分类 ${category.name}`} onClick={() => setCategoryDialog({ materialType: section.type, category })} type="button"><Pencil size={12} /></button>
-                      <button aria-label={`删除分类 ${category.name}`} onClick={() => void removeCategory(category)} type="button"><Trash2 size={12} /></button>
+                      <button
+                        aria-expanded={categoryMenuId === category.id}
+                        aria-label={`管理分类 ${category.name}`}
+                        className="material-category-menu-trigger"
+                        onClick={() => setCategoryMenuId((current) => current === category.id ? null : category.id)}
+                        type="button"
+                      ><MoreHorizontal size={15} /></button>
+                      {categoryMenuId === category.id ? (
+                        <div className="material-category-menu" role="menu">
+                          <button onClick={() => { setCategoryMenuId(null); setCategoryDialog({ materialType: section.type, category }); }} role="menuitem" type="button"><Pencil size={13} />重命名</button>
+                          <button className="danger" onClick={() => { setCategoryMenuId(null); void removeCategory(category); }} role="menuitem" type="button"><Trash2 size={13} />删除分类</button>
+                        </div>
+                      ) : null}
                     </div>
                   ))}
                 </section>

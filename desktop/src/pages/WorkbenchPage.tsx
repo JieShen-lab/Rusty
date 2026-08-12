@@ -5,6 +5,7 @@ import type { Project } from '../api/types';
 import { DangerButton } from '../components/DangerButton';
 import { EmptyState } from '../components/EmptyState';
 import { PrimaryButton } from '../components/PrimaryButton';
+import { TopBar } from '../components/TopBar';
 
 type Props = {
   onNavigate: (path: string) => void;
@@ -61,16 +62,7 @@ export function WorkbenchPage({ onNavigate }: Props) {
 
   return (
     <section className="project-library-page">
-      <header className="project-library-header">
-        <div>
-          <h1>工程</h1>
-          <p>{loading ? '读取中…' : `${projects.length} 个工程`}</p>
-        </div>
-        <PrimaryButton onClick={() => onNavigate('/new-project')}>
-          <Plus size={16} />
-          新建工程
-        </PrimaryButton>
-      </header>
+      <TopBar title="工程" actions={<PrimaryButton onClick={() => onNavigate('/new-project')}><Plus size={16} />新建工程</PrimaryButton>} />
       {error ? <div className="inline-alert error">后端错误：{error}</div> : null}
       {projects.length === 0 && !loading ? (
         <EmptyState

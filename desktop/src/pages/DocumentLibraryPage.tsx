@@ -887,9 +887,8 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
                 <Search size={15} /><span className="sr-only">搜索文档</span>
                 <input onChange={(event) => setSearchText(event.target.value)} placeholder="搜索标题或作者" type="search" value={searchText} />
               </label>
-              {activeCategoryId != null || activeTag ? (
+              {activeTag ? (
                 <div className="document-active-filters" aria-label="当前筛选条件">
-                  {activeCategoryId != null ? <button onClick={() => setActiveCategoryId(null)} type="button">分类：{categories.find((item) => item.id === activeCategoryId)?.name ?? activeCategoryId}<X size={12} /></button> : null}
                   {activeTag ? <button onClick={() => setActiveTagId(null)} type="button">标签：{activeTag.name}<X size={12} /></button> : null}
                 </div>
               ) : null}
@@ -1009,10 +1008,9 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
                   ) : <p className="document-resource-empty">未设置标签</p>}
                 </section>
               </div>
-              <section className="document-library-location document-current-file">
-                <span>当前版本文件</span>
-                <div title={selectedDocument.storage_path}>{selectedDocument.storage_path}</div>
-                <small title={libraryPath}>文档库存储目录：{libraryPath || '正在读取目录…'}</small>
+              <section className="document-library-location">
+                <span>文档库存储目录</span>
+                <div title={libraryPath}>{libraryPath || '正在读取目录…'}</div>
               </section>
               <footer className="library-detail-footer">
                 <SecondaryButton onClick={() => void openProcessing('chapters')}><BookOpenText size={15} />编辑</SecondaryButton>

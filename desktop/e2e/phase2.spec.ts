@@ -549,6 +549,158 @@ test('角色库按工程和公共分类导航，标签只在右侧筛选且摘�
   }
 });
 
+test('角色和素材分类使用文件夹语义且素材分类操作收进更多菜单', async ({ page }) => {
+  await page.route('http://127.0.0.1:8765/api/material-categories', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      status: 200,
+      body: JSON.stringify([{ id: 41, name: '动作场景', normalized_name: '动作场景', material_type: 'scene_reference', sort_order: 0, resource_count: 1 }]),
+    });
+  });
+
+  await page.goto('/characters');
+  const characterCategory = page.locator('.character-category-row').filter({ hasText: '主要角色' });
+  await expect(characterCategory.locator('svg.lucide-folder')).toHaveCount(1);
+  await expect(page.locator('.character-browser-shelf > header').getByText('全部公共角色', { exact: true })).toHaveCount(0);
+
+  await page.goto('/materials');
+  const recent = page.locator('.material-library-sidebar').getByRole('button', { name: /最近导入/ }).first();
+  await expect(recent.locator('svg.lucide-clock')).toHaveCount(1);
+  const category = page.locator('.material-category-row').filter({ hasText: '动作场景' });
+  await expect(category.locator('svg.lucide-folder')).toHaveCount(1);
+  await expect(category.getByRole('button', { name: /重命名分类/ })).toHaveCount(0);
+  await category.getByRole('button', { name: '管理分类 动作场景' }).click();
+  await expect(category.getByRole('menuitem', { name: '重命名' })).toBeVisible();
+  await expect(category.getByRole('menuitem', { name: '删除分类' })).toBeVisible();
+});
+
+test('资源库和提示词在深浅主题中保持同层 Workspace surface', async ({ page }) => {
+  const cases = [
+    { path: '/documents', workspace: '.document-library-layout', columns: ['.document-tag-panel', '.document-shelf-panel', '.document-detail-panel'] },
+    { path: '/characters', workspace: '.character-browser-layout', columns: ['.character-range-panel', '.character-browser-shelf', '.character-detail-panel'] },
+    { path: '/materials', workspace: '.material-browser-layout', columns: ['.material-library-sidebar', '.material-browser-shelf', '.material-detail-panel'] },
+    { path: '/prompts', workspace: '.prompt-definition-layout', columns: ['.prompt-kind-tree', '.prompt-item-list', '.prompt-definition-editor'] },
+  ];
+
+  for (const item of cases) {
+    await page.goto(item.path);
+    const light = await page.locator(item.workspace).evaluate((workspace, columns) => ({
+      workspace: getComputedStyle(workspace).backgroundColor,
+      columns: columns.map((selector) => getComputedStyle(workspace.querySelector(selector)!).backgroundColor),
+      radius: getComputedStyle(workspace).borderRadius,
+    }), item.columns);
+    expect(light.workspace).not.toBe('rgba(0, 0, 0, 0)');
+    expect(new Set(light.columns)).toEqual(new Set(['rgba(0, 0, 0, 0)']));
+    expect(light.radius).toBe('12px');
+
+    await page.getByRole('button', { name: '切换到深色模式' }).click();
+    const dark = await page.locator(item.workspace).evaluate((workspace, columns) => ({
+      workspace: getComputedStyle(workspace).backgroundColor,
+      columns: columns.map((selector) => getComputedStyle(workspace.querySelector(selector)!).backgroundColor),
+    }), item.columns);
+    expect(dark.workspace).not.toBe(light.workspace);
+    expect(new Set(dark.columns)).toEqual(new Set(['rgba(0, 0, 0, 0)']));
+    await page.getByRole('button', { name: '切换到浅色模式' }).click();
+  }
+});
+
+test('提示词使用统一 Header、分隔列表并保留编辑保存、导入和新建', async ({ page }) => {
+  let savedName = '';
+  let imported = false;
+  await page.route('http://127.0.0.1:8765/api/prompt-definitions/101', async (route) => {
+    const payload = route.request().postDataJSON() as Record<string, unknown>;
+    savedName = String(payload.name ?? '');
+    await route.fulfill({ contentType: 'application/json', status: 200, body: JSON.stringify({ id: 101, ...payload, created_at: '', updated_at: '' }) });
+  });
+  await page.route('http://127.0.0.1:8765/api/prompt-definitions/import', async (route) => {
+    imported = true;
+    await route.fulfill({ contentType: 'application/json', status: 200, body: JSON.stringify({ id: 104, name: '导入提示词', description: '', kind: 'master', workflow_key: null, task_key: null, content: '导入内容', input_description: '', is_default: false, created_at: '', updated_at: '' }) });
+  });
+
+  await page.goto('/prompts');
+  await expect(page.locator('.prompt-definition-page > .page-topbar').getByRole('heading', { name: '提示词' })).toBeVisible();
+  const activeItem = page.locator('.prompt-item-list > button.active');
+  const activeStyle = await activeItem.evaluate((element) => ({
+    shadow: getComputedStyle(element).boxShadow,
+    divider: getComputedStyle(element).borderBottomWidth,
+  }));
+  expect(activeStyle.shadow).toBe('none');
+  expect(activeStyle.divider).toBe('1px');
+
+  await page.getByLabel('名称').fill('小说总规则（修订）');
+  await page.getByRole('button', { name: '保存', exact: true }).click();
+  await expect(page.getByText('提示词已保存。')).toBeVisible();
+  expect(savedName).toBe('小说总规则（修订）');
+
+  await page.locator('input[type="file"]').setInputFiles({ name: 'prompt.json', mimeType: 'application/json', buffer: Buffer.from('{"name":"导入提示词"}') });
+  await expect(page.getByText('提示词已导入。')).toBeVisible();
+  expect(imported).toBe(true);
+  await page.getByRole('button', { name: '新建', exact: true }).click();
+  await expect(page.getByLabel('名称')).toHaveValue('');
+});
+
+test('工程 Creative Workspace 使用统一 surface 并适配三种桌面尺寸', async ({ page }) => {
+  await page.goto('/workspace/1');
+  await expect(page.locator('.creative-topbar').getByRole('heading', { name: '示例工程' })).toBeVisible();
+  const surfaces = await page.locator('.creative-columns').evaluate((workspace) => ({
+    workspace: getComputedStyle(workspace).backgroundColor,
+    columns: ['.chapter-rail', '.chapter-workspace', '.creative-context-panel'].map((selector) => getComputedStyle(workspace.querySelector(selector)!).backgroundColor),
+    radius: getComputedStyle(workspace).borderRadius,
+  }));
+  expect(surfaces.workspace).not.toBe('rgba(0, 0, 0, 0)');
+  expect(new Set(surfaces.columns)).toEqual(new Set(['rgba(0, 0, 0, 0)']));
+  expect(surfaces.radius).toBe('12px');
+  for (const viewport of [{ width: 1280, height: 720 }, { width: 1440, height: 900 }, { width: 1920, height: 1080 }]) {
+    await page.setViewportSize(viewport);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)).toBe(false);
+  }
+  await page.getByRole('button', { name: '切换到深色模式' }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await expect(page.getByText('自动保存', { exact: false })).toBeVisible();
+});
+
+test('模型页保持原有双栏组件和主题交互', async ({ page }) => {
+  await page.goto('/models');
+  await expect(page.getByRole('heading', { name: '模型', exact: true })).toBeVisible();
+  await expect(page.getByText('测试模型', { exact: true })).toBeVisible();
+  await expect(page.locator('.model-list-panel')).toBeVisible();
+  await expect(page.locator('.model-config-panel')).toBeVisible();
+  const lightColumns = await page.locator('.models-layout').evaluate((element) => getComputedStyle(element).gridTemplateColumns);
+  expect(lightColumns.split(' ')).toHaveLength(2);
+  await page.getByRole('button', { name: '切换到深色模式' }).click();
+  const darkColumns = await page.locator('.models-layout').evaluate((element) => getComputedStyle(element).gridTemplateColumns);
+  expect(darkColumns).toBe(lightColumns);
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+});
+
+test('主要 Workspace 可生成深浅主题视觉验收截图', async ({ page }) => {
+  const screenshotDirectory = process.env.RUSTY_E2E_SCREENSHOT_DIR;
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const pages = [
+    { key: 'characters', path: '/characters', heading: '角色卡库' },
+    { key: 'materials', path: '/materials', heading: '素材库' },
+    { key: 'documents', path: '/documents', heading: '文档库' },
+    { key: 'prompts', path: '/prompts', heading: '提示词' },
+    { key: 'workflow', path: '/workspace/1', heading: '示例工程' },
+  ];
+
+  for (const item of pages) {
+    await page.goto(item.path);
+    await expect(page.getByRole('heading', { name: item.heading, exact: true }).first()).toBeVisible();
+    if (item.key === 'materials') await page.locator('.material-resource-row').first().click();
+    if (await page.locator('html').getAttribute('data-theme') === 'dark') {
+      await page.getByRole('button', { name: '切换到浅色模式' }).click();
+    }
+    await page.waitForTimeout(200);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)).toBe(false);
+    if (screenshotDirectory) await page.screenshot({ path: `${screenshotDirectory}/${item.key}-light-1440x900.png` });
+    await page.getByRole('button', { name: '切换到深色模式' }).click();
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+    await page.waitForTimeout(200);
+    if (screenshotDirectory) await page.screenshot({ path: `${screenshotDirectory}/${item.key}-dark-1440x900.png` });
+  }
+});
+
 test('统一新建入口先预览多个 AI 候选且手动编辑器使用紧凑资源布局', async ({ page }) => {
   await page.goto('/characters');
   await expect(page.getByRole('button', { name: /AI 分析/ })).toHaveCount(0);
@@ -648,13 +800,15 @@ test('分类标签和搜索按交集筛选且标签胶囊不修改关联', async
   await expect(page.getByRole('button', { name: '示例长篇，作者' })).toBeVisible();
   await expect(page.getByRole('button', { name: '普通资料，资料作者' })).toHaveCount(0);
   expect(tagAssignmentRequests).toHaveLength(0);
-  await expect(page.getByRole('button', { name: /分类：研究/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /分类：研究/ })).toHaveCount(0);
   await expect(page.getByRole('button', { name: /标签：长篇/ })).toBeVisible();
 });
 
-test('标签管理弹窗显式移除关联并显示当前版本文件', async ({ page }) => {
+test('标签管理弹窗显式移除关联并显示文档库存储目录', async ({ page }) => {
   await page.goto('/documents');
-  await expect(page.getByText('D:/Rusty/novel-v2.txt', { exact: true })).toBeVisible();
+  await expect(page.getByText('文档库存储目录', { exact: true })).toBeVisible();
+  await expect(page.getByText('D:/Rusty', { exact: true })).toBeVisible();
+  await expect(page.getByText('D:/Rusty/novel-v2.txt', { exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: '管理当前文档标签' }).click();
   const dialog = page.getByRole('dialog', { name: '管理标签' });
   await dialog.getByRole('checkbox', { name: '长篇' }).uncheck();

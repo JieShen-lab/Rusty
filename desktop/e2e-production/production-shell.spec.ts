@@ -57,6 +57,7 @@ test('production loadFile renders Rusty with local assets and file-safe navigati
       ['素材', 'materials', '素材库'],
       ['角色卡', 'characters', '角色卡库'],
       ['提示词', 'prompts', '提示词'],
+      ['模型', 'models', '模型'],
     ] as const) {
       await page.getByRole('button', { name: button, exact: true }).click();
       await expect(page).toHaveURL(new RegExp(`#/${route}$`));
@@ -67,6 +68,15 @@ test('production loadFile renders Rusty with local assets and file-safe navigati
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
     await page.getByRole('button', { name: /浅色/ }).click();
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+
+    await page.getByRole('button', { name: '工程', exact: true }).click();
+    await expect(page).toHaveURL(/#\/library$/);
+    await expect(page.getByRole('heading', { name: '工程', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: /真实 E2E 1/ }).first().click();
+    await page.getByRole('button', { name: '进入工程', exact: true }).click();
+    await expect(page).toHaveURL(/#\/workspace\/\d+$/);
+    await expect(page.locator('.creative-workspace')).toBeVisible();
+    await expect(page.getByRole('button', { name: '运行预分析' })).toBeVisible();
 
     expect(failedLocalResources).toEqual([]);
     expect(rendererErrors).toEqual([]);

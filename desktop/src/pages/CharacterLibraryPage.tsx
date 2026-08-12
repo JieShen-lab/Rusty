@@ -7,6 +7,7 @@ import {
   Check,
   ChevronDown,
   Filter,
+  Folder,
   FolderOpen,
   Pencil,
   Plus,
@@ -331,12 +332,6 @@ export function CharacterLibraryPage() {
     });
   }
 
-  const rangeLabel = selection.kind === 'project'
-    ? projects.find((project) => project.project_id === selection.projectId)?.project_name ?? '工程角色'
-    : selection.kind === 'public-category'
-      ? categories.find((category) => category.id === selection.categoryId)?.name ?? '公共分类'
-      : '全部公共角色';
-
   return (
     <div className="document-library-page character-library-page">
       <TopBar
@@ -395,7 +390,7 @@ export function CharacterLibraryPage() {
                 <LibrarySidebarItem
                   active={selection.kind === 'public-category' && selection.categoryId === category.id}
                   count={category.resource_count}
-                  icon={<Tag size={15} />}
+                  icon={<Folder size={15} />}
                   label={category.name}
                   onClick={() => selectMainRange({ kind: 'public-category', categoryId: category.id })}
                 />
@@ -410,10 +405,6 @@ export function CharacterLibraryPage() {
 
         <main className="document-shelf-panel character-browser-shelf">
           <header>
-            <div>
-              <h2>{rangeLabel}</h2>
-              <span>{filteredCards.length} 个角色</span>
-            </div>
             <div className="document-shelf-tools character-search-tools">
               <label className="search-field document-search">
                 <Search size={15} />

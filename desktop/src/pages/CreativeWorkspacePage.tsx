@@ -943,10 +943,10 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
   return (
     <div className="creative-workspace">
       <header className="creative-topbar">
-        <button className="button ghost" onClick={() => onNavigate('/library')} type="button">
-          <ArrowLeft size={17} />工程列表
-        </button>
-        <div className="creative-project-title"><strong>{projectName}</strong><span>/</span><span>{selectedChapter?.title ?? '暂无章节'}</span></div>
+        <div className="creative-project-title">
+          <button className="button ghost" onClick={() => onNavigate('/library')} type="button"><ArrowLeft size={17} />工程列表</button>
+          <div><h1>{projectName}</h1><span>{selectedChapter?.title ?? '暂无章节'}</span></div>
+        </div>
         <div className="creative-top-actions">
           <button className="button ghost" onClick={() => void openSettings()} type="button"><Settings2 size={17} />工程设置</button>
         </div>
