@@ -3,13 +3,16 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import re
 import sqlite3
 from pathlib import Path
 
 from .connection import session
 
-CURRENT_SCHEMA_VERSION = 51
+CURRENT_SCHEMA_VERSION = 52
+
+logger = logging.getLogger(__name__)
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -3769,14 +3772,13 @@ def _migrate_to_v40(connection: sqlite3.Connection) -> None:
     )
 
 
-def _migrate_to_v41(connection: sqlite3.Connection) -> None:
-    """Persist chapter-level progress for the chapter-centric creative workspace."""
+def _ensure_chapter_workflow_state_schema(connection: sqlite3.Connection) -> None:
     scene_foreign_key = (
         "FOREIGN KEY (active_scene_id) REFERENCES scenes(id) ON DELETE SET NULL"
         if _table_exists(connection, "scenes")
         else ""
     )
-    connection.executescript(
+    connection.execute(
         f"""
         CREATE TABLE IF NOT EXISTS chapter_workflow_state (
             chapter_id INTEGER PRIMARY KEY,
@@ -3788,13 +3790,51 @@ def _migrate_to_v41(connection: sqlite3.Connection) -> None:
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE
             {',' if scene_foreign_key else ''} {scene_foreign_key}
-        );
-        CREATE INDEX IF NOT EXISTS idx_chapter_workflow_stage
-            ON chapter_workflow_state(current_stage, updated_at);
-        INSERT OR IGNORE INTO chapter_workflow_state (chapter_id)
-        SELECT id FROM chapters;
+        )
         """
     )
+    _validate_chapter_workflow_state_columns(connection)
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_chapter_workflow_stage
+            ON chapter_workflow_state(current_stage, updated_at)
+        """
+    )
+    connection.execute(
+        """
+        INSERT OR IGNORE INTO chapter_workflow_state (chapter_id)
+        SELECT id FROM chapters
+        """
+    )
+
+
+def _validate_chapter_workflow_state_columns(connection: sqlite3.Connection) -> None:
+    columns = {
+        str(row[1]): {"not_null": int(row[3]), "pk": int(row[5])}
+        for row in connection.execute("PRAGMA table_info(chapter_workflow_state)").fetchall()
+    }
+    expected_columns = {"chapter_id", "active_scene_id", "current_stage", "updated_at"}
+    if set(columns) != expected_columns:
+        raise RuntimeError("chapter_workflow_state has an incompatible column layout")
+    if columns["chapter_id"]["pk"] != 1:
+        raise RuntimeError("chapter_workflow_state.chapter_id must be the primary key")
+    if columns["current_stage"]["not_null"] != 1 or columns["updated_at"]["not_null"] != 1:
+        raise RuntimeError("chapter_workflow_state required columns must be NOT NULL")
+
+
+def _validate_chapter_workflow_state_schema(connection: sqlite3.Connection) -> None:
+    _validate_chapter_workflow_state_columns(connection)
+    indexes = {
+        str(row[1])
+        for row in connection.execute("PRAGMA index_list(chapter_workflow_state)").fetchall()
+    }
+    if "idx_chapter_workflow_stage" not in indexes:
+        raise RuntimeError("chapter_workflow_state workflow index is missing")
+
+
+def _migrate_to_v41(connection: sqlite3.Connection) -> None:
+    """Persist chapter-level progress for the chapter-centric creative workspace."""
+    _ensure_chapter_workflow_state_schema(connection)
 
 
 def _migrate_to_v42(connection: sqlite3.Connection) -> None:
@@ -4253,6 +4293,12 @@ def _migrate_to_v51(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_to_v52(connection: sqlite3.Connection) -> None:
+    """Repair databases whose migration ledger advanced without chapter workflow state."""
+    _ensure_chapter_workflow_state_schema(connection)
+    _validate_chapter_workflow_state_schema(connection)
+
+
 def _safe_json_list(value: object) -> list[dict[str, object]]:
     try:
         parsed = json.loads(str(value or "[]"))
@@ -4654,6 +4700,7 @@ MIGRATIONS = {
     49: _migrate_to_v49,
     50: _migrate_to_v50,
     51: _migrate_to_v51,
+    52: _migrate_to_v52,
 }
 
 
@@ -4664,6 +4711,17 @@ def initialize_database(connection: sqlite3.Connection) -> None:
         connection.executescript(DEFAULT_SEED_SQL)
         row = connection.execute("SELECT MAX(version) AS version FROM schema_migrations").fetchone()
         applied_version = int(row[0]) if row is not None and row[0] is not None else 0
+        database_row = connection.execute("PRAGMA database_list").fetchone()
+        database_path = str(database_row[2]) if database_row is not None and database_row[2] else ":memory:"
+        if database_path != ":memory:":
+            database_path = str(Path(database_path).resolve())
+        if applied_version < CURRENT_SCHEMA_VERSION:
+            logger.info(
+                "Migrating Rusty database path=%s schema=%d->%d",
+                database_path,
+                applied_version,
+                CURRENT_SCHEMA_VERSION,
+            )
         for version in range(applied_version + 1, CURRENT_SCHEMA_VERSION + 1):
             migration = MIGRATIONS.get(version)
             if migration is not None:
@@ -4672,6 +4730,11 @@ def initialize_database(connection: sqlite3.Connection) -> None:
                 "INSERT OR IGNORE INTO schema_migrations(version) VALUES (?)",
                 (version,),
             )
+        logger.debug(
+            "Rusty database initialized path=%s schema_version=%d",
+            database_path,
+            CURRENT_SCHEMA_VERSION,
+        )
 
 
 def initialize_database_file(database_path: str | Path) -> None:

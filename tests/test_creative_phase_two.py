@@ -164,7 +164,7 @@ class CreativePhaseTwoTests(unittest.TestCase):
         connection.executescript("""CREATE TABLE prompt_definitions(id INTEGER PRIMARY KEY,name TEXT,description TEXT,kind TEXT,workflow_key TEXT,task_key TEXT,content TEXT,input_description TEXT,is_default INTEGER,deleted_at TEXT);""")
         _migrate_to_v51(connection); _migrate_to_v51(connection)
         self.assertEqual({"special_analysis","target_design","writing_plan","full_scene_generation"},{row[0] for row in connection.execute("SELECT task_key FROM prompt_definitions WHERE workflow_key='reimagine'")})
-        self.assertEqual(51,CURRENT_SCHEMA_VERSION)
+        self.assertGreaterEqual(CURRENT_SCHEMA_VERSION,51)
 
     def test_block_generation_preserves_source_without_ai_and_uses_manual_draft_context(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd(), ignore_cleanup_errors=True) as directory:
