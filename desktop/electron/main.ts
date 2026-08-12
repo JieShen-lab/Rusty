@@ -209,7 +209,7 @@ function createWindow(): void {
     const params = new URLSearchParams(query);
     void window.loadURL(`http://127.0.0.1:5173?${params.toString()}`);
   } else {
-    void window.loadFile(path.join(__dirname, '../dist/index.html'), { query });
+    void window.loadFile(path.join(app.getAppPath(), 'dist', 'index.html'), { query });
   }
 }
 

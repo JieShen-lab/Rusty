@@ -158,7 +158,7 @@ export function MaterialLibraryPage() {
     setSelection({ materialType: launch.materialType, kind: 'all' });
     setExtractionLaunch(launch);
     setNewType(launch.materialType);
-    window.history.replaceState(null, '', window.location.pathname);
+    window.history.replaceState(null, '', window.location.href);
   }, []);
 
   const activeTag = tags.find((tagItem) => tagItem.id === queryState.activeTagId) ?? null;

@@ -165,7 +165,7 @@ export function CharacterLibraryPage() {
     if (!launch?.selectedText) return;
     setExtractionLaunch(launch);
     setCreateDialogOpen(true);
-    window.history.replaceState(null, '', window.location.pathname);
+    window.history.replaceState(null, '', window.location.href);
   }, []);
 
   useEffect(() => {

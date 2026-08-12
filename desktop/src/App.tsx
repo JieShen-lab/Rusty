@@ -17,6 +17,18 @@ type Route = {
   projectId?: number;
 };
 
+const usesFileRouting = window.location.protocol === 'file:';
+
+function currentRoutePath(): string {
+  if (!usesFileRouting) return window.location.pathname;
+  const hashPath = window.location.hash.slice(1);
+  return hashPath.startsWith('/') ? hashPath : '/library';
+}
+
+function historyUrl(path: string): string {
+  return usesFileRouting ? `#${path}` : path;
+}
+
 function parseRoute(pathname: string): Route {
   const parts = pathname.split('/').filter(Boolean);
   if (parts[0] === 'library') return { key: 'library' };
@@ -35,7 +47,7 @@ function parseRoute(pathname: string): Route {
 }
 
 export default function App() {
-  const [route, setRoute] = useState(() => parseRoute(window.location.pathname));
+  const [route, setRoute] = useState(() => parseRoute(currentRoutePath()));
   const [theme, setTheme] = useState<UiTheme>(getInitialTheme);
 
   useLayoutEffect(() => {
@@ -43,8 +55,8 @@ export default function App() {
   }, [theme]);
 
   useEffect(() => {
-    if (window.location.pathname === '/') {
-      window.history.replaceState(null, '', '/library');
+    if ((!usesFileRouting && window.location.pathname === '/') || (usesFileRouting && !window.location.hash)) {
+      window.history.replaceState(window.history.state, '', historyUrl('/library'));
       setRoute(parseRoute('/library'));
     }
     const onPop = async () => {
@@ -53,7 +65,7 @@ export default function App() {
       } catch {
         return;
       }
-      setRoute(parseRoute(window.location.pathname));
+      setRoute(parseRoute(currentRoutePath()));
     };
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
@@ -65,7 +77,7 @@ export default function App() {
     } catch {
       return;
     }
-    window.history.pushState(state ?? null, '', path);
+    window.history.pushState(state ?? null, '', historyUrl(path));
     setRoute(parseRoute(path));
   }
 
