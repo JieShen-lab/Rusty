@@ -945,7 +945,7 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
       <header className="creative-topbar">
         <div className="creative-project-title">
           <button className="button ghost" onClick={() => onNavigate('/library')} type="button"><ArrowLeft size={17} />工程列表</button>
-          <div><h1>{projectName}</h1><span>{selectedChapter?.title ?? '暂无章节'}</span></div>
+          <h1>{projectName}</h1>
         </div>
         <div className="creative-top-actions">
           <button className="button ghost" onClick={() => void openSettings()} type="button"><Settings2 size={17} />工程设置</button>
@@ -955,6 +955,24 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
       {error ? <div className="inline-alert error creative-alert" role="alert">{error}</div> : null}
 
       <div className="creative-columns">
+        <nav className="creative-stage-rail creative-workflow-progress" aria-label="章节创作阶段">
+          {stageOrder.map((stage, index) => {
+            const disabled = index > Math.max(0, reachedIndex);
+            return (
+              <button
+                aria-current={viewStage === stage ? 'step' : undefined}
+                className={`${index < reachedIndex ? 'complete' : ''} ${viewStage === stage ? 'active' : ''}`}
+                disabled={disabled}
+                key={stage}
+                onClick={() => setViewStage(stage)}
+                type="button"
+              >
+                <span />{stageLabels[stage]}
+              </button>
+            );
+          })}
+        </nav>
+
         <aside className="chapter-rail" aria-label="章节导航">
           <h2>章节</h2>
           <div className="chapter-only-list">
@@ -979,27 +997,6 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
         </aside>
 
         <main className="chapter-workspace">
-          <header className="chapter-workspace-head">
-            <h1>{selectedChapter ? `${chapterNumber(selectedChapter.index)} · ${selectedChapter.title}` : '暂无章节'}</h1>
-            <nav className="creative-stage-rail" aria-label="章节创作阶段">
-              {stageOrder.map((stage, index) => {
-                const disabled = index > Math.max(0, reachedIndex);
-                return (
-                  <button
-                    aria-current={viewStage === stage ? 'step' : undefined}
-                    className={`${index < reachedIndex ? 'complete' : ''} ${viewStage === stage ? 'active' : ''}`}
-                    disabled={disabled}
-                    key={stage}
-                    onClick={() => setViewStage(stage)}
-                    type="button"
-                  >
-                    <span />{stageLabels[stage]}
-                  </button>
-                );
-              })}
-            </nav>
-          </header>
-
           <section className="scene-list-section">
             <div className="section-title"><h2>场景</h2><span>{scenes.length} 个工作对象</span><button className="button ghost" disabled={!scenes.length || busy} onClick={() => setBoundaryEditing((value) => !value)} type="button">调整场景边界</button></div>
             <div className="creative-scene-list">

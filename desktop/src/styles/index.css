@@ -348,8 +348,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .project-list-copy strong { font-size: 13px; }
 .project-list-copy small, .project-list-item time { color: var(--muted); font-size: 10px; }
 .project-list-item time { align-self: start; white-space: nowrap; }
-.project-detail-card { display: grid; min-width: 0; min-height: 390px; grid-template-columns: 210px minmax(0, 1fr); gap: 22px; align-self: start; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); padding: 20px; }
-.project-cover { display: grid; min-height: 300px; place-items: center; border: 1px solid var(--line); border-radius: 9px; background: var(--paper-muted); color: var(--muted); font-size: 17px; font-weight: 700; }
+.project-detail-card { display: grid; min-width: 0; min-height: 340px; grid-template-columns: 210px minmax(0, 1fr); gap: 22px; align-self: start; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); padding: 18px 20px; }
+.project-cover { display: grid; min-height: 270px; place-items: center; border: 1px solid var(--line); border-radius: 9px; background: var(--paper-muted); color: var(--muted); font-size: 17px; font-weight: 700; }
 .project-detail-content { display: flex; min-width: 0; flex-direction: column; }
 .project-detail-meta { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 11px; }
 .project-detail-meta span { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 999px; padding: 5px 9px; }
@@ -888,7 +888,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .binder-heading h2, .inspector-heading h2 { margin: 0; font-size: 13px; }
 .binder-heading span, .inspector-heading span { overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .chapter-list { min-height: 0; overflow: auto; padding: 6px; }
-.chapter-row { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; align-items: center; gap: 7px; width: 100%; min-height: 38px; cursor: pointer; border: 0; border-left: 3px solid transparent; border-radius: 6px; background: transparent; padding: 0 7px; text-align: left; }
+.chapter-row { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; align-items: center; gap: 7px; width: 100%; min-height: 38px; cursor: pointer; border: 0; border-left: 3px solid transparent; border-radius: 6px; background: transparent; padding: 0 7px; text-align: left; }
 .chapter-row:hover { background: var(--paper-muted); }
 .chapter-row.selected { border-left-color: transparent; background: var(--accent-soft); }
 .document-volume-group { display: grid; gap: 2px; margin: 3px 0; }
@@ -900,7 +900,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .document-volume-row input:focus { border-color: var(--selected-border); outline: none; background: var(--paper); }
 .document-volume-row > span { color: var(--muted); font-size: 9px; white-space: nowrap; }
 .document-volume-chapters { display: grid; gap: 1px; padding-left: 12px; }
-.chapter-number { color: var(--muted); font-size: 11px; text-align: right; }
+.chapter-number { color: var(--muted); font-size: 11px; text-align: right; white-space: nowrap; }
 .chapter-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chapter-state { border-radius: 4px; padding: 3px 5px; color: var(--muted); background: var(--paper-muted); font-size: 9px; white-space: nowrap; }
 .chapter-state.good { background: var(--success-soft); color: var(--success); }
@@ -2533,6 +2533,13 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 }
 .prompt-definition-editor > footer { border-top-color: var(--border-default); }
 
+.document-workspace-action-scroll { padding-top: 12px; }
+.document-editor-commands {
+  margin-top: 12px;
+  border-top: 1px solid var(--border-default) !important;
+  padding-top: 12px !important;
+}
+
 .creative-workspace {
   height: 100%;
   min-height: 640px;
@@ -2553,11 +2560,17 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   margin-bottom: 20px;
 }
 .creative-project-title { min-width: 0; gap: 14px; }
-.creative-project-title > div { min-width: 0; }
 .creative-project-title h1 { overflow: hidden; margin: 0; color: var(--text-primary); font-size: clamp(24px, 2.2vw, 30px); line-height: 1.15; letter-spacing: -.025em; text-overflow: ellipsis; white-space: nowrap; }
-.creative-project-title span { display: block; overflow: hidden; margin-top: 5px; color: var(--text-secondary); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .creative-alert { margin: -8px 0 14px; }
-.creative-columns { grid-template-columns: 220px minmax(540px, 1fr) 290px; }
+.creative-columns {
+  grid-template-columns: minmax(180px, 15%) minmax(480px, 1fr) minmax(320px, 30%);
+  grid-template-rows: auto minmax(0, 1fr);
+}
+.creative-workflow-progress {
+  grid-column: 1 / -1;
+  padding: 18px 28px 16px;
+  border-bottom: 1px solid var(--border-default);
+}
 .chapter-rail,
 .chapter-workspace,
 .creative-context-panel { background: transparent; color: var(--text-primary); }
@@ -2578,8 +2591,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .creative-scene-list small,
 .section-title span,
 .creative-empty { color: var(--text-secondary); }
-.chapter-workspace-head { border-bottom-color: var(--border-default); padding: 24px 28px 20px; }
-.chapter-workspace-head h1 { color: var(--text-primary); }
 .creative-stage-rail button { color: var(--text-secondary); }
 .creative-stage-rail button::before { background: var(--border-strong); }
 .creative-stage-rail button span { border-color: var(--border-strong); background: var(--workspace-bg); }

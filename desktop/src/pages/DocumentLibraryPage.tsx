@@ -1153,7 +1153,6 @@ const DocumentWorkspace = forwardRef<DocumentEditorController, DocumentWorkspace
         </div>
         <div className="document-workspace-actions">
           <div className="document-workspace-action-scroll">
-            <header><span>文档处理</span><small>选择操作</small></header>
             <div className="inspector-action-area">
               <button className="button secondary full" onClick={() => props.onDocumentAction('merge')} type="button"><Combine size={16} />合并文档</button>
               <button className="button secondary full" onClick={() => props.onDocumentAction('create-chapter')} type="button"><Plus size={16} />新增章节</button>
@@ -1161,7 +1160,6 @@ const DocumentWorkspace = forwardRef<DocumentEditorController, DocumentWorkspace
               <button className="button secondary full" onClick={props.onOpenCleanup} type="button"><WandSparkles size={16} />文字整理</button>
               <button className="button secondary full" onClick={props.onOpenRevisions} type="button"><Clock3 size={16} />版本记录</button>
             </div>
-            <header className="document-editor-command-heading"><span>编辑操作</span><small>正文命令</small></header>
             <div className="inspector-action-area document-editor-commands">
               <button className="button secondary full" onClick={() => editorRef.current?.markBoundary()} type="button">标记章节</button>
               <button className="button secondary full" onClick={() => editorRef.current?.undo()} type="button">撤销</button>

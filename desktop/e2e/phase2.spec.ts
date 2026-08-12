@@ -679,6 +679,17 @@ test('工程首页保留独立 Dashboard 卡片布局并可进入 Creative Workf
   const darkDetailBackground = await page.locator('.project-detail-card').evaluate((element) => getComputedStyle(element).backgroundColor);
   expect(darkDetailBackground).not.toBe(light.detailBackground);
 
+  const detailHeight = await page.locator('.project-detail-card').evaluate((element) => element.getBoundingClientRect().height);
+  expect(detailHeight).toBeLessThanOrEqual(360);
+
+  await page.getByRole('button', { name: '新建工程' }).click();
+  await expect(page).toHaveURL(/(?:#)?\/new-project$/);
+  await page.goto('/library');
+  page.once('dialog', (dialog) => dialog.accept());
+  const deleteRequest = page.waitForRequest((request) => request.method() === 'POST' && request.url().endsWith('/api/projects/1/delete'));
+  await page.getByRole('button', { name: '删除', exact: true }).click();
+  await deleteRequest;
+
   await page.getByRole('button', { name: '进入工程' }).click();
   await expect(page).toHaveURL(/(?:#)?\/workspace\/1$/);
   await expect(page.locator('.creative-topbar').getByRole('heading', { name: '示例工程' })).toBeVisible();
@@ -687,14 +698,25 @@ test('工程首页保留独立 Dashboard 卡片布局并可进入 Creative Workf
 test('工程 Creative Workspace 使用统一 surface 并适配三种桌面尺寸', async ({ page }) => {
   await page.goto('/workspace/1');
   await expect(page.locator('.creative-topbar').getByRole('heading', { name: '示例工程' })).toBeVisible();
+  await expect(page.locator('.creative-topbar').getByText('第一章', { exact: true })).toHaveCount(0);
+  await expect(page.locator('.chapter-workspace-head')).toHaveCount(0);
+  await expect(page.getByText('第1章 · 第一章', { exact: true })).toHaveCount(0);
+  const progress = page.locator('.creative-workflow-progress');
+  await expect(progress).toBeVisible();
+  await expect(progress.getByRole('button')).toHaveCount(6);
   const surfaces = await page.locator('.creative-columns').evaluate((workspace) => ({
     workspace: getComputedStyle(workspace).backgroundColor,
     columns: ['.chapter-rail', '.chapter-workspace', '.creative-context-panel'].map((selector) => getComputedStyle(workspace.querySelector(selector)!).backgroundColor),
     radius: getComputedStyle(workspace).borderRadius,
+    progressColumn: getComputedStyle(workspace.querySelector('.creative-workflow-progress')!).gridColumn,
+    widths: ['.chapter-rail', '.chapter-workspace', '.creative-context-panel'].map((selector) => workspace.querySelector(selector)!.getBoundingClientRect().width),
   }));
   expect(surfaces.workspace).not.toBe('rgba(0, 0, 0, 0)');
   expect(new Set(surfaces.columns)).toEqual(new Set(['rgba(0, 0, 0, 0)']));
   expect(surfaces.radius).toBe('12px');
+  expect(surfaces.progressColumn).toBe('1 / -1');
+  expect(surfaces.widths[2]).toBeGreaterThan(300);
+  expect(surfaces.widths[2]).toBeGreaterThan(surfaces.widths[0]);
   for (const viewport of [{ width: 1280, height: 720 }, { width: 1440, height: 900 }, { width: 1920, height: 1080 }]) {
     await page.setViewportSize(viewport);
     expect(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)).toBe(false);
@@ -867,6 +889,27 @@ test('标签管理弹窗显式移除关联并显示文档库存储目录', async
 test('文档正文右键菜单、编辑命令与统一分章入口', async ({ page }) => {
   await page.goto('/documents');
   await page.getByRole('button', { name: '示例长篇，作者' }).dblclick();
+  const chapterLayout = await page.locator('.chapter-row').first().evaluate((row) => {
+    const ordinal = row.querySelector('.chapter-number')!;
+    const title = row.querySelector('.chapter-name')!;
+    const words = row.querySelector('.chapter-state')!;
+    return {
+      ordinal: ordinal.textContent,
+      ordinalWhiteSpace: getComputedStyle(ordinal).whiteSpace,
+      titleOverflow: getComputedStyle(title).textOverflow,
+      wordsWhiteSpace: getComputedStyle(words).whiteSpace,
+      rowColumns: getComputedStyle(row).gridTemplateColumns,
+    };
+  });
+  expect(chapterLayout).toMatchObject({ ordinal: '第一章', ordinalWhiteSpace: 'nowrap', titleOverflow: 'ellipsis', wordsWhiteSpace: 'nowrap' });
+  expect(chapterLayout.rowColumns.split(' ')).toHaveLength(3);
+  const inspector = page.locator('.document-workspace-inspector');
+  for (const removedHeading of ['文档处理', '选择操作', '编辑操作', '正文命令']) {
+    await expect(inspector.getByText(removedHeading, { exact: true })).toHaveCount(0);
+  }
+  for (const action of ['合并文档', '新增章节', '分章', '文字整理', '版本记录', '标记章节', '撤销', '重做', '导出文档']) {
+    await expect(inspector.getByRole('button', { name: action, exact: true })).toBeVisible();
+  }
   const editor = page.locator('textarea.manuscript-editor');
   await editor.evaluate((node: HTMLTextAreaElement) => {
     node.focus();
