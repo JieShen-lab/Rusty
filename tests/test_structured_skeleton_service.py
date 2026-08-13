@@ -7,6 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.support import initialized_database
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from rusty.services.project_service import ProjectService
@@ -71,7 +73,7 @@ class StructuredSkeletonServiceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory(dir=Path.cwd())
         self.root = Path(self.temp.name)
-        self.database = self.root / "rusty.db"
+        self.database = initialized_database(self.root / "rusty.db")
         self.source = self.root / "book.txt"
         self.source.write_text("1. One\nThe protagonist enters the courtyard.", encoding="utf-8")
         self.projects = ProjectService(self.database)

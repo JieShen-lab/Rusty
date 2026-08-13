@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from rusty.db import initialize_database, session
+from rusty.db import session
 from rusty.services.context_service import ContextService
 from rusty.services.chapter_version_service import ChapterVersionService, SourceVersionConflict
 from rusty.db import default_database_path
@@ -46,8 +46,6 @@ class ProseRewriteOrchestrator:
         self.skeletons = SkeletonExtractionService(self.database_path)
         self.rewrite_maps = RewriteVersionMapService(self.database_path)
         self.ai = WorkflowAI(self.database_path, ai_client=ai_client)
-        with session(self.database_path) as connection:
-            initialize_database(connection)
 
     def plan(
         self,

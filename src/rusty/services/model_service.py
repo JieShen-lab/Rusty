@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
-from rusty.db import initialize_database, session
+from rusty.db import session
 from rusty.secrets import SecretStore, default_secret_store
 from rusty.db import default_database_path
 
@@ -39,8 +39,6 @@ class ModelService:
     ) -> None:
         self.database_path = Path(database_path) if database_path is not None else default_database_path()
         self.secret_store = secret_store or default_secret_store()
-        with session(self.database_path) as connection:
-            initialize_database(connection)
 
     def create_model(
         self,

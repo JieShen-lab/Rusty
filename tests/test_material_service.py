@@ -6,6 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.support import initialized_database
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from rusty.db import session
@@ -42,7 +44,7 @@ class FakeMaterialAIClient(AIClient):
 class MaterialServiceTests(unittest.TestCase):
     def test_legacy_project_copy_is_normalized_into_unified_library(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
-            database_path = Path(directory) / "rusty.db"
+            database_path = initialized_database(Path(directory) / "rusty.db")
             service = MaterialService(database_path)
             with session(database_path) as connection:
                 project_id = int(
@@ -92,7 +94,7 @@ class MaterialServiceTests(unittest.TestCase):
 
     def test_type_specific_ai_extraction_creates_timeline_material(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
-            database_path = Path(directory) / "rusty.db"
+            database_path = initialized_database(Path(directory) / "rusty.db")
             ModelService(database_path).create_model(
                 display_name="Fake",
                 provider="openai_compatible",

@@ -8,6 +8,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.support import initialized_database
+
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -36,7 +38,7 @@ class PromptDefinitionTests(unittest.TestCase):
             root = Path(directory)
             source = root / "book.txt"
             source.write_text("第一章\n原文。", encoding="utf-8")
-            database = root / "rusty.db"
+            database = initialized_database(root / "rusty.db")
             projects = ProjectService(database)
             project_id = projects.create_project(projects.preview_book(source), root)
             service = PromptDefinitionService(database)
@@ -90,7 +92,7 @@ class PromptDefinitionTests(unittest.TestCase):
             root = Path(directory)
             source = root / "book.txt"
             source.write_text("第一章\n原文。", encoding="utf-8")
-            database = root / "rusty.db"
+            database = initialized_database(root / "rusty.db")
             prompts = PromptDefinitionService(database)
             master = prompts.create_definition(
                 name="创建时总提示词", description="", kind="master", content="创建时复制",

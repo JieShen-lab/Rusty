@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from rusty.db import initialize_database, session
+from rusty.db import session
 from rusty.db import default_database_path
 
 CANONICAL_STYLE_SCHEMA = "rusty.style_template"
@@ -31,8 +31,6 @@ class StyleTemplate:
 class StyleTemplateService:
     def __init__(self, database_path: str | Path | None = None) -> None:
         self.database_path = Path(database_path) if database_path is not None else default_database_path()
-        with session(self.database_path) as connection:
-            initialize_database(connection)
 
     def create_template(
         self,

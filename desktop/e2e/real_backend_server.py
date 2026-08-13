@@ -12,7 +12,7 @@ sys.path.insert(0, str(ROOT / "src"))
 import uvicorn
 
 from backend.api import create_app
-from rusty.db import session
+from rusty.db import initialize_database_file, session
 from rusty.services.project_service import ProjectService
 from rusty.services.rewrite_workflow_service import RewriteWorkflowService
 from rusty.services.model_service import ModelService
@@ -266,6 +266,7 @@ if __name__ == "__main__":
         database.unlink()
     os.environ.setdefault("RUSTY_API_TOKEN", "real-e2e-token")
     os.environ.setdefault("RUSTY_API_ALLOWED_ORIGINS", "http://127.0.0.1:4174")
+    initialize_database_file(database)
     seed(database)
     uvicorn.run(
         create_app(database, workflow_ai_client=RealE2EFakeLLM()),

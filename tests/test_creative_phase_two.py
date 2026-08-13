@@ -7,6 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.support import initialized_database
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -239,7 +241,7 @@ class CreativePhaseTwoTests(unittest.TestCase):
     def test_plot_adjust_reuses_target_plan_draft_and_expresses_all_mappings(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd(), ignore_cleanup_errors=True) as directory:
             root = Path(directory); source = root / "book.txt"; source.write_text("第一章\nA\nB\nC\nD", encoding="utf-8")
-            database = root / "rusty.db"; projects = ProjectService(database); project_id = projects.create_project(projects.preview_book(source), root)
+            database = initialized_database(root / "rusty.db"); projects = ProjectService(database); project_id = projects.create_project(projects.preview_book(source), root)
             chapter = projects.list_chapters(project_id)[0]; scenes = SceneService(database); scene = scenes.split_chapter(chapter.id)[0]; scenes.confirm_boundaries(chapter.id)
             ai = PlotAdjustAI(); service = CreativeWorkflowService(database, ai_client=ai)
             service.save_preanalysis(scene.id, {"summary":"四个事件","characters":[],"basic_events":["A","B","C","D"]}); service.confirm_preanalysis(scene.id)
@@ -256,7 +258,7 @@ class CreativePhaseTwoTests(unittest.TestCase):
     def test_expansion_inserts_only_new_content_and_keeps_source_blocks_verbatim(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd(), ignore_cleanup_errors=True) as directory:
             root=Path(directory); source=root/"book.txt"; source.write_text("第一章\nA\nB\nC",encoding="utf-8")
-            database=root/"rusty.db"; projects=ProjectService(database); project_id=projects.create_project(projects.preview_book(source),root)
+            database=initialized_database(root/"rusty.db"); projects=ProjectService(database); project_id=projects.create_project(projects.preview_book(source),root)
             chapter=projects.list_chapters(project_id)[0]; scenes=SceneService(database); scene=scenes.split_chapter(chapter.id)[0]; scenes.confirm_boundaries(chapter.id)
             ai=ExpansionAI(); service=CreativeWorkflowService(database,ai_client=ai)
             service.save_preanalysis(scene.id,{"summary":"ABC","characters":[],"basic_events":["A","B","C"]}); service.confirm_preanalysis(scene.id)
@@ -274,7 +276,7 @@ class CreativePhaseTwoTests(unittest.TestCase):
         original="李四走进酒楼。王五坐在窗边。"
         with tempfile.TemporaryDirectory(dir=Path.cwd(),ignore_cleanup_errors=True) as directory:
             root=Path(directory); source=root/"book.txt"; source.write_text(f"第一章\n{original}",encoding="utf-8")
-            database=root/"rusty.db"; projects=ProjectService(database); project_id=projects.create_project(projects.preview_book(source),root)
+            database=initialized_database(root/"rusty.db"); projects=ProjectService(database); project_id=projects.create_project(projects.preview_book(source),root)
             chapter=projects.list_chapters(project_id)[0]; scenes=SceneService(database); scene=scenes.split_chapter(chapter.id)[0]; scenes.confirm_boundaries(chapter.id)
             card_id=AnchorService(database).create_character_card(name="李四",scope="project",project_id=project_id,setting_text="善于观察。")
             ai=ReimagineAI(); service=CreativeWorkflowService(database,ai_client=ai)
@@ -373,7 +375,7 @@ class CreativePhaseTwoTests(unittest.TestCase):
             root = Path(directory)
             long_source = SOURCE * 6
             source = root / "book.txt"; source.write_text("第一章\n" + ("前" * 100) + long_source + long_source, encoding="utf-8")
-            database = root / "rusty.db"; projects = ProjectService(database)
+            database = initialized_database(root / "rusty.db"); projects = ProjectService(database)
             project_id = projects.create_project(projects.preview_book(source), root)
             chapter = projects.list_chapters(project_id)[0]; scenes = SceneService(database)
             created_scenes = scenes.split_chapter(chapter.id, proposed_boundaries=[
@@ -497,7 +499,7 @@ class CreativePhaseTwoTests(unittest.TestCase):
     def test_strategy_analysis_noop_save_preserves_confirmation_and_downstream(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd(), ignore_cleanup_errors=True) as directory:
             root = Path(directory); source = root / "book.txt"; source.write_text("第一章\nA\nB\nC\nD", encoding="utf-8")
-            database = root / "rusty.db"; projects = ProjectService(database); project_id = projects.create_project(projects.preview_book(source), root)
+            database = initialized_database(root / "rusty.db"); projects = ProjectService(database); project_id = projects.create_project(projects.preview_book(source), root)
             chapter = projects.list_chapters(project_id)[0]; scenes = SceneService(database); scene = scenes.split_chapter(chapter.id)[0]; scenes.confirm_boundaries(chapter.id)
             service = CreativeWorkflowService(database, ai_client=PlotAdjustAI())
             service.save_preanalysis(scene.id,{"summary":"四个事件","characters":[],"basic_events":["A","B","C","D"]}); service.confirm_preanalysis(scene.id)
@@ -565,7 +567,7 @@ class CreativePhaseTwoTests(unittest.TestCase):
     def _prepared(root: Path) -> tuple[CreativeWorkflowService, int, RecordingAI]:
         source = root / "book.txt"
         source.write_text(f"第一章\n{SOURCE}", encoding="utf-8")
-        database = root / "rusty.db"
+        database = initialized_database(root / "rusty.db")
         projects = ProjectService(database)
         project_id = projects.create_project(projects.preview_book(source), root)
         chapter = projects.list_chapters(project_id)[0]

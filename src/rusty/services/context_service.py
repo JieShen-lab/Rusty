@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Iterable
 
-from rusty.db import initialize_database, session
+from rusty.db import session
 from rusty.services.anchor_service import AnchorService
 from rusty.services.material_service import MaterialService
 from rusty.db import default_database_path
@@ -164,8 +164,6 @@ class ContextService:
         self.rewrite_maps = RewriteVersionMapService(self.database_path)
         self.chapter_versions = ChapterVersionService(self.database_path)
         self.budgeter = PromptBudgeter()
-        with session(self.database_path) as connection:
-            initialize_database(connection)
 
     def build_sliding_window(
         self,

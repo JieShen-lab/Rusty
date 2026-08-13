@@ -5,6 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.support import initialized_database
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docx import Document
@@ -22,7 +24,7 @@ class DocumentLibraryServiceTests(unittest.TestCase):
             root = Path(directory)
             source = root / "titles.txt"
             source.write_text("第一章 阿尔法为父亲\n\n正文一。\n", encoding="utf-8")
-            service = DocumentLibraryService(root / "rusty.db", root / "library")
+            service = DocumentLibraryService(initialized_database(root / "rusty.db"), root / "library")
             document = service.import_document(source).document
             first = service.list_chapters(document.id)[0]
 
@@ -48,7 +50,7 @@ class DocumentLibraryServiceTests(unittest.TestCase):
             root = Path(directory)
             source = root / "draft.txt"
             source.write_text("第一章\n\n原正文。\n\n第二章\n\n后续正文。\n", encoding="utf-8")
-            service = DocumentLibraryService(root / "rusty.db", root / "library")
+            service = DocumentLibraryService(initialized_database(root / "rusty.db"), root / "library")
             document = service.import_document(source).document
             chapter = service.list_chapters(document.id)[0]
             content = service.get_content(document.id, chapter.id)
@@ -80,7 +82,7 @@ class DocumentLibraryServiceTests(unittest.TestCase):
             root = Path(directory)
             source = root / "conflict.txt"
             source.write_text("第一章\n\n正文。\n", encoding="utf-8")
-            service = DocumentLibraryService(root / "rusty.db", root / "library")
+            service = DocumentLibraryService(initialized_database(root / "rusty.db"), root / "library")
             document = service.import_document(source).document
             chapter = service.list_chapters(document.id)[0]
             content = service.get_content(document.id, chapter.id)
@@ -103,7 +105,7 @@ class DocumentLibraryServiceTests(unittest.TestCase):
             source_text = "第一章\n\n中 A，。\u3000\n🙂\n\n第二章\n\n尾声。\n"
             source = root / "counts.txt"
             source.write_text(source_text, encoding="utf-8")
-            service = DocumentLibraryService(root / "rusty.db", root / "library")
+            service = DocumentLibraryService(initialized_database(root / "rusty.db"), root / "library")
             document = service.import_document(source).document
             first, second = service.list_chapters(document.id)
             first_content = service.get_content(document.id, first.id)
@@ -137,7 +139,7 @@ class DocumentLibraryServiceTests(unittest.TestCase):
             root = Path(directory)
             source = root / "split.txt"
             source.write_text("第一章\n正文\n第二章\n正文\n", encoding="utf-8")
-            service = DocumentLibraryService(root / "rusty.db", root / "library")
+            service = DocumentLibraryService(initialized_database(root / "rusty.db"), root / "library")
             document = service.import_document(source).document
             original = service.list_revisions(document.id)[0]
             preview = service.preview_regex_split(document.id, r"^第.+章$")
@@ -156,7 +158,7 @@ class DocumentLibraryServiceTests(unittest.TestCase):
             root = Path(directory)
             source = root / "classified.txt"
             source.write_text("正文", encoding="utf-8")
-            service = DocumentLibraryService(root / "rusty.db", root / "library")
+            service = DocumentLibraryService(initialized_database(root / "rusty.db"), root / "library")
             document = service.import_document(source).document
             first = service.create_category("参考")
             second = service.create_category("待整理")
@@ -185,7 +187,7 @@ class DocumentLibraryServiceTests(unittest.TestCase):
             root = Path(directory)
             source = root / "project-source.txt"
             source.write_text("工程正文", encoding="utf-8")
-            database = root / "rusty.db"
+            database = initialized_database(root / "rusty.db")
             service = DocumentLibraryService(database, root / "library")
             ordinary = service.import_document(source).document
             self.assertFalse(ordinary.is_project_document)
@@ -222,7 +224,7 @@ class DocumentLibraryServiceTests(unittest.TestCase):
             root = Path(directory)
             source = root / "排版.txt"
             source.write_text("  第一章 风起\n第一段。\n\n　第二段。\n", encoding="utf-8")
-            service = DocumentLibraryService(root / "rusty.db", root / "library")
+            service = DocumentLibraryService(initialized_database(root / "rusty.db"), root / "library")
             imported = service.import_document(source)
             template = service.list_processing_templates()[0]
 
@@ -249,7 +251,7 @@ class DocumentLibraryServiceTests(unittest.TestCase):
             root = Path(directory)
             source = root / "原稿.txt"
             source.write_bytes("第一章\r\n正文。".encode("gb18030"))
-            service = DocumentLibraryService(root / "rusty.db", root / "library")
+            service = DocumentLibraryService(initialized_database(root / "rusty.db"), root / "library")
 
             first = service.import_document(source)
             second = service.import_document(source)
@@ -278,7 +280,7 @@ class DocumentLibraryServiceTests(unittest.TestCase):
                 "第一章 风起\n第一段。\n\n第二章 归途\n第二段。\n",
                 encoding="utf-8",
             )
-            database_path = root / "rusty.db"
+            database_path = initialized_database(root / "rusty.db")
             original_library = root / "library"
             migrated_library = root / "migrated-library"
             service = DocumentLibraryService(database_path, original_library)
@@ -335,7 +337,7 @@ class DocumentLibraryServiceTests(unittest.TestCase):
             document.add_heading("第二章", level=1)
             document.add_paragraph("第二段正文。")
             document.save(source)
-            service = DocumentLibraryService(root / "rusty.db", root / "library")
+            service = DocumentLibraryService(initialized_database(root / "rusty.db"), root / "library")
 
             result = service.import_document(source)
             stored_text = Path(result.document.storage_path).read_text(encoding="utf-8")
@@ -353,7 +355,7 @@ class DocumentLibraryServiceTests(unittest.TestCase):
             root = Path(directory)
             source = root / "book.epub"
             _write_sample_epub(source)
-            service = DocumentLibraryService(root / "rusty.db", root / "library")
+            service = DocumentLibraryService(initialized_database(root / "rusty.db"), root / "library")
 
             result = service.import_document(source)
             stored_text = Path(result.document.storage_path).read_text(encoding="utf-8")
@@ -372,7 +374,7 @@ class DocumentLibraryServiceTests(unittest.TestCase):
                 "第七卷 雨夜\n\n第787章 雨夜\n正文一。\n\n第788章 风声\n正文二。\n",
                 encoding="utf-8",
             )
-            service = DocumentLibraryService(root / "rusty.db", root / "library")
+            service = DocumentLibraryService(initialized_database(root / "rusty.db"), root / "library")
             document = service.import_document(source).document
             original_revision = service.list_revisions(document.id)[0]
             directory_before = service.get_directory(document.id)
@@ -418,7 +420,7 @@ class DocumentLibraryServiceTests(unittest.TestCase):
                 encoding="utf-8",
             )
             second_path.write_text("第九章 归途\n正文三。\n", encoding="utf-8")
-            service = DocumentLibraryService(root / "rusty.db", root / "library")
+            service = DocumentLibraryService(initialized_database(root / "rusty.db"), root / "library")
             first = service.import_document(first_path).document
             second = service.import_document(second_path).document
             first_revision = service.list_revisions(first.id)[0]

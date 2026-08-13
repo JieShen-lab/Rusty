@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from rusty.content_hash import hash_text
-from rusty.db import initialize_database, session
+from rusty.db import session
 from rusty.models import count_text_units
 from rusty.serialization import json_object
 
@@ -45,8 +45,6 @@ class ChapterVersionService:
 
     def __init__(self, database_path: str | Path) -> None:
         self.database_path = Path(database_path)
-        with session(self.database_path) as connection:
-            initialize_database(connection)
 
     def resolve_chapter_source(
         self,

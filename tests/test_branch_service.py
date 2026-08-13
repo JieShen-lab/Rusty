@@ -7,6 +7,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+from tests.support import initialized_database
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -22,7 +24,7 @@ class BranchServiceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory(dir=Path.cwd())
         self.root = Path(self.temp.name)
-        self.database = self.root / "rusty.db"
+        self.database = initialized_database(self.root / "rusty.db")
         self.source = self.root / "book.txt"
         self.original = "The gate opens.\n\nThe traveler enters."
         self.source.write_text(f"1. One\n{self.original}", encoding="utf-8")

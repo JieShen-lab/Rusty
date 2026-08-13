@@ -21,6 +21,7 @@ from rusty.services import anchor_extraction_service as extraction_module
 from rusty.services.anchor_service import AnchorService
 from rusty.services.material_service import MATERIAL_AI_DEFAULTS, MaterialService
 from rusty.services.model_service import ModelService
+from tests.support import initialized_database
 
 
 class ContractAIClient(AIClient):
@@ -65,7 +66,7 @@ class ContractAIClient(AIClient):
 
 class PreviewApplyContractV23Tests(unittest.TestCase):
     def _service(self, directory: str) -> tuple[Path, AnchorExtractionService, ContractAIClient]:
-        database_path = Path(directory) / "rusty.db"
+        database_path = initialized_database(Path(directory) / "rusty.db")
         ModelService(database_path).create_model(
             display_name="Fake",
             provider="openai_compatible",
@@ -477,7 +478,7 @@ class PreviewApplyContractV23Tests(unittest.TestCase):
 
     def test_material_settings_are_independent_persistent_and_resettable(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
-            database_path = Path(directory) / "rusty.db"
+            database_path = initialized_database(Path(directory) / "rusty.db")
             service = MaterialService(database_path)
             for index, task_type in enumerate(sorted(MATERIAL_AI_DEFAULTS)):
                 service.update_ai_settings(
@@ -573,7 +574,7 @@ class PreviewApplyContractV23Tests(unittest.TestCase):
 
     def test_structured_material_round_trip_preserves_unedited_fields_and_legacy_extra(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
-            service = MaterialService(Path(directory) / "rusty.db")
+            service = MaterialService(initialized_database(Path(directory) / "rusty.db"))
             material_id = service.create_material(
                 material_type="plot_skeleton",
                 scope="public",
@@ -626,7 +627,7 @@ class PreviewApplyContractV23Tests(unittest.TestCase):
     def test_publish_missing_or_failed_cover_leaves_no_public_half_record(self) -> None:
         png = b"\x89PNG\r\n\x1a\n" + (b"\x00" * 8) + (1).to_bytes(4, "big") + (1).to_bytes(4, "big")
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
-            database_path = Path(directory) / "rusty.db"
+            database_path = initialized_database(Path(directory) / "rusty.db")
             service = AnchorService(database_path)
             with session(database_path) as connection:
                 project_id = int(

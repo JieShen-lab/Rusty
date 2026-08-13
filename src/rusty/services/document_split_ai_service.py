@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from rusty.db import initialize_database, session
+from rusty.db import session
 from rusty.services.document_library_service import DocumentLibraryService
 from rusty.db import default_database_path
 from rusty.services.structured_model_service import StructuredModelService
@@ -34,8 +34,6 @@ class DocumentSplitAIService:
         self.database_path = Path(database_path) if database_path is not None else default_database_path()
         self.document_service = DocumentLibraryService(self.database_path)
         self.model_service = structured_model_service or StructuredModelService(self.database_path)
-        with session(self.database_path) as connection:
-            initialize_database(connection)
 
     def preview(self, document_id: int, *, model_id: int | None = None) -> dict[str, Any]:
         content = self.document_service.get_content(document_id)

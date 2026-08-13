@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from rusty.content_hash import hash_text
-from rusty.db import default_database_path, initialize_database, session
+from rusty.db import default_database_path, session
 from rusty.exporters import build_txt_export, export_epub
 from rusty.importers import parse_docx, parse_epub, parse_txt
 from rusty.models import (
@@ -41,8 +41,6 @@ def _text_changes(source: str, target: str) -> list[dict[str, int]]:
 class ProjectService:
     def __init__(self, database_path: str | Path | None = None) -> None:
         self.database_path = Path(database_path) if database_path is not None else default_database_path()
-        with session(self.database_path) as connection:
-            initialize_database(connection)
 
     def import_txt(self, source_path: str | Path, workspace_path: str | Path | None = None) -> int:
         parsed_book = parse_txt(source_path)

@@ -6,7 +6,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
 
-from rusty.db import initialize_database, session
+from rusty.db import session
 from rusty.models import ChapterAIOutputs, ChapterError, ChapterRecord, StageStatus, count_text_units
 from rusty.services.ai_client import AIClient, AIResponse, OpenAICompatibleClient
 from rusty.services.anchor_service import AnchorService, CharacterCard, OutlineTemplate
@@ -42,8 +42,6 @@ class PipelineService:
         self.anchor_service = AnchorService(self.database_path)
         self.prompt_compiler = PromptCompiler()
         self.ai_client = ai_client or OpenAICompatibleClient()
-        with session(self.database_path) as connection:
-            initialize_database(connection)
 
     def summarize_chapter(
         self,

@@ -6,6 +6,8 @@ import re
 import tempfile
 import unittest
 from pathlib import Path
+
+from tests.support import initialized_database
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -100,7 +102,7 @@ class RecordingAIClient:
 class PromptPackageTests(unittest.TestCase):
     def test_prompt_package_round_trip_excludes_project_material(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
-            database_path = Path(directory) / "rusty.db"
+            database_path = initialized_database(Path(directory) / "rusty.db")
             service = PromptService(database_path)
             template_id = service.create_template(
                 name="Novel A",
@@ -141,7 +143,7 @@ class PromptPackageTests(unittest.TestCase):
 
     def test_v2_prompt_package_rejects_missing_required_fields(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
-            service = PromptService(Path(directory) / "rusty.db")
+            service = PromptService(initialized_database(Path(directory) / "rusty.db"))
             with self.assertRaisesRegex(ValueError, "missing required fields"):
                 service.import_template_text(json.dumps({"schema": PROMPT_PACKAGE_SCHEMA, "schema_version": 2, "name": "Incomplete"}))
 
@@ -175,7 +177,7 @@ class PromptPackageTests(unittest.TestCase):
             "breakthroughTemplate": "仅作为兼容元数据保留。",
         }
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
-            service = PromptService(Path(directory) / "rusty.db")
+            service = PromptService(initialized_database(Path(directory) / "rusty.db"))
             template_id = service.import_template_text(json.dumps(legacy_payload, ensure_ascii=False))
             template = service.get_template(template_id)
 
@@ -195,7 +197,7 @@ class PromptPackageTests(unittest.TestCase):
             root = Path(directory)
             source = root / "book.txt"
             source.write_text("1. One\nAlice enters a battle.", encoding="utf-8")
-            database_path = root / "rusty.db"
+            database_path = initialized_database(root / "rusty.db")
             project_service = ProjectService(database_path)
             project_id = project_service.import_book(source, root)
             chapter_id = project_service.list_chapters(project_id)[0].id
@@ -252,7 +254,7 @@ class PromptPackageTests(unittest.TestCase):
             root = Path(directory)
             source = root / "book.txt"
             source.write_text("1. One\nAlice starts her journey.", encoding="utf-8")
-            database_path = root / "rusty.db"
+            database_path = initialized_database(root / "rusty.db")
             project_service = ProjectService(database_path)
             project_id = project_service.import_book(source, root)
             analysis_service = AnalysisService(database_path, ai_client=RecordingAIClient(payload))

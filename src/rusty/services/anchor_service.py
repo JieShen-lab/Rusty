@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from rusty.db import initialize_database, session
+from rusty.db import session
 from rusty.services.extraction_apply_error import CandidateApplyError
 from rusty.db import default_database_path
 from rusty.services.style_service import DETAIL_LEVELS
@@ -157,8 +157,6 @@ class CharacterProjectSummary:
 class AnchorService:
     def __init__(self, database_path: str | Path | None = None) -> None:
         self.database_path = Path(database_path) if database_path is not None else default_database_path()
-        with session(self.database_path) as connection:
-            initialize_database(connection)
 
     def create_outline_template(
         self,

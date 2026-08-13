@@ -5,7 +5,7 @@ import difflib
 from pathlib import Path
 from typing import Any
 
-from rusty.db import default_database_path, initialize_database, session
+from rusty.db import default_database_path, session
 from rusty.services.scene_service import SceneService
 from rusty.services.workflow_ai import WorkflowAI
 from rusty.services.anchor_service import AnchorService
@@ -34,8 +34,6 @@ class CreativeWorkflowService:
 
     def __init__(self, database_path: str | Path | None = None, *, ai_client: Any | None = None) -> None:
         self.database_path = Path(database_path) if database_path is not None else default_database_path()
-        with session(self.database_path) as connection:
-            initialize_database(connection)
         self.scenes = SceneService(self.database_path)
         self.characters = AnchorService(self.database_path)
         self.materials = MaterialService(self.database_path)

@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from backend.schemas import CreateProjectRequest
 from rusty.db.schema import CURRENT_SCHEMA_VERSION, initialize_database
 from rusty.services.project_service import ProjectService
+from tests.support import initialized_database
 
 
 class ProjectKindV24Tests(unittest.TestCase):
@@ -23,7 +24,7 @@ class ProjectKindV24Tests(unittest.TestCase):
             root = Path(directory)
             source = root / "book.txt"
             source.write_text("1. Opening\nOriginal.", encoding="utf-8")
-            service = ProjectService(root / "rusty.db")
+            service = ProjectService(initialized_database(root / "rusty.db"))
 
             rewrite_id = service.create_project(
                 service.preview_book(source),
@@ -74,7 +75,7 @@ class ProjectKindV24Tests(unittest.TestCase):
             root = Path(directory)
             source = root / "book.txt"
             source.write_text("1. One\nOriginal.", encoding="utf-8")
-            database = root / "rusty.db"
+            database = initialized_database(root / "rusty.db")
             service = ProjectService(database)
             project_id = service.create_project(
                 service.preview_book(source), root, project_kind="rewrite"

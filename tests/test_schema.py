@@ -10,7 +10,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from rusty.db import CURRENT_SCHEMA_VERSION, connect, initialize_database
+from rusty.db import (
+    CURRENT_SCHEMA_VERSION,
+    connect,
+    initialize_database,
+    initialize_database_file,
+)
 from rusty.db.schema import (
     _migrate_to_v14,
     _migrate_to_v15,
@@ -199,6 +204,7 @@ class SchemaTests(unittest.TestCase):
             database = root / "legacy.db"
             source.write_text("1. One\nimmutable original", encoding="utf-8")
             with mock.patch("rusty.db.schema.CURRENT_SCHEMA_VERSION", 37):
+                initialize_database_file(database)
                 projects = ProjectService(database)
                 project_id = projects.create_project(
                     projects.preview_book(source), root, project_kind="rewrite"
@@ -306,6 +312,7 @@ class SchemaTests(unittest.TestCase):
             database = root / "v39.db"
             source.write_text("1. One\nimmutable original", encoding="utf-8")
             with mock.patch("rusty.db.schema.CURRENT_SCHEMA_VERSION", 39):
+                initialize_database_file(database)
                 projects = ProjectService(database)
                 project_id = projects.create_project(
                     projects.preview_book(source), root, project_kind="rewrite"

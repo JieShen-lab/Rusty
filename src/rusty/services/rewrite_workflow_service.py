@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-from rusty.db import initialize_database, session
+from rusty.db import session
 from rusty.serialization import json_object
 from rusty.services.context_service import ContextService
 from rusty.services.material_service import MaterialService
@@ -58,8 +58,6 @@ class RewriteWorkflowService:
         self.scene_service = SceneService(self.database_path)
         self.context_service = ContextService(self.database_path)
         self.material_service = MaterialService(self.database_path)
-        with session(self.database_path) as connection:
-            initialize_database(connection)
 
     def create_skeleton(
         self,

@@ -10,7 +10,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from rusty.chapter_titles import format_chapter_heading, normalize_chapter_title
-from rusty.db import initialize_database, session
+from rusty.db import session
 from rusty.exporters import build_txt_export, export_epub
 from rusty.importers import parse_docx, parse_epub, parse_txt, split_document_structure
 from rusty.importers.txt import read_text_with_encoding
@@ -224,7 +224,6 @@ class DocumentLibraryService:
         self.database_path = Path(database_path)
         configured_path = os.environ.get("RUSTY_DOCUMENT_LIBRARY_PATH")
         with session(self.database_path) as connection:
-            initialize_database(connection)
             row = connection.execute(
                 "SELECT storage_path FROM document_library_settings WHERE id = 1"
             ).fetchone()

@@ -6,6 +6,8 @@ import unittest
 import os
 from pathlib import Path
 
+from tests.support import initialized_database
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from rusty.services.chapter_version_service import ChapterVersionService
@@ -40,7 +42,7 @@ class RewriteSnapshotProvenanceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
-        self.database = self.root / "rusty.db"
+        self.database = initialized_database(self.root / "rusty.db")
         self.original = "Alice enters.\n\nAlice argues.\n\nAlice leaves."
         source = self.root / "book.txt"
         source.write_text(f"1. Chapter\n{self.original}", encoding="utf-8")
