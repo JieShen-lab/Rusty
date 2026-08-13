@@ -108,17 +108,18 @@ Rusty 以本地优先方式管理小说项目。当前主界面采用 Electron +
 - 来源可只保存为 `analysis_status='unanalyzed'` 的待整理素材并显示在“最近导入”；修改原始来源会重新标记为未分析。
 - 工程通过每种素材独立的标签筛选（任一/全部）和手动固定素材 ID 使用统一资产。上下文检索优先级为：手动指定 → 工程标签筛选 → 时间线/适用场景 → 关键词 → 相似度；未分析素材不参与自动检索。
 - 支持大纲模板 CRUD、AI 抽取和项目绑定。
-- 角色卡以角色名、身份、年龄、设定为固定字段，其他信息使用有序自定义字段。
-- 角色卡支持公共/工程作用域、多标签、分析状态、独立副本和稳定默认封面。标签只在详情区显示和管理，并始终限定在当前工程或公共分类范围内筛选。
-- 公共角色支持独立的多对多分类；一个公共角色可属于多个分类，工程角色不能关联公共分类，角色分类与角色标签是独立命名空间。
-- 工程角色的权威集合是 `project_character_bindings.is_active = 1`；角色库和改写上下文均从有效绑定读取，不再把 `character_cards.project_id` 当作唯一关系。
-- 公共角色复制到工程会原子创建独立副本，复制稳定字段、标签和封面，保留来源卡 ID/版本并自动建立有效工程绑定；公共分类不会复制。
-- 公共角色复制到工程时还会在工程副本的 `source_metadata.public_baseline` 保存复制当时的完整稳定字段快照，用于后续字段级差异判断；重复添加会先提示打开已有有效副本或明确创建新副本。
-- 工程角色可“保存为公共角色”，该操作始终创建新的公共角色，仅导出用户勾选的稳定字段，不复制工程绑定、事实账本、场景人物状态或其他项目运行时状态，也不会自动加入公共分类。
+- 角色卡是统一全局资产，不再区分公共角色和工程角色。旧记录的 `scope`、`project_id`、`source_character_card_id` 继续保留用于兼容与追踪，但统一列表不会因旧 scope 隐藏记录，新建角色写兼容值 `scope='public'`。
+- `project_character_bindings` 只表示工程引用了哪些角色卡；绑定不创建副本，解绑不删除角色卡，一张角色卡可被多个工程引用。旧 copy-to-project / publish-to-public API 仅作为 deprecated legacy 接口保留，新前端零调用。
+- 分类负责整理角色卡，一张角色卡可属于多个分类；标签负责筛选，分类与标签相互独立。删除分类只解除链接，不删除角色。
+- 角色页的左栏、divider、分类行、书本卡片、标签胶囊、详情 section、管理弹窗和搜索布局直接复用文档库 `LibraryPrimitives` 与同一 CSS token。
+- 角色稳定设定统一存为 `stable_fields_json`：每项包含稳定 `id`、显示 `label`、多行 `value` 与 `sort_order`。旧固定字段和未知 `custom_fields_json` 在 v53 迁移时转入同一数组且不丢失。
+- AI 新建和手动新建是两个独立入口。AI 请求必须提供 `target_character_name`，一次只提取一个人物；其他人物只能作为目标人物的关系证据。
+- `POST /api/characters/extract/preview` 返回一个严格 JSON `character` draft，不返回 `candidates[]`，也不写 `character_cards` 或标签。用户在统一角色编辑器确认、删改建议标签并保存后，才通过标准角色 API 创建一张卡。
+- AI 维度定义与角色设定使用同一稳定 ID。默认和自定义维度的名称、说明、顺序、启用状态持久化在 `character_extraction_settings.dimensions_json`；Prompt 预览显示目标名/来源占位符、启用维度、说明、附加要求和 JSON schema。
 - “新建角色”统一提供“手动创建”和“从文本提取”两个模式。手动创建不调用 AI、默认 `analysis_status='unanalyzed'`；AI 提取使用 preview/apply 两阶段流程，确认创建后默认标记为已分析。
 - AI preview 只返回可编辑候选和 0～8 个短标签建议，不写角色、标签或分类；apply 在单一事务中创建全部确认候选、标签、分类和工程绑定，任一失败整批回滚并允许修正后重试，全部成功后 Preview Token 单次消费。
 - 角色提取设置持久化在数据库中，可配置模型、细化程度、候选上限、生成维度、附加要求和高级系统提示词，并支持恢复安全默认值与查看不含 API key 的 Prompt 预览。
-- 支持角色卡 CRUD、复制、JSON 导入、AI 抽取和项目绑定；改写时只注入与当前章节相关的人物。
+- 支持统一角色卡 CRUD、JSON 导入、单人物 AI draft 和项目引用绑定；改写时只注入工程有效绑定且与当前章节相关的人物。
 
 主要实现：
 
@@ -133,7 +134,7 @@ Rusty 以本地优先方式管理小说项目。当前主界面采用 Electron +
 - 文档库正文编辑区、工程原文和工程改写稿支持选中文字后打开右键菜单。
 - 菜单并列提供“添加为剧情骨架来源”“添加为场景素材来源”“提取角色卡”。
 - 两个素材入口通过一次性 history state 将选区正文和文档/工程、revision、卷、章节、offset 及标题来源带到素材页；用户可仅保存来源，或生成候选并确认后写库。
-- “提取角色卡”通过 history state 将选区正文与文档、revision、章节、偏移及标题来源传到角色页，读取一次后立即清除；长文本不进入 URL 或 localStorage，确认候选前不创建角色。
+- “提取角色卡”通过 history state 将选区正文与文档、revision、卷、章节、偏移及标题来源传到角色页，读取一次后立即清除；用户仍必须填写目标人物名称，Preview 前后均不会创建角色。
 - 只保存规范化后的纯文本，前后端均限制单次选区不超过 50,000 字符。
 - 来源信息单独保存为元数据，包括文档/工程、章节和字符 offset，不混入正文。
 - 素材选区不会直接创建记录；“仅保存来源”才创建未分析素材，AI 候选在 apply 前也不会写库。
@@ -263,9 +264,9 @@ SQLite + OS keyring + 本地文件
 - 剧情运行状态、草稿生成进度、独立分支路线和不可变章节/场景版本快照。
 - 章节/场景创作阶段、预分析、创作方向、strategy 专项分析、SceneTarget、WritingPlan/blocks、Current Draft 和 ReviewMark。
 
-v14 将旧素材类型 `snippet` 映射为 `scene_reference`，将 `outline` 映射为 `plot_skeleton` 并保留旧类型元数据；旧素材分类和文档分类迁移为标签。角色卡旧固定字段迁移为身份、年龄、设定及有序自定义字段。v19 新增文档卷层级；v20 新增仅适用于公共角色的 `character_categories` / `character_category_links`，并幂等补齐历史工程角色的有效 `project_character_bindings`；v21 新增单例 `character_extraction_settings`；v22 新增素材分类、标签组、工程素材筛选和三任务 `material_ai_settings`。v22 会原地保留历史工程素材 ID，把 `scope` 统一为 `public`、清空 `project_id`，并在来源元数据记录 `legacy_scope` / `legacy_project_id` / `migrated_to_unified_library`；已有标签会转为对应工程的素材筛选，未打标签的旧素材不会生成伪标签。v23 为三个素材 AI 任务分别增加用户提示词模板、JSON 分析维度、通用标签开关和适用场景标签开关；v22 的 `generate_tags` 会迁移到两个新开关。迁移和关系写入均可幂等重放。
+v14 将旧素材类型 `snippet` 映射为 `scene_reference`，将 `outline` 映射为 `plot_skeleton` 并保留旧类型元数据；旧素材分类和文档分类迁移为标签。角色卡旧固定字段迁移为身份、年龄、设定及有序自定义字段。v19 新增文档卷层级；v20 新增 `character_categories` / `character_category_links`，并幂等补齐历史工程角色的有效 `project_character_bindings`；v21 新增单例 `character_extraction_settings`；v22 新增素材分类、标签组、工程素材筛选和三任务 `material_ai_settings`。v53 新增 `character_cards.stable_fields_json` 与 `character_extraction_settings.dimensions_json`，把旧稳定字段和未知自定义字段无损迁入统一 schema，并持久化有序 AI 维度定义。迁移和关系写入均可幂等重放。
 
-兼容性：旧的 `POST /api/characters/extract`、`POST /api/characters/{card_id}/analyze` 和 `POST /api/characters/{card_id}/analyze/confirm` 暂时仅作为后端 legacy 接口保留；对应前端调用已清理，新角色页不再调用这些单阶段接口。素材的 `POST /api/material-extractions`、`POST /api/materials/{id}/copy`、`POST /api/materials/{id}/analyze` 与分析 apply 接口也仅作为后端 legacy 接口保留；对应前端调用与废弃的旧素材管理页已清理，新的素材页只调用 `/api/material-extractions/preview` 与 `/api/material-extractions/apply`。旧的选区直接创建素材接口已删除，文档和工程选区必须进入候选确认流程。
+兼容性：旧的 `POST /api/characters/extract`、`POST /api/characters/extract/apply`、copy-to-project、project-copy、publish-to-public、角色分析和封面 API 暂时只作为后端 deprecated legacy 接口保留；新角色页不调用它们。素材的单阶段提取、复制与分析接口同样仅为 legacy；新素材页只调用 Preview/Apply。文档选区提取角色统一进入必须填写目标人物名的 AI Preview 流程。
 
 SQLite 连接默认启用外键、WAL、`synchronous=NORMAL` 和 5 秒忙等待。迁移由 `schema_migrations` 记录，初始化时按版本顺序执行。
 
