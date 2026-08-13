@@ -36,6 +36,7 @@ from rusty.services.document_library_service import (
     ProcessingTemplate,
 )
 from rusty.services.document_split_ai_service import DocumentSplitAIService
+from rusty.services.document_cleanup_ai_service import DocumentCleanupAIService
 from rusty.services.model_service import ModelService
 from rusty.services.pipeline_service import PipelineService
 from rusty.db import default_database_path
@@ -99,6 +100,7 @@ from .schemas import (
     LibraryDocumentImportResponse,
     LibraryDocumentUpdateRequest,
     LibraryDocumentCleanupRequest,
+    LibraryDocumentAICleanupRequest,
     LibraryDocumentCleanupResponse,
     LibraryDocumentChapterOut,
     LibraryDocumentChapterReorderRequest,
@@ -138,6 +140,7 @@ from .schemas import (
     DocumentLibrarySettingsOut,
     DocumentCreateChapterRequest,
     DocumentCreateChapterResponse,
+    DocumentCursorSplitRequest,
     DocumentCategoryOut,
     DocumentMergeRequest,
     ModelTestResponse,
@@ -246,6 +249,7 @@ def create_app(
     chapter_split_service = ChapterSplitService()
     document_library_service = DocumentLibraryService(db_path)
     document_split_ai_service = DocumentSplitAIService(db_path)
+    document_cleanup_ai_service = DocumentCleanupAIService(db_path)
     pipeline_service = PipelineService(db_path)
     model_service = ModelService(db_path)
     prompt_service = PromptService(db_path)
@@ -646,7 +650,12 @@ def create_app(
         dependencies=[Depends(_require_token)],
     )
     def preview_ai_document_split(document_id: int, payload: AISplitPreviewRequest) -> dict[str, Any]:
-        return document_split_ai_service.preview(document_id, model_id=payload.model_id)
+        return document_split_ai_service.preview(
+            document_id,
+            chapter_id=payload.chapter_id,
+            prompt=payload.prompt,
+            model_id=payload.model_id,
+        )
 
     @app.post(
         "/api/documents/{document_id}/split/ai/apply",
@@ -658,6 +667,30 @@ def create_app(
         if int(result.get("proposal_id", 0)) != payload.proposal_id or int(result.get("document_id", 0)) != document_id:
             raise _http_error(409, "split_proposal_mismatch", "AI split proposal mismatch.")
         return result
+
+    @app.post(
+        "/api/documents/{document_id}/split/cursor",
+        response_model=DocumentCreateChapterResponse,
+        dependencies=[Depends(_require_token)],
+    )
+    def split_document_chapter_at_cursor(
+        document_id: int,
+        payload: DocumentCursorSplitRequest,
+    ) -> DocumentCreateChapterResponse:
+        result = document_library_service.split_chapter_at_cursor(
+            document_id,
+            chapter_id=payload.chapter_id,
+            cursor_offset=payload.cursor_offset,
+            next_title=payload.next_title,
+        )
+        if result.created_chapter_id is None:
+            raise RuntimeError("Created chapter could not be resolved in the new revision.")
+        return DocumentCreateChapterResponse(
+            document=_library_document_out(result.document),
+            revision=_document_revision_out(result.revision),
+            created=result.created,
+            created_chapter_id=result.created_chapter_id,
+        )
 
     @app.post(
         "/api/documents/{document_id}/split/regex/apply",
@@ -749,6 +782,27 @@ def create_app(
         payload: LibraryDocumentCleanupRequest,
     ) -> LibraryDocumentCleanupResponse:
         result = document_library_service.apply_cleanup(document_id, payload.template_id)
+        return LibraryDocumentCleanupResponse(
+            document=_library_document_out(result.document),
+            revision=_document_revision_out(result.revision),
+            created=result.created,
+        )
+
+    @app.post(
+        "/api/documents/{document_id}/cleanup/ai",
+        response_model=LibraryDocumentCleanupResponse,
+        dependencies=[Depends(_require_token)],
+    )
+    def cleanup_library_document_with_ai(
+        document_id: int,
+        payload: LibraryDocumentAICleanupRequest,
+    ) -> LibraryDocumentCleanupResponse:
+        result = document_cleanup_ai_service.apply(
+            document_id,
+            chapter_id=payload.chapter_id,
+            prompt=payload.prompt,
+            model_id=payload.model_id,
+        )
         return LibraryDocumentCleanupResponse(
             document=_library_document_out(result.document),
             revision=_document_revision_out(result.revision),
@@ -1390,6 +1444,7 @@ def create_app(
         chapter = _require_existing_chapter(project_service, chapter_id)
         _require_project(project_service, chapter.project_id)
         project_service.save_chapter_rewrite(chapter_id, payload.rewritten_text)
+        document_library_service.sync_project_document(chapter.project_id)
         updated = _require_existing_chapter(project_service, chapter_id)
         return _chapter_detail(updated, pipeline_service)
 
@@ -1402,6 +1457,7 @@ def create_app(
         chapter = _require_existing_chapter(project_service, chapter_id)
         _require_project(project_service, chapter.project_id)
         pipeline_service.confirm_rewrite(chapter_id)
+        document_library_service.sync_project_document(chapter.project_id)
         return _chapter_detail(_require_existing_chapter(project_service, chapter_id), pipeline_service)
 
     @app.get("/api/chapters/{chapter_id}/scenes", response_model=list[dict[str, Any]])

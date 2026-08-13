@@ -91,6 +91,12 @@ class LibraryDocumentCleanupRequest(BaseModel):
     template_id: int
 
 
+class LibraryDocumentAICleanupRequest(BaseModel):
+    chapter_id: int | None = None
+    prompt: str = Field(min_length=1)
+    model_id: int | None = None
+
+
 class LibraryDocumentCleanupResponse(BaseModel):
     document: LibraryDocumentOut
     revision: LibraryDocumentRevisionOut
@@ -225,6 +231,12 @@ class DocumentCreateChapterResponse(LibraryDocumentCleanupResponse):
     created_chapter_id: int
 
 
+class DocumentCursorSplitRequest(BaseModel):
+    chapter_id: int
+    cursor_offset: int = Field(ge=0)
+    next_title: str = Field(min_length=1)
+
+
 class SplitChapterCandidate(BaseModel):
     index: int
     title: str
@@ -260,6 +272,8 @@ class ManualChapterMarkRequest(BaseModel):
 
 
 class AISplitPreviewRequest(BaseModel):
+    chapter_id: int
+    prompt: str = Field(min_length=1)
     model_id: int | None = None
 
 
