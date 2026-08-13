@@ -136,7 +136,7 @@ class SceneRewriteOrchestrator:
         model_id: int | None = None,
         character_ids: list[int] | None = None,
         material_mappings: list[dict[str, Any]] | None = None,
-        scene_reference_ids: list[int] | None = None,
+        author_style_ids: list[int] | None = None,
     ) -> dict[str, Any]:
         run = self.get_run(run_id)
         scene = self._require_scene(int(run["scene_id"]))
@@ -159,11 +159,11 @@ class SceneRewriteOrchestrator:
                     else []
                 )
                 mapping["event_nodes"] = content.get("event_nodes", legacy_event_nodes)
-        reference_ids = list(scene_reference_ids or [])
-        for material_id in reference_ids:
+        style_ids = list(author_style_ids or [])
+        for material_id in style_ids:
             material = self.material_service.get_material(material_id)
-            if material is None or material.material_type != "scene_reference":
-                raise ValueError("Scene writing references must use scene_reference materials.")
+            if material is None or material.material_type != "author_style":
+                raise ValueError("Writing style guidance must use author_style materials.")
         skeleton_nodes = self._skeleton_nodes(skeleton_version_id)
         node_ids = {str(node.get("id")) for node in skeleton_nodes}
         allowed_insertions = {"__start__", "__end__", *node_ids}
@@ -173,9 +173,9 @@ class SceneRewriteOrchestrator:
                 raise ValueError(
                     f"Plot insertion target does not exist in the confirmed skeleton: {insertion}"
                 )
-        scene_reference_constraints = {
-            "material_ids": reference_ids,
-            "rule": "Scene references guide local writing only and cannot create new plot events.",
+        author_style_context = {
+            "material_ids": style_ids,
+            "rule": "Author styles guide expression only and cannot create story facts or plot events.",
         }
         with session(self.database_path) as connection:
             connection.execute(
@@ -192,7 +192,7 @@ class SceneRewriteOrchestrator:
                 int(run["scene_id"]),
                 stage="planning",
                 system_rules=(
-                    "Create a scene rewrite plan. Scene references guide local writing only. "
+                    "Create a scene rewrite plan. Author styles guide expression only. "
                     "Only plot skeleton mappings may add events. Preserve required outcomes."
                 ),
                 user_instruction=user_instruction,
@@ -200,7 +200,7 @@ class SceneRewriteOrchestrator:
                     "mode": run["mode"],
                     "confirmed_skeleton": skeleton_nodes,
                     "material_mappings": mappings,
-                    "scene_reference_constraints": scene_reference_constraints,
+                    "author_style_context": author_style_context,
                     "expansion_event_rule": (
                         "Only event nodes from plot_skeleton mappings may create new events."
                     ),
@@ -220,7 +220,7 @@ class SceneRewriteOrchestrator:
                 validator=_validate_plan,
                 model_id=model_id,
                 character_ids=character_ids or [],
-                material_ids=[*[int(item["material_id"]) for item in mappings], *reference_ids],
+                material_ids=[*[int(item["material_id"]) for item in mappings], *style_ids],
             )
             if run["mode"] == "skeleton_rewrite":
                 plan_id = self.workflow.create_skeleton_rewrite_plan(
@@ -270,7 +270,7 @@ class SceneRewriteOrchestrator:
         model_id: int | None = None,
         character_ids: list[int] | None = None,
         plot_skeleton_material_ids: list[int] | None = None,
-        scene_reference_ids: list[int] | None = None,
+        author_style_ids: list[int] | None = None,
         material_ids: list[int] | None = None,
     ) -> dict[str, Any]:
         run = self.get_run(run_id)
@@ -284,22 +284,22 @@ class SceneRewriteOrchestrator:
         scene = self._require_scene(scene_id)
         plan_plot_ids = [int(item["material_id"]) for item in plan["materials"]]
         plot_ids = list(plot_skeleton_material_ids or [])
-        reference_ids = list(scene_reference_ids or [])
+        style_ids = list(author_style_ids or [])
         for legacy_id in material_ids or []:
             material = self.material_service.get_material(legacy_id)
             if material is None:
                 raise FileNotFoundError(f"Material not found: {legacy_id}")
-            target = plot_ids if material.material_type == "plot_skeleton" else reference_ids
+            target = plot_ids if material.material_type == "plot_skeleton" else style_ids
             if legacy_id not in target:
                 target.append(legacy_id)
         if not plot_ids:
             plot_ids = plan_plot_ids
-        if set(plot_ids) & set(reference_ids):
-            raise ValueError("A material cannot be both a plot skeleton and a scene reference.")
-        self._validate_execution_materials(scene.project_id, plot_ids, reference_ids)
+        if set(plot_ids) & set(style_ids):
+            raise ValueError("A material cannot be both a plot skeleton and an author style.")
+        self._validate_execution_materials(scene.project_id, plot_ids, style_ids)
         if set(plot_ids) != set(plan_plot_ids):
             raise ValueError("Plot skeleton materials must match the confirmed plan mappings.")
-        retrieval_material_ids = [*plot_ids, *reference_ids]
+        retrieval_material_ids = [*plot_ids, *style_ids]
         with session(self.database_path) as connection:
             connection.execute(
                 """
@@ -326,9 +326,9 @@ class SceneRewriteOrchestrator:
                     "rewrite_plan": plan["plan"],
                     "material_mappings": plan["materials"],
                     "plot_skeleton_mappings": plan["materials"],
-                    "scene_reference_constraints": {
-                        "material_ids": reference_ids,
-                        "rule": "Scene references are writing guidance only and do not authorize new events.",
+                    "author_style_context": {
+                        "material_ids": style_ids,
+                        "rule": "Author styles are expression guidance only and do not authorize facts or events.",
                     },
                     "must_preserve_events": plan["plan"].get("preserve", []),
                     "required_end_state": plan["plan"].get("expected_end_state", {}),
@@ -391,11 +391,11 @@ class SceneRewriteOrchestrator:
         self,
         project_id: int,
         plot_skeleton_material_ids: list[int],
-        scene_reference_ids: list[int],
+        author_style_ids: list[int],
     ) -> None:
         for material_id, expected_type in [
             *((material_id, "plot_skeleton") for material_id in plot_skeleton_material_ids),
-            *((material_id, "scene_reference") for material_id in scene_reference_ids),
+            *((material_id, "author_style") for material_id in author_style_ids),
         ]:
             material = self.material_service.get_material(material_id)
             if material is None:

@@ -389,7 +389,7 @@ class RewriteWorkflowService:
                 if material.material_type != "plot_skeleton":
                     raise ValueError(
                         "Only plot_skeleton materials may introduce expansion event nodes; "
-                        "scene_reference materials are writing-context references."
+                        "author_style materials are writing-context references."
                     )
                 event_nodes = _normalize_skeleton_nodes(mapping.get("event_nodes", []))
                 if not event_nodes:
