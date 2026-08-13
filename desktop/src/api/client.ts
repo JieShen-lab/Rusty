@@ -376,6 +376,18 @@ export function createLibraryDocumentChapter(
   });
 }
 
+export function splitLibraryDocumentChapterAtCursor(
+  documentId: number,
+  chapterId: number,
+  cursorOffset: number,
+  nextTitle: string,
+) {
+  return request<LibraryDocumentCreateChapterResult>(`/api/documents/${documentId}/split/cursor`, {
+    method: 'POST',
+    body: JSON.stringify({ chapter_id: chapterId, cursor_offset: cursorOffset, next_title: nextTitle }),
+  });
+}
+
 export function previewRegexSplit(documentId: number, pattern: string) {
   return request<SplitPreview>(`/api/documents/${documentId}/split/regex/preview`, {
     method: 'POST',
@@ -437,6 +449,18 @@ export function cleanupLibraryDocument(documentId: number, templateId: number) {
   return request<LibraryDocumentCleanupResult>(`/api/documents/${documentId}/cleanup`, {
     method: 'POST',
     body: JSON.stringify({ template_id: templateId }),
+  });
+}
+
+export function cleanupLibraryDocumentWithAI(
+  documentId: number,
+  chapterId: number | null,
+  prompt: string,
+  modelId?: number | null,
+) {
+  return request<LibraryDocumentCleanupResult>(`/api/documents/${documentId}/cleanup/ai`, {
+    method: 'POST',
+    body: JSON.stringify({ chapter_id: chapterId, prompt, model_id: modelId ?? null }),
   });
 }
 
@@ -1389,10 +1413,15 @@ export function checkBookConsistency(projectId: number) {
   return request<Record<string, unknown>>(`/api/projects/${projectId}/book-consistency-check`);
 }
 
-export function previewAIDocumentSplit(documentId: number, modelId?: number | null) {
+export function previewAIDocumentSplit(
+  documentId: number,
+  chapterId: number,
+  prompt: string,
+  modelId?: number | null,
+) {
   return request<import('./types').AISplitProposal>(`/api/documents/${documentId}/split/ai/preview`, {
     method: 'POST',
-    body: JSON.stringify({ model_id: modelId ?? null }),
+    body: JSON.stringify({ chapter_id: chapterId, prompt, model_id: modelId ?? null }),
   });
 }
 

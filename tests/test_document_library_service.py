@@ -403,6 +403,22 @@ class DocumentLibraryServiceTests(unittest.TestCase):
             self.assertEqual([project_id], linked.project_ids)
             self.assertNotIn("工程", linked.tags)
             self.assertNotIn("工程", [tag.name for tag in service.list_tags()])
+            with self.assertRaisesRegex(ValueError, "仅支持阅读"):
+                service.save_content(linked.id, text="不应写回工程")
+            project_chapter = ProjectService(database).list_chapters(project_id)[0]
+            ProjectService(database).save_chapter_rewrite(project_chapter.id, "工程最新保存正文")
+            synced = service.sync_project_document(project_id)
+            self.assertIsNotNone(synced)
+            synced_chapter = service.list_chapters(linked.id)[0]
+            self.assertIn("工程最新保存正文", service.get_content(linked.id, synced_chapter.id).body_text)
+            self.assertEqual("project_sync", service.list_revisions(linked.id)[0].revision_type)
+            ordinary_source = root / "ordinary.txt"
+            ordinary_source.write_text("普通导入正文", encoding="utf-8")
+            ordinary_document = service.import_document(ordinary_source).document
+            all_documents = service.list_documents()
+            self.assertEqual({linked.id, ordinary_document.id}, {item.id for item in all_documents})
+            self.assertEqual([linked.id], [item.id for item in all_documents if item.is_project_document])
+            self.assertEqual([ordinary_document.id], [item.id for item in service.list_recent_imports()])
             with session(database) as connection:
                 self.assertEqual(
                     linked.id,
@@ -411,6 +427,62 @@ class DocumentLibraryServiceTests(unittest.TestCase):
                         (project_id,),
                     ).fetchone()[0],
                 )
+
+    def test_cursor_split_preserves_order_offsets_and_creates_revision(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            source = root / "cursor-split.txt"
+            source.write_text("第一章 原标题\n\nAAAAAABBBBBB\n\n第二章 后续\n\nCCCCCC\n", encoding="utf-8")
+            database = initialized_database(root / "rusty.db")
+            service = DocumentLibraryService(database, root / "library")
+            document = service.import_document(source).document
+            first, second = service.list_chapters(document.id)
+            before_revisions = len(service.list_revisions(document.id))
+
+            result = service.split_chapter_at_cursor(
+                document.id,
+                chapter_id=first.id,
+                cursor_offset=6,
+                next_title="新章节",
+            )
+
+            chapters = service.list_chapters(document.id)
+            self.assertEqual(before_revisions + 1, len(service.list_revisions(document.id)))
+            self.assertEqual("split_cursor", result.revision.revision_type)
+            self.assertEqual(["原标题", "新章节", "后续"], [chapter.title for chapter in chapters])
+            self.assertEqual([1, 2, 3], [chapter.index for chapter in chapters])
+            self.assertEqual("AAAAAA", service.get_content(document.id, chapters[0].id).body_text)
+            self.assertTrue(service.get_content(document.id, chapters[1].id).body_text.startswith("BBBBBB"))
+            self.assertEqual(second.title, chapters[2].title)
+            self.assertEqual(
+                chapters[0].end_offset,
+                chapters[1].start_offset,
+            )
+            self.assertEqual(
+                chapters[1].end_offset,
+                chapters[2].start_offset,
+            )
+
+    def test_prompt_cleanup_creates_cleanup_revision_and_preserves_chapter_order(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            source = root / "prompt-cleanup.txt"
+            source.write_text("第一章\n\n正文一。\n\n第二章\n\n正文二。\n", encoding="utf-8")
+            service = DocumentLibraryService(initialized_database(root / "rusty.db"), root / "library")
+            document = service.import_document(source).document
+            first = service.list_chapters(document.id)[0]
+
+            result = service.apply_prompt_cleanup(
+                document.id,
+                chapter_id=first.id,
+                title=first.title,
+                cleaned_text="正文一。\n",
+                prompt="只整理空白",
+            )
+
+            self.assertEqual("cleanup_ai", result.revision.revision_type)
+            self.assertEqual(2, len(service.list_chapters(document.id)))
+            self.assertEqual(["", ""], [chapter.title for chapter in service.list_chapters(document.id)])
 
     def test_default_cleanup_template_versions_text_and_can_restore_import(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:

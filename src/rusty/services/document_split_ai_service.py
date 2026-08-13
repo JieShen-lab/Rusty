@@ -17,11 +17,16 @@ AI_SPLIT_SCHEMA = {
         "chapters": {
             "type": "array",
             "items": {
-                "required": ["title", "start_offset", "end_offset", "reason"],
+                "required": ["title", "start_offset", "end_offset"],
             },
         }
     },
 }
+
+DEFAULT_AI_SPLIT_PROMPT = (
+    "请只根据当前章节原文划分连续章节边界并拟定标题。"
+    "不得改写、补充、删除或重复原文；边界必须从 0 开始、连续无重叠，并覆盖到正文末尾。"
+)
 
 
 class DocumentSplitAIService:
@@ -35,8 +40,16 @@ class DocumentSplitAIService:
         self.document_service = DocumentLibraryService(self.database_path)
         self.model_service = structured_model_service or StructuredModelService(self.database_path)
 
-    def preview(self, document_id: int, *, model_id: int | None = None) -> dict[str, Any]:
-        content = self.document_service.get_content(document_id)
+    def preview(
+        self,
+        document_id: int,
+        *,
+        chapter_id: int,
+        prompt: str = DEFAULT_AI_SPLIT_PROMPT,
+        model_id: int | None = None,
+    ) -> dict[str, Any]:
+        content = self.document_service.get_content(document_id, chapter_id)
+        instruction = prompt.strip() or DEFAULT_AI_SPLIT_PROMPT
         result = self.model_service.run(
             invocation_kind="document_ai_split",
             stage="chapter_boundaries",
@@ -44,22 +57,24 @@ class DocumentSplitAIService:
                 {
                     "role": "system",
                     "content": (
-                        "Propose chapter boundaries for the exact source text. Boundaries must start "
-                        "at 0, be continuous and non-overlapping, and end at the source length. "
-                        "Return strict JSON only."
+                        "Only choose chapter boundaries and titles for the exact source body. "
+                        "Never rewrite or invent text. Boundaries must start at 0, be continuous and "
+                        "non-overlapping, and end at the source length. Return strict JSON only."
                     ),
                 },
                 {
                     "role": "user",
                     "content": (
-                        f"Source length: {len(content.text)} characters.\n"
-                        "Return chapters[{title,start_offset,end_offset,reason}].\n\n"
-                        f"Source text:\n{content.text}"
+                        f"Current chapter title: {content.title}\n"
+                        f"User requirement: {instruction}\n"
+                        f"Source length: {len(content.body_text)} characters.\n"
+                        "Return chapters[{title,start_offset,end_offset}].\n\n"
+                        f"Source body:\n{content.body_text}"
                     ),
                 },
             ],
             output_schema=AI_SPLIT_SCHEMA,
-            validator=lambda value: _validate_split(value, len(content.text)),
+            validator=lambda value: _validate_split(value, len(content.body_text)),
             model_id=model_id,
             document_id=document_id,
         )
@@ -79,10 +94,15 @@ class DocumentSplitAIService:
                 ),
             )
             proposal_id = int(cursor.lastrowid)
+            connection.execute(
+                "UPDATE document_split_proposals SET unmatched_json = ? WHERE id = ?",
+                (json.dumps({"chapter_id": chapter_id, "prompt": instruction}, ensure_ascii=False), proposal_id),
+            )
         return {
             "proposal_id": proposal_id,
             "document_id": document_id,
             "source_revision_id": content.revision_id,
+            "chapter_id": chapter_id,
             "chapters": result.value["chapters"],
             "model_invocation_id": result.invocation_id,
         }
@@ -97,17 +117,23 @@ class DocumentSplitAIService:
             raise FileNotFoundError(f"Document split proposal not found: {proposal_id}")
         if proposal["status"] != "draft":
             raise ValueError("Only draft document split proposals can be applied.")
-        content = self.document_service.get_content(int(proposal["document_id"]))
+        proposal_context = json.loads(str(proposal["unmatched_json"] or "{}"))
+        chapter_id = int(proposal_context.get("chapter_id") or 0)
+        if chapter_id <= 0:
+            raise ValueError("AI split proposal is missing its source chapter.")
+        content = self.document_service.get_content(int(proposal["document_id"]), chapter_id)
         boundaries = chapters or json.loads(str(proposal["boundaries_json"]))
-        validated = _validate_split({"chapters": boundaries}, len(content.text))["chapters"]
-        revision, saved_chapters = self.document_service.apply_split_boundaries(
+        validated = _validate_split({"chapters": boundaries}, len(content.body_text))["chapters"]
+        revision, saved_chapters = self.document_service.apply_chapter_split_boundaries(
             int(proposal["document_id"]),
+            chapter_id=chapter_id,
             source_revision_id=int(proposal["source_revision_id"]),
             boundaries=validated,
             revision_type="split_ai",
             metadata={
                 "proposal_id": proposal_id,
                 "model_invocation_id": proposal["model_invocation_id"],
+                "prompt": proposal_context.get("prompt"),
             },
         )
         with session(self.database_path) as connection:
@@ -124,6 +150,7 @@ class DocumentSplitAIService:
             "proposal_id": proposal_id,
             "document_id": int(proposal["document_id"]),
             "revision_id": revision.id,
+            "chapter_id": chapter_id,
             "chapters": [chapter.__dict__ for chapter in saved_chapters],
         }
 

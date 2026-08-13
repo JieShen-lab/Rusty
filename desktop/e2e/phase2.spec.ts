@@ -30,11 +30,11 @@ const materials = [
   { id: 2, material_type: 'plot_skeleton', scope: 'public', project_id: null, project_name: null, name: '误会解除', description: '事件骨架', detail_level: 'standard', raw_text: '', content: { schema_version: 1, premise: '误会造成分离', stages: [{ id: 'stage-fixed', title: '误会发生', summary: '两人争执', causes: ['错误线索'], effects: ['暂时分离'], characters: ['林舟'], locations: ['旧城'], must_keep_details: ['钥匙'], forbidden_changes: ['不能提前和解'], unknown: 'keep' }], conflicts: [], turning_points: [], climax: { id: 'climax', title: '真相', summary: '发现真相' }, resolution: { id: 'resolution', title: '和解', summary: '解除误会' }, hooks: [], legacy_extra: { keep: true } }, analysis_status: 'analyzed', source_metadata: {}, import_metadata: {}, source_material_id: null, source_version: null, timeline_start_chapter: null, timeline_end_chapter: null, sort_order: 0, version: 1, created_at: '', updated_at: '', tags: [] },
 ];
 const baseDocumentItems = [
-  { id: 1, title: '示例长篇', author: '作者', description: null, source_filename: 'novel.txt', source_format: 'txt', storage_path: 'D:/Rusty/novel-v2.txt', source_size_bytes: 100, stored_size_bytes: 100, chapter_count: 1, word_count: 16, status: 'ready', favorite: false, tags: ['长篇'], is_project_document: false, category_ids: [11, 12], categories: ['研究', '待整理'], project_ids: [], created_at: '2026-07-29 10:00:00', updated_at: '' },
+  { id: 1, title: '示例长篇', author: '作者', description: null, source_filename: 'novel.txt', source_format: 'txt', storage_path: 'D:/Rusty/novel-v2.txt', source_size_bytes: 100, stored_size_bytes: 100, chapter_count: 1, word_count: 16, status: 'ready', favorite: false, tags: ['长篇', '历史'], is_project_document: false, category_ids: [11, 12], categories: ['研究', '待整理'], project_ids: [], created_at: '2026-07-29 10:00:00', updated_at: '' },
   { id: 2, title: '工程原稿', author: '工程作者', description: null, source_filename: 'project.txt', source_format: 'txt', storage_path: 'D:/Rusty/project-v1.txt', source_size_bytes: 80, stored_size_bytes: 80, chapter_count: 1, word_count: 12, status: 'ready', favorite: false, tags: ['长篇'], is_project_document: true, category_ids: [11], categories: ['研究'], project_ids: [1], created_at: '2026-07-28 10:00:00', updated_at: '' },
   { id: 3, title: '普通资料', author: '资料作者', description: null, source_filename: 'reference.txt', source_format: 'txt', storage_path: 'D:/Rusty/reference-v1.txt', source_size_bytes: 60, stored_size_bytes: 60, chapter_count: 1, word_count: 10, status: 'ready', favorite: false, tags: [], is_project_document: false, category_ids: [11], categories: ['研究'], project_ids: [], created_at: '2026-07-27 10:00:00', updated_at: '' },
 ];
-const documentTags = [{ id: 21, name: '长篇', normalized_name: '长篇', sort_order: 0, resource_count: 2 }];
+const documentTags = [{ id: 21, name: '长篇', normalized_name: '长篇', sort_order: 0, resource_count: 2 }, { id: 22, name: '历史', normalized_name: '历史', sort_order: 1, resource_count: 1 }];
 const documentCategories = [
   { id: 11, name: '研究', normalized_name: '研究', sort_order: 0, resource_count: 3 },
   { id: 12, name: '待整理', normalized_name: '待整理', sort_order: 1, resource_count: 1 },
@@ -54,6 +54,7 @@ async function mockApi(page: Page) {
   let documentChapterTitle = '';
   let volumeTitle = '第七卷 雨夜';
   let extraChapter: { id: number; document_id: number; revision_id: number; index: number; title: string; start_line: number; end_line: number; start_offset: number; end_offset: number; word_count: number; volume_id: number } | null = null;
+  let extraChapterBody = '新增正文';
   await page.route('http://127.0.0.1:8765/api/**', async (route) => {
     const url = new URL(route.request().url());
     const path = url.pathname;
@@ -146,8 +147,9 @@ async function mockApi(page: Page) {
       const tagId = Number(tagIdText);
       const selected = Boolean((route.request().postDataJSON() as { selected: boolean }).selected);
       tagAssignmentRequests.push({ documentId, tagId, selected });
+      const tag = documentTags.find((item) => item.id === tagId);
       documentItems = documentItems.map((item) => item.id === documentId
-        ? { ...item, tags: selected ? ['长篇'] : [] }
+        ? { ...item, tags: selected && tag ? [...new Set([...item.tags, tag.name])] : item.tags.filter((name) => name !== tag?.name) }
         : item);
       body = documentItems.find((item) => item.id === documentId);
     }
@@ -192,8 +194,19 @@ async function mockApi(page: Page) {
       const request = route.request().postDataJSON() as { title: string; text: string };
       documentRevisionNumber += 1;
       extraChapter = { id: 999, document_id: documentId, revision_id: documentId * 10 + documentRevisionNumber, index: 2, title: request.title, start_line: 3, end_line: 4, start_offset: 30, end_offset: 30 + request.title.length + request.text.length + 2, word_count: Array.from(request.title + request.text).filter((value) => !/\s/u.test(value)).length, volume_id: 701 };
+      extraChapterBody = request.text;
       documentItems = documentItems.map((item) => item.id === documentId ? { ...item, chapter_count: 2 } : item);
       body = { document: documentItems.find((item) => item.id === documentId), revision: { id: documentId * 10 + documentRevisionNumber, document_id: documentId, revision_number: documentRevisionNumber, revision_type: 'manual_edit', storage_path: `D:/Rusty/novel-v${documentRevisionNumber}.txt`, template_id: null, parent_revision_id: documentId * 10 + documentRevisionNumber - 1, created_at: '' }, created: true, created_chapter_id: 999 };
+    }
+    else if (/^\/api\/documents\/\d+\/split\/cursor$/.test(path)) {
+      const documentId = Number(path.split('/')[3]);
+      const request = route.request().postDataJSON() as { cursor_offset: number; next_title: string };
+      extraChapterBody = documentBody.slice(request.cursor_offset);
+      documentBody = documentBody.slice(0, request.cursor_offset);
+      documentRevisionNumber += 1;
+      extraChapter = { id: 999, document_id: documentId, revision_id: documentId * 10 + documentRevisionNumber, index: 2, title: request.next_title, start_line: 3, end_line: 4, start_offset: documentBody.length, end_offset: documentBody.length + request.next_title.length + extraChapterBody.length + 2, word_count: Array.from(request.next_title + extraChapterBody).filter((value) => !/\s/u.test(value)).length, volume_id: 701 };
+      documentItems = documentItems.map((item) => item.id === documentId ? { ...item, chapter_count: 2 } : item);
+      body = { document: documentItems.find((item) => item.id === documentId), revision: { id: documentId * 10 + documentRevisionNumber, document_id: documentId, revision_number: documentRevisionNumber, revision_type: 'split_cursor', storage_path: `D:/Rusty/novel-v${documentRevisionNumber}.txt`, template_id: null, parent_revision_id: documentId * 10 + documentRevisionNumber - 1, created_at: '' }, created: true, created_chapter_id: 999 };
     }
     else if (/^\/api\/documents\/\d+\/chapters$/.test(path)) {
       const documentId = Number(path.split('/')[3]);
@@ -237,7 +250,7 @@ async function mockApi(page: Page) {
       const documentId = Number(path.split('/')[3]);
       const requestedChapterId = Number(url.searchParams.get('chapter_id'));
       body = requestedChapterId === 999 && extraChapter
-        ? { document_id: documentId, revision_id: extraChapter.revision_id, chapter_id: 999, title: extraChapter.title, text: `${extraChapter.title}\n\n新增正文`, body_text: '新增正文', section_start_offset: extraChapter.start_offset, body_start_offset: extraChapter.start_offset + extraChapter.title.length + 2, start_offset: extraChapter.start_offset, end_offset: extraChapter.end_offset }
+        ? { document_id: documentId, revision_id: extraChapter.revision_id, chapter_id: 999, title: extraChapter.title, text: `${extraChapter.title}\n\n${extraChapterBody}`, body_text: extraChapterBody, section_start_offset: extraChapter.start_offset, body_start_offset: extraChapter.start_offset + extraChapter.title.length + 2, start_offset: extraChapter.start_offset, end_offset: extraChapter.end_offset }
         : { document_id: documentId, revision_id: documentId * 10 + documentRevisionNumber, chapter_id: documentId * 100 + documentRevisionNumber, title: documentChapterTitle, text: `${documentChapterTitle}\n\n${documentBody}`, body_text: documentBody, section_start_offset: 0, body_start_offset: documentChapterTitle.length + 2, start_offset: 0, end_offset: documentBody.length + documentChapterTitle.length + 2 };
     }
     else if (path === '/api/projects/1') body = { project: { id: 1, name: '示例工程', author: '', project_kind: 'rewrite', purpose: 'rewrite', status: 'ready', source_path: '', workspace_path: '', total_chapters: 1, total_words: 16, processed_chapters: 0, created_at: '', updated_at: '' }, metadata: {}, settings: { processing_mode: 'rewrite' }, exports: [] };
@@ -974,11 +987,14 @@ test('文档库在常用桌面窗口无横向溢出', async ({ page }) => {
   }
 });
 
-test('全部文档包含工程文档且切回全集会清除分类筛选', async ({ page }) => {
+test('全部文档包含工程文档且系统筛选与分类可组合', async ({ page }) => {
   await page.goto('/documents');
   await expect(page.getByRole('button', { name: '示例长篇，作者' })).toBeVisible();
   await expect(page.getByRole('button', { name: '普通资料，资料作者' })).toBeVisible();
   await expect(page.getByRole('button', { name: '工程原稿，工程作者' })).toBeVisible();
+  const projectCard = page.getByRole('button', { name: '工程原稿，工程作者' });
+  await expect(projectCard.locator('.default-book-cover .document-project-marker')).toHaveText('工程');
+  await expect(projectCard.locator(':scope > .document-project-marker')).toHaveCount(0);
   await page.locator('.document-tag-panel').getByRole('button', { name: /研究/ }).click();
   await page.locator('.document-tag-panel').getByRole('button', { name: /工程文档/ }).click();
   await expect(page.getByRole('button', { name: '工程原稿，工程作者' })).toBeVisible();
@@ -991,20 +1007,59 @@ test('全部文档包含工程文档且切回全集会清除分类筛选', async
   await page.getByRole('button', { name: '工程原稿，工程作者' }).dblclick();
   await expect(page.locator('textarea.manuscript-editor')).toBeVisible();
   await expect(page.getByText('工程原稿', { exact: true }).first()).toBeVisible();
+  await expect(page.getByText('工程文档由工程保存结果同步，此处为只读工作区。')).toBeVisible();
+  await expect(page.getByRole('button', { name: '保存', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '新增章节', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '导出文档', exact: true })).toHaveCount(1);
+});
+
+test('我的分类加号只打开轻量新建分类弹窗', async ({ page }) => {
+  await page.goto('/documents');
+  await page.getByRole('button', { name: '新建文档分类' }).click();
+  const dialog = page.getByRole('dialog', { name: '新建分类' });
+  await expect(dialog.getByLabel('分类名称')).toBeVisible();
+  await expect(dialog.getByRole('checkbox')).toHaveCount(0);
+  await expect(dialog.getByText('管理分类')).toHaveCount(0);
+  await expect(dialog.getByRole('button', { name: '保存关联' })).toHaveCount(0);
+  await expect(dialog.getByRole('button', { name: '新建' })).toBeVisible();
+});
+
+test('文档详情只保留标签、导出和删除操作', async ({ page }) => {
+  await page.goto('/documents');
+  const detail = page.locator('.document-detail-panel');
+  await expect(detail.getByText('分类', { exact: true })).toHaveCount(0);
+  await expect(detail.getByRole('button', { name: '编辑', exact: true })).toHaveCount(0);
+  await expect(detail.getByRole('button', { name: 'AI 分析', exact: true })).toHaveCount(0);
+  await expect(detail.getByRole('button', { name: '导出文档', exact: true })).toBeVisible();
+  await expect(detail.getByRole('button', { name: '删除', exact: true })).toBeVisible();
+  await expect(detail.locator('footer .button')).toHaveCount(2);
+});
+
+test('最近导入排除工程自动同步文档', async ({ page }) => {
+  await page.goto('/documents');
+  await page.locator('.document-tag-panel').getByRole('button', { name: /最近导入/ }).click();
+  await expect(page.getByRole('button', { name: '示例长篇，作者' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '普通资料，资料作者' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '工程原稿，工程作者' })).toHaveCount(0);
 });
 
 test('分类标签和搜索按交集筛选且标签胶囊不修改关联', async ({ page }) => {
   await page.goto('/documents');
-  await expect(page.locator('.document-detail-panel').getByRole('button', { name: '研究' })).toBeVisible();
-  await expect(page.locator('.document-detail-panel').getByRole('button', { name: '待整理' })).toBeVisible();
+  await expect(page.locator('.document-detail-panel').getByText('分类', { exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '管理当前文档分类' })).toHaveCount(0);
   await page.locator('.document-tag-panel').getByRole('button', { name: /研究/ }).click();
   await page.locator('.document-detail-panel').getByRole('button', { name: '长篇', exact: true }).click();
+  await page.locator('.document-detail-panel').getByRole('button', { name: '历史', exact: true }).click();
   await page.getByRole('searchbox', { name: '搜索文档' }).fill('示例');
   await expect(page.getByRole('button', { name: '示例长篇，作者' })).toBeVisible();
   await expect(page.getByRole('button', { name: '普通资料，资料作者' })).toHaveCount(0);
   expect(tagAssignmentRequests).toHaveLength(0);
   await expect(page.getByRole('button', { name: /分类：研究/ })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: /标签：长篇/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /标签：长篇/ })).toHaveCount(0);
+  await expect(page.locator('.document-detail-panel').getByRole('button', { name: '长篇', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('.document-detail-panel').getByRole('button', { name: '历史', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await page.locator('.document-detail-panel').getByRole('button', { name: '历史', exact: true }).click();
+  await expect(page.locator('.document-detail-panel').getByRole('button', { name: '历史', exact: true })).toHaveAttribute('aria-pressed', 'false');
 });
 
 test('标签管理弹窗显式移除关联并显示文档库存储目录', async ({ page }) => {
@@ -1015,10 +1070,10 @@ test('标签管理弹窗显式移除关联并显示文档库存储目录', async
   await page.getByRole('button', { name: '管理当前文档标签' }).click();
   const dialog = page.getByRole('dialog', { name: '管理标签' });
   await dialog.getByRole('checkbox', { name: '长篇' }).uncheck();
-  await dialog.getByRole('button', { name: '保存关联' }).click();
-  await expect(dialog).toHaveCount(0);
+  await expect(dialog.getByRole('button', { name: '保存关联' })).toHaveCount(0);
   expect(tagAssignmentRequests).toEqual([{ documentId: 1, tagId: 21, selected: false }]);
   await expect(page.locator('.document-detail-panel').getByRole('button', { name: '长篇', exact: true })).toHaveCount(0);
+  await dialog.getByRole('button', { name: '关闭', exact: true }).click();
 });
 
 test('文档正文右键菜单、编辑命令与统一分章入口', async ({ page }) => {
@@ -1042,9 +1097,10 @@ test('文档正文右键菜单、编辑命令与统一分章入口', async ({ pa
   for (const removedHeading of ['文档处理', '选择操作', '编辑操作', '正文命令']) {
     await expect(inspector.getByText(removedHeading, { exact: true })).toHaveCount(0);
   }
-  for (const action of ['合并文档', '新增章节', '分章', '文字整理', '版本记录', '标记章节', '撤销', '重做', '导出文档']) {
+  for (const action of ['合并文档', '新增章节', '分章', '文字整理', '版本记录', '导出文档']) {
     await expect(inspector.getByRole('button', { name: action, exact: true })).toBeVisible();
   }
+  for (const removed of ['标记章节', '撤销', '重做']) await expect(inspector.getByRole('button', { name: removed, exact: true })).toHaveCount(0);
   const editor = page.locator('textarea.manuscript-editor');
   await editor.evaluate((node: HTMLTextAreaElement) => {
     node.focus();
@@ -1072,15 +1128,16 @@ test('文档正文右键菜单、编辑命令与统一分章入口', async ({ pa
   await page.getByRole('button', { name: '取消' }).last().click();
   await page.goBack();
   await page.getByRole('button', { name: '示例长篇，作者' }).dblclick();
-  await expect(page.getByRole('button', { name: '标记章节', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '标记章节', exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: '分章', exact: true })).toHaveCount(1);
   await expect(page.getByRole('button', { name: 'AI 分章', exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: '正则分章', exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: '引用范围', exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: '分章', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'AI 识别' })).toBeVisible();
-  await expect(page.getByRole('button', { name: '正则识别' })).toBeVisible();
-  await expect(page.getByRole('button', { name: '手动标记' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '光标处分章' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'AI 分章' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '正则识别' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '手动标记' })).toHaveCount(0);
 });
 
 test('文档选区通过 history state 进入角色候选流程而不直接创建', async ({ page }) => {
@@ -1117,16 +1174,21 @@ test('正文自动保存草稿、手动保存单一版本并打开文字整理�
   }
   await page.getByRole('button', { name: '版本记录' }).click();
   await expect(page.getByText('版本 2 · 手动编辑')).toBeVisible();
-  await page.getByRole('button', { name: '关闭' }).click();
+  await page.getByRole('button', { name: '关闭', exact: true }).click();
   await page.getByRole('button', { name: '文字整理' }).click();
-  await expect(page.getByRole('dialog').filter({ hasText: '文字整理' })).toBeVisible();
-  await expect(page.getByRole('dialog').filter({ hasText: '文字整理' }).getByText('版本记录')).toHaveCount(0);
+  const cleanupDialog = page.getByRole('dialog').filter({ hasText: '文字整理' });
+  await expect(cleanupDialog).toBeVisible();
+  await expect(cleanupDialog.getByText('版本记录')).toHaveCount(0);
+  await expect(cleanupDialog.getByText('章节缩进')).toHaveCount(0);
+  await expect(cleanupDialog.getByText('章节标题正则')).toHaveCount(0);
+  await expect(cleanupDialog.getByLabel('整理提示词')).toBeVisible();
+  await expect(cleanupDialog.getByLabel('具体要求')).toContainText('禁止改剧情');
   if (process.env.RUSTY_E2E_SCREENSHOT_DIR) {
     await page.screenshot({ path: `${process.env.RUSTY_E2E_SCREENSHOT_DIR}/document-cleanup-dialog.png` });
   }
 });
 
-test('章节标题、实时字数及受控撤销重做保持同步', async ({ page }) => {
+test('章节标题、实时字数及原生输入撤销保持同步', async ({ page }) => {
   await page.goto('/documents');
   await page.getByRole('button', { name: '示例长篇，作者' }).dblclick();
   const editor = page.locator('textarea.manuscript-editor');
@@ -1145,15 +1207,24 @@ test('章节标题、实时字数及受控撤销重做保持同步', async ({ pa
   expect(editorLayout.outlineStyle).toBe('none');
   expect(editorLayout.boxShadow).toBe('none');
   expect(Math.abs(editorLayout.bottomGap)).toBeLessThanOrEqual(1);
+  const headingLayout = await page.locator('.document-editor-heading').evaluate((node) => {
+    const heading = node.getBoundingClientRect();
+    const titleRect = node.querySelector('.document-editor-title')!.getBoundingClientRect();
+    const saveRect = node.querySelector('.button')!.getBoundingClientRect();
+    return {
+      centerDelta: Math.abs((titleRect.left + titleRect.width / 2) - (heading.left + heading.width / 2)),
+      saveRightGap: Math.abs(heading.right - saveRect.right - 18),
+    };
+  });
+  expect(headingLayout.centerDelta).toBeLessThanOrEqual(1);
+  expect(headingLayout.saveRightGap).toBeLessThanOrEqual(1);
   await expect(page.locator('.document-workspace-text').getByText('正文', { exact: true })).toHaveCount(0);
   await title.fill('即时新标题');
   await expect(page.locator('.chapter-list').getByText('即时新标题')).toBeVisible();
   await editor.fill('中文 A，🙂');
   await expect(page.locator('.document-workspace-stats').getByText('5', { exact: true })).toBeVisible();
-  await page.getByRole('button', { name: '撤销', exact: true }).click();
-  await expect(editor).toHaveValue('林舟推门而入，看见桌上的钥匙。');
-  await page.getByRole('button', { name: '重做', exact: true }).click();
-  await expect(editor).toHaveValue('中文 A，🙂');
+  await expect(page.getByRole('button', { name: '撤销', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '重做', exact: true })).toHaveCount(0);
   await editor.press('Control+z');
   await expect(editor).toHaveValue('林舟推门而入，看见桌上的钥匙。');
   await editor.press('Control+Shift+z');
@@ -1165,15 +1236,35 @@ test('新增章节按目录序号解析锚点并自动选中新章节', async ({
   await page.getByRole('button', { name: '示例长篇，作者' }).dblclick();
   await page.getByRole('button', { name: '新增章节' }).click();
   const dialog = page.getByRole('dialog').filter({ hasText: '新增章节' });
+  await expect(dialog.getByText('文档处理')).toHaveCount(0);
   await dialog.getByLabel('章节标题').fill('插入的新章');
   await dialog.getByLabel('插入位置').selectOption('after-index');
-  await dialog.getByLabel('章节序号').fill('1');
-  await expect(dialog.getByText('匹配：第一章')).toBeVisible();
+  await dialog.getByLabel('指定章节', { exact: true }).selectOption('1');
   await dialog.getByLabel('正文').fill('新增正文');
   await dialog.getByRole('button', { name: '保存为新版本' }).click();
   await expect(page.locator('.chapter-row[aria-current="page"]').getByText('插入的新章')).toBeVisible();
   await expect(page.locator('.chapter-row[aria-current="page"]').getByText('第二章')).toBeVisible();
   await expect(page.locator('.document-editor-title input')).toHaveValue('插入的新章');
+});
+
+test('光标处分章只要求下一章标题并自动选中新章节', async ({ page }) => {
+  await page.goto('/documents');
+  await page.getByRole('button', { name: '示例长篇，作者' }).dblclick();
+  const editor = page.locator('textarea.manuscript-editor');
+  await editor.evaluate((node: HTMLTextAreaElement) => {
+    node.focus();
+    node.setSelectionRange(4, 4);
+    node.dispatchEvent(new Event('select', { bubbles: true }));
+  });
+  await page.getByRole('button', { name: '分章', exact: true }).click();
+  const dialog = page.getByRole('dialog').filter({ hasText: '光标处分章' });
+  await expect(dialog.getByText('正则识别')).toHaveCount(0);
+  await expect(dialog.getByText('手动标记')).toHaveCount(0);
+  await dialog.getByLabel('下一章标题').fill('光标新章');
+  await expect(dialog.getByText('第 4 字')).toBeVisible();
+  await dialog.getByRole('button', { name: '分章', exact: true }).click();
+  await expect(page.locator('.chapter-row[aria-current="page"]').getByText('光标新章')).toBeVisible();
+  await expect(page.locator('.document-editor-title input')).toHaveValue('光标新章');
 });
 
 test('工作台右栏直接编辑书名和作者并同步统一元数据', async ({ page }) => {
@@ -1194,7 +1285,7 @@ test('新增无标题章节仍按目录顺序显示章节序号', async ({ page 
   await page.getByRole('button', { name: '新增章节' }).click();
   const dialog = page.getByRole('dialog').filter({ hasText: '新增章节' });
   await dialog.getByLabel('插入位置').selectOption('after-index');
-  await dialog.getByLabel('章节序号').fill('1');
+  await dialog.getByLabel('指定章节', { exact: true }).selectOption('1');
   await dialog.getByRole('button', { name: '保存为新版本' }).click();
   const selected = page.locator('.chapter-row[aria-current="page"]');
   await expect(selected.getByText('第二章')).toBeVisible();
@@ -1219,13 +1310,14 @@ test('卷目录可折叠、点击章节并独立修改卷标题', async ({ page 
   await expect(page.getByLabel('卷标题：第七卷 新雨')).toHaveValue('第七卷 新雨');
 });
 
-test('合并弹窗使用分类树且合并结果保留卷目录', async ({ page }) => {
+test('合并弹窗直接选择文档且合并结果保留卷目录', async ({ page }) => {
   await page.goto('/documents');
   await page.getByRole('button', { name: '示例长篇，作者' }).dblclick();
   await page.getByRole('button', { name: '合并文档' }).click();
   const dialog = page.getByRole('dialog').filter({ hasText: '合并文档' });
-  await expect(dialog.getByRole('heading', { name: '研究' })).toBeVisible();
-  await dialog.getByRole('checkbox', { name: '普通资料' }).check();
+  await expect(dialog.getByRole('heading', { name: '研究' })).toHaveCount(0);
+  await expect(dialog.getByText('工程原稿')).toBeVisible();
+  await dialog.getByText('普通资料').locator('..').getByRole('button', { name: '添加' }).click();
   await dialog.getByLabel('新文档标题').fill('层级合并本');
   await dialog.getByRole('button', { name: '创建新文档' }).click();
   await expect(page.getByRole('button', { name: '层级合并本，作者' })).toBeVisible();

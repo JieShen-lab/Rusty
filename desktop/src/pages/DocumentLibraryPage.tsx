@@ -34,20 +34,17 @@ import {
 } from 'lucide-react';
 import {
   activateLibraryDocumentRevision,
-  assignDocumentCategory,
   assignDocumentTag,
-  cleanupLibraryDocument,
+  cleanupLibraryDocumentWithAI,
   createDocumentCategory,
   createDocumentTag,
   createLibraryDocumentChapter,
-  createDocumentProcessingTemplate,
   deleteDocumentCategory,
   deleteLibraryDocument,
   exportLibraryDocument,
   getDocumentTags,
   getDocumentCategories,
   getDocumentLibrarySettings,
-  getDocumentProcessingTemplates,
   getLibraryDocumentDirectory,
   getLibraryDocumentContent,
   getLibraryDocumentRevisions,
@@ -55,12 +52,10 @@ import {
   importLibraryDocument,
   migrateDocumentLibrary,
   mergeLibraryDocuments,
-  previewRegexSplit,
   reorderLibraryDocumentChapters,
-  applyRegexSplit,
-  markLibraryDocumentChapter,
   previewAIDocumentSplit,
   applyAIDocumentSplit,
+  splitLibraryDocumentChapterAtCursor,
   commitLibraryDocumentDraft,
   getLibraryDocumentDraft,
   saveLibraryDocumentDraft,
@@ -69,8 +64,6 @@ import {
   updateLibraryDocument,
 } from '../api/client';
 import type {
-  DocumentProcessingSettings,
-  DocumentProcessingTemplate,
   DocumentCategory,
   LibraryDocument,
   LibraryDocumentChapter,
@@ -81,7 +74,6 @@ import type {
   LibraryDocumentVolume,
   ResourceTag,
   AISplitProposal,
-  SplitPreview,
 } from '../api/types';
 import { PrimaryButton } from '../components/PrimaryButton';
 import { SecondaryButton } from '../components/SecondaryButton';
@@ -90,9 +82,7 @@ import { LibraryContextMenu, LibraryDialog, LibrarySidebarSectionTitle } from '.
 import { TopBar } from '../components/TopBar';
 import { useAutoDismiss } from '../hooks/useAutoDismiss';
 
-type ProcessingTab = 'chapters' | 'cleanup' | 'reference';
 type DocumentAction = 'merge' | 'create-chapter' | 'split';
-type ReferenceScope = 'book' | 'chapters' | 'paragraphs';
 type SaveStatus = 'clean' | 'dirty' | 'saving' | 'saved' | 'error';
 
 const systemFilters = [
@@ -105,14 +95,6 @@ type SystemFilter = typeof systemFilters[number]['key'];
 
 const palettes = ['indigo', 'terracotta', 'jade', 'slate', 'ochre', 'plum', 'bluegray'] as const;
 
-const fallbackSettings: DocumentProcessingSettings = {
-  chapter_pattern: '^\\s*(第[一二三四五六七八九十百千万零〇两0-9]+[章节卷集部篇回].*|[0-9]+[、.． ].*)\\s*$',
-  chapter_indent: 0,
-  paragraph_indent: 2,
-  blank_lines: 1,
-  trim_whitespace: true,
-};
-
 export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string, state?: unknown) => void }) {
   const [documents, setDocuments] = useState<LibraryDocument[]>([]);
   const [tags, setTags] = useState<ResourceTag[]>([]);
@@ -120,7 +102,7 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
   const [libraryPath, setLibraryPath] = useState('');
   const [systemFilter, setSystemFilter] = useState<SystemFilter>('all');
   const [activeCategoryId, setActiveCategoryId] = useState<number | null>(null);
-  const [activeTagId, setActiveTagId] = useState<number | null>(null);
+  const [activeTagIds, setActiveTagIds] = useState<number[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [searchText, setSearchText] = useState('');
   const [busy, setBusy] = useState(false);
@@ -129,10 +111,6 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
   const [message, setMessage] = useState<string | null>(null);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [processingBusy, setProcessingBusy] = useState(false);
-  const [templates, setTemplates] = useState<DocumentProcessingTemplate[]>([]);
-  const [templateId, setTemplateId] = useState<number | null>(null);
-  const [templateName, setTemplateName] = useState('自定义排版');
-  const [templateSettings, setTemplateSettings] = useState<DocumentProcessingSettings>(fallbackSettings);
   const [revisions, setRevisions] = useState<LibraryDocumentRevision[]>([]);
   const [chapters, setChapters] = useState<LibraryDocumentChapter[]>([]);
   const [volumes, setVolumes] = useState<LibraryDocumentVolume[]>([]);
@@ -140,7 +118,8 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
   const [documentDraft, setDocumentDraft] = useState<LibraryDocumentDraft | null>(null);
   const [selectedChapterId, setSelectedChapterId] = useState<number | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
-  const [resourceManager, setResourceManager] = useState<'category' | 'tag' | null>(null);
+  const [resourceManager, setResourceManager] = useState<'tag' | null>(null);
+  const [categoryCreateOpen, setCategoryCreateOpen] = useState(false);
   const [categoryContextMenu, setCategoryContextMenu] = useState<{ category: DocumentCategory; x: number; y: number } | null>(null);
   const [categoryRename, setCategoryRename] = useState<DocumentCategory | null>(null);
   const [editingMetadata, setEditingMetadata] = useState<'title' | 'author' | null>(null);
@@ -157,14 +136,17 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
     () => documentsForSystemFilter(documents, systemFilter),
     [documents, systemFilter],
   );
-  const activeTag = tags.find((tag) => tag.id === activeTagId) ?? null;
+  const activeTagNames = useMemo(() => {
+    const selectedIds = new Set(activeTagIds);
+    return tags.filter((tag) => selectedIds.has(tag.id)).map((tag) => tag.name);
+  }, [activeTagIds, tags]);
   const visibleDocuments = useMemo(
     () => systemDocuments.filter((document) => (
       (activeCategoryId == null || document.category_ids.includes(activeCategoryId))
-      && (activeTag == null || document.tags.includes(activeTag.name))
+      && activeTagNames.every((tagName) => document.tags.includes(tagName))
       && (!query || `${document.title} ${document.author ?? ''} ${document.source_filename}`.toLocaleLowerCase().includes(query))
     )),
-    [activeCategoryId, activeTag, query, systemDocuments],
+    [activeCategoryId, activeTagNames, query, systemDocuments],
   );
   const selectedDocument = documents.find((document) => document.id === selectedId) ?? null;
 
@@ -180,7 +162,7 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
   useEffect(() => {
     if (workspaceOpen || visibleDocuments.some((document) => document.id === selectedId)) return;
     setSelectedId(visibleDocuments[0]?.id ?? null);
-  }, [systemFilter, activeCategoryId, activeTagId, query, visibleDocuments, workspaceOpen]);
+  }, [systemFilter, activeCategoryId, activeTagIds, query, visibleDocuments, workspaceOpen]);
 
   async function loadLibrary(preferredId?: number | null) {
     setError(null);
@@ -245,8 +227,16 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
       const created = kind === 'category'
         ? await createDocumentCategory(name)
         : await createDocumentTag(name);
-      if (kind === 'category') setCategories((current) => [...current, created as DocumentCategory]);
-      else setTags((current) => [...current, created as ResourceTag]);
+      if (kind === 'category') {
+        setCategories((current) => [...current, created as DocumentCategory]);
+        setCategoryCreateOpen(false);
+      } else {
+        setTags((current) => [...current, created as ResourceTag]);
+        if (selectedDocument) {
+          await assignDocumentTag(selectedDocument.id, created.id, true);
+          await loadLibrary(selectedDocument.id);
+        }
+      }
       setMessage(`已创建${kind === 'category' ? '分类' : '标签'}“${created.name}”。`);
     }, false);
   }
@@ -274,21 +264,12 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
     }, false);
   }
 
-  async function applyManagedResources(kind: 'category' | 'tag', selectedIds: number[]) {
+  async function toggleDocumentTag(tagId: number, selected: boolean) {
     if (!selectedDocument) return;
-    const currentIds = kind === 'category'
-      ? selectedDocument.category_ids
-      : tags.filter((tag) => selectedDocument.tags.includes(tag.name)).map((tag) => tag.id);
-    const allIds = new Set([...currentIds, ...selectedIds]);
     await runBusy(async () => {
-      await Promise.all([...allIds].map((id) => (
-        kind === 'category'
-          ? assignDocumentCategory(selectedDocument.id, id, selectedIds.includes(id))
-          : assignDocumentTag(selectedDocument.id, id, selectedIds.includes(id))
-      )));
+      await assignDocumentTag(selectedDocument.id, tagId, selected);
       await loadLibrary(selectedDocument.id);
-      setResourceManager(null);
-      setMessage(`${kind === 'category' ? '分类' : '标签'}关联已保存。`);
+      setMessage(selected ? '标签已关联。' : '标签关联已移除。');
     }, false);
   }
 
@@ -336,7 +317,6 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
   }
 
   async function openProcessing(
-    tab: ProcessingTab = 'chapters',
     targetDocument: LibraryDocument | null = selectedDocument,
   ): Promise<boolean> {
     if (!targetDocument) return false;
@@ -346,8 +326,7 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
     setProcessingBusy(true);
     setError(null);
     try {
-      const [templateItems, revisionItems, directory] = await Promise.all([
-        getDocumentProcessingTemplates(),
+      const [revisionItems, directory] = await Promise.all([
         getLibraryDocumentRevisions(targetDocument.id),
         getLibraryDocumentDirectory(targetDocument.id),
       ]);
@@ -357,16 +336,10 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
         getLibraryDocumentContent(targetDocument.id, firstChapterId),
         getLibraryDocumentDraft(targetDocument.id, firstChapterId),
       ]);
-      setTemplates(templateItems);
       setRevisions(revisionItems);
       setSelectedChapterId(firstChapterId);
       setDocumentContent(content);
       setDocumentDraft(draft);
-      const defaultTemplate = templateItems.find((template) => template.is_default) ?? templateItems[0];
-      if (defaultTemplate) {
-        setTemplateId(defaultTemplate.id);
-        setTemplateSettings(defaultTemplate.settings);
-      }
       return true;
     } catch (err) {
       setError(errorMessage(err));
@@ -375,10 +348,6 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
     } finally {
       setProcessingBusy(false);
     }
-  }
-
-  async function openAnalysisWorkspace() {
-    if (await openProcessing('chapters')) setActionDialog('split');
   }
 
   async function reorderChapters(
@@ -572,38 +541,14 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
     }
   }
 
-  function selectTemplate(nextTemplateId: number) {
-    setTemplateId(nextTemplateId);
-    const template = templates.find((item) => item.id === nextTemplateId);
-    if (template) setTemplateSettings(template.settings);
-  }
-
-  async function saveProcessingTemplate() {
+  async function applyPromptCleanup(prompt: string) {
+    if (!selectedDocument) return;
+    if (!(await flushEditorDraft('文字整理'))) return;
     await runProcessing(async () => {
-      const saved = await createDocumentProcessingTemplate(templateName, templateSettings);
-      setTemplates((current) => [...current, saved]);
-      setTemplateId(saved.id);
-      setMessage('文字整理模板已保存。');
-    });
-  }
-
-  async function applyProcessingTemplate() {
-    if (!selectedDocument || !templateId) return;
-    if (!(await flushEditorDraft('应用文字整理模板'))) return;
-    if (documentDraft) {
-      setError('文字整理会生成新版本，请先点击正文标题栏的“保存”提交当前草稿。');
-      return;
-    }
-    await runProcessing(async () => {
-      const selectedTemplate = templates.find((template) => template.id === templateId);
-      let effectiveTemplateId = templateId;
-      if (!selectedTemplate || JSON.stringify(selectedTemplate.settings) !== JSON.stringify(templateSettings)) {
-        const saved = await createDocumentProcessingTemplate(templateName, templateSettings);
-        setTemplates((current) => [...current, saved]);
-        setTemplateId(saved.id);
-        effectiveTemplateId = saved.id;
+      if (editorDirty || documentDraft) {
+        await commitLibraryDocumentDraft(selectedDocument.id, selectedChapterId);
       }
-      const result = await cleanupLibraryDocument(selectedDocument.id, effectiveTemplateId);
+      const result = await cleanupLibraryDocumentWithAI(selectedDocument.id, selectedChapterId, prompt);
       await loadLibrary(selectedDocument.id);
       const [revisionItems, directory] = await Promise.all([
         getLibraryDocumentRevisions(selectedDocument.id),
@@ -611,11 +556,12 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
       ]);
       const chapterItems = applyDirectory(directory);
       setRevisions(revisionItems);
-      setSelectedChapterId(null);
-      setDocumentContent(await getLibraryDocumentContent(selectedDocument.id));
+      const resolvedChapterId = chapterItems.find((chapter) => chapter.index === chapters.find((chapter) => chapter.id === selectedChapterId)?.index)?.id ?? chapterItems[0]?.id ?? null;
+      setSelectedChapterId(resolvedChapterId);
+      setDocumentContent(await getLibraryDocumentContent(selectedDocument.id, resolvedChapterId));
       setDocumentDraft(null);
       setCleanupOpen(false);
-      setMessage(result.created ? `已生成版本 ${result.revision.revision_number}。` : '当前版本已经符合模板。');
+      setMessage(`已生成文字整理版本 ${result.revision.revision_number}。`);
     });
   }
 
@@ -725,9 +671,7 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
               <strong>{selectedDocument.title}</strong>
             </div>
           </div>
-          <div className="toolbar-actions">
-            <button className="button ghost" onClick={() => { void flushEditorDraft('导出文档').then((saved) => { if (saved) setExportOpen(true); }); }} type="button"><Download size={16} />导出</button>
-          </div>
+          <div className="toolbar-actions" />
         </header>
         <div className="workbench-feedback">
           {error ? <div className="inline-alert error workbench-alert" role="alert"><span>{error}</span></div> : null}
@@ -756,34 +700,18 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
               chapter.id === selectedChapterId ? { ...chapter, title } : chapter
             )));
           }}
-          onManualMark={async (startOffset, endOffset, title) => {
-            if (!documentContent) return;
-            await runBusy(async () => {
-              const saved = await markLibraryDocumentChapter(selectedDocument.id, documentContent.revision_id, title, startOffset, endOffset);
-              setChapters(saved);
-              setMessage('手动章节区间已加入目录。');
-            });
-          }}
           onSelectionResource={(kind, text, startOffset, endOffset) => void saveSelection(kind, text, startOffset, endOffset)}
           onRenameVolume={(volumeId, title) => void renameVolume(volumeId, title)}
           onReorder={(draggedId, targetId, targetVolumeId) => void reorderChapters(draggedId, targetId, targetVolumeId)}
           processingBusy={processingBusy}
           selectedChapterId={selectedChapterId}
+          readOnly={selectedDocument.is_project_document}
         />
         {cleanupOpen ? (
           <CleanupDialog
             busy={processingBusy}
-            content={documentContent ? { ...documentContent, body_text: documentDraft?.text ?? documentContent.body_text } : null}
-            onApply={() => void applyProcessingTemplate()}
+            onApply={(prompt) => void applyPromptCleanup(prompt)}
             onClose={() => setCleanupOpen(false)}
-            onSaveTemplate={() => void saveProcessingTemplate()}
-            onSelectTemplate={selectTemplate}
-            onSettingsChange={setTemplateSettings}
-            onTemplateNameChange={setTemplateName}
-            templateId={templateId}
-            templateName={templateName}
-            templateSettings={templateSettings}
-            templates={templates}
           />
         ) : null}
         {revisionsOpen ? (
@@ -792,6 +720,7 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
             document={selectedDocument}
             onClose={() => setRevisionsOpen(false)}
             onRestore={(revisionId) => void restoreRevision(revisionId).then(() => setRevisionsOpen(false))}
+            readOnly={selectedDocument.is_project_document}
             revisions={revisions}
           />
         ) : null}
@@ -800,16 +729,13 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
           <DocumentActionDialog
             action={actionDialog}
             busy={busy}
-            categories={categories}
             chapters={chapters}
             currentChapterId={selectedChapterId}
+            currentBodyLength={documentDraft?.text.length ?? documentContent?.body_text.length ?? 0}
+            cursorOffset={editorControllerRef.current?.getCursorOffset() ?? null}
             currentDocument={selectedDocument}
             documents={documents}
             onClose={() => setActionDialog(null)}
-            onManualSplit={() => {
-              setActionDialog(null);
-              editorControllerRef.current?.markBoundary();
-            }}
             onCreateChapter={async (title, text, position, anchorChapterId) => {
               await runBusy(async () => {
                 const result = await createLibraryDocumentChapter(
@@ -833,28 +759,36 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
                 setMessage('合并文档已创建，源文档未修改。');
               });
             }}
-            onRegexApply={async (pattern, preview) => {
+            onCursorSplit={async (nextTitle, cursorOffset) => {
+              if (selectedChapterId == null) return;
               await runBusy(async () => {
-                const saved = await applyRegexSplit(selectedDocument.id, pattern, preview.preview_token, preview.chapters);
-                const updatedDocument = { ...selectedDocument, chapter_count: saved.length };
-                await refreshWorkspaceDocument(updatedDocument, saved[0]?.id ?? null);
+                const result = await splitLibraryDocumentChapterAtCursor(
+                  selectedDocument.id,
+                  selectedChapterId,
+                  cursorOffset,
+                  nextTitle,
+                );
                 setActionDialog(null);
-                setMessage('正则分章已应用为新版本。');
+                await refreshWorkspaceDocument(result.document, result.created_chapter_id);
+                setMessage('已在光标位置分章并生成新版本。');
               });
             }}
-            onAIPreview={() => previewAIDocumentSplit(selectedDocument.id)}
+            onAIPreview={(prompt) => {
+              if (selectedChapterId == null) return Promise.reject(new Error('请先选择一个章节。'));
+              return previewAIDocumentSplit(selectedDocument.id, selectedChapterId, prompt);
+            }}
             onAIApply={async (proposal) => {
               await runBusy(async () => {
                 const result = await applyAIDocumentSplit(selectedDocument.id, proposal.proposal_id, proposal.chapters);
+                const currentIndex = chapters.find((chapter) => chapter.id === selectedChapterId)?.index ?? 1;
                 setActionDialog(null);
                 await refreshWorkspaceDocument(
                   { ...selectedDocument, chapter_count: result.chapters.length },
-                  result.chapters[0]?.id ?? null,
+                  result.chapters.find((chapter) => chapter.index === currentIndex)?.id ?? result.chapters[0]?.id ?? null,
                 );
                 setMessage('AI 分章已应用为新文档版本。');
               });
             }}
-            onRegexPreview={(pattern) => previewRegexSplit(selectedDocument.id, pattern)}
           />
         ) : null}
       </div>
@@ -889,10 +823,9 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
             {systemFilters.map(({ icon: Icon, key, label }) => (
               <TagFilterButton active={systemFilter === key} count={filterCount(key)} icon={<Icon size={16} />} key={key} label={label} onClick={() => {
                 setSystemFilter(key);
-                if (key === 'all') setActiveCategoryId(null);
               }} />
             ))}
-            <LibrarySidebarSectionTitle action={<button aria-label="新建文档分类" className="document-add-tag" disabled={busy} onClick={() => setResourceManager('category')} title="新建分类" type="button"><Plus size={15} /></button>}>我的分类</LibrarySidebarSectionTitle>
+            <LibrarySidebarSectionTitle action={<button aria-label="新建文档分类" className="document-add-tag" disabled={busy} onClick={() => setCategoryCreateOpen(true)} title="新建分类" type="button"><Plus size={15} /></button>}>我的分类</LibrarySidebarSectionTitle>
             {categories.length ? categories.map((category) => (
               <TagFilterButton
                 active={activeCategoryId === category.id}
@@ -917,11 +850,6 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
                 <Search size={15} /><span className="sr-only">搜索文档</span>
                 <input onChange={(event) => setSearchText(event.target.value)} placeholder="搜索标题或作者" type="search" value={searchText} />
               </label>
-              {activeTag ? (
-                <div className="document-active-filters" aria-label="当前筛选条件">
-                  {activeTag ? <button onClick={() => setActiveTagId(null)} type="button">标签：{activeTag.name}<X size={12} /></button> : null}
-                </div>
-              ) : null}
             </div>
           </header>
           {loading ? <ShelfMessage title="正在读取文档库…" /> : visibleDocuments.length ? (
@@ -934,11 +862,10 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
                     className={`document-book ${selectedDocument?.id === document.id ? 'selected' : ''}`}
                     key={document.id}
                     onClick={() => setSelectedId(document.id)}
-                    onDoubleClick={() => void openProcessing('chapters', document)}
+                    onDoubleClick={() => void openProcessing(document)}
                     type="button"
                   >
                     <DefaultBookCover document={document} />
-                    {document.is_project_document ? <span className="document-project-marker">工程文档</span> : null}
                   </button>
                 ))}
               </div>
@@ -1002,34 +929,20 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
                   <Definition label="字数" value={formatNumber(selectedDocument.word_count)} />
                 </section>
                 <section>
-                  <div className="document-detail-heading"><span>分类</span><button aria-label="管理当前文档分类" className="document-inline-plus" onClick={() => setResourceManager('category')} type="button"><Plus size={14} /></button></div>
-                  {selectedDocument.categories.length ? (
-                    <div className="document-tag-checks">
-                      {selectedDocument.category_ids.map((categoryId, index) => (
-                        <button
-                          aria-pressed={activeCategoryId === categoryId}
-                          className={activeCategoryId === categoryId ? 'selected' : ''}
-                          key={categoryId}
-                          type="button"
-                          onClick={() => setActiveCategoryId(categoryId)}
-                        >
-                          {selectedDocument.categories[index]}
-                        </button>
-                      ))}
-                    </div>
-                  ) : <p className="document-resource-empty">未设置分类</p>}
-                </section>
-                <section>
                   <div className="document-detail-heading"><span>标签</span><button aria-label="管理当前文档标签" className="document-inline-plus" onClick={() => setResourceManager('tag')} type="button"><Plus size={14} /></button></div>
                   {selectedDocument.tags.length ? (
                     <div className="document-tag-checks">
                       {tags.filter((tag) => selectedDocument.tags.includes(tag.name)).map((tag) => (
                         <button
-                          aria-pressed={activeTagId === tag.id}
-                          className={activeTagId === tag.id ? 'selected' : ''}
+                          aria-pressed={activeTagIds.includes(tag.id)}
+                          className={activeTagIds.includes(tag.id) ? 'selected' : ''}
                           key={tag.id}
                           type="button"
-                          onClick={() => setActiveTagId(tag.id)}
+                          onClick={() => setActiveTagIds((current) => (
+                            current.includes(tag.id)
+                              ? current.filter((id) => id !== tag.id)
+                              : [...current, tag.id]
+                          ))}
                         >
                           {tag.name}
                         </button>
@@ -1043,8 +956,6 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
                 <div title={libraryPath}>{libraryPath || '正在读取目录…'}</div>
               </section>
               <footer className="library-detail-footer">
-                <SecondaryButton onClick={() => void openProcessing('chapters')}><BookOpenText size={15} />编辑</SecondaryButton>
-                <SecondaryButton onClick={() => void openAnalysisWorkspace()}><WandSparkles size={15} />AI 分析</SecondaryButton>
                 <SecondaryButton onClick={() => setExportOpen(true)}><Download size={15} />导出文档</SecondaryButton>
                 <DangerButton onClick={() => void deleteDocument()}><Trash2 size={15} />删除</DangerButton>
               </footer>
@@ -1058,11 +969,18 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
         <ResourceAssignmentDialog
           busy={busy}
           document={selectedDocument}
-          items={resourceManager === 'category' ? categories : tags}
-          kind={resourceManager}
-          onApply={(selectedIds) => void applyManagedResources(resourceManager, selectedIds)}
+          items={tags}
           onClose={() => setResourceManager(null)}
-          onCreate={(name) => void createManagedResource(resourceManager, name)}
+          onCreate={(name) => void createManagedResource('tag', name)}
+          onToggle={(tagId, selected) => void toggleDocumentTag(tagId, selected)}
+        />
+      ) : null}
+      {categoryCreateOpen ? (
+        <DocumentCategoryNameDialog
+          busy={busy}
+          category={null}
+          onClose={() => setCategoryCreateOpen(false)}
+          onSave={(name) => void createManagedResource('category', name)}
         />
       ) : null}
       {categoryContextMenu ? (
@@ -1108,17 +1026,15 @@ type DocumentWorkspaceProps = {
   onDraftSaved: (draft: LibraryDocumentDraft) => void;
   onDirtyChange: (dirty: boolean) => void;
   onTitlePreview: (title: string) => void;
-  onManualMark: (startOffset: number, endOffset: number, title: string) => void;
   onSelectionResource: (kind: 'scene' | 'plot' | 'character', text: string, startOffset: number, endOffset: number) => void;
   processingBusy: boolean;
+  readOnly: boolean;
   selectedChapterId: number | null;
 };
 
 type DocumentEditorController = {
   flushDraft: () => Promise<boolean>;
-  undo: () => void;
-  redo: () => void;
-  markBoundary: () => void;
+  getCursorOffset: () => number | null;
 };
 
 const DocumentWorkspace = forwardRef<DocumentEditorController, DocumentWorkspaceProps>(function DocumentWorkspace(props, ref) {
@@ -1146,9 +1062,7 @@ const DocumentWorkspace = forwardRef<DocumentEditorController, DocumentWorkspace
 
   useImperativeHandle(ref, () => ({
     flushDraft: () => editorRef.current?.flushDraft() ?? Promise.resolve(true),
-    undo: () => editorRef.current?.undo(),
-    redo: () => editorRef.current?.redo(),
-    markBoundary: () => editorRef.current?.markBoundary(),
+    getCursorOffset: () => editorRef.current?.getCursorOffset() ?? null,
   }), []);
 
   const liveTotal = selectedChapter
@@ -1165,6 +1079,7 @@ const DocumentWorkspace = forwardRef<DocumentEditorController, DocumentWorkspace
         onRenameVolume={props.onRenameVolume}
         onReorder={props.onReorder}
         selectedChapterId={props.selectedChapterId}
+        readOnly={props.readOnly}
         volumes={props.volumes}
       />
       <main className="workspace-center document-workspace-main">
@@ -1178,11 +1093,11 @@ const DocumentWorkspace = forwardRef<DocumentEditorController, DocumentWorkspace
             onDirtyChange={props.onDirtyChange}
             onDraftSaved={props.onDraftSaved}
             onLiveCountChange={setLiveCount}
-            onManualMark={props.onManualMark}
             onSaveDraft={props.onSaveDraft}
             onSaveStatusChange={handleSaveStatusChange}
             onSelectionResource={props.onSelectionResource}
             onTitlePreview={props.onTitlePreview}
+            readOnly={props.readOnly}
             ref={editorRef}
           />
         </div>
@@ -1190,8 +1105,8 @@ const DocumentWorkspace = forwardRef<DocumentEditorController, DocumentWorkspace
       <aside className="workbench-inspector document-workspace-inspector">
         <div className="document-workspace-info">
           <section>
-            <label className="document-workspace-metadata"><span>书名</span><input aria-label="书名" onBlur={() => void props.onUpdateMetadata(metadataTitle, metadataAuthor)} onChange={(event) => setMetadataTitle(event.target.value)} value={metadataTitle} /></label>
-            <label className="document-workspace-metadata"><span>作者</span><input aria-label="作者" onBlur={() => void props.onUpdateMetadata(metadataTitle, metadataAuthor)} onChange={(event) => setMetadataAuthor(event.target.value)} placeholder="未知作者" value={metadataAuthor} /></label>
+            <label className="document-workspace-metadata"><span>书名</span><input aria-label="书名" onBlur={() => { if (!props.readOnly) void props.onUpdateMetadata(metadataTitle, metadataAuthor); }} onChange={(event) => setMetadataTitle(event.target.value)} readOnly={props.readOnly} value={metadataTitle} /></label>
+            <label className="document-workspace-metadata"><span>作者</span><input aria-label="作者" onBlur={() => { if (!props.readOnly) void props.onUpdateMetadata(metadataTitle, metadataAuthor); }} onChange={(event) => setMetadataAuthor(event.target.value)} placeholder="未知作者" readOnly={props.readOnly} value={metadataAuthor} /></label>
           </section>
           <section className="document-workspace-stats">
             <div><strong>{formatNumber(liveTotal)}</strong><span>全文字数</span></div>
@@ -1203,18 +1118,13 @@ const DocumentWorkspace = forwardRef<DocumentEditorController, DocumentWorkspace
         </div>
         <div className="document-workspace-actions">
           <div className="document-workspace-action-scroll">
-            <div className="inspector-action-area">
+            {!props.readOnly ? <div className="inspector-action-area">
               <button className="button secondary full" onClick={() => props.onDocumentAction('merge')} type="button"><Combine size={16} />合并文档</button>
               <button className="button secondary full" onClick={() => props.onDocumentAction('create-chapter')} type="button"><Plus size={16} />新增章节</button>
               <button className="button secondary full" onClick={() => props.onDocumentAction('split')} type="button"><Scissors size={16} />分章</button>
               <button className="button secondary full" onClick={props.onOpenCleanup} type="button"><WandSparkles size={16} />文字整理</button>
               <button className="button secondary full" onClick={props.onOpenRevisions} type="button"><Clock3 size={16} />版本记录</button>
-            </div>
-            <div className="inspector-action-area document-editor-commands">
-              <button className="button secondary full" onClick={() => editorRef.current?.markBoundary()} type="button">标记章节</button>
-              <button className="button secondary full" onClick={() => editorRef.current?.undo()} type="button">撤销</button>
-              <button className="button secondary full" onClick={() => editorRef.current?.redo()} type="button">重做</button>
-            </div>
+            </div> : <div className="inspector-action-area"><div className="document-readonly-note">工程文档由工程保存结果同步，此处为只读工作区。</div><button className="button secondary full" onClick={props.onOpenRevisions} type="button"><Clock3 size={16} />版本记录</button></div>}
           </div>
           <SecondaryButton onClick={props.onExport}><Download size={15} />导出文档</SecondaryButton>
         </div>
@@ -1231,6 +1141,7 @@ function WorkspaceChapterNav({
   onRenameVolume,
   onReorder,
   selectedChapterId,
+  readOnly,
   volumes,
 }: {
   chapters: LibraryDocumentChapter[];
@@ -1240,6 +1151,7 @@ function WorkspaceChapterNav({
   onRenameVolume: (volumeId: number, title: string) => void;
   onReorder: (draggedId: number, targetId: number | null, targetVolumeId: number | null) => void;
   selectedChapterId: number | null;
+  readOnly: boolean;
   volumes: LibraryDocumentVolume[];
 }) {
   const listRef = useRef<HTMLElement>(null);
@@ -1279,12 +1191,12 @@ function WorkspaceChapterNav({
     <button
       aria-current={selectedChapterId === chapter.id ? 'page' : undefined}
       className={`chapter-row draggable ${selectedChapterId === chapter.id ? 'selected' : ''}`}
-      draggable
+      draggable={!readOnly}
       key={chapter.id}
       onClick={() => onContentChange(chapter.id)}
-      onDragOver={(event) => event.preventDefault()}
-      onDragStart={(event) => startDrag(event, chapter.id)}
-      onDrop={(event) => dropChapter(event, chapter.id, chapter.volume_id)}
+      onDragOver={(event) => { if (!readOnly) event.preventDefault(); }}
+      onDragStart={(event) => { if (!readOnly) startDrag(event, chapter.id); }}
+      onDrop={(event) => { if (!readOnly) dropChapter(event, chapter.id, chapter.volume_id); }}
       type="button"
     >
       <span className="chapter-number">{chapterOrdinal(chapter.index)}</span>
@@ -1306,8 +1218,8 @@ function WorkspaceChapterNav({
             <section className="document-volume-group" key={volume.id}>
               <div
                 className="document-volume-row"
-                onDragOver={(event) => event.preventDefault()}
-                onDrop={(event) => dropChapter(event, null, volume.id)}
+                onDragOver={(event) => { if (!readOnly) event.preventDefault(); }}
+                onDrop={(event) => { if (!readOnly) dropChapter(event, null, volume.id); }}
               >
                 <button
                   aria-expanded={!isCollapsed}
@@ -1325,6 +1237,7 @@ function WorkspaceChapterNav({
                 <input
                   aria-label={`卷标题：${volume.title}`}
                   defaultValue={volume.title}
+                  readOnly={readOnly}
                   onBlur={(event) => {
                     if (event.target.value.trim() && event.target.value.trim() !== volume.title) {
                       onRenameVolume(volume.id, event.target.value);
@@ -1356,11 +1269,11 @@ const EditableTextPreview = forwardRef<DocumentEditorController, {
   onDirtyChange: (dirty: boolean) => void;
   onDraftSaved: (draft: LibraryDocumentDraft) => void;
   onLiveCountChange: (count: number) => void;
-  onManualMark: (startOffset: number, endOffset: number, title: string) => void;
   onSaveDraft: (title: string, text: string) => Promise<LibraryDocumentDraft>;
   onSaveStatusChange: (status: SaveStatus, savedAt: string) => void;
   onSelectionResource: (kind: 'scene' | 'plot' | 'character', text: string, startOffset: number, endOffset: number) => void;
   onTitlePreview: (title: string) => void;
+  readOnly: boolean;
 }>(function EditableTextPreview({
   chapterIndex,
   content,
@@ -1370,11 +1283,11 @@ const EditableTextPreview = forwardRef<DocumentEditorController, {
   onDirtyChange,
   onDraftSaved,
   onLiveCountChange,
-  onManualMark,
   onSaveDraft,
   onSaveStatusChange,
   onSelectionResource,
   onTitlePreview,
+  readOnly,
 }, ref) {
   const initialText = draft?.text ?? content?.body_text ?? '';
   const initialTitle = draft?.title ?? content?.title ?? '';
@@ -1383,9 +1296,6 @@ const EditableTextPreview = forwardRef<DocumentEditorController, {
   const [saveStatus, setSaveStatus] = useState<SaveStatus>(draft ? 'saved' : 'clean');
   const [savedAt, setSavedAt] = useState(draft?.updated_at ?? '');
   const [menu, setMenu] = useState<{ x: number; y: number; text: string; startOffset: number; endOffset: number } | null>(null);
-  const [markStart, setMarkStart] = useState<number | null>(null);
-  const [markEnd, setMarkEnd] = useState<number | null>(null);
-  const [markTitle, setMarkTitle] = useState('');
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const mountedRef = useRef(true);
@@ -1396,11 +1306,6 @@ const EditableTextPreview = forwardRef<DocumentEditorController, {
   const requestSequenceRef = useRef(0);
   const saveQueueRef = useRef<Promise<boolean>>(Promise.resolve(true));
   const callbacksRef = useRef({ onCommit, onDirtyChange, onDraftSaved, onLiveCountChange, onSaveDraft, onTitlePreview });
-  const historyRef = useRef<Array<{ text: string; selectionStart: number; selectionEnd: number }>>([
-    { text: initialText, selectionStart: 0, selectionEnd: 0 },
-  ]);
-  const historyIndexRef = useRef(0);
-  const lastHistoryAtRef = useRef(0);
 
   textRef.current = text;
   titleRef.current = title;
@@ -1415,12 +1320,8 @@ const EditableTextPreview = forwardRef<DocumentEditorController, {
     setSaveStatus(draft ? 'saved' : 'clean');
     setSavedAt(draft?.updated_at ?? '');
     persistedSignatureRef.current = draft ? draftSignature(nextTitle, nextText) : '';
-    historyRef.current = [{ text: nextText, selectionStart: 0, selectionEnd: 0 }];
-    historyIndexRef.current = 0;
     onDirtyChange(false);
     onLiveCountChange(countTextUnits(nextText));
-    setMarkStart(null);
-    setMarkEnd(null);
     setMenu(null);
   }, [content?.revision_id, content?.chapter_id, draft?.id]);
 
@@ -1515,52 +1416,10 @@ const EditableTextPreview = forwardRef<DocumentEditorController, {
     callbacksRef.current.onDirtyChange(true);
   }
 
-  function restoreHistory(index: number) {
-    const snapshot = historyRef.current[index];
-    if (!snapshot) return;
-    historyIndexRef.current = index;
-    setText(snapshot.text);
-    markDirty();
-    callbacksRef.current.onLiveCountChange(
-      countTextUnits(snapshot.text),
-    );
-    window.requestAnimationFrame(() => editorRef.current?.setSelectionRange(snapshot.selectionStart, snapshot.selectionEnd));
-  }
-
-  function undo() {
-    restoreHistory(Math.max(0, historyIndexRef.current - 1));
-  }
-
-  function redo() {
-    restoreHistory(Math.min(historyRef.current.length - 1, historyIndexRef.current + 1));
-  }
-
-  function recordText(nextText: string, selectionStart: number, selectionEnd: number) {
-    const now = Date.now();
-    const next = { text: nextText, selectionStart, selectionEnd };
-    const history = historyRef.current.slice(0, historyIndexRef.current + 1);
-    if (now - lastHistoryAtRef.current < 700 && history.length > 1) history[history.length - 1] = next;
-    else history.push(next);
-    if (history.length > 100) history.shift();
-    historyRef.current = history;
-    historyIndexRef.current = history.length - 1;
-    lastHistoryAtRef.current = now;
-  }
-
-  function markBoundary() {
-    const cursor = editorRef.current?.selectionStart;
-    if (cursor == null || !content) return;
-    const absolute = content.body_start_offset + cursor;
-    if (markStart == null) {
-      setMarkStart(absolute);
-      return;
-    }
-    if (absolute <= markStart) return;
-    setMarkTitle(content.title || '新章节');
-    setMarkEnd(absolute);
-  }
-
-  useImperativeHandle(ref, () => ({ flushDraft, undo, redo, markBoundary }), [flushDraft]);
+  useImperativeHandle(ref, () => ({
+    flushDraft: readOnly ? () => Promise.resolve(true) : flushDraft,
+    getCursorOffset: () => editorRef.current?.selectionStart ?? null,
+  }), [flushDraft, readOnly]);
 
   function openMenu(event: MouseEvent<HTMLTextAreaElement>) {
     const target = event.currentTarget;
@@ -1585,6 +1444,7 @@ const EditableTextPreview = forwardRef<DocumentEditorController, {
   return (
     <section aria-busy={loading} className="manuscript-pane document-workspace-text editable-manuscript">
       <header className="document-editor-heading">
+        <span aria-hidden="true" className="document-editor-heading-spacer" />
         <label className="document-editor-title">
           {chapterIndex != null ? <strong>{chapterOrdinal(chapterIndex)}</strong> : null}
           <input
@@ -1599,10 +1459,11 @@ const EditableTextPreview = forwardRef<DocumentEditorController, {
               markDirty();
             }}
             placeholder={content?.chapter_id == null ? '文档标题' : '未命名'}
+            style={{ width: `${Math.min(40, Math.max(6, Array.from(title || '未命名').length + 1))}em` }}
             value={title}
           />
         </label>
-        <button
+        {!readOnly ? <button
           className="button secondary"
           disabled={saveStatus === 'clean' || saveStatus === 'saving' || loading || !content || (content.chapter_id == null && !title.trim())}
           onClick={() => {
@@ -1612,14 +1473,14 @@ const EditableTextPreview = forwardRef<DocumentEditorController, {
             });
           }}
           type="button"
-        ><Save size={15} />保存</button>
+        ><Save size={15} />保存</button> : <span className="document-readonly-badge">只读</span>}
       </header>
       <textarea
         className="manuscript-editor"
         disabled={loading || !content}
+        readOnly={readOnly}
         onChange={(event) => {
           const nextText = event.target.value;
-          recordText(nextText, event.target.selectionStart, event.target.selectionEnd);
           setText(nextText);
           callbacksRef.current.onLiveCountChange(
             countTextUnits(nextText),
@@ -1627,12 +1488,6 @@ const EditableTextPreview = forwardRef<DocumentEditorController, {
           markDirty();
         }}
         onContextMenu={openMenu}
-        onKeyDown={(event) => {
-          if (!(event.ctrlKey || event.metaKey)) return;
-          const key = event.key.toLocaleLowerCase();
-          if (key === 'z' && !event.shiftKey) { event.preventDefault(); undo(); }
-          else if (key === 'y' || (key === 'z' && event.shiftKey)) { event.preventDefault(); redo(); }
-        }}
         ref={editorRef}
         value={loading && !content ? '正在读取正文…' : text}
       />
@@ -1643,53 +1498,29 @@ const EditableTextPreview = forwardRef<DocumentEditorController, {
           <button onClick={() => { onSelectionResource('character', menu.text, menu.startOffset, menu.endOffset); setMenu(null); }} type="button">提取角色卡</button>
         </div>
       ) : null}
-      {markStart != null && markEnd != null ? (
-        <div className="library-confirm-panel" role="dialog" aria-label="章节标题">
-          <label><span>章节标题</span><input autoFocus value={markTitle} onChange={(event) => setMarkTitle(event.target.value)} /></label>
-          <div><button className="button secondary" onClick={() => { setMarkEnd(null); setMarkStart(null); }} type="button">取消</button><button className="button primary" disabled={!markTitle.trim()} onClick={() => { onManualMark(markStart, markEnd, markTitle.trim()); setMarkStart(null); setMarkEnd(null); }} type="button">确认章节</button></div>
-        </div>
-      ) : null}
     </section>
   );
 });
 
+const DEFAULT_CLEANUP_PROMPT = '只整理空白、段落、标点间距和明显排版问题。禁止改剧情、改写句子、添加内容、删除有效正文，也不要改变人物、设定和事实。';
+const DEFAULT_SPLIT_PROMPT = '请根据当前章节内容划分自然、连续的章节边界并拟定简洁标题。不得改写、补充、删除或重复原文。';
+
 function CleanupDialog(props: {
   busy: boolean;
-  content: LibraryDocumentContent | null;
-  onApply: () => void;
+  onApply: (prompt: string) => void;
   onClose: () => void;
-  onSaveTemplate: () => void;
-  onSelectTemplate: (templateId: number) => void;
-  onSettingsChange: (settings: DocumentProcessingSettings) => void;
-  onTemplateNameChange: (name: string) => void;
-  templateId: number | null;
-  templateName: string;
-  templateSettings: DocumentProcessingSettings;
-  templates: DocumentProcessingTemplate[];
 }) {
-  const settings = props.templateSettings;
+  const [preset, setPreset] = useState('default');
+  const [prompt, setPrompt] = useState(DEFAULT_CLEANUP_PROMPT);
   return (
     <div className="document-processing-backdrop" role="presentation">
-      <section aria-modal="true" className="document-cleanup-dialog" role="dialog">
-        <header><div><span>文档处理</span><h2>文字整理</h2></div><button className="icon-button" onClick={props.onClose} type="button"><X size={17} /></button></header>
-        <div className="document-cleanup-grid">
-          <div className="document-processing-settings">
-            <label><span className="form-label">整理模板</span><select className="form-input" value={props.templateId ?? ''} onChange={(event) => props.onSelectTemplate(Number(event.target.value))}>{props.templates.map((template) => <option key={template.id} value={template.id}>{template.name}{template.is_default ? '（默认）' : ''}</option>)}</select></label>
-            <div className="document-processing-number-grid">
-              <NumberField label="章节缩进" value={settings.chapter_indent} onChange={(value) => props.onSettingsChange({ ...settings, chapter_indent: value })} />
-              <NumberField label="段落首行缩进" value={settings.paragraph_indent} onChange={(value) => props.onSettingsChange({ ...settings, paragraph_indent: value })} />
-              <NumberField label="段落间空行" max={3} value={settings.blank_lines} onChange={(value) => props.onSettingsChange({ ...settings, blank_lines: value })} />
-            </div>
-            <label><span className="form-label">章节标题正则</span><textarea className="document-processing-regex" value={settings.chapter_pattern} onChange={(event) => props.onSettingsChange({ ...settings, chapter_pattern: event.target.value })} /></label>
-            <label className="document-processing-toggle"><input checked={settings.trim_whitespace} onChange={(event) => props.onSettingsChange({ ...settings, trim_whitespace: event.target.checked })} type="checkbox" />清除每行多余的前后空白</label>
-            <div className="document-processing-save-template"><input className="form-input" value={props.templateName} onChange={(event) => props.onTemplateNameChange(event.target.value)} /><SecondaryButton disabled={props.busy || !props.templateName.trim()} onClick={props.onSaveTemplate}><Save size={15} />另存模板</SecondaryButton></div>
-          </div>
-          <div className="document-processing-preview">
-            <span className="form-label">处理后真实预览</span>
-            <pre>{applyCleanupPreview(props.content?.body_text ?? '', settings)}</pre>
-          </div>
+      <section aria-modal="true" className="document-modal document-cleanup-dialog" role="dialog">
+        <header><h2>文字整理</h2><button aria-label="关闭文字整理" className="icon-button" onClick={props.onClose} type="button"><X size={17} /></button></header>
+        <div className="document-modal-body document-cleanup-body">
+          <label className="document-modal-row"><span>整理提示词</span><select className="form-input" value={preset} onChange={(event) => { setPreset(event.target.value); setPrompt(DEFAULT_CLEANUP_PROMPT); }}><option value="default">默认文字整理</option></select></label>
+          <label className="document-modal-stack"><span>具体要求</span><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} /></label>
         </div>
-        <footer><SecondaryButton onClick={props.onClose}>取消</SecondaryButton><PrimaryButton disabled={props.busy || !props.templateId} onClick={props.onApply}><WandSparkles size={16} />应用并生成新版本</PrimaryButton></footer>
+        <footer><SecondaryButton onClick={props.onClose}>取消</SecondaryButton><PrimaryButton disabled={props.busy || !prompt.trim()} onClick={() => props.onApply(prompt.trim())}><WandSparkles size={16} />应用并生成新版本</PrimaryButton></footer>
       </section>
     </div>
   );
@@ -1700,19 +1531,26 @@ function RevisionHistoryDialog(props: {
   document: LibraryDocument;
   onClose: () => void;
   onRestore: (revisionId: number) => void;
+  readOnly: boolean;
   revisions: LibraryDocumentRevision[];
 }) {
+  const currentRevision = props.revisions.find((revision) => revision.storage_path === props.document.storage_path) ?? props.revisions[0];
+  const historical = props.revisions.filter((revision) => revision.id !== currentRevision?.id);
+  const renderRevision = (revision: LibraryDocumentRevision, current: boolean) => (
+    <div key={revision.id}>
+      <span>版本 {revision.revision_number} · {revisionLabel(revision.revision_type)} · {formatDateTime(revision.created_at)}</span>
+      <button disabled={props.busy || props.readOnly || current} onClick={() => { if (window.confirm('恢复后会切换当前文档版本，确定继续吗？')) props.onRestore(revision.id); }} type="button">{current ? '当前' : props.readOnly ? '只读' : '恢复'}</button>
+    </div>
+  );
   return (
     <div className="document-processing-backdrop" role="presentation">
-      <section aria-modal="true" className="document-tag-dialog document-revision-dialog" role="dialog">
-        <header><div><span>文档版本</span><h2>版本记录</h2></div><button className="icon-button" onClick={props.onClose} type="button"><X size={17} /></button></header>
+      <section aria-modal="true" className="document-modal document-revision-dialog" role="dialog">
+        <header><h2>版本记录</h2><button aria-label="关闭版本记录" className="icon-button" onClick={props.onClose} type="button"><X size={17} /></button></header>
         <div className="document-revision-list">
-          {props.revisions.map((revision) => (
-            <div key={revision.id}>
-              <span>版本 {revision.revision_number} · {revisionLabel(revision.revision_type)}</span>
-              <button disabled={props.busy || revision.storage_path === props.document.storage_path} onClick={() => props.onRestore(revision.id)} type="button">{revision.storage_path === props.document.storage_path ? '当前' : '恢复'}</button>
-            </div>
-          ))}
+          <h3>当前版本</h3>
+          {currentRevision ? renderRevision(currentRevision, true) : null}
+          <h3>历史版本</h3>
+          {historical.length ? historical.map((revision) => renderRevision(revision, false)) : <p className="document-resource-empty">暂无历史版本</p>}
         </div>
         <footer><SecondaryButton onClick={props.onClose}>关闭</SecondaryButton></footer>
       </section>
@@ -1720,52 +1558,32 @@ function RevisionHistoryDialog(props: {
   );
 }
 
-function ReferencePanel({ scope, setScope }: { scope: ReferenceScope; setScope: (scope: ReferenceScope) => void }) {
-  const options: Array<[ReferenceScope, string, string]> = [
-    ['book', '整本书', '引用当前文档的全部内容'],
-    ['chapters', '特定章节', '从已识别章节中选择'],
-    ['paragraphs', '选定段落', '进入正文后选择连续段落'],
-  ];
-  return (
-    <section className="document-reference-panel">
-      <header><h3>默认引用范围</h3><p>为工程、角色卡和剧情大纲预设选择范围。</p></header>
-      <div>{options.map(([key, label, description]) => <button className={scope === key ? 'selected' : ''} key={key} onClick={() => setScope(key)} type="button"><BookOpenText size={18} /><span><strong>{label}</strong><small>{description}</small></span></button>)}</div>
-    </section>
-  );
-}
-
 function DocumentActionDialog(props: {
   action: DocumentAction;
   busy: boolean;
-  categories: DocumentCategory[];
   chapters: LibraryDocumentChapter[];
   currentChapterId: number | null;
+  currentBodyLength: number;
+  cursorOffset: number | null;
   currentDocument: LibraryDocument;
   documents: LibraryDocument[];
   onClose: () => void;
   onCreateChapter: (title: string, text: string, position: 'before' | 'after', anchorChapterId: number | null) => void;
-  onManualSplit: () => void;
+  onCursorSplit: (nextTitle: string, cursorOffset: number) => void;
   onMerge: (ids: number[], title: string) => void;
-  onRegexPreview: (pattern: string) => Promise<SplitPreview>;
-  onRegexApply: (pattern: string, preview: SplitPreview) => void;
-  onAIPreview: () => Promise<AISplitProposal>;
+  onAIPreview: (prompt: string) => Promise<AISplitProposal>;
   onAIApply: (proposal: AISplitProposal) => void;
 }) {
   const [title, setTitle] = useState(props.action === 'merge' ? `${props.currentDocument.title} 合并本` : '');
   const [text, setText] = useState('');
   const [positionMode, setPositionMode] = useState<'before-current' | 'after-current' | 'after-index'>(props.currentChapterId ? 'after-current' : 'after-index');
   const [anchorIndex, setAnchorIndex] = useState(props.chapters.at(-1)?.index ?? 1);
-  const [splitTab, setSplitTab] = useState<'ai' | 'regex' | 'manual'>('ai');
-  const [selected, setSelected] = useState<number[]>([props.currentDocument.id]);
-  const [pattern, setPattern] = useState('^第.+[章节].*$');
-  const [regexPreview, setRegexPreview] = useState<SplitPreview | null>(null);
-  const [aiPreview, setAiPreview] = useState<AISplitProposal | null>(null);
+  const [splitTab, setSplitTab] = useState<'cursor' | 'ai'>('cursor');
+  const [selected, setSelected] = useState<number[]>([]);
+  const [splitPrompt, setSplitPrompt] = useState(DEFAULT_SPLIT_PROMPT);
   const [localError, setLocalError] = useState('');
-  async function previewRegex() {
-    try { setRegexPreview(await props.onRegexPreview(pattern)); setLocalError(''); } catch (reason) { setLocalError(errorMessage(reason)); }
-  }
-  async function previewAI() {
-    try { setAiPreview(await props.onAIPreview()); setLocalError(''); } catch (reason) { setLocalError(errorMessage(reason)); }
+  async function applyAI() {
+    try { props.onAIApply(await props.onAIPreview(splitPrompt)); setLocalError(''); } catch (reason) { setLocalError(errorMessage(reason)); }
   }
   function moveDocument(index: number, direction: -1 | 1) {
     const target = index + direction;
@@ -1781,118 +1599,44 @@ function DocumentActionDialog(props: {
   const createAnchor = positionMode === 'after-index' ? indexedAnchor : currentChapter;
   return (
     <div className="document-processing-backdrop" role="presentation">
-      <section className="document-tag-dialog document-action-dialog" role="dialog" aria-modal="true">
-        <header><div><span>文档处理</span><h2>{heading}</h2></div><button className="icon-button" onClick={props.onClose} type="button"><X size={17} /></button></header>
+      <section className={`document-modal document-action-dialog action-${props.action}`} role="dialog" aria-modal="true">
+        <header><h2>{heading}</h2><button aria-label={`关闭${heading}`} className="icon-button" onClick={props.onClose} type="button"><X size={17} /></button></header>
         {props.action === 'merge' ? (
           <>
-            <label><span className="form-label">新文档标题</span><input className="form-input" value={title} onChange={(event) => setTitle(event.target.value)} /></label>
-            <div className="document-merge-list document-merge-category-tree">
-              {[
-                ...props.categories.map((category) => ({
-                  id: `category-${category.id}`,
-                  label: category.name,
-                  documents: props.documents.filter((document) => document.category_ids.includes(category.id)),
-                })),
-                {
-                  id: 'uncategorized',
-                  label: '未分类',
-                  documents: props.documents.filter((document) => document.category_ids.length === 0),
-                },
-              ].filter((group) => group.documents.length > 0).map((group) => (
-                <section key={group.id}>
-                  <h3><Folder size={14} />{group.label}</h3>
-                  {group.documents.map((document) => (
-                    <label key={`${group.id}-${document.id}`}>
-                      <input
-                        checked={selected.includes(document.id)}
-                        disabled={document.id === props.currentDocument.id}
-                        type="checkbox"
-                        onChange={(event) => setSelected(
-                          event.target.checked
-                            ? [...new Set([...selected, document.id])]
-                            : selected.filter((id) => id !== document.id),
-                        )}
-                      />
-                      {document.title}
-                    </label>
-                  ))}
-                </section>
-              ))}
-              <div className="document-merge-order">
-              {selected.map((id, index) => <div key={id}><span>{index + 1}. {props.documents.find((item) => item.id === id)?.title}</span><button onClick={() => moveDocument(index, -1)} type="button">↑</button><button onClick={() => moveDocument(index, 1)} type="button">↓</button></div>)}
+            <div className="document-modal-body">
+              <label className="document-modal-row"><span>新文档标题</span><input className="form-input" value={title} onChange={(event) => setTitle(event.target.value)} /></label>
+              <div className="document-merge-columns">
+                <section><h3>可添加文档</h3><div className="document-merge-list">{props.documents.filter((document) => document.id !== props.currentDocument.id).map((document) => <div key={document.id}><span>{document.title}{document.is_project_document ? <small className="document-project-inline-badge">工程</small> : null}</span><button className="button secondary compact" disabled={selected.includes(document.id)} onClick={() => setSelected((current) => [...current, document.id])} type="button">添加</button></div>)}</div></section>
+                <section><h3>已选择</h3><div className="document-merge-list document-merge-order">{selected.map((id, index) => <div key={id}><span>{index + 1}. {props.documents.find((item) => item.id === id)?.title}</span><span className="document-merge-controls"><button aria-label="上移" disabled={index === 0} onClick={() => moveDocument(index, -1)} type="button">↑</button><button aria-label="下移" disabled={index === selected.length - 1} onClick={() => moveDocument(index, 1)} type="button">↓</button><button onClick={() => setSelected((current) => current.filter((item) => item !== id))} type="button">移除</button></span></div>)}</div></section>
               </div>
             </div>
-            <footer><SecondaryButton onClick={props.onClose}>取消</SecondaryButton><PrimaryButton disabled={props.busy || selected.length < 2 || !title.trim()} onClick={() => props.onMerge(selected, title.trim())}>创建新文档</PrimaryButton></footer>
+            <footer><SecondaryButton onClick={props.onClose}>取消</SecondaryButton><PrimaryButton disabled={props.busy || selected.length < 1 || !title.trim()} onClick={() => props.onMerge([props.currentDocument.id, ...selected], title.trim())}>创建新文档</PrimaryButton></footer>
           </>
         ) : null}
         {props.action === 'create-chapter' ? (
           <>
-            <label><span className="form-label">章节标题</span><input className="form-input" value={title} onChange={(event) => setTitle(event.target.value)} /></label>
-            <label><span className="form-label">插入位置</span><select value={positionMode} onChange={(event) => setPositionMode(event.target.value as typeof positionMode)}><option value="before-current">本章之前</option><option value="after-current">本章之后</option><option value="after-index">插入到第几章之后</option></select></label>
-            {positionMode === 'after-index' ? <label><span className="form-label">章节序号</span><input min={1} max={Math.max(1, props.chapters.length)} type="number" value={anchorIndex} onChange={(event) => setAnchorIndex(Number(event.target.value))} /><small>{indexedAnchor ? `匹配：${chapterDisplayTitle(indexedAnchor)}` : '没有匹配该章节序号'}</small></label> : <p className="document-action-anchor">锚点：{currentChapter ? chapterDisplayTitle(currentChapter) : '当前文档暂无章节'}</p>}
-            <label><span className="form-label">正文</span><textarea value={text} onChange={(event) => setText(event.target.value)} /></label>
+            <div className="document-modal-body document-create-chapter-body">
+              <label className="document-modal-row"><span>章节标题</span><input className="form-input" value={title} onChange={(event) => setTitle(event.target.value)} /></label>
+              <label className="document-modal-row"><span>插入位置</span><select value={positionMode} onChange={(event) => setPositionMode(event.target.value as typeof positionMode)}><option value="before-current">本章之前</option><option value="after-current">本章之后</option><option value="after-index">指定章节之后</option></select></label>
+              {positionMode === 'after-index' ? <label className="document-modal-row"><span>指定章节</span><select aria-label="指定章节" value={anchorIndex} onChange={(event) => setAnchorIndex(Number(event.target.value))}>{props.chapters.map((chapter) => <option key={chapter.id} value={chapter.index}>{chapterDisplayTitle(chapter)}</option>)}</select></label> : <p className="document-action-anchor">锚点：{currentChapter ? chapterDisplayTitle(currentChapter) : '当前文档暂无章节'}</p>}
+              <label className="document-modal-stack document-chapter-text"><span>正文</span><textarea value={text} onChange={(event) => setText(event.target.value)} /></label>
+            </div>
             <footer><SecondaryButton onClick={props.onClose}>取消</SecondaryButton><PrimaryButton disabled={props.busy || (props.chapters.length > 0 && !createAnchor)} onClick={() => props.onCreateChapter(title.trim(), text, createPosition, createAnchor?.id ?? null)}>保存为新版本</PrimaryButton></footer>
           </>
         ) : null}
         {props.action === 'split' ? (
           <>
-            <div className="document-split-tabs">
-              <button className={splitTab === 'ai' ? 'selected' : ''} onClick={() => setSplitTab('ai')} type="button">AI 识别</button>
-              <button className={splitTab === 'regex' ? 'selected' : ''} onClick={() => setSplitTab('regex')} type="button">正则识别</button>
-              <button className={splitTab === 'manual' ? 'selected' : ''} onClick={() => setSplitTab('manual')} type="button">手动标记</button>
+            <div className="document-modal-body document-split-body">
+              <div className="document-split-tabs"><button className={splitTab === 'cursor' ? 'selected' : ''} onClick={() => setSplitTab('cursor')} type="button">光标处分章</button><button className={splitTab === 'ai' ? 'selected' : ''} onClick={() => setSplitTab('ai')} type="button">AI 分章</button></div>
+              {splitTab === 'cursor' ? <><label className="document-modal-row"><span>下一章标题</span><input className="form-input" value={title} onChange={(event) => setTitle(event.target.value)} /></label><p className="document-cursor-position">当前分割位置：{props.cursorOffset == null ? '请先在正文中放置光标' : `第 ${props.cursorOffset} 字`}</p></> : <label className="document-modal-stack"><span>分章要求</span><textarea value={splitPrompt} onChange={(event) => setSplitPrompt(event.target.value)} /></label>}
             </div>
-            {splitTab === 'regex' ? <>
-              <label><span className="form-label">章节标题正则</span><textarea value={pattern} onChange={(event) => { setPattern(event.target.value); setRegexPreview(null); }} /></label>
-              <SecondaryButton disabled={props.busy || !pattern} onClick={() => void previewRegex()}>生成候选</SecondaryButton>
-              {regexPreview ? <EditableBoundaryPreview chapters={regexPreview.chapters} onChange={(chapters) => setRegexPreview({ ...regexPreview, chapters, chapter_count: chapters.length })} /> : null}
-            </> : null}
-            {splitTab === 'ai' ? <>
-              {!aiPreview ? <SecondaryButton disabled={props.busy} onClick={() => void previewAI()}>调用模型生成候选</SecondaryButton> : (
-              <div className="document-split-editor">
-                {aiPreview.chapters.map((chapter, index) => (
-                  <div key={index}>
-                    <input aria-label={`第 ${index + 1} 章标题`} value={chapter.title} onChange={(event) => setAiPreview({ ...aiPreview, chapters: aiPreview.chapters.map((item, itemIndex) => itemIndex === index ? { ...item, title: event.target.value } : item) })} />
-                    <input aria-label={`第 ${index + 1} 章开始位置`} type="number" value={chapter.start_offset} onChange={(event) => setAiPreview({ ...aiPreview, chapters: aiPreview.chapters.map((item, itemIndex) => itemIndex === index ? { ...item, start_offset: Number(event.target.value) } : item) })} />
-                    <input aria-label={`第 ${index + 1} 章结束位置`} type="number" value={chapter.end_offset} onChange={(event) => setAiPreview({ ...aiPreview, chapters: aiPreview.chapters.map((item, itemIndex) => itemIndex === index ? { ...item, end_offset: Number(event.target.value) } : item) })} />
-                    <small>{chapter.reason}</small>
-                  </div>
-                ))}
-              </div>
-            )}
-            </> : null}
-            {splitTab === 'manual' ? <div className="document-manual-split-help"><p>返回正文后，使用右侧“标记章节”记录当前光标的起止位置。</p><SecondaryButton onClick={props.onManualSplit}>进入手动标记</SecondaryButton></div> : null}
-            <footer><SecondaryButton onClick={props.onClose}>取消</SecondaryButton><PrimaryButton disabled={props.busy || (splitTab === 'ai' ? !aiPreview : splitTab === 'regex' ? !regexPreview : true)} onClick={() => { if (splitTab === 'ai' && aiPreview) props.onAIApply(aiPreview); if (splitTab === 'regex' && regexPreview) props.onRegexApply(pattern, regexPreview); }}>应用为新版本</PrimaryButton></footer>
+            <footer><SecondaryButton onClick={props.onClose}>取消</SecondaryButton>{splitTab === 'cursor' ? <PrimaryButton disabled={props.busy || !title.trim() || props.cursorOffset == null || props.cursorOffset <= 0 || props.cursorOffset >= props.currentBodyLength} onClick={() => props.onCursorSplit(title.trim(), props.cursorOffset!)}>分章</PrimaryButton> : <PrimaryButton disabled={props.busy || !splitPrompt.trim()} onClick={() => void applyAI()}>AI 分章</PrimaryButton>}</footer>
           </>
         ) : null}
         {localError ? <div className="inline-alert error" role="alert">{localError}</div> : null}
       </section>
     </div>
   );
-}
-
-function EditableBoundaryPreview({ chapters, onChange }: { chapters: SplitPreview['chapters']; onChange: (chapters: SplitPreview['chapters']) => void }) {
-  return (
-    <div className="document-split-editor">
-      {chapters.map((chapter, index) => (
-        <div key={`${chapter.start_offset}-${index}`}>
-          <input aria-label={`第 ${index + 1} 章标题`} value={chapter.title} onChange={(event) => onChange(chapters.map((item, itemIndex) => itemIndex === index ? { ...item, title: event.target.value } : item))} />
-          <input aria-label={`第 ${index + 1} 章开始位置`} type="number" value={chapter.start_offset} onChange={(event) => onChange(chapters.map((item, itemIndex) => itemIndex === index ? { ...item, start_offset: Number(event.target.value) } : item))} />
-          <input aria-label={`第 ${index + 1} 章结束位置`} type="number" value={chapter.end_offset} onChange={(event) => onChange(chapters.map((item, itemIndex) => itemIndex === index ? { ...item, end_offset: Number(event.target.value) } : item))} />
-          <small>{chapter.end_offset - chapter.start_offset} 字符 · {chapter.word_count} 字</small>
-        </div>
-      ))}
-      <ChapterBoundaryPreview chapters={chapters} count={chapters.length} />
-    </div>
-  );
-}
-
-function ChapterBoundaryPreview({ chapters, count }: { chapters: Array<{ title: string; start_offset: number; end_offset: number; word_count: number }>; count: number }) {
-  const ordered = [...chapters].sort((left, right) => left.start_offset - right.start_offset);
-  const gaps = ordered.flatMap((chapter, index) => {
-    const expected = index === 0 ? 0 : ordered[index - 1].end_offset;
-    return chapter.start_offset > expected ? [`${expected}–${chapter.start_offset}`] : [];
-  });
-  return <div className="document-split-preview"><strong>匹配章节：{count}</strong>{chapters.map((chapter, index) => <div key={`${chapter.start_offset}-${index}`}><span>{chapter.title}</span><small>{chapter.start_offset}–{chapter.end_offset} · {chapter.word_count} 字</small></div>)}<p>{gaps.length ? `未匹配区间：${gaps.join('、')}` : '未匹配开头或中间内容：无；尾部由最后一章终点标识。'}</p></div>;
 }
 
 function DocumentCategoryNameDialog({
@@ -1902,18 +1646,18 @@ function DocumentCategoryNameDialog({
   onSave,
 }: {
   busy: boolean;
-  category: DocumentCategory;
+  category: DocumentCategory | null;
   onClose: () => void;
   onSave: (name: string) => void;
 }) {
-  const [name, setName] = useState(category.name);
+  const [name, setName] = useState(category?.name ?? '');
   const normalizedName = name.trim();
   return (
     <LibraryDialog
-      footer={<><SecondaryButton onClick={onClose}>取消</SecondaryButton><PrimaryButton disabled={busy || !normalizedName} onClick={() => onSave(normalizedName)}>保存</PrimaryButton></>}
+      className="document-category-name-dialog"
+      footer={<><SecondaryButton onClick={onClose}>取消</SecondaryButton><PrimaryButton disabled={busy || !normalizedName} onClick={() => onSave(normalizedName)}>{category ? '保存' : '新建'}</PrimaryButton></>}
       onClose={onClose}
-      subtitle="文档分类"
-      title="重命名分类"
+      title={category ? '重命名分类' : '新建分类'}
     >
       <label className="library-name-field"><span>分类名称</span><input autoFocus className="form-input" maxLength={40} onChange={(event) => setName(event.target.value)} value={name} /></label>
     </LibraryDialog>
@@ -1924,36 +1668,33 @@ function ResourceAssignmentDialog({
   busy,
   document,
   items,
-  kind,
-  onApply,
   onClose,
   onCreate,
+  onToggle,
 }: {
   busy: boolean;
   document: LibraryDocument | null;
-  items: Array<DocumentCategory | ResourceTag>;
-  kind: 'category' | 'tag';
-  onApply: (selectedIds: number[]) => void;
+  items: ResourceTag[];
   onClose: () => void;
   onCreate: (name: string) => void;
+  onToggle: (tagId: number, selected: boolean) => void;
 }) {
-  const initialSelected = kind === 'category'
-    ? document?.category_ids ?? []
-    : items.filter((item) => document?.tags.includes(item.name)).map((item) => item.id);
-  const [selectedIds, setSelectedIds] = useState<number[]>(initialSelected);
+  const [selectedIds, setSelectedIds] = useState<number[]>(() => items.filter((item) => document?.tags.includes(item.name)).map((item) => item.id));
   const [name, setName] = useState('');
-  const label = kind === 'category' ? '分类' : '标签';
+  useEffect(() => {
+    setSelectedIds(items.filter((item) => document?.tags.includes(item.name)).map((item) => item.id));
+  }, [document?.tags, items]);
   return (
     <div className="document-processing-backdrop" role="presentation">
       <section
         aria-labelledby="document-resource-title"
         aria-modal="true"
-        className="document-tag-dialog document-resource-dialog"
+        className="document-modal document-resource-dialog"
         role="dialog"
       >
         <header>
-          <div><span>文档{label}</span><h2 id="document-resource-title">管理{label}</h2></div>
-          <button aria-label={`关闭${label}窗口`} className="icon-button" onClick={onClose} type="button"><X size={17} /></button>
+          <h2 id="document-resource-title">管理标签</h2>
+          <button aria-label="关闭标签窗口" className="icon-button" onClick={onClose} type="button"><X size={17} /></button>
         </header>
         <div className="document-resource-options">
           {document ? items.map((item) => (
@@ -1961,23 +1702,23 @@ function ResourceAssignmentDialog({
               <input
                 checked={selectedIds.includes(item.id)}
                 disabled={busy}
-                onChange={(event) => setSelectedIds((current) => (
-                  event.target.checked
-                    ? [...current, item.id]
-                    : current.filter((id) => id !== item.id)
-                ))}
+                onChange={(event) => {
+                  const selected = event.target.checked;
+                  setSelectedIds((current) => selected ? [...current, item.id] : current.filter((id) => id !== item.id));
+                  onToggle(item.id, selected);
+                }}
                 type="checkbox"
               />
               <span>{item.name}</span>
             </label>
-          )) : <p>先创建分类；选择文档后可分配关联。</p>}
-          {document && !items.length ? <p>尚无可用{label}。</p> : null}
+          )) : <p>请先选择文档。</p>}
+          {document && !items.length ? <p>尚无可用标签。</p> : null}
         </div>
         <form className="document-resource-create" onSubmit={(event) => { event.preventDefault(); if (name.trim()) { onCreate(name.trim()); setName(''); } }}>
-          <input className="form-input" maxLength={40} onChange={(event) => setName(event.target.value)} placeholder={`新${label}名称`} value={name} />
+          <input className="form-input" maxLength={40} onChange={(event) => setName(event.target.value)} placeholder="新标签名称" value={name} />
           <SecondaryButton disabled={busy || !name.trim()} type="submit"><Plus size={14} />新建</SecondaryButton>
         </form>
-        <footer><SecondaryButton onClick={onClose}>取消</SecondaryButton><PrimaryButton disabled={busy || !document} onClick={() => onApply(selectedIds)}>保存关联</PrimaryButton></footer>
+        <footer><SecondaryButton onClick={onClose}>关闭</SecondaryButton></footer>
       </section>
     </div>
   );
@@ -2016,7 +1757,7 @@ function TagFilterButton({ active, count, icon, label, onClick, onContextMenu }:
 
 function DefaultBookCover({ compact = false, document }: { compact?: boolean; document: LibraryDocument }) {
   const palette = palettes[(document.id - 1) % palettes.length];
-  return <span className={`default-book-cover palette-${palette} ${compact ? 'compact' : ''}`}><span className="default-book-spine" /><strong>{document.title}</strong><span className="default-book-author">{document.author || '未知作者'}</span></span>;
+  return <span className={`default-book-cover palette-${palette} ${compact ? 'compact' : ''}`}><span className="default-book-spine" />{document.is_project_document ? <span className="document-project-marker">工程</span> : null}<strong>{document.title}</strong><span className="default-book-author">{document.author || '未知作者'}</span></span>;
 }
 
 function Definition({ label, value }: { label: string; value: string }) {
@@ -2027,17 +1768,13 @@ function ShelfMessage({ action, title }: { action?: ReactNode; title: string }) 
   return <div className="document-shelf-empty"><LibraryBig size={28} /><strong>{title}</strong>{action ? <div className="document-shelf-empty-action">{action}</div> : null}</div>;
 }
 
-function NumberField({ label, max = 8, onChange, value }: { label: string; max?: number; onChange: (value: number) => void; value: number }) {
-  return <label><span className="form-label">{label}</span><input className="form-input" max={max} min={0} onChange={(event) => onChange(Number(event.target.value))} type="number" value={value} /></label>;
-}
-
 function documentsForSystemFilter(
   documents: LibraryDocument[],
   filter: SystemFilter,
 ): LibraryDocument[] {
   if (filter === 'project') return documents.filter((document) => document.is_project_document);
   if (filter === 'recent') {
-    return [...documents]
+    return documents.filter((document) => !document.is_project_document)
       .sort((left, right) => right.created_at.localeCompare(left.created_at) || right.id - left.id)
       .slice(0, 5);
   }
@@ -2070,7 +1807,10 @@ function revisionLabel(revisionType: string) {
   if (revisionType === 'manual_edit') return '手动编辑';
   if (revisionType === 'merge') return '合并';
   if (revisionType === 'split_ai') return 'AI 分章';
+  if (revisionType === 'split_cursor') return '光标分章';
   if (revisionType === 'split_regex') return '正则分章';
+  if (revisionType === 'project_sync') return '工程同步';
+  if (revisionType === 'cleanup_ai') return '文字整理';
   return '文字整理';
 }
 
@@ -2078,13 +1818,6 @@ function statusLabel(status: string) {
   if (status === 'imported') return '已导入';
   if (status === 'processed') return '已处理';
   return status;
-}
-
-function formatPreview(settings: DocumentProcessingSettings) {
-  const chapterIndent = '　'.repeat(settings.chapter_indent);
-  const paragraphIndent = '　'.repeat(settings.paragraph_indent);
-  const separator = '\n'.repeat(settings.blank_lines + 1);
-  return `${chapterIndent}第一章　风起${separator}${paragraphIndent}这是正文的第一段。${separator}${paragraphIndent}这是正文的第二段。`;
 }
 
 function countTextUnits(text: string): number {
@@ -2101,22 +1834,6 @@ function saveStatusLabel(status: SaveStatus, savedAt: string): string {
   if (status === 'error') return '草稿保存失败';
   if (status === 'saved') return savedAt ? `草稿已保存 ${formatDate(savedAt)}` : '草稿已保存';
   return '已保存';
-}
-
-function applyCleanupPreview(text: string, settings: DocumentProcessingSettings): string {
-  let chapterPattern: RegExp | null = null;
-  try {
-    chapterPattern = new RegExp(settings.chapter_pattern);
-  } catch {
-    chapterPattern = null;
-  }
-  const lines = text.replace(/\r\n?/g, '\n').split('\n').flatMap((rawLine) => {
-    const line = settings.trim_whitespace ? rawLine.trim() : rawLine;
-    if (!line) return [];
-    const indent = chapterPattern?.test(line) ? settings.chapter_indent : settings.paragraph_indent;
-    return `${'　'.repeat(indent)}${settings.trim_whitespace ? line.trimStart() : line}`;
-  });
-  return lines.join('\n'.repeat(settings.blank_lines + 1));
 }
 
 function formatDate(value: string) {
