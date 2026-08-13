@@ -100,6 +100,39 @@ class ProjectServiceTests(unittest.TestCase):
         self.assertIsNotNone(project_after_clear)
         self.assertEqual(1, project_after_clear.completed_chapters)
 
+    def test_confirm_and_exports_read_the_immutable_current_head(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            source = root / "authority.txt"
+            database_path = initialized_database(root / "rusty.db")
+            output = root / "authority-export.txt"
+            source.write_text("1. One\nOriginal text.\n", encoding="utf-8")
+            projects = ProjectService(database_path)
+            project_id = projects.import_book(source, root)
+            chapter = projects.list_chapters(project_id)[0]
+            projects.save_chapter_rewrite(chapter.id, "Immutable head text.")
+            connection = sqlite3.connect(database_path)
+            try:
+                connection.execute(
+                    "UPDATE chapters SET rewritten_text = 'drifted chapter projection' WHERE id = ?",
+                    (chapter.id,),
+                )
+                connection.execute(
+                    "UPDATE chapter_rewrites SET rewritten_text = 'drifted rewrite projection' WHERE chapter_id = ?",
+                    (chapter.id,),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            pipeline = PipelineService(database_path)
+            pipeline.confirm_rewrite(chapter.id)
+            projects.export_txt(project_id, output)
+
+            self.assertIn("Immutable head text.", output.read_text(encoding="utf-8"))
+            self.assertNotIn("drifted", output.read_text(encoding="utf-8"))
+            self.assertIn("Immutable head text.", pipeline.merge_project_text(project_id))
+
     def test_export_plan_reorders_renames_excludes_and_drives_exports(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)

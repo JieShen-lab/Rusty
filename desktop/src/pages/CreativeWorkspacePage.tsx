@@ -172,7 +172,6 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
   const [sourceCharacter, setSourceCharacter] = useState('');
   const [targetCharacterId, setTargetCharacterId] = useState<number | null>(null);
   const [focusedEvidence, setFocusedEvidence] = useState('');
-  const [loadedSceneId, setLoadedSceneId] = useState<number | null>(null);
   const [boundaryEditing, setBoundaryEditing] = useState(false);
   const [boundaryDrafts, setBoundaryDrafts] = useState<SceneBoundaryItem[]>([]);
   const loadedDraftRef = useRef<LoadedSceneDraft | null>(null);
@@ -372,7 +371,6 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
       writingPlanRevision: 0,
       currentDraftRevision: 0,
     };
-    setLoadedSceneId(sceneId);
     setPreanalysis(analysis);
     setIntent(creativeIntent);
     setCharacterAnalysis(specialized);
@@ -412,7 +410,6 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
     if (!activeSceneId || !selectedChapterId) {
       sceneLoadSequenceRef.current += 1;
       loadedDraftRef.current = null;
-      setLoadedSceneId(null);
       setSceneContextLoading(false);
       setPreanalysis(null);
       setIntent(null);
@@ -433,12 +430,12 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
   }, [activeSceneId, loadSceneContext, selectedChapterId]);
 
   useEffect(() => {
-    if (!loadedSceneId || (!analysisDirty && !intentDirty && !characterAnalysisDirty && !strategyAnalysisDirty && !targetDirty && !writingPlanDirty && !currentDraftDirty)) return;
+    if (!loadedDraftRef.current || (!analysisDirty && !intentDirty && !characterAnalysisDirty && !strategyAnalysisDirty && !targetDirty && !writingPlanDirty && !currentDraftDirty)) return;
     const timeout = window.setTimeout(() => {
       void flushLoadedScene().catch(() => undefined);
     }, 650);
     return () => window.clearTimeout(timeout);
-  }, [analysisDirty, characterAnalysisDirty, strategyAnalysisDirty, flushLoadedScene, intentDirty, loadedSceneId, preanalysis, intent, characterAnalysis, strategyAnalysis, target, targetDirty, writingPlan, writingPlanDirty, currentDraft, currentDraftDirty]);
+  }, [analysisDirty, characterAnalysisDirty, strategyAnalysisDirty, flushLoadedScene, intentDirty, preanalysis, intent, characterAnalysis, strategyAnalysis, target, targetDirty, writingPlan, writingPlanDirty, currentDraft, currentDraftDirty]);
 
   useEffect(() => {
     void loadProject().catch((reason) => setError(messageOf(reason)));
@@ -470,7 +467,6 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
       await flushLoadedScene();
       sceneLoadSequenceRef.current += 1;
       loadedDraftRef.current = null;
-      setLoadedSceneId(null);
       selectedChapterIdRef.current = chapterId;
       setSelectedChapterId(chapterId);
     });
@@ -569,7 +565,7 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
 
   function patchAnalysis(patch: Partial<BaseSceneAnalysis>) {
     const draft = loadedDraftRef.current;
-    if (!draft || draft.sceneId !== loadedSceneId || !draft.preanalysis) return;
+    if (!draft || !draft.preanalysis) return;
     const next = { ...draft.preanalysis, ...patch };
     draft.preanalysis = next;
     draft.analysisDirty = true;
@@ -580,7 +576,7 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
 
   function patchIntent(patch: Partial<CreativeIntent>) {
     const draft = loadedDraftRef.current;
-    if (!draft || draft.sceneId !== loadedSceneId || !draft.intent) return;
+    if (!draft || !draft.intent) return;
     const next = { ...draft.intent, ...patch };
     draft.intent = next;
     draft.intentDirty = true;
@@ -676,7 +672,7 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
 
   function patchCharacterAnalysis(value: CharacterModificationAnalysis) {
     const draft = loadedDraftRef.current;
-    if (!draft || draft.sceneId !== loadedSceneId) return;
+    if (!draft) return;
     draft.characterAnalysis = value;
     draft.characterAnalysisDirty = true;
     draft.characterAnalysisRevision += 1;
@@ -693,7 +689,7 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
 
   function patchStrategyAnalysis(value: StrategySceneAnalysis) {
     const draft = loadedDraftRef.current;
-    if (!draft || draft.sceneId !== loadedSceneId) return;
+    if (!draft) return;
     draft.strategyAnalysis = value; draft.strategyAnalysisDirty = true; draft.strategyAnalysisRevision += 1;
     setStrategyAnalysis(value); setStrategyAnalysisDirty(true);
   }
@@ -720,7 +716,7 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
 
   function patchTarget(value: SceneTarget) {
     const draft = loadedDraftRef.current;
-    if (!draft || draft.sceneId !== loadedSceneId) return;
+    if (!draft) return;
     draft.target = value;
     draft.targetDirty = true;
     draft.targetRevision += 1;
@@ -757,7 +753,7 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
 
   function patchWritingPlan(value: WritingPlan) {
     const draft = loadedDraftRef.current;
-    if (!draft || draft.sceneId !== loadedSceneId) return;
+    if (!draft) return;
     draft.writingPlan = value; draft.writingPlanDirty = true; draft.writingPlanRevision += 1;
     setWritingPlan(value); setWritingPlanDirty(true);
   }
@@ -777,7 +773,7 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
 
   function patchCurrentDraftText(text: string) {
     const draft = loadedDraftRef.current;
-    if (!draft || draft.sceneId !== loadedSceneId || !draft.currentDraft) return;
+    if (!draft || !draft.currentDraft) return;
     const next = { ...draft.currentDraft, text };
     draft.currentDraft = next; draft.currentDraftDirty = true; draft.currentDraftRevision += 1;
     setCurrentDraft(next); setCurrentDraftDirty(true);
@@ -921,7 +917,6 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
       const items = await adjustChapterScenes(selectedChapterId, boundaryDrafts);
       sceneLoadSequenceRef.current += 1;
       loadedDraftRef.current = null;
-      setLoadedSceneId(null);
       setScenes(items);
       setBoundaryDrafts(boundariesFromScenes(items));
       await refreshWorkflowStates(selectedChapterId);

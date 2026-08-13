@@ -133,9 +133,18 @@ class PipelineService:
         chapter = self.project_service.get_chapter(chapter_id)
         if chapter is None:
             raise ValueError(f"Chapter not found: {chapter_id}")
-        if not (chapter.rewritten_text or "").strip():
-            raise ValueError("No rewritten text is available to confirm.")
         with session(self.database_path) as connection:
+            head = connection.execute(
+                """
+                SELECT v.rewritten_text
+                FROM chapter_rewrites h
+                JOIN chapter_rewrite_versions v ON v.id = h.current_version_id
+                WHERE h.chapter_id = ?
+                """,
+                (chapter_id,),
+            ).fetchone()
+            if head is None or not str(head["rewritten_text"]).strip():
+                raise ValueError("No rewritten text is available to confirm.")
             connection.execute(
                 "UPDATE chapter_rewrites SET confirmed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE chapter_id = ?",
                 (chapter_id,),
@@ -289,7 +298,7 @@ class PipelineService:
     def merge_project_text(self, project_id: int) -> str:
         parts: list[str] = []
         for chapter in self.project_service.list_chapters(project_id):
-            text = chapter.rewritten_text or chapter.original_text
+            text = self.chapter_versions.resolve_chapter_source(chapter.id).text
             parts.append(f"{chapter.title}\n\n{text.strip()}")
         return "\n\n".join(parts).strip() + "\n"
 

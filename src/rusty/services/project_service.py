@@ -896,7 +896,7 @@ class ProjectService:
                     c.title AS original_title,
                     c.original_text,
                     CASE
-                        WHEN r.confirmed_at IS NOT NULL OR c.status = 'confirmed' THEN c.rewritten_text
+                        WHEN r.confirmed_at IS NOT NULL OR c.status = 'confirmed' THEN v.rewritten_text
                         ELSE NULL
                     END AS rewritten_text,
                     c.word_count,
@@ -909,6 +909,7 @@ class ProjectService:
                 FROM export_chapter_plan p
                 JOIN chapters c ON c.id = p.chapter_id
                 LEFT JOIN chapter_rewrites r ON r.chapter_id = c.id
+                LEFT JOIN chapter_rewrite_versions v ON v.id = r.current_version_id
                 WHERE p.project_id = ?
                   AND p.include_in_export = 1
                 ORDER BY p.export_order, c.chapter_index, c.id
