@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import sys
 import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tests.support import initialized_database
 
@@ -12,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docx import Document
 
+from rusty.db import session
 from rusty.importers.epub import parse_epub
 from rusty.models import ExportPlanItem
 from rusty.services import PipelineService, ProjectService
@@ -132,6 +135,49 @@ class ProjectServiceTests(unittest.TestCase):
             self.assertIn("Immutable head text.", output.read_text(encoding="utf-8"))
             self.assertNotIn("drifted", output.read_text(encoding="utf-8"))
             self.assertIn("Immutable head text.", pipeline.merge_project_text(project_id))
+
+    def test_confirm_rejects_a_concurrent_head_change(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            source = root / "confirm-race.txt"
+            database_path = initialized_database(root / "rusty.db")
+            source.write_text("1. One\nOriginal text.\n", encoding="utf-8")
+            projects = ProjectService(database_path)
+            project_id = projects.import_book(source, root)
+            chapter = projects.list_chapters(project_id)[0]
+            projects.save_chapter_rewrite(chapter.id, "First head.")
+            pipeline = PipelineService(database_path)
+            interleaved = False
+
+            class InterleavingConnection:
+                def __init__(self, connection):
+                    self.connection = connection
+
+                def execute(self, sql, parameters=()):
+                    nonlocal interleaved
+                    cursor = self.connection.execute(sql, parameters)
+                    if not interleaved and "SELECT h.current_version_id" in sql:
+                        interleaved = True
+                        projects.save_chapter_rewrite(chapter.id, "Concurrent head.")
+                    return cursor
+
+            @contextmanager
+            def interleaving_session(path):
+                with session(path) as connection:
+                    yield InterleavingConnection(connection)
+
+            with (
+                mock.patch(
+                    "rusty.services.pipeline_service.session",
+                    interleaving_session,
+                ),
+                self.assertRaisesRegex(RuntimeError, "head changed"),
+            ):
+                pipeline.confirm_rewrite(chapter.id)
+
+            current = projects.get_chapter(chapter.id)
+            self.assertEqual("Concurrent head.", current.rewritten_text)
+            self.assertEqual("rewritten", current.status)
 
     def test_export_plan_reorders_renames_excludes_and_drives_exports(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:

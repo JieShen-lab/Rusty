@@ -152,6 +152,7 @@ class PreviewApplyContractV23Tests(unittest.TestCase):
             preview = extraction.preview_materials_from_text(
                 "A then B.", task_type=task_type
             )
+            preview.prompt_snapshot["detail_level"] = "brief"
             set_detail_level("brief")
             payload = [
                 {

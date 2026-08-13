@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import secrets
 import time
@@ -348,7 +349,7 @@ class AnchorExtractionService:
                 source_summary=source_summary,
                 import_metadata=import_metadata,
                 raw_text=full_source_text,
-                prompt_snapshot=prompt_snapshot,
+                prompt_snapshot=copy.deepcopy(prompt_snapshot),
             )
         return MaterialExtractionPreview(
             preview_token=token,
@@ -356,7 +357,7 @@ class AnchorExtractionService:
             task_type=task_type,
             material_type=material_type,
             source_summary=source_summary,
-            prompt_snapshot=prompt_snapshot,
+            prompt_snapshot=copy.deepcopy(prompt_snapshot),
             candidates=candidates,
         )
 

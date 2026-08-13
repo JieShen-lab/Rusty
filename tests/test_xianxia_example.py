@@ -6,9 +6,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests.support import initialized_database
-
-
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY_ROOT))
 sys.path.insert(0, str(REPOSITORY_ROOT / "src"))
@@ -87,7 +84,8 @@ class XianxiaExampleTests(unittest.TestCase):
     def test_xianxia_world_character_technique_and_decision_rules_compile_and_rewrite(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            database_path = initialized_database(root / "rusty.db")
+            database_path = root / "rusty.db"
+            self.assertFalse(database_path.exists())
             seeded = seed_demo(database_path, root / "workspace", example_path=EXAMPLE_ROOT)
             project_id = seeded["project_id"]
 

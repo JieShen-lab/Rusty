@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -272,6 +273,43 @@ class DocumentLibraryServiceTests(unittest.TestCase):
 
             self.assertEqual(1, len(service.list_revisions(document.id)))
             self.assertEqual(draft.id, service.get_draft(document.id).id)
+            self.assertEqual(
+                content.revision_id, service._ensure_initial_revision(document.id).id
+            )
+
+    def test_draft_title_rolls_back_when_exact_draft_consumption_fails(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            source = root / "draft-title-rollback.txt"
+            source.write_text("第一章\n正文\n", encoding="utf-8")
+            service = DocumentLibraryService(
+                initialized_database(root / "rusty.db"), root / "library"
+            )
+            document = service.import_document(source).document
+            content = service.get_content(document.id)
+            draft = service.save_draft(
+                document.id,
+                base_revision_id=content.revision_id,
+                title="新书名",
+                text="替换正文",
+            )
+            with session(service.database_path) as connection:
+                connection.execute(
+                    """
+                    CREATE TRIGGER fail_exact_draft_delete
+                    BEFORE DELETE ON library_document_drafts
+                    BEGIN
+                        SELECT RAISE(ABORT, 'injected draft delete failure');
+                    END
+                    """
+                )
+
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "injected draft delete failure"):
+                service.commit_draft(document.id)
+
+            self.assertEqual(1, len(service.list_revisions(document.id)))
+            self.assertEqual(draft.id, service.get_draft(document.id).id)
+            self.assertEqual(document.title, service._get_document(document.id).title)
             self.assertEqual(
                 content.revision_id, service._ensure_initial_revision(document.id).id
             )

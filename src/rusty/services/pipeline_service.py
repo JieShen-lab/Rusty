@@ -136,7 +136,7 @@ class PipelineService:
         with session(self.database_path) as connection:
             head = connection.execute(
                 """
-                SELECT v.rewritten_text
+                SELECT h.current_version_id, v.rewritten_text
                 FROM chapter_rewrites h
                 JOIN chapter_rewrite_versions v ON v.id = h.current_version_id
                 WHERE h.chapter_id = ?
@@ -145,10 +145,16 @@ class PipelineService:
             ).fetchone()
             if head is None or not str(head["rewritten_text"]).strip():
                 raise ValueError("No rewritten text is available to confirm.")
-            connection.execute(
-                "UPDATE chapter_rewrites SET confirmed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE chapter_id = ?",
-                (chapter_id,),
+            confirmed = connection.execute(
+                """
+                UPDATE chapter_rewrites
+                SET confirmed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                WHERE chapter_id = ? AND current_version_id = ?
+                """,
+                (chapter_id, int(head["current_version_id"])),
             )
+            if confirmed.rowcount != 1:
+                raise RuntimeError("The chapter rewrite head changed before confirmation.")
             connection.execute(
                 "UPDATE chapters SET status = 'confirmed', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (chapter_id,),

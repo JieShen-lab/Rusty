@@ -1165,9 +1165,8 @@ class DocumentLibraryService:
             consume_draft_id=draft_id,
             consume_draft_base_revision_id=draft_base_revision_id,
             consume_draft_chapter_id=chapter_id,
+            document_title=title.strip() if chapter_id is None else None,
         )
-        if chapter_id is None and title.strip() and title.strip() != document.title:
-            self.update_document_metadata(document_id, title=title.strip(), author=document.author)
         return CleanupResult(document=self._get_document(document_id), revision=revision, created=True)
 
     def merge_documents(self, document_ids: list[int], title: str, author: str | None = None) -> LibraryDocument:
@@ -1804,6 +1803,7 @@ class DocumentLibraryService:
         consume_draft_id: int | None = None,
         consume_draft_base_revision_id: int | None = None,
         consume_draft_chapter_id: int | None = None,
+        document_title: str | None = None,
     ) -> DocumentRevision:
         encoded_text = self._normalize_text(text).encode("utf-8")
         content_hash = hashlib.sha256(encoded_text).hexdigest()
@@ -1923,12 +1923,14 @@ class DocumentLibraryService:
                 updated = connection.execute(
                     """
                     UPDATE library_documents
-                    SET storage_path = ?, content_hash = ?, stored_size_bytes = ?,
+                    SET title = COALESCE(?, title),
+                        storage_path = ?, content_hash = ?, stored_size_bytes = ?,
                         chapter_count = ?, word_count = ?, current_revision_id = ?,
                         status = 'processed', updated_at = CURRENT_TIMESTAMP
                     WHERE id = ? AND current_revision_id = ?
                     """,
                     (
+                        document_title,
                         str(storage_path),
                         content_hash,
                         len(encoded_text),
