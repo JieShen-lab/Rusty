@@ -6,7 +6,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY_ROOT))
 sys.path.insert(0, str(REPOSITORY_ROOT / "src"))
@@ -86,6 +85,7 @@ class XianxiaExampleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             database_path = root / "rusty.db"
+            self.assertFalse(database_path.exists())
             seeded = seed_demo(database_path, root / "workspace", example_path=EXAMPLE_ROOT)
             project_id = seeded["project_id"]
 

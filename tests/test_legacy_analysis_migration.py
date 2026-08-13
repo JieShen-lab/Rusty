@@ -14,13 +14,14 @@ from fastapi.testclient import TestClient
 from backend.api import create_app
 from rusty.db import session
 from rusty.services.project_service import ProjectService
+from tests.support import initialized_database
 
 
 class LegacyAnalysisMigrationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory(dir=Path.cwd())
         self.root = Path(self.temp.name)
-        self.database = self.root / "legacy.db"
+        self.database = initialized_database(self.root / "legacy.db")
         self.source = self.root / "legacy.txt"
         self.source.write_text("1. 第一章\n原始正文。", encoding="utf-8")
         projects = ProjectService(self.database)

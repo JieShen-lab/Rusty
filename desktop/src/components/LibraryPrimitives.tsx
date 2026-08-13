@@ -1,4 +1,5 @@
-import { useEffect, useId, type MouseEvent, type ReactNode } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { CircleDashed, X } from 'lucide-react';
 
 export function LibrarySidebarItem({
@@ -7,24 +8,110 @@ export function LibrarySidebarItem({
   icon,
   label,
   onClick,
+  onContextMenu,
 }: {
   active: boolean;
   count: number;
   icon: ReactNode;
   label: string;
   onClick: () => void;
+  onContextMenu?: (event: MouseEvent<HTMLButtonElement>) => void;
 }) {
   return (
     <button
       aria-pressed={active}
       className={`document-tag-item ${active ? 'selected' : ''}`}
       onClick={onClick}
+      onContextMenu={onContextMenu}
       type="button"
     >
       {icon}
       <span>{label}</span>
       <small>{count}</small>
     </button>
+  );
+}
+
+export function LibrarySidebarSectionTitle({ action, children }: { action?: ReactNode; children: ReactNode }) {
+  return <div className="library-sidebar-section-title"><strong>{children}</strong>{action}</div>;
+}
+
+export type LibraryContextMenuAction = {
+  danger?: boolean;
+  icon?: ReactNode;
+  label: string;
+  onSelect: () => void;
+};
+
+export function LibraryContextMenu({
+  actions,
+  label = '分类操作',
+  onClose,
+  x,
+  y,
+}: {
+  actions: LibraryContextMenuAction[];
+  label?: string;
+  onClose: () => void;
+  x: number;
+  y: number;
+}) {
+  const menuRef = useRef<HTMLDivElement>(null);
+  const safeX = Number.isFinite(x) ? x : 8;
+  const safeY = Number.isFinite(y) ? y : 8;
+  const [position, setPosition] = useState({ left: safeX, top: safeY });
+
+  useLayoutEffect(() => {
+    const menu = menuRef.current;
+    if (!menu) return;
+    const margin = 8;
+    const rect = menu.getBoundingClientRect();
+    setPosition({
+      left: Math.max(margin, Math.min(safeX, window.innerWidth - rect.width - margin)),
+      top: Math.max(margin, Math.min(safeY, window.innerHeight - rect.height - margin)),
+    });
+  }, [safeX, safeY]);
+
+  useEffect(() => {
+    const closeOutside = (event: PointerEvent) => {
+      if (!menuRef.current?.contains(event.target as Node)) onClose();
+    };
+    const closeOnKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    document.addEventListener('pointerdown', closeOutside);
+    window.addEventListener('keydown', closeOnKey);
+    window.addEventListener('resize', onClose);
+    window.addEventListener('scroll', onClose, true);
+    return () => {
+      document.removeEventListener('pointerdown', closeOutside);
+      window.removeEventListener('keydown', closeOnKey);
+      window.removeEventListener('resize', onClose);
+      window.removeEventListener('scroll', onClose, true);
+    };
+  }, [onClose]);
+
+  return createPortal(
+    <div
+      aria-label={label}
+      className="library-context-menu"
+      ref={menuRef}
+      role="menu"
+      style={{ left: position.left, top: position.top }}
+    >
+      {actions.map((action) => (
+        <button
+          className={action.danger ? 'danger' : ''}
+          key={action.label}
+          onClick={() => { onClose(); action.onSelect(); }}
+          role="menuitem"
+          type="button"
+        >
+          {action.icon}{action.label}
+        </button>
+      ))}
+    </div>,
+    document.body,
   );
 }
 

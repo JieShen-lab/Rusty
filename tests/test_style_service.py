@@ -6,6 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.support import initialized_database
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from rusty.db import session
@@ -48,7 +50,7 @@ class FakeStyleAIClient(AIClient):
 class StyleTemplateServiceTests(unittest.TestCase):
     def test_style_template_crud_export_import_and_project_binding(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
-            database_path = Path(directory) / "rusty.db"
+            database_path = initialized_database(Path(directory) / "rusty.db")
             service = StyleTemplateService(database_path)
             with session(database_path) as connection:
                 cursor = connection.execute(
@@ -94,7 +96,7 @@ class StyleTemplateServiceTests(unittest.TestCase):
 
     def test_import_legacy_template_maps_known_fields_without_enabling_breakthrough(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
-            database_path = Path(directory) / "rusty.db"
+            database_path = initialized_database(Path(directory) / "rusty.db")
             service = StyleTemplateService(database_path)
             legacy_payload = {
                 "name": "Legacy style",
@@ -124,14 +126,14 @@ class StyleTemplateServiceTests(unittest.TestCase):
 
     def test_import_rejects_malformed_json(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
-            service = StyleTemplateService(Path(directory) / "rusty.db")
+            service = StyleTemplateService(initialized_database(Path(directory) / "rusty.db"))
 
             with self.assertRaises(ValueError):
                 service.import_template_text("{not valid json")
 
     def test_binding_rejects_deleted_project_or_template(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
-            database_path = Path(directory) / "rusty.db"
+            database_path = initialized_database(Path(directory) / "rusty.db")
             service = StyleTemplateService(database_path)
             with session(database_path) as connection:
                 cursor = connection.execute(
@@ -148,7 +150,7 @@ class StyleTemplateServiceTests(unittest.TestCase):
 
     def test_ai_style_extraction_from_text_creates_structured_template(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
-            database_path = Path(directory) / "rusty.db"
+            database_path = initialized_database(Path(directory) / "rusty.db")
             ModelService(database_path).create_model(
                 display_name="Fake",
                 provider="openai_compatible",
@@ -182,7 +184,7 @@ class StyleTemplateServiceTests(unittest.TestCase):
     def test_ai_style_extraction_from_file_uses_import_parser_sample(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)
-            database_path = root / "rusty.db"
+            database_path = initialized_database(root / "rusty.db")
             source_path = root / "style.txt"
             source_path.write_text("1. One\nFile sample prose.", encoding="utf-8")
             ModelService(database_path).create_model(
@@ -205,7 +207,7 @@ class StyleTemplateServiceTests(unittest.TestCase):
 
     def test_trial_write_uses_existing_style_template(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
-            database_path = Path(directory) / "rusty.db"
+            database_path = initialized_database(Path(directory) / "rusty.db")
             ModelService(database_path).create_model(
                 display_name="Fake",
                 provider="openai_compatible",
@@ -231,7 +233,7 @@ class StyleTemplateServiceTests(unittest.TestCase):
 
     def test_ai_style_extraction_rejects_invalid_json_response(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
-            database_path = Path(directory) / "rusty.db"
+            database_path = initialized_database(Path(directory) / "rusty.db")
             ModelService(database_path).create_model(
                 display_name="Fake",
                 provider="openai_compatible",

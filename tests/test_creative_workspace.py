@@ -7,6 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.support import initialized_database
+
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -196,7 +198,7 @@ class CreativeWorkspaceTests(unittest.TestCase):
                 "第一章 夜宴\n张三退到了墙边。\n要不是因为他挡在这里，王五早已经走了。",
                 encoding="utf-8",
             )
-            database = root / "rusty.db"
+            database = initialized_database(root / "rusty.db")
             projects = ProjectService(database)
             project_id = projects.create_project(projects.preview_book(source), root)
             chapter = projects.list_chapters(project_id)[0]
@@ -238,7 +240,7 @@ class CreativeWorkspaceTests(unittest.TestCase):
             root = Path(directory)
             source = root / "book.txt"
             source.write_text("第一章 起宴\n张三退到了墙边。\n\n第二章 夜宴\n王五举刀。", encoding="utf-8")
-            database = root / "rusty.db"
+            database = initialized_database(root / "rusty.db")
             projects = ProjectService(database)
             parsed = projects.preview_book(source)
             rewrite_id = projects.create_project(parsed, root, project_kind="rewrite")
@@ -261,7 +263,7 @@ class CreativeWorkspaceTests(unittest.TestCase):
             root = Path(directory)
             source = root / "book.txt"
             source.write_text("第一章\n原文。", encoding="utf-8")
-            database = root / "rusty.db"
+            database = initialized_database(root / "rusty.db")
             projects = ProjectService(database)
             project_id = projects.create_project(projects.preview_book(source), root)
             with sqlite3.connect(database) as connection:
@@ -288,7 +290,7 @@ class CreativeWorkspaceTests(unittest.TestCase):
             root = Path(directory)
             source = root / "book.txt"
             source.write_text(f"第一章\n{fixture}", encoding="utf-8")
-            database = root / "rusty.db"
+            database = initialized_database(root / "rusty.db")
             projects = ProjectService(database)
             project_id = projects.create_project(projects.preview_book(source), root)
             chapter = projects.list_chapters(project_id)[0]
@@ -383,7 +385,7 @@ class CreativeWorkspaceTests(unittest.TestCase):
             root = Path(directory)
             source = root / "book.txt"
             source.write_text("第一章\n场景甲。\n\n场景乙。", encoding="utf-8")
-            database = root / "rusty.db"
+            database = initialized_database(root / "rusty.db")
             projects = ProjectService(database)
             project_id = projects.create_project(projects.preview_book(source), root)
             chapter = projects.list_chapters(project_id)[0]
@@ -415,7 +417,7 @@ class CreativeWorkspaceTests(unittest.TestCase):
             root = Path(directory)
             source = root / "book.txt"
             source.write_text(f"第一章\n{fixture}", encoding="utf-8")
-            database = root / "rusty.db"
+            database = initialized_database(root / "rusty.db")
             projects = ProjectService(database)
             project_id = projects.create_project(projects.preview_book(source), root)
             chapter = projects.list_chapters(project_id)[0]
@@ -467,7 +469,7 @@ class CreativeWorkspaceTests(unittest.TestCase):
             root = Path(directory)
             source = root / "book.txt"
             source.write_text("第一章\n甲段。\n\n乙段。\n\n丙段。", encoding="utf-8")
-            database = root / "rusty.db"
+            database = initialized_database(root / "rusty.db")
             projects = ProjectService(database)
             project_id = projects.create_project(projects.preview_book(source), root)
             chapter = projects.list_chapters(project_id)[0]

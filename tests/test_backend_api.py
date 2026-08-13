@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -88,6 +89,18 @@ def create_analysis_prompt(client, headers) -> int:
 
 @unittest.skipIf(TestClient is None, "FastAPI optional dependency is not installed")
 class BackendApiTests(unittest.TestCase):
+    def test_create_app_bootstraps_database_once(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            api = importlib.import_module("backend.api")
+            database_path = Path(directory) / "rusty.db"
+            with mock.patch(
+                "backend.api.initialize_database_file",
+                wraps=api.initialize_database_file,
+            ) as bootstrap:
+                api.create_app(database_path)
+
+        bootstrap.assert_called_once_with(database_path)
+
     def test_health_and_token_rejection(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)

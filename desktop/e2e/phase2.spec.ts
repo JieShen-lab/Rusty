@@ -1,10 +1,10 @@
 import { expect, test, type Page } from '@playwright/test';
 
 const projects = [
-  { id: 1, name: '示例工程', author: '', status: 'ready', source_format: 'txt', total_chapters: 1, total_words: 100, processed_chapters: 0, progress_percent: 0, created_at: '', updated_at: '2026-07-29 12:00:00' },
-  { id: 2, name: '北境工程', author: '', status: 'ready', source_format: 'txt', total_chapters: 1, total_words: 100, processed_chapters: 0, progress_percent: 0, created_at: '', updated_at: '2026-07-28 12:00:00' },
-  { id: 3, name: '旧城工程', author: '', status: 'ready', source_format: 'txt', total_chapters: 1, total_words: 100, processed_chapters: 0, progress_percent: 0, created_at: '', updated_at: '2026-07-27 12:00:00' },
-  { id: 4, name: '海港工程', author: '', status: 'ready', source_format: 'txt', total_chapters: 1, total_words: 100, processed_chapters: 0, progress_percent: 0, created_at: '', updated_at: '2026-07-26 12:00:00' },
+  { id: 1, name: '示例工程', author: '', status: 'ready', current_stage: 'imported', progress: 0, source_format: 'txt', total_chapters: 1, total_words: 100, processed_chapters: 0, progress_percent: 0, created_at: '', updated_at: '2026-07-29 12:00:00' },
+  { id: 2, name: '北境工程', author: '', status: 'ready', current_stage: 'imported', progress: 0, source_format: 'txt', total_chapters: 1, total_words: 100, processed_chapters: 0, progress_percent: 0, created_at: '', updated_at: '2026-07-28 12:00:00' },
+  { id: 3, name: '旧城工程', author: '', status: 'ready', current_stage: 'imported', progress: 0, source_format: 'txt', total_chapters: 1, total_words: 100, processed_chapters: 0, progress_percent: 0, created_at: '', updated_at: '2026-07-27 12:00:00' },
+  { id: 4, name: '海港工程', author: '', status: 'ready', current_stage: 'imported', progress: 0, source_format: 'txt', total_chapters: 1, total_words: 100, processed_chapters: 0, progress_percent: 0, created_at: '', updated_at: '2026-07-26 12:00:00' },
 ];
 const tags = [{ id: 1, name: '主角', normalized_name: '主角', sort_order: 0, resource_count: 1 }];
 const characterCategories = [
@@ -549,6 +549,361 @@ test('角色库按工程和公共分类导航，标签只在右侧筛选且摘�
   }
 });
 
+test('文档角色素材自定义分类统一使用右键菜单且不会越出视口', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.route('http://127.0.0.1:8765/api/material-categories', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      status: 200,
+      body: JSON.stringify([{ id: 41, name: '动作场景', normalized_name: '动作场景', material_type: 'scene_reference', sort_order: 0, resource_count: 1 }]),
+    });
+  });
+
+  await page.goto('/characters');
+  const characterCategory = page.locator('.character-category-row').filter({ hasText: '主要角色' });
+  await expect(characterCategory.locator('svg.lucide-folder')).toHaveCount(1);
+  await expect(page.locator('.character-browser-shelf > header').getByText('全部公共角色', { exact: true })).toHaveCount(0);
+  await expect(characterCategory.getByRole('button', { name: /重命名分类|删除分类/ })).toHaveCount(0);
+  await characterCategory.locator('.document-tag-item').click();
+  await expect(characterCategory.locator('.document-tag-item')).toHaveAttribute('aria-pressed', 'true');
+  await characterCategory.locator('.document-tag-item').click({ button: 'right' });
+  let menu = page.getByRole('menu', { name: '主要角色 分类操作' });
+  await expect(menu.getByRole('menuitem', { name: '重命名' })).toBeVisible();
+  await expect(menu.getByRole('menuitem', { name: '删除分类' })).toBeVisible();
+  if (process.env.RUSTY_E2E_SCREENSHOT_DIR) await page.screenshot({ path: `${process.env.RUSTY_E2E_SCREENSHOT_DIR}/characters-category-context-menu.png` });
+  await page.keyboard.press('Escape');
+  await expect(menu).toHaveCount(0);
+  await page.locator('.character-range-panel').getByRole('button', { name: /全部角色/ }).click({ button: 'right' });
+  await expect(page.getByRole('menu')).toHaveCount(0);
+
+  await page.goto('/materials');
+  const recent = page.locator('.material-library-sidebar').getByRole('button', { name: /最近导入/ }).first();
+  await expect(recent.locator('svg.lucide-clock')).toHaveCount(1);
+  const category = page.locator('.material-category-row').filter({ hasText: '动作场景' });
+  await expect(category.locator('svg.lucide-folder')).toHaveCount(1);
+  await expect(category.getByRole('button', { name: /管理分类|重命名分类|删除分类/ })).toHaveCount(0);
+  await category.locator('.document-tag-item').click();
+  await expect(category.locator('.document-tag-item')).toHaveAttribute('aria-pressed', 'true');
+  await category.locator('.document-tag-item').click({ button: 'right' });
+  menu = page.getByRole('menu', { name: '动作场景 分类操作' });
+  await expect(menu).toBeVisible();
+  if (process.env.RUSTY_E2E_SCREENSHOT_DIR) await page.screenshot({ path: `${process.env.RUSTY_E2E_SCREENSHOT_DIR}/materials-category-context-menu.png` });
+  await page.locator('.page-topbar').click();
+  await category.locator('.document-tag-item').evaluate((element) => element.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 1438, clientY: 898 })));
+  menu = page.getByRole('menu', { name: '动作场景 分类操作' });
+  await expect(menu).toBeVisible();
+  const menuRect = await menu.boundingBox();
+  expect(menuRect).not.toBeNull();
+  expect(menuRect!.x).toBeGreaterThanOrEqual(8);
+  expect(menuRect!.y).toBeGreaterThanOrEqual(8);
+  expect(menuRect!.x + menuRect!.width).toBeLessThanOrEqual(1432);
+  expect(menuRect!.y + menuRect!.height).toBeLessThanOrEqual(892);
+  await page.locator('.page-topbar').click();
+  await expect(menu).toHaveCount(0);
+  await category.locator('.document-tag-item').click({ button: 'right' });
+  await page.locator('.material-library-sidebar nav').dispatchEvent('scroll');
+  await expect(menu).toHaveCount(0);
+  await recent.click({ button: 'right' });
+  await expect(page.getByRole('menu')).toHaveCount(0);
+
+  await page.goto('/documents');
+  const documentCategory = page.locator('.document-tag-panel').getByRole('button', { name: /研究/ }).first();
+  await documentCategory.click();
+  await expect(documentCategory).toHaveAttribute('aria-current', 'page');
+  await documentCategory.click({ button: 'right' });
+  menu = page.getByRole('menu', { name: '研究 分类操作' });
+  await expect(menu.getByRole('menuitem', { name: '重命名' })).toBeVisible();
+  await expect(menu.getByRole('menuitem', { name: '删除分类' })).toBeVisible();
+  if (process.env.RUSTY_E2E_SCREENSHOT_DIR) await page.screenshot({ path: `${process.env.RUSTY_E2E_SCREENSHOT_DIR}/documents-category-context-menu.png` });
+  await menu.getByRole('menuitem', { name: '重命名' }).click();
+  const renameDialog = page.getByRole('dialog', { name: '重命名分类' });
+  await expect(renameDialog.getByLabel('分类名称')).toHaveValue('研究');
+  await renameDialog.getByRole('button', { name: '取消' }).click();
+  await documentCategory.click({ button: 'right' });
+  await page.keyboard.press('Escape');
+  await page.locator('.document-tag-panel').getByRole('button', { name: /全部文档/ }).click({ button: 'right' });
+  await expect(page.getByRole('menu')).toHaveCount(0);
+});
+
+test('资源库和提示词在深浅主题中保持同层 Workspace surface', async ({ page }) => {
+  const cases = [
+    { path: '/documents', workspace: '.document-library-layout', columns: ['.document-tag-panel', '.document-shelf-panel', '.document-detail-panel'] },
+    { path: '/characters', workspace: '.character-browser-layout', columns: ['.character-range-panel', '.character-browser-shelf', '.character-detail-panel'] },
+    { path: '/materials', workspace: '.material-browser-layout', columns: ['.material-library-sidebar', '.material-browser-shelf', '.material-detail-panel'] },
+    { path: '/prompts', workspace: '.prompt-definition-layout', columns: ['.prompt-kind-tree', '.prompt-item-list', '.prompt-definition-editor'] },
+  ];
+
+  for (const item of cases) {
+    await page.goto(item.path);
+    const light = await page.locator(item.workspace).evaluate((workspace, columns) => ({
+      workspace: getComputedStyle(workspace).backgroundColor,
+      columns: columns.map((selector) => getComputedStyle(workspace.querySelector(selector)!).backgroundColor),
+      radius: getComputedStyle(workspace).borderRadius,
+    }), item.columns);
+    expect(light.workspace).not.toBe('rgba(0, 0, 0, 0)');
+    expect(new Set(light.columns)).toEqual(new Set(['rgba(0, 0, 0, 0)']));
+    expect(light.radius).toBe('12px');
+
+    await page.getByRole('button', { name: '切换到深色模式' }).click();
+    const dark = await page.locator(item.workspace).evaluate((workspace, columns) => ({
+      workspace: getComputedStyle(workspace).backgroundColor,
+      columns: columns.map((selector) => getComputedStyle(workspace.querySelector(selector)!).backgroundColor),
+    }), item.columns);
+    expect(dark.workspace).not.toBe(light.workspace);
+    expect(new Set(dark.columns)).toEqual(new Set(['rgba(0, 0, 0, 0)']));
+    await page.getByRole('button', { name: '切换到浅色模式' }).click();
+  }
+});
+
+test('文档角色素材使用同宽导航列和统一标题及导航行', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const cases = [
+    { path: '/documents', sidebar: '.document-library-layout > .document-tag-panel', title: '.document-tag-panel > header h2' },
+    { path: '/characters', sidebar: '.character-browser-layout > .character-range-panel', title: '.library-sidebar-section-title strong' },
+    { path: '/materials', sidebar: '.material-browser-layout > .material-library-sidebar', title: '.library-sidebar-section-title strong' },
+  ];
+  const measurements = [];
+  for (const item of cases) {
+    await page.goto(item.path);
+    measurements.push(await page.locator(item.sidebar).evaluate((sidebar, titleSelector) => {
+      const title = sidebar.querySelector(titleSelector)!;
+      const row = sidebar.querySelector('.document-tag-item')!;
+      const rowStyle = getComputedStyle(row);
+      const titleStyle = getComputedStyle(title);
+      return {
+        width: sidebar.getBoundingClientRect().width,
+        titleAlign: titleStyle.textAlign,
+        titleSize: titleStyle.fontSize,
+        titleWeight: titleStyle.fontWeight,
+        rowHeight: rowStyle.minHeight,
+        rowRadius: rowStyle.borderRadius,
+        rowColumns: rowStyle.gridTemplateColumns.split(' ').length,
+      };
+    }, item.title));
+  }
+  expect(new Set(measurements.map((item) => item.width))).toEqual(new Set([210]));
+  expect(new Set(measurements.map((item) => item.titleSize))).toEqual(new Set(['15px']));
+  expect(measurements.every((item) => Number(item.titleWeight) >= 700)).toBe(true);
+  expect(measurements.every((item) => item.rowHeight === '42px' && item.rowRadius === '7px' && item.rowColumns === 3)).toBe(true);
+});
+
+test('提示词使用统一 Header、分隔列表并保留编辑保存、导入和新建', async ({ page }) => {
+  let savedName = '';
+  let imported = false;
+  await page.route('http://127.0.0.1:8765/api/prompt-definitions/101', async (route) => {
+    const payload = route.request().postDataJSON() as Record<string, unknown>;
+    savedName = String(payload.name ?? '');
+    await route.fulfill({ contentType: 'application/json', status: 200, body: JSON.stringify({ id: 101, ...payload, created_at: '', updated_at: '' }) });
+  });
+  await page.route('http://127.0.0.1:8765/api/prompt-definitions/import', async (route) => {
+    imported = true;
+    await route.fulfill({ contentType: 'application/json', status: 200, body: JSON.stringify({ id: 104, name: '导入提示词', description: '', kind: 'master', workflow_key: null, task_key: null, content: '导入内容', input_description: '', is_default: false, created_at: '', updated_at: '' }) });
+  });
+
+  await page.goto('/prompts');
+  await expect(page.locator('.prompt-definition-page > .page-topbar').getByRole('heading', { name: '提示词' })).toBeVisible();
+  const primaryCategories = await page.locator('.prompt-kind-tree .primary-category, .prompt-kind-tree .prompt-primary-category').evaluateAll((items) => items.map((element) => ({
+    fontSize: getComputedStyle(element).fontSize,
+    fontWeight: getComputedStyle(element).fontWeight,
+    height: getComputedStyle(element).minHeight,
+    textAlign: getComputedStyle(element).textAlign,
+  })));
+  expect(primaryCategories).toHaveLength(3);
+  expect(new Set(primaryCategories.map((item) => JSON.stringify(item))).size).toBe(1);
+  const workflowChild = await page.locator('.prompt-kind-tree .category-button.nested').first().evaluate((element) => ({
+    fontSize: getComputedStyle(element).fontSize,
+    fontWeight: getComputedStyle(element).fontWeight,
+    paddingLeft: getComputedStyle(element).paddingLeft,
+    textAlign: getComputedStyle(element).textAlign,
+  }));
+  expect(workflowChild).toEqual({ fontSize: '13px', fontWeight: '400', paddingLeft: '28px', textAlign: 'left' });
+  const activeItem = page.locator('.prompt-item-list > button.active');
+  const activeStyle = await activeItem.evaluate((element) => ({
+    shadow: getComputedStyle(element).boxShadow,
+    divider: getComputedStyle(element).borderBottomWidth,
+  }));
+  expect(activeStyle.shadow).toBe('none');
+  expect(activeStyle.divider).toBe('1px');
+  await expect(page.getByRole('button', { name: '复制', exact: true })).toHaveClass(/secondary/);
+  await expect(page.getByRole('button', { name: '导出', exact: true })).toHaveClass(/secondary/);
+  await expect(page.getByRole('button', { name: '删除', exact: true })).toHaveClass(/danger/);
+  await expect(page.getByRole('button', { name: '保存', exact: true })).toHaveClass(/primary/);
+
+  await page.getByLabel('名称').fill('小说总规则（修订）');
+  await page.getByRole('button', { name: '保存', exact: true }).click();
+  await expect(page.getByText('提示词已保存。')).toBeVisible();
+  expect(savedName).toBe('小说总规则（修订）');
+
+  await page.locator('input[type="file"]').setInputFiles({ name: 'prompt.json', mimeType: 'application/json', buffer: Buffer.from('{"name":"导入提示词"}') });
+  await expect(page.getByText('提示词已导入。')).toBeVisible();
+  expect(imported).toBe(true);
+  await page.getByRole('button', { name: '新建', exact: true }).click();
+  await expect(page.getByLabel('名称')).toHaveValue('');
+});
+
+test('工程首页保留独立 Dashboard 卡片布局并可进入 Creative Workflow', async ({ page }) => {
+  await page.goto('/library');
+  await expect(page.locator('.project-library-header').getByRole('heading', { name: '工程', exact: true })).toBeVisible();
+  await expect(page.locator('.project-library-header')).toContainText('4 个工程');
+  await expect(page.locator('.project-library-page > .page-topbar')).toHaveCount(0);
+  await expect(page.locator('.project-list[aria-label="工程列表"]')).toBeVisible();
+
+  const light = await page.locator('.project-library-layout').evaluate((layout) => {
+    const detail = layout.querySelector('.project-detail-card')!;
+    return {
+      layoutBackground: getComputedStyle(layout).backgroundColor,
+      layoutBorder: getComputedStyle(layout).borderTopWidth,
+      layoutGap: getComputedStyle(layout).gap,
+      layoutPaddingTop: getComputedStyle(layout).paddingTop,
+      detailBackground: getComputedStyle(detail).backgroundColor,
+      detailBorder: getComputedStyle(detail).borderTopWidth,
+      detailRadius: getComputedStyle(detail).borderRadius,
+      detailAlign: getComputedStyle(detail).alignSelf,
+    };
+  });
+  expect(light).toMatchObject({
+    layoutBackground: 'rgba(0, 0, 0, 0)',
+    layoutBorder: '0px',
+    layoutGap: '20px',
+    layoutPaddingTop: '20px',
+    detailBorder: '1px',
+    detailRadius: '12px',
+    detailAlign: 'start',
+  });
+
+  for (const viewport of [{ width: 1280, height: 720 }, { width: 1440, height: 900 }, { width: 1920, height: 1080 }]) {
+    await page.setViewportSize(viewport);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)).toBe(false);
+  }
+
+  await page.getByRole('button', { name: '切换到深色模式' }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  const darkDetailBackground = await page.locator('.project-detail-card').evaluate((element) => getComputedStyle(element).backgroundColor);
+  expect(darkDetailBackground).not.toBe(light.detailBackground);
+
+  const detailHeight = await page.locator('.project-detail-card').evaluate((element) => element.getBoundingClientRect().height);
+  expect(detailHeight).toBeLessThanOrEqual(360);
+
+  await page.getByRole('button', { name: '新建工程' }).click();
+  await expect(page).toHaveURL(/(?:#)?\/new-project$/);
+  await page.goto('/library');
+  page.once('dialog', (dialog) => dialog.accept());
+  const deleteRequest = page.waitForRequest((request) => request.method() === 'POST' && request.url().endsWith('/api/projects/1/delete'));
+  await page.getByRole('button', { name: '删除', exact: true }).click();
+  await deleteRequest;
+
+  await page.getByRole('button', { name: '进入工程' }).click();
+  await expect(page).toHaveURL(/(?:#)?\/workspace\/1$/);
+  await expect(page.locator('.creative-topbar').getByRole('heading', { name: '示例工程' })).toBeVisible();
+});
+
+test('工程 Creative Workspace 使用统一 surface 并适配三种桌面尺寸', async ({ page }) => {
+  await page.goto('/workspace/1');
+  await expect(page.locator('.creative-topbar').getByRole('heading', { name: '示例工程' })).toBeVisible();
+  await expect(page.locator('.creative-topbar').getByText('第一章', { exact: true })).toHaveCount(0);
+  await expect(page.locator('.chapter-workspace-head')).toHaveCount(0);
+  await expect(page.getByText('第1章 · 第一章', { exact: true })).toHaveCount(0);
+  const progress = page.locator('.creative-workflow-progress');
+  await expect(progress).toBeVisible();
+  await expect(progress.getByRole('button')).toHaveCount(6);
+  const surfaces = await page.locator('.creative-columns').evaluate((workspace) => ({
+    workspace: getComputedStyle(workspace).backgroundColor,
+    columns: ['.chapter-rail', '.chapter-workspace', '.creative-context-panel'].map((selector) => getComputedStyle(workspace.querySelector(selector)!).backgroundColor),
+    radius: getComputedStyle(workspace).borderRadius,
+    progressColumn: getComputedStyle(workspace.querySelector('.creative-workflow-progress')!).gridColumn,
+    widths: ['.chapter-rail', '.chapter-workspace', '.creative-context-panel'].map((selector) => workspace.querySelector(selector)!.getBoundingClientRect().width),
+  }));
+  expect(surfaces.workspace).not.toBe('rgba(0, 0, 0, 0)');
+  expect(new Set(surfaces.columns)).toEqual(new Set(['rgba(0, 0, 0, 0)']));
+  expect(surfaces.radius).toBe('12px');
+  expect(surfaces.progressColumn).toBe('1 / -1');
+  expect(surfaces.widths[2]).toBeGreaterThan(300);
+  expect(surfaces.widths[2]).toBeGreaterThan(surfaces.widths[0]);
+  for (const viewport of [{ width: 1280, height: 720 }, { width: 1440, height: 900 }, { width: 1920, height: 1080 }]) {
+    await page.setViewportSize(viewport);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)).toBe(false);
+  }
+  await page.getByRole('button', { name: '切换到深色模式' }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await expect(page.getByText('自动保存', { exact: false })).toBeVisible();
+});
+
+test('模型页保持原有双栏组件和主题交互', async ({ page }) => {
+  await page.goto('/models');
+  await expect(page.getByRole('heading', { name: '模型', exact: true })).toBeVisible();
+  await expect(page.getByText('测试模型', { exact: true })).toBeVisible();
+  await expect(page.locator('.model-list-panel')).toBeVisible();
+  await expect(page.locator('.model-config-panel')).toBeVisible();
+  const lightColumns = await page.locator('.models-layout').evaluate((element) => getComputedStyle(element).gridTemplateColumns);
+  expect(lightColumns.split(' ')).toHaveLength(2);
+  await page.getByRole('button', { name: '切换到深色模式' }).click();
+  const darkColumns = await page.locator('.models-layout').evaluate((element) => getComputedStyle(element).gridTemplateColumns);
+  expect(darkColumns).toBe(lightColumns);
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+});
+
+test('全局操作按钮沿用模型页 Primary Secondary Danger 视觉基准', async ({ page }) => {
+  const buttonStyle = (element: Element) => ({
+    background: getComputedStyle(element).backgroundColor,
+    border: getComputedStyle(element).borderColor,
+    color: getComputedStyle(element).color,
+    radius: getComputedStyle(element).borderRadius,
+    fontWeight: getComputedStyle(element).fontWeight,
+  });
+  await page.goto('/models');
+  const modelPrimary = await page.getByRole('button', { name: '保存', exact: true }).evaluate(buttonStyle);
+  const modelSecondary = await page.getByRole('button', { name: '测试连接', exact: true }).evaluate(buttonStyle);
+  const modelDanger = await page.getByRole('button', { name: '删除', exact: true }).evaluate(buttonStyle);
+
+  await page.goto('/prompts');
+  expect(await page.getByRole('button', { name: '保存', exact: true }).evaluate(buttonStyle)).toEqual(modelPrimary);
+  expect(await page.getByRole('button', { name: '导入', exact: true }).evaluate(buttonStyle)).toEqual(modelSecondary);
+  const promptDanger = await page.getByRole('button', { name: '删除', exact: true }).evaluate(buttonStyle);
+  expect(promptDanger).toEqual(modelDanger);
+
+  await page.goto('/characters');
+  const settings = page.getByRole('button', { name: '角色提取设置' });
+  const settingsSize = await settings.evaluate((element) => ({ width: getComputedStyle(element).width, height: getComputedStyle(element).minHeight }));
+  expect(settingsSize).toEqual({ width: '40px', height: '40px' });
+});
+
+test('主要 Workspace 可生成深浅主题视觉验收截图', async ({ page }) => {
+  const screenshotDirectory = process.env.RUSTY_E2E_SCREENSHOT_DIR;
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const pages = [
+    { key: 'project-home', path: '/library', heading: '工程' },
+    { key: 'characters', path: '/characters', heading: '角色卡库' },
+    { key: 'materials', path: '/materials', heading: '素材库' },
+    { key: 'documents', path: '/documents', heading: '文档库' },
+    { key: 'prompts', path: '/prompts', heading: '提示词' },
+    { key: 'workflow', path: '/workspace/1', heading: '示例工程' },
+  ];
+
+  for (const item of pages) {
+    await page.goto(item.path);
+    await expect(page.getByRole('heading', { name: item.heading, exact: true }).first()).toBeVisible();
+    if (item.key === 'materials') await page.locator('.material-resource-row').first().click();
+    if (await page.locator('html').getAttribute('data-theme') === 'dark') {
+      await page.getByRole('button', { name: '切换到浅色模式' }).click();
+    }
+    await page.waitForTimeout(200);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)).toBe(false);
+    if (screenshotDirectory) await page.screenshot({ path: `${screenshotDirectory}/${item.key}-light-1440x900.png` });
+    await page.getByRole('button', { name: '切换到深色模式' }).click();
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+    await page.waitForTimeout(200);
+    if (screenshotDirectory) await page.screenshot({ path: `${screenshotDirectory}/${item.key}-dark-1440x900.png` });
+  }
+
+  await page.goto('/documents');
+  if (await page.locator('html').getAttribute('data-theme') === 'dark') {
+    await page.getByRole('button', { name: '切换到浅色模式' }).click();
+  }
+  await page.getByRole('button', { name: '示例长篇，作者' }).dblclick();
+  await expect(page.locator('.document-workspace-layout')).toBeVisible();
+  if (screenshotDirectory) await page.screenshot({ path: `${screenshotDirectory}/document-editor-light-1440x900.png` });
+});
+
 test('统一新建入口先预览多个 AI 候选且手动编辑器使用紧凑资源布局', async ({ page }) => {
   await page.goto('/characters');
   await expect(page.getByRole('button', { name: /AI 分析/ })).toHaveCount(0);
@@ -648,13 +1003,15 @@ test('分类标签和搜索按交集筛选且标签胶囊不修改关联', async
   await expect(page.getByRole('button', { name: '示例长篇，作者' })).toBeVisible();
   await expect(page.getByRole('button', { name: '普通资料，资料作者' })).toHaveCount(0);
   expect(tagAssignmentRequests).toHaveLength(0);
-  await expect(page.getByRole('button', { name: /分类：研究/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /分类：研究/ })).toHaveCount(0);
   await expect(page.getByRole('button', { name: /标签：长篇/ })).toBeVisible();
 });
 
-test('标签管理弹窗显式移除关联并显示当前版本文件', async ({ page }) => {
+test('标签管理弹窗显式移除关联并显示文档库存储目录', async ({ page }) => {
   await page.goto('/documents');
-  await expect(page.getByText('D:/Rusty/novel-v2.txt', { exact: true })).toBeVisible();
+  await expect(page.getByText('文档库存储目录', { exact: true })).toBeVisible();
+  await expect(page.getByText('D:/Rusty', { exact: true })).toBeVisible();
+  await expect(page.getByText('D:/Rusty/novel-v2.txt', { exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: '管理当前文档标签' }).click();
   const dialog = page.getByRole('dialog', { name: '管理标签' });
   await dialog.getByRole('checkbox', { name: '长篇' }).uncheck();
@@ -667,6 +1024,27 @@ test('标签管理弹窗显式移除关联并显示当前版本文件', async ({
 test('文档正文右键菜单、编辑命令与统一分章入口', async ({ page }) => {
   await page.goto('/documents');
   await page.getByRole('button', { name: '示例长篇，作者' }).dblclick();
+  const chapterLayout = await page.locator('.chapter-row').first().evaluate((row) => {
+    const ordinal = row.querySelector('.chapter-number')!;
+    const title = row.querySelector('.chapter-name')!;
+    const words = row.querySelector('.chapter-state')!;
+    return {
+      ordinal: ordinal.textContent,
+      ordinalWhiteSpace: getComputedStyle(ordinal).whiteSpace,
+      titleOverflow: getComputedStyle(title).textOverflow,
+      wordsWhiteSpace: getComputedStyle(words).whiteSpace,
+      rowColumns: getComputedStyle(row).gridTemplateColumns,
+    };
+  });
+  expect(chapterLayout).toMatchObject({ ordinal: '第一章', ordinalWhiteSpace: 'nowrap', titleOverflow: 'ellipsis', wordsWhiteSpace: 'nowrap' });
+  expect(chapterLayout.rowColumns.split(' ')).toHaveLength(3);
+  const inspector = page.locator('.document-workspace-inspector');
+  for (const removedHeading of ['文档处理', '选择操作', '编辑操作', '正文命令']) {
+    await expect(inspector.getByText(removedHeading, { exact: true })).toHaveCount(0);
+  }
+  for (const action of ['合并文档', '新增章节', '分章', '文字整理', '版本记录', '标记章节', '撤销', '重做', '导出文档']) {
+    await expect(inspector.getByRole('button', { name: action, exact: true })).toBeVisible();
+  }
   const editor = page.locator('textarea.manuscript-editor');
   await editor.evaluate((node: HTMLTextAreaElement) => {
     node.focus();

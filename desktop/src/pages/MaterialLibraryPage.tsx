@@ -3,8 +3,9 @@ import {
   ArrowDown,
   ArrowUp,
   Boxes,
+  Clock,
   Filter,
-  FolderPlus,
+  Folder,
   ListTree,
   Pencil,
   Plus,
@@ -51,7 +52,7 @@ import type {
   ResourceTag,
 } from '../api/types';
 import { DangerButton } from '../components/DangerButton';
-import { LibraryDialog, LibraryEmptyState, LibrarySidebarItem } from '../components/LibraryPrimitives';
+import { LibraryContextMenu, LibraryDialog, LibraryEmptyState, LibrarySidebarItem, LibrarySidebarSectionTitle } from '../components/LibraryPrimitives';
 import { PrimaryButton } from '../components/PrimaryButton';
 import { SecondaryButton } from '../components/SecondaryButton';
 import { TopBar } from '../components/TopBar';
@@ -113,6 +114,7 @@ export function MaterialLibraryPage() {
     material: Material;
   } | null>(null);
   const [filterOpen, setFilterOpen] = useState(false);
+  const [categoryContextMenu, setCategoryContextMenu] = useState<{ category: MaterialCategory; x: number; y: number } | null>(null);
   const [categoryDialog, setCategoryDialog] = useState<{
     materialType: MaterialType;
     category?: MaterialCategory;
@@ -158,7 +160,7 @@ export function MaterialLibraryPage() {
     setSelection({ materialType: launch.materialType, kind: 'all' });
     setExtractionLaunch(launch);
     setNewType(launch.materialType);
-    window.history.replaceState(null, '', window.location.pathname);
+    window.history.replaceState(null, '', window.location.href);
   }, []);
 
   const activeTag = tags.find((tagItem) => tagItem.id === queryState.activeTagId) ?? null;
@@ -249,7 +251,7 @@ export function MaterialLibraryPage() {
             <PrimaryButton disabled={busy} onClick={() => setNewType('scene_reference')}>
               <Plus size={16} />新建场景素材
             </PrimaryButton>
-            <SecondaryButton aria-label="素材 AI 设置" disabled={busy} onClick={() => setSettingsOpen(true)}>
+            <SecondaryButton aria-label="素材 AI 设置" className="icon-only" disabled={busy} onClick={() => setSettingsOpen(true)}>
               <Settings size={16} />
             </SecondaryButton>
           </>
@@ -265,7 +267,7 @@ export function MaterialLibraryPage() {
               const sectionCategories = categories.filter((item) => item.material_type === section.type);
               return (
                 <section className="material-sidebar-section" key={section.type}>
-                  <div className="document-tag-heading"><span>{section.label}</span></div>
+                  <LibrarySidebarSectionTitle>{section.label}</LibrarySidebarSectionTitle>
                   <LibrarySidebarItem
                     active={selection.materialType === section.type && selection.kind === 'all'}
                     count={counts[section.type]}
@@ -276,36 +278,37 @@ export function MaterialLibraryPage() {
                   <LibrarySidebarItem
                     active={selection.materialType === section.type && selection.kind === 'pending'}
                     count={materials.filter((item) => item.material_type === section.type && isPendingImport(item)).length}
-                    icon={<Sparkles size={16} />}
+                    icon={<Clock size={16} />}
                     label="最近导入"
                     onClick={() => setSelection({ materialType: section.type, kind: 'pending' })}
                   />
-                  <div className="document-tag-heading material-category-heading">
-                    <span>我的分类</span>
+                  <LibrarySidebarSectionTitle action={(
                     <button
                       aria-label={`新建${section.label}分类`}
                       className="document-add-tag"
                       onClick={() => setCategoryDialog({ materialType: section.type })}
                       type="button"
                     >
-                      <FolderPlus size={14} />
+                      <Plus size={14} />
                     </button>
-                  </div>
+                  )}>我的分类</LibrarySidebarSectionTitle>
                   {sectionCategories.map((category) => (
-                    <div className="library-tag-row material-category-row" key={category.id}>
+                    <div className="material-category-row" key={category.id}>
                       <LibrarySidebarItem
                         active={selection.kind === 'category' && selection.categoryId === category.id}
                         count={category.resource_count}
-                        icon={<Tag size={15} />}
+                        icon={<Folder size={15} />}
                         label={category.name}
                         onClick={() => setSelection({
                           materialType: section.type,
                           kind: 'category',
                           categoryId: category.id,
                         })}
+                        onContextMenu={(event) => {
+                          event.preventDefault();
+                          setCategoryContextMenu({ category, x: event.clientX, y: event.clientY });
+                        }}
                       />
-                      <button aria-label={`重命名分类 ${category.name}`} onClick={() => setCategoryDialog({ materialType: section.type, category })} type="button"><Pencil size={12} /></button>
-                      <button aria-label={`删除分类 ${category.name}`} onClick={() => void removeCategory(category)} type="button"><Trash2 size={12} /></button>
                     </div>
                   ))}
                 </section>
@@ -550,6 +553,18 @@ export function MaterialLibraryPage() {
             await load(id);
             setMessage('素材关系已更新。');
           }}
+        />
+      ) : null}
+      {categoryContextMenu ? (
+        <LibraryContextMenu
+          actions={[
+            { icon: <Pencil size={14} />, label: '重命名', onSelect: () => setCategoryDialog({ materialType: categoryContextMenu.category.material_type, category: categoryContextMenu.category }) },
+            { danger: true, icon: <Trash2 size={14} />, label: '删除分类', onSelect: () => void removeCategory(categoryContextMenu.category) },
+          ]}
+          label={`${categoryContextMenu.category.name} 分类操作`}
+          onClose={() => setCategoryContextMenu(null)}
+          x={categoryContextMenu.x}
+          y={categoryContextMenu.y}
         />
       ) : null}
     </div>

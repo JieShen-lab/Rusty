@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from rusty.content_hash import hash_text
-from rusty.db import initialize_database, session
+from rusty.db import session
 from rusty.serialization import json_object
 from rusty.db import default_database_path
 from rusty.services.project_service import ProjectService
@@ -75,8 +75,6 @@ class SceneService:
     def __init__(self, database_path: str | Path | None = None) -> None:
         self.database_path = Path(database_path) if database_path is not None else default_database_path()
         self.project_service = ProjectService(self.database_path)
-        with session(self.database_path) as connection:
-            initialize_database(connection)
 
     def get_source_version(self, chapter_id: int, source_version: int = 1) -> dict[str, Any]:
         with session(self.database_path) as connection:

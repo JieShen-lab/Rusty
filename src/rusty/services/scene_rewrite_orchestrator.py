@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from rusty.db import initialize_database, session
+from rusty.db import session
 from rusty.services.context_service import ContextService
 from rusty.services.anchor_service import AnchorService
 from rusty.services.material_service import MaterialService
@@ -36,8 +36,6 @@ class SceneRewriteOrchestrator:
         self.anchor_service = AnchorService(self.database_path)
         self.prompt_compiler = PromptCompiler()
         self.model_service = structured_model_service or StructuredModelService(self.database_path)
-        with session(self.database_path) as connection:
-            initialize_database(connection)
 
     def start(
         self,

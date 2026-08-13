@@ -6,6 +6,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+from tests.support import initialized_database
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -51,7 +53,7 @@ class PhaseTwoContractRegressionTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory(dir=Path.cwd())
         self.root = Path(self.temp.name)
-        self.database = self.root / "rusty.db"
+        self.database = initialized_database(self.root / "rusty.db")
 
     def tearDown(self) -> None:
         self.temp.cleanup()

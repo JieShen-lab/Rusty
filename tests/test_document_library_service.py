@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import sqlite3
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
+
+from tests.support import initialized_database
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -22,7 +26,7 @@ class DocumentLibraryServiceTests(unittest.TestCase):
             root = Path(directory)
             source = root / "titles.txt"
             source.write_text("第一章 阿尔法为父亲\n\n正文一。\n", encoding="utf-8")
-            service = DocumentLibraryService(root / "rusty.db", root / "library")
+            service = DocumentLibraryService(initialized_database(root / "rusty.db"), root / "library")
             document = service.import_document(source).document
             first = service.list_chapters(document.id)[0]
 
@@ -48,7 +52,7 @@ class DocumentLibraryServiceTests(unittest.TestCase):
             root = Path(directory)
             source = root / "draft.txt"
             source.write_text("第一章\n\n原正文。\n\n第二章\n\n后续正文。\n", encoding="utf-8")
-            service = DocumentLibraryService(root / "rusty.db", root / "library")
+            service = DocumentLibraryService(initialized_database(root / "rusty.db"), root / "library")
             document = service.import_document(source).document
             chapter = service.list_chapters(document.id)[0]
             content = service.get_content(document.id, chapter.id)
@@ -80,7 +84,7 @@ class DocumentLibraryServiceTests(unittest.TestCase):
             root = Path(directory)
             source = root / "conflict.txt"
             source.write_text("第一章\n\n正文。\n", encoding="utf-8")
-            service = DocumentLibraryService(root / "rusty.db", root / "library")
+            service = DocumentLibraryService(initialized_database(root / "rusty.db"), root / "library")
             document = service.import_document(source).document
             chapter = service.list_chapters(document.id)[0]
             content = service.get_content(document.id, chapter.id)
@@ -103,7 +107,7 @@ class DocumentLibraryServiceTests(unittest.TestCase):
             source_text = "第一章\n\n中 A，。\u3000\n🙂\n\n第二章\n\n尾声。\n"
             source = root / "counts.txt"
             source.write_text(source_text, encoding="utf-8")
-            service = DocumentLibraryService(root / "rusty.db", root / "library")
+            service = DocumentLibraryService(initialized_database(root / "rusty.db"), root / "library")
             document = service.import_document(source).document
             first, second = service.list_chapters(document.id)
             first_content = service.get_content(document.id, first.id)
@@ -137,7 +141,7 @@ class DocumentLibraryServiceTests(unittest.TestCase):
             root = Path(directory)
             source = root / "split.txt"
             source.write_text("第一章\n正文\n第二章\n正文\n", encoding="utf-8")
-            service = DocumentLibraryService(root / "rusty.db", root / "library")
+            service = DocumentLibraryService(initialized_database(root / "rusty.db"), root / "library")
             document = service.import_document(source).document
             original = service.list_revisions(document.id)[0]
             preview = service.preview_regex_split(document.id, r"^第.+章$")
@@ -151,12 +155,203 @@ class DocumentLibraryServiceTests(unittest.TestCase):
             restored = service.activate_revision(document.id, original.id)
             self.assertEqual(original.storage_path, restored.storage_path)
 
+    def test_explicit_split_writes_final_boundaries_without_reparsing_text(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            source = root / "explicit-split.txt"
+            text = "第一章\n正文一\n第二章\n正文二\n"
+            source.write_text(text, encoding="utf-8")
+            service = DocumentLibraryService(
+                initialized_database(root / "rusty.db"), root / "library"
+            )
+            document = service.import_document(source).document
+            original = service.list_revisions(document.id)[0]
+            second_start = text.index("第二章")
+            boundaries = [
+                {"title": "一", "start_offset": 0, "end_offset": second_start},
+                {
+                    "title": "二",
+                    "start_offset": second_start,
+                    "end_offset": len(text),
+                },
+            ]
+
+            with mock.patch(
+                "rusty.services.document_library_service.parse_txt",
+                side_effect=AssertionError("explicit boundaries must not parse"),
+            ):
+                revision, chapters = service.apply_split_boundaries(
+                    document.id,
+                    source_revision_id=original.id,
+                    boundaries=boundaries,
+                    revision_type="split_manual",
+                )
+
+            self.assertEqual(["一", "二"], [chapter.title for chapter in chapters])
+            self.assertEqual(
+                [(0, second_start), (second_start, len(text))],
+                [(chapter.start_offset, chapter.end_offset) for chapter in chapters],
+            )
+            with session(service.database_path) as connection:
+                stored = connection.execute(
+                    "SELECT COUNT(*) FROM library_document_chapters WHERE revision_id = ?",
+                    (revision.id,),
+                ).fetchone()[0]
+            self.assertEqual(2, stored)
+
+    def test_split_failure_rolls_back_revision_head_and_projection(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            source = root / "split-rollback.txt"
+            text = "第一章\n正文一\n第二章\n正文二\n"
+            source.write_text(text, encoding="utf-8")
+            service = DocumentLibraryService(
+                initialized_database(root / "rusty.db"), root / "library"
+            )
+            document = service.import_document(source).document
+            original = service.list_revisions(document.id)[0]
+            original_chapters = service.list_chapters(document.id)
+            second_start = text.index("第二章")
+
+            with (
+                mock.patch(
+                    "rusty.services.document_library_service.count_text_units",
+                    side_effect=RuntimeError("injected split failure"),
+                ),
+                self.assertRaisesRegex(RuntimeError, "injected split failure"),
+            ):
+                service.apply_split_boundaries(
+                    document.id,
+                    source_revision_id=original.id,
+                    boundaries=[
+                        {"title": "一", "start_offset": 0, "end_offset": second_start},
+                        {
+                            "title": "二",
+                            "start_offset": second_start,
+                            "end_offset": len(text),
+                        },
+                    ],
+                    revision_type="split_manual",
+                )
+
+            self.assertEqual(original.id, service._ensure_initial_revision(document.id).id)
+            self.assertEqual(1, len(service.list_revisions(document.id)))
+            self.assertEqual(
+                [(item.title, item.start_offset, item.end_offset) for item in original_chapters],
+                [
+                    (item.title, item.start_offset, item.end_offset)
+                    for item in service.list_chapters(document.id)
+                ],
+            )
+
+    def test_draft_commit_failure_rolls_back_revision_and_preserves_exact_draft(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            source = root / "draft-rollback.txt"
+            source.write_text("第一章\n正文\n", encoding="utf-8")
+            service = DocumentLibraryService(
+                initialized_database(root / "rusty.db"), root / "library"
+            )
+            document = service.import_document(source).document
+            content = service.get_content(document.id)
+            draft = service.save_draft(
+                document.id,
+                base_revision_id=content.revision_id,
+                title=content.title,
+                text="替换正文",
+            )
+
+            with (
+                mock.patch.object(
+                    service,
+                    "_insert_chapters",
+                    side_effect=RuntimeError("injected draft failure"),
+                ),
+                self.assertRaisesRegex(RuntimeError, "injected draft failure"),
+            ):
+                service.commit_draft(document.id)
+
+            self.assertEqual(1, len(service.list_revisions(document.id)))
+            self.assertEqual(draft.id, service.get_draft(document.id).id)
+            self.assertEqual(
+                content.revision_id, service._ensure_initial_revision(document.id).id
+            )
+
+    def test_draft_title_rolls_back_when_exact_draft_consumption_fails(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            source = root / "draft-title-rollback.txt"
+            source.write_text("第一章\n正文\n", encoding="utf-8")
+            service = DocumentLibraryService(
+                initialized_database(root / "rusty.db"), root / "library"
+            )
+            document = service.import_document(source).document
+            content = service.get_content(document.id)
+            draft = service.save_draft(
+                document.id,
+                base_revision_id=content.revision_id,
+                title="新书名",
+                text="替换正文",
+            )
+            with session(service.database_path) as connection:
+                connection.execute(
+                    """
+                    CREATE TRIGGER fail_exact_draft_delete
+                    BEFORE DELETE ON library_document_drafts
+                    BEGIN
+                        SELECT RAISE(ABORT, 'injected draft delete failure');
+                    END
+                    """
+                )
+
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "injected draft delete failure"):
+                service.commit_draft(document.id)
+
+            self.assertEqual(1, len(service.list_revisions(document.id)))
+            self.assertEqual(draft.id, service.get_draft(document.id).id)
+            self.assertEqual(document.title, service._get_document(document.id).title)
+            self.assertEqual(
+                content.revision_id, service._ensure_initial_revision(document.id).id
+            )
+
+    def test_committing_one_chapter_draft_does_not_delete_another(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            source = root / "two-drafts.txt"
+            source.write_text("第一章\n正文一\n第二章\n正文二\n", encoding="utf-8")
+            service = DocumentLibraryService(
+                initialized_database(root / "rusty.db"), root / "library"
+            )
+            document = service.import_document(source).document
+            first, second = service.list_chapters(document.id)
+            first_content = service.get_content(document.id, first.id)
+            second_content = service.get_content(document.id, second.id)
+            service.save_draft(
+                document.id,
+                chapter_id=first.id,
+                base_revision_id=first_content.revision_id,
+                title=first_content.title,
+                text="第一章新正文",
+            )
+            other = service.save_draft(
+                document.id,
+                chapter_id=second.id,
+                base_revision_id=second_content.revision_id,
+                title=second_content.title,
+                text="第二章未提交正文",
+            )
+
+            service.commit_draft(document.id, first.id)
+
+            self.assertIsNone(service.get_draft(document.id, first.id))
+            self.assertEqual(other.id, service.get_draft(document.id, second.id).id)
+
     def test_categories_are_many_to_many_and_independent_from_tags(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)
             source = root / "classified.txt"
             source.write_text("正文", encoding="utf-8")
-            service = DocumentLibraryService(root / "rusty.db", root / "library")
+            service = DocumentLibraryService(initialized_database(root / "rusty.db"), root / "library")
             document = service.import_document(source).document
             first = service.create_category("参考")
             second = service.create_category("待整理")
@@ -185,7 +380,7 @@ class DocumentLibraryServiceTests(unittest.TestCase):
             root = Path(directory)
             source = root / "project-source.txt"
             source.write_text("工程正文", encoding="utf-8")
-            database = root / "rusty.db"
+            database = initialized_database(root / "rusty.db")
             service = DocumentLibraryService(database, root / "library")
             ordinary = service.import_document(source).document
             self.assertFalse(ordinary.is_project_document)
@@ -222,7 +417,7 @@ class DocumentLibraryServiceTests(unittest.TestCase):
             root = Path(directory)
             source = root / "排版.txt"
             source.write_text("  第一章 风起\n第一段。\n\n　第二段。\n", encoding="utf-8")
-            service = DocumentLibraryService(root / "rusty.db", root / "library")
+            service = DocumentLibraryService(initialized_database(root / "rusty.db"), root / "library")
             imported = service.import_document(source)
             template = service.list_processing_templates()[0]
 
@@ -249,7 +444,7 @@ class DocumentLibraryServiceTests(unittest.TestCase):
             root = Path(directory)
             source = root / "原稿.txt"
             source.write_bytes("第一章\r\n正文。".encode("gb18030"))
-            service = DocumentLibraryService(root / "rusty.db", root / "library")
+            service = DocumentLibraryService(initialized_database(root / "rusty.db"), root / "library")
 
             first = service.import_document(source)
             second = service.import_document(source)
@@ -278,7 +473,7 @@ class DocumentLibraryServiceTests(unittest.TestCase):
                 "第一章 风起\n第一段。\n\n第二章 归途\n第二段。\n",
                 encoding="utf-8",
             )
-            database_path = root / "rusty.db"
+            database_path = initialized_database(root / "rusty.db")
             original_library = root / "library"
             migrated_library = root / "migrated-library"
             service = DocumentLibraryService(database_path, original_library)
@@ -335,7 +530,7 @@ class DocumentLibraryServiceTests(unittest.TestCase):
             document.add_heading("第二章", level=1)
             document.add_paragraph("第二段正文。")
             document.save(source)
-            service = DocumentLibraryService(root / "rusty.db", root / "library")
+            service = DocumentLibraryService(initialized_database(root / "rusty.db"), root / "library")
 
             result = service.import_document(source)
             stored_text = Path(result.document.storage_path).read_text(encoding="utf-8")
@@ -353,7 +548,7 @@ class DocumentLibraryServiceTests(unittest.TestCase):
             root = Path(directory)
             source = root / "book.epub"
             _write_sample_epub(source)
-            service = DocumentLibraryService(root / "rusty.db", root / "library")
+            service = DocumentLibraryService(initialized_database(root / "rusty.db"), root / "library")
 
             result = service.import_document(source)
             stored_text = Path(result.document.storage_path).read_text(encoding="utf-8")
@@ -372,7 +567,7 @@ class DocumentLibraryServiceTests(unittest.TestCase):
                 "第七卷 雨夜\n\n第787章 雨夜\n正文一。\n\n第788章 风声\n正文二。\n",
                 encoding="utf-8",
             )
-            service = DocumentLibraryService(root / "rusty.db", root / "library")
+            service = DocumentLibraryService(initialized_database(root / "rusty.db"), root / "library")
             document = service.import_document(source).document
             original_revision = service.list_revisions(document.id)[0]
             directory_before = service.get_directory(document.id)
@@ -418,7 +613,7 @@ class DocumentLibraryServiceTests(unittest.TestCase):
                 encoding="utf-8",
             )
             second_path.write_text("第九章 归途\n正文三。\n", encoding="utf-8")
-            service = DocumentLibraryService(root / "rusty.db", root / "library")
+            service = DocumentLibraryService(initialized_database(root / "rusty.db"), root / "library")
             first = service.import_document(first_path).document
             second = service.import_document(second_path).document
             first_revision = service.list_revisions(first.id)[0]

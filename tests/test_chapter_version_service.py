@@ -6,11 +6,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.support import initialized_database
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from fastapi.testclient import TestClient
 
 from backend.api import create_app
+from rusty.db import session
 from rusty.services.chapter_version_service import ChapterVersionService
 from rusty.services.project_service import ProjectService
 
@@ -19,7 +22,7 @@ class ChapterVersionServiceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory(dir=Path.cwd())
         self.root = Path(self.temp.name)
-        self.database = self.root / "rusty.db"
+        self.database = initialized_database(self.root / "rusty.db")
         source = self.root / "book.txt"
         source.write_text("1. One\nimmutable original", encoding="utf-8")
         self.projects = ProjectService(self.database)
@@ -48,6 +51,28 @@ class ChapterVersionServiceTests(unittest.TestCase):
         self.assertTrue(restored["is_current"])
         self.assertEqual("version two", self.versions.get_version(v2["id"])["rewritten_text"])
         self.assertEqual([3, 2, 1], [item["version"] for item in all_versions])
+
+    def test_current_head_and_compatibility_projections_stay_identical(self) -> None:
+        self.projects.save_chapter_rewrite(self.chapter_id, "projection invariant")
+
+        with session(self.database) as connection:
+            row = connection.execute(
+                """
+                SELECT v.rewritten_text AS head_text, v.version AS head_version,
+                       h.rewritten_text AS rewrite_text,
+                       h.current_version AS rewrite_version,
+                       c.rewritten_text AS chapter_text
+                FROM chapter_rewrites h
+                JOIN chapter_rewrite_versions v ON v.id = h.current_version_id
+                JOIN chapters c ON c.id = h.chapter_id
+                WHERE h.chapter_id = ?
+                """,
+                (self.chapter_id,),
+            ).fetchone()
+
+        self.assertEqual(row["head_text"], row["rewrite_text"])
+        self.assertEqual(row["head_text"], row["chapter_text"])
+        self.assertEqual(row["head_version"], row["rewrite_version"])
 
     def test_source_selection_resolves_current_original_and_history(self) -> None:
         self.projects.save_chapter_rewrite(self.chapter_id, "version one")

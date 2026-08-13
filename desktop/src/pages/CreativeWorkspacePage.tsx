@@ -172,7 +172,6 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
   const [sourceCharacter, setSourceCharacter] = useState('');
   const [targetCharacterId, setTargetCharacterId] = useState<number | null>(null);
   const [focusedEvidence, setFocusedEvidence] = useState('');
-  const [loadedSceneId, setLoadedSceneId] = useState<number | null>(null);
   const [boundaryEditing, setBoundaryEditing] = useState(false);
   const [boundaryDrafts, setBoundaryDrafts] = useState<SceneBoundaryItem[]>([]);
   const loadedDraftRef = useRef<LoadedSceneDraft | null>(null);
@@ -372,7 +371,6 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
       writingPlanRevision: 0,
       currentDraftRevision: 0,
     };
-    setLoadedSceneId(sceneId);
     setPreanalysis(analysis);
     setIntent(creativeIntent);
     setCharacterAnalysis(specialized);
@@ -412,7 +410,6 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
     if (!activeSceneId || !selectedChapterId) {
       sceneLoadSequenceRef.current += 1;
       loadedDraftRef.current = null;
-      setLoadedSceneId(null);
       setSceneContextLoading(false);
       setPreanalysis(null);
       setIntent(null);
@@ -433,12 +430,12 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
   }, [activeSceneId, loadSceneContext, selectedChapterId]);
 
   useEffect(() => {
-    if (!loadedSceneId || (!analysisDirty && !intentDirty && !characterAnalysisDirty && !strategyAnalysisDirty && !targetDirty && !writingPlanDirty && !currentDraftDirty)) return;
+    if (!loadedDraftRef.current || (!analysisDirty && !intentDirty && !characterAnalysisDirty && !strategyAnalysisDirty && !targetDirty && !writingPlanDirty && !currentDraftDirty)) return;
     const timeout = window.setTimeout(() => {
       void flushLoadedScene().catch(() => undefined);
     }, 650);
     return () => window.clearTimeout(timeout);
-  }, [analysisDirty, characterAnalysisDirty, strategyAnalysisDirty, flushLoadedScene, intentDirty, loadedSceneId, preanalysis, intent, characterAnalysis, strategyAnalysis, target, targetDirty, writingPlan, writingPlanDirty, currentDraft, currentDraftDirty]);
+  }, [analysisDirty, characterAnalysisDirty, strategyAnalysisDirty, flushLoadedScene, intentDirty, preanalysis, intent, characterAnalysis, strategyAnalysis, target, targetDirty, writingPlan, writingPlanDirty, currentDraft, currentDraftDirty]);
 
   useEffect(() => {
     void loadProject().catch((reason) => setError(messageOf(reason)));
@@ -470,7 +467,6 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
       await flushLoadedScene();
       sceneLoadSequenceRef.current += 1;
       loadedDraftRef.current = null;
-      setLoadedSceneId(null);
       selectedChapterIdRef.current = chapterId;
       setSelectedChapterId(chapterId);
     });
@@ -569,7 +565,7 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
 
   function patchAnalysis(patch: Partial<BaseSceneAnalysis>) {
     const draft = loadedDraftRef.current;
-    if (!draft || draft.sceneId !== loadedSceneId || !draft.preanalysis) return;
+    if (!draft || !draft.preanalysis) return;
     const next = { ...draft.preanalysis, ...patch };
     draft.preanalysis = next;
     draft.analysisDirty = true;
@@ -580,7 +576,7 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
 
   function patchIntent(patch: Partial<CreativeIntent>) {
     const draft = loadedDraftRef.current;
-    if (!draft || draft.sceneId !== loadedSceneId || !draft.intent) return;
+    if (!draft || !draft.intent) return;
     const next = { ...draft.intent, ...patch };
     draft.intent = next;
     draft.intentDirty = true;
@@ -676,7 +672,7 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
 
   function patchCharacterAnalysis(value: CharacterModificationAnalysis) {
     const draft = loadedDraftRef.current;
-    if (!draft || draft.sceneId !== loadedSceneId) return;
+    if (!draft) return;
     draft.characterAnalysis = value;
     draft.characterAnalysisDirty = true;
     draft.characterAnalysisRevision += 1;
@@ -693,7 +689,7 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
 
   function patchStrategyAnalysis(value: StrategySceneAnalysis) {
     const draft = loadedDraftRef.current;
-    if (!draft || draft.sceneId !== loadedSceneId) return;
+    if (!draft) return;
     draft.strategyAnalysis = value; draft.strategyAnalysisDirty = true; draft.strategyAnalysisRevision += 1;
     setStrategyAnalysis(value); setStrategyAnalysisDirty(true);
   }
@@ -720,7 +716,7 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
 
   function patchTarget(value: SceneTarget) {
     const draft = loadedDraftRef.current;
-    if (!draft || draft.sceneId !== loadedSceneId) return;
+    if (!draft) return;
     draft.target = value;
     draft.targetDirty = true;
     draft.targetRevision += 1;
@@ -757,7 +753,7 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
 
   function patchWritingPlan(value: WritingPlan) {
     const draft = loadedDraftRef.current;
-    if (!draft || draft.sceneId !== loadedSceneId) return;
+    if (!draft) return;
     draft.writingPlan = value; draft.writingPlanDirty = true; draft.writingPlanRevision += 1;
     setWritingPlan(value); setWritingPlanDirty(true);
   }
@@ -777,7 +773,7 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
 
   function patchCurrentDraftText(text: string) {
     const draft = loadedDraftRef.current;
-    if (!draft || draft.sceneId !== loadedSceneId || !draft.currentDraft) return;
+    if (!draft || !draft.currentDraft) return;
     const next = { ...draft.currentDraft, text };
     draft.currentDraft = next; draft.currentDraftDirty = true; draft.currentDraftRevision += 1;
     setCurrentDraft(next); setCurrentDraftDirty(true);
@@ -921,7 +917,6 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
       const items = await adjustChapterScenes(selectedChapterId, boundaryDrafts);
       sceneLoadSequenceRef.current += 1;
       loadedDraftRef.current = null;
-      setLoadedSceneId(null);
       setScenes(items);
       setBoundaryDrafts(boundariesFromScenes(items));
       await refreshWorkflowStates(selectedChapterId);
@@ -943,10 +938,10 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
   return (
     <div className="creative-workspace">
       <header className="creative-topbar">
-        <button className="button ghost" onClick={() => onNavigate('/library')} type="button">
-          <ArrowLeft size={17} />工程列表
-        </button>
-        <div className="creative-project-title"><strong>{projectName}</strong><span>/</span><span>{selectedChapter?.title ?? '暂无章节'}</span></div>
+        <div className="creative-project-title">
+          <button className="button ghost" onClick={() => onNavigate('/library')} type="button"><ArrowLeft size={17} />工程列表</button>
+          <h1>{projectName}</h1>
+        </div>
         <div className="creative-top-actions">
           <button className="button ghost" onClick={() => void openSettings()} type="button"><Settings2 size={17} />工程设置</button>
         </div>
@@ -955,6 +950,24 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
       {error ? <div className="inline-alert error creative-alert" role="alert">{error}</div> : null}
 
       <div className="creative-columns">
+        <nav className="creative-stage-rail creative-workflow-progress" aria-label="章节创作阶段">
+          {stageOrder.map((stage, index) => {
+            const disabled = index > Math.max(0, reachedIndex);
+            return (
+              <button
+                aria-current={viewStage === stage ? 'step' : undefined}
+                className={`${index < reachedIndex ? 'complete' : ''} ${viewStage === stage ? 'active' : ''}`}
+                disabled={disabled}
+                key={stage}
+                onClick={() => setViewStage(stage)}
+                type="button"
+              >
+                <span />{stageLabels[stage]}
+              </button>
+            );
+          })}
+        </nav>
+
         <aside className="chapter-rail" aria-label="章节导航">
           <h2>章节</h2>
           <div className="chapter-only-list">
@@ -979,27 +992,6 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
         </aside>
 
         <main className="chapter-workspace">
-          <header className="chapter-workspace-head">
-            <h1>{selectedChapter ? `${chapterNumber(selectedChapter.index)} · ${selectedChapter.title}` : '暂无章节'}</h1>
-            <nav className="creative-stage-rail" aria-label="章节创作阶段">
-              {stageOrder.map((stage, index) => {
-                const disabled = index > Math.max(0, reachedIndex);
-                return (
-                  <button
-                    aria-current={viewStage === stage ? 'step' : undefined}
-                    className={`${index < reachedIndex ? 'complete' : ''} ${viewStage === stage ? 'active' : ''}`}
-                    disabled={disabled}
-                    key={stage}
-                    onClick={() => setViewStage(stage)}
-                    type="button"
-                  >
-                    <span />{stageLabels[stage]}
-                  </button>
-                );
-              })}
-            </nav>
-          </header>
-
           <section className="scene-list-section">
             <div className="section-title"><h2>场景</h2><span>{scenes.length} 个工作对象</span><button className="button ghost" disabled={!scenes.length || busy} onClick={() => setBoundaryEditing((value) => !value)} type="button">调整场景边界</button></div>
             <div className="creative-scene-list">
@@ -1019,6 +1011,11 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
             {boundaryEditing ? <SceneBoundaryEditor boundaries={boundaryDrafts} busy={busy} onApply={() => void applyBoundaries()} onChange={setBoundaryDrafts} onConfirm={() => void confirmBoundaries()} scenes={scenes} /> : null}
           </section>
 
+          <fieldset
+            aria-busy={busy || sceneContextLoading}
+            className="scene-editor-ownership"
+            disabled={busy || sceneContextLoading}
+          >
           {viewStage === 'preanalysis' ? (
             <PreanalysisEditor analysis={preanalysis} boundariesConfirmed={scenes.find((item) => item.id === activeSceneId)?.user_confirmed ?? false} busy={busy || sceneContextLoading} dirty={analysisDirty} onAnalyze={() => void analyzeScene()} onChange={patchAnalysis} onConfirm={() => void confirmAnalysis()} />
           ) : null}
@@ -1030,6 +1027,7 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
           {viewStage === 'writing' ? <WritingStage busy={busy || sceneContextLoading} currentDraft={currentDraft} draftDirty={currentDraftDirty} draftEditorRef={draftEditorRef} onDraftText={patchCurrentDraftText} onGenerate={() => void generateDraft()} onPlan={patchWritingPlan} onPlanWriting={() => void planWriting()} onReview={() => void beginReview()} onSelectedEdit={() => void aiEditSelection()} onView={setWritingView} plan={writingPlan} planDirty={writingPlanDirty} target={target} view={writingView} /> : null}
           {viewStage === 'review' ? <ReviewStage busy={busy || sceneContextLoading} currentDraft={currentDraft} diff={reviewDiff} onAccept={() => void acceptReviewRework()} onAddNote={() => void addReviewNote()} onConfirm={() => void confirmSceneFromReview()} onRestore={() => void restoreSelectedReview()} onRework={() => void aiReworkSelected()} onReworkAll={() => void reworkAllMarks()} onUndo={() => void undoReviewRework()} sourceRef={reviewSourceRef} targetRef={reviewTargetRef} undoAvailable={reviewUndo !== null} /> : null}
           {!['preanalysis', 'direction', 'special_analysis', 'target_design', 'writing', 'review'].includes(viewStage) ? <section className="stage-placeholder"><h2>{stageLabels[viewStage]}</h2><p>场景已确认。</p></section> : null}
+          </fieldset>
         </main>
 
         <aside className="creative-context-panel">

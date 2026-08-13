@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from rusty.db import initialize_database, session
+from rusty.db import session
 from rusty.services.ai_client import AIClient, OpenAICompatibleClient
 from rusty.services.model_service import ModelService
 from rusty.db import default_database_path
@@ -33,8 +33,6 @@ class AnalysisService:
         self.model_service = ModelService(self.database_path)
         self.prompt_service = PromptService(self.database_path)
         self.ai_client = ai_client or OpenAICompatibleClient()
-        with session(self.database_path) as connection:
-            initialize_database(connection)
 
     def create_template(
         self,

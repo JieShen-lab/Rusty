@@ -7,12 +7,15 @@ import unittest
 from unittest import mock
 from pathlib import Path
 
+from tests.support import initialized_database
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from rusty.services.project_service import ProjectService
 from rusty.services.prose_rewrite_orchestrator import ProseRewriteOrchestrator
 from rusty.services.chapter_version_service import ChapterVersionService
 from rusty.services.rewrite_version_map_service import RewriteVersionMapService
+from rusty.db import session
 
 
 def skeleton() -> dict:
@@ -142,7 +145,7 @@ class ProseRewriteOrchestratorTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory(dir=Path.cwd())
         self.root = Path(self.temp.name)
-        self.database = self.root / "rusty.db"
+        self.database = initialized_database(self.root / "rusty.db")
         source = self.root / "book.txt"
         source.write_text("1. One\nOriginal baseline.", encoding="utf-8")
         self.projects = ProjectService(self.database)
@@ -252,6 +255,28 @@ class ProseRewriteOrchestratorTests(unittest.TestCase):
         self.assertEqual(parent["id"], current["parent_version_id"])
         self.assertEqual("prose_rewrite", current["source_operation"])
         self.assertEqual(completed["result_version_id"], current["id"])
+
+    def test_rejects_frozen_run_after_semantic_map_drift(self) -> None:
+        self.projects.save_chapter_rewrite(self.chapter_id, "Version with frozen map.")
+        run = self.plan()
+        version_id = int(run["source_base_version_id"])
+        frozen_hash = str(run["source_map_hash"])
+
+        with session(self.database) as connection:
+            connection.execute(
+                """
+                INSERT INTO chapter_rewrite_version_segments(
+                    rewrite_version_id, segment_kind, node_id, segment_index,
+                    start_offset, end_offset, mapping_method
+                ) VALUES (?, 'generated_event', 'drift', 0, 0, 1, 'semantic')
+                """,
+                (version_id,),
+            )
+
+        maps = RewriteVersionMapService(self.database)
+        self.assertNotEqual(frozen_hash, maps.map_hash(version_id))
+        with self.assertRaisesRegex(ValueError, "semantic map hash"):
+            self.service.execute(run["id"])
 
     def test_explicit_historical_source_preserves_true_parent(self) -> None:
         self.projects.save_chapter_rewrite(self.chapter_id, "version one")

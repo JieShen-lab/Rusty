@@ -30,6 +30,27 @@
   --focus: #3f75f0;
   --scrollbar: #c7ccd4;
 
+  /* Semantic application surfaces. Theme switching changes values, not hierarchy. */
+  --app-bg: var(--canvas);
+  --workspace-bg: #f7f8fa;
+  --surface-subtle: #f2f4f7;
+  --surface-input: #ffffff;
+  --surface-hover: #eceff3;
+  --surface-selected: #e8effd;
+  --surface-elevated: #ffffff;
+  --border-default: var(--border);
+  --text-primary: var(--ink);
+  --text-secondary: var(--ink-muted);
+  --text-muted: var(--ink-soft);
+  --danger-emphasis: var(--danger);
+  --library-sidebar-width: 210px;
+  --button-primary-bg: var(--accent);
+  --button-primary-hover: var(--accent-strong);
+  --button-secondary-bg: var(--surface-input);
+  --button-secondary-border: var(--border-strong);
+  --button-danger-text: var(--danger);
+  --button-danger-border: var(--danger-border);
+
   /* Shared workbench aliases used by the newer editor surfaces. */
   --line: var(--border);
   --line-strong: var(--border-strong);
@@ -99,6 +120,25 @@
   --info-border: #496b9b;
   --focus: #8bacff;
   --scrollbar: #596270;
+  --app-bg: var(--canvas);
+  --workspace-bg: #20242b;
+  --surface-subtle: #292e36;
+  --surface-input: #252a32;
+  --surface-hover: #303640;
+  --surface-selected: #293b5e;
+  --surface-elevated: #292e36;
+  --border-default: var(--border);
+  --text-primary: var(--ink);
+  --text-secondary: var(--ink-muted);
+  --text-muted: var(--ink-soft);
+  --danger-emphasis: var(--danger);
+  --library-sidebar-width: 210px;
+  --button-primary-bg: var(--accent);
+  --button-primary-hover: var(--accent-strong);
+  --button-secondary-bg: var(--surface-input);
+  --button-secondary-border: var(--border-strong);
+  --button-danger-text: var(--danger);
+  --button-danger-border: var(--danger-border);
   --bg-ink: #101217;
   --accent-cyan: #65aee5;
   --accent-violet: #a99af0;

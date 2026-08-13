@@ -6,6 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.support import initialized_database
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from rusty.db import session
@@ -22,7 +24,7 @@ class LongformRewriteServiceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory(dir=Path.cwd())
         self.root = Path(self.temp.name)
-        self.database_path = self.root / "rusty.db"
+        self.database_path = initialized_database(self.root / "rusty.db")
         self.source_path = self.root / "source.txt"
         self.source_path.write_text("source", encoding="utf-8")
         self.project_service = ProjectService(self.database_path)

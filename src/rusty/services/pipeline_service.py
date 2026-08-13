@@ -6,7 +6,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
 
-from rusty.db import initialize_database, session
+from rusty.db import session
 from rusty.models import ChapterAIOutputs, ChapterError, ChapterRecord, StageStatus, count_text_units
 from rusty.services.ai_client import AIClient, AIResponse, OpenAICompatibleClient
 from rusty.services.anchor_service import AnchorService, CharacterCard, OutlineTemplate
@@ -42,8 +42,6 @@ class PipelineService:
         self.anchor_service = AnchorService(self.database_path)
         self.prompt_compiler = PromptCompiler()
         self.ai_client = ai_client or OpenAICompatibleClient()
-        with session(self.database_path) as connection:
-            initialize_database(connection)
 
     def summarize_chapter(
         self,
@@ -135,13 +133,28 @@ class PipelineService:
         chapter = self.project_service.get_chapter(chapter_id)
         if chapter is None:
             raise ValueError(f"Chapter not found: {chapter_id}")
-        if not (chapter.rewritten_text or "").strip():
-            raise ValueError("No rewritten text is available to confirm.")
         with session(self.database_path) as connection:
-            connection.execute(
-                "UPDATE chapter_rewrites SET confirmed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE chapter_id = ?",
+            head = connection.execute(
+                """
+                SELECT h.current_version_id, v.rewritten_text
+                FROM chapter_rewrites h
+                JOIN chapter_rewrite_versions v ON v.id = h.current_version_id
+                WHERE h.chapter_id = ?
+                """,
                 (chapter_id,),
+            ).fetchone()
+            if head is None or not str(head["rewritten_text"]).strip():
+                raise ValueError("No rewritten text is available to confirm.")
+            confirmed = connection.execute(
+                """
+                UPDATE chapter_rewrites
+                SET confirmed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                WHERE chapter_id = ? AND current_version_id = ?
+                """,
+                (chapter_id, int(head["current_version_id"])),
             )
+            if confirmed.rowcount != 1:
+                raise RuntimeError("The chapter rewrite head changed before confirmation.")
             connection.execute(
                 "UPDATE chapters SET status = 'confirmed', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (chapter_id,),
@@ -291,7 +304,7 @@ class PipelineService:
     def merge_project_text(self, project_id: int) -> str:
         parts: list[str] = []
         for chapter in self.project_service.list_chapters(project_id):
-            text = chapter.rewritten_text or chapter.original_text
+            text = self.chapter_versions.resolve_chapter_source(chapter.id).text
             parts.append(f"{chapter.title}\n\n{text.strip()}")
         return "\n\n".join(parts).strip() + "\n"
 

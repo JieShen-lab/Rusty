@@ -4,6 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.support import initialized_database
+
 from rusty.db import session
 from rusty.services.branch_service import BranchService
 from rusty.services.plot_generation_orchestrator import PlotGenerationOrchestrator
@@ -63,7 +65,7 @@ class PlotGenerationOrchestratorTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory(dir=Path.cwd())
         self.root = Path(self.temp.name)
-        self.database = self.root / "rusty.db"
+        self.database = initialized_database(self.root / "rusty.db")
         self.source = self.root / "book.txt"
         self.original = "Alpha enters the yard.\n\nAlpha checks the gate.\n\nAlpha returns to the inn."
         self.source.write_text(f"1. One\n{self.original}", encoding="utf-8")

@@ -5,11 +5,29 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 
 class MainWindowTests(unittest.TestCase):
+    def test_desktop_entry_bootstraps_before_constructing_window(self) -> None:
+        from rusty import app as desktop_app
+
+        application = mock.Mock()
+        application.exec.return_value = 0
+        window = mock.Mock()
+        with (
+            mock.patch.object(desktop_app, "initialize_database_file") as bootstrap,
+            mock.patch("PySide6.QtWidgets.QApplication", return_value=application),
+            mock.patch("rusty.ui.RustyMainWindow", return_value=window),
+        ):
+            result = desktop_app.main()
+
+        bootstrap.assert_called_once_with(desktop_app.default_database_path())
+        window.show.assert_called_once_with()
+        self.assertEqual(0, result)
+
     def test_main_window_exposes_stage_two_flow(self) -> None:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
@@ -18,8 +36,10 @@ class MainWindowTests(unittest.TestCase):
             try:
                 from PySide6.QtWidgets import QApplication
 
+                from rusty.db import default_database_path, initialize_database_file
                 from rusty.ui import RustyMainWindow
 
+                initialize_database_file(default_database_path())
                 app = QApplication.instance() or QApplication([])
                 window = RustyMainWindow()
             finally:

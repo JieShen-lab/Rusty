@@ -351,6 +351,7 @@ test('快速切换场景会先按 loaded scene 身份保存三类 dirty 草稿',
     else if (/^\/api\/scenes\/\d+\/(strategy-analysis|target|writing-plan|current-draft)$/.test(path)) body = null;
     else if (/^\/api\/scenes\/\d+\/review-marks$/.test(path)) body = [];
     else if (path.match(/^\/api\/scenes\/(\d+)\/creative-workflow\/activate$/)) {
+      await new Promise((resolve) => setTimeout(resolve, 400));
       activeSceneId = Number(path.split('/')[3]);
       body = { chapter_id: 901, chapter_index: 1, title: '第一章', active_scene_id: activeSceneId, current_stage: stages[activeSceneId], updated_at: '' };
     } else if (sceneMatch) {
@@ -375,8 +376,11 @@ test('快速切换场景会先按 loaded scene 身份保存三类 dirty 草稿',
   await expect(page.getByRole('button', { name: /场景 C/ })).toContainText('进行中');
   await expect(page.getByText('已完成', { exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: '预分析', exact: true }).click();
-  await page.getByLabel('摘要').fill('A 已编辑');
+  const sceneASummary = page.getByLabel('摘要');
+  await sceneASummary.fill('A 已编辑');
   await page.getByRole('button', { name: /场景 B/ }).click();
+  await expect(sceneASummary).toBeDisabled();
+  await expect(sceneASummary).toHaveValue('A 已编辑');
   await expect(page.getByRole('heading', { name: '怎样处理这个场景？' })).toBeVisible();
   await page.getByPlaceholder(/把张三替换成李四/).fill('B 已编辑');
   await page.getByRole('button', { name: /场景 C/ }).click();

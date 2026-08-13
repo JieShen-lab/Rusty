@@ -15,6 +15,7 @@ from rusty.services.anchor_extraction_service import AnchorExtractionService
 from rusty.services.ai_client import AIClient, AIResponse
 from rusty.services.material_service import MaterialService
 from rusty.services.model_service import ModelService
+from tests.support import initialized_database
 
 
 class FakeMaterialPreviewClient(AIClient):
@@ -58,7 +59,7 @@ class FakeMaterialPreviewClient(AIClient):
 class MaterialLibraryV22Tests(unittest.TestCase):
     def test_category_type_rules_and_delete_preserves_material(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
-            service = MaterialService(Path(directory) / "rusty.db")
+            service = MaterialService(initialized_database(Path(directory) / "rusty.db"))
             plot_category = service.create_category("plot_skeleton", "主线")
             scene_category = service.create_category("scene_reference", "战斗场景")
             material_id = service.create_material(
@@ -81,7 +82,7 @@ class MaterialLibraryV22Tests(unittest.TestCase):
 
     def test_tag_groups_are_independent_and_project_filter_excludes_unanalyzed(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
-            database_path = Path(directory) / "rusty.db"
+            database_path = initialized_database(Path(directory) / "rusty.db")
             service = MaterialService(database_path)
             with session(database_path) as connection:
                 project_id = int(
@@ -131,7 +132,7 @@ class MaterialLibraryV22Tests(unittest.TestCase):
 
     def test_preview_is_pure_apply_is_confirmed_and_token_is_single_use(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
-            database_path = Path(directory) / "rusty.db"
+            database_path = initialized_database(Path(directory) / "rusty.db")
             ModelService(database_path).create_model(
                 display_name="Fake",
                 provider="openai_compatible",
@@ -181,7 +182,7 @@ class MaterialLibraryV22Tests(unittest.TestCase):
 
     def test_ai_settings_persist_and_reset_for_exact_three_tasks(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
-            database_path = Path(directory) / "rusty.db"
+            database_path = initialized_database(Path(directory) / "rusty.db")
             service = MaterialService(database_path)
             self.assertEqual(3, len(service.list_ai_settings()))
             updated = service.update_ai_settings(

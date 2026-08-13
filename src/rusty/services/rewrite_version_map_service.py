@@ -532,8 +532,14 @@ class RewriteVersionMapService:
         )
         return hash_text(payload)
 
-    def validate_map_hash(self, rewrite_version_id: int, expected_hash: str) -> None:
-        if self.map_hash(rewrite_version_id) != expected_hash:
+    def validate_map_hash(
+        self,
+        rewrite_version_id: int,
+        expected_hash: str,
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> None:
+        if self.map_hash(rewrite_version_id, connection=connection) != expected_hash:
             raise ValueError("Rewrite semantic map hash does not match the frozen run source.")
 
     def resolve_structure(

@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from rusty.content_hash import hash_text
-from rusty.db import default_database_path, initialize_database, session
+from rusty.db import default_database_path, session
 from rusty.exporters import build_txt_export, export_epub
 from rusty.importers import parse_docx, parse_epub, parse_txt
 from rusty.models import (
@@ -41,8 +41,6 @@ def _text_changes(source: str, target: str) -> list[dict[str, int]]:
 class ProjectService:
     def __init__(self, database_path: str | Path | None = None) -> None:
         self.database_path = Path(database_path) if database_path is not None else default_database_path()
-        with session(self.database_path) as connection:
-            initialize_database(connection)
 
     def import_txt(self, source_path: str | Path, workspace_path: str | Path | None = None) -> int:
         parsed_book = parse_txt(source_path)
@@ -898,7 +896,7 @@ class ProjectService:
                     c.title AS original_title,
                     c.original_text,
                     CASE
-                        WHEN r.confirmed_at IS NOT NULL OR c.status = 'confirmed' THEN c.rewritten_text
+                        WHEN r.confirmed_at IS NOT NULL OR c.status = 'confirmed' THEN v.rewritten_text
                         ELSE NULL
                     END AS rewritten_text,
                     c.word_count,
@@ -911,6 +909,7 @@ class ProjectService:
                 FROM export_chapter_plan p
                 JOIN chapters c ON c.id = p.chapter_id
                 LEFT JOIN chapter_rewrites r ON r.chapter_id = c.id
+                LEFT JOIN chapter_rewrite_versions v ON v.id = r.current_version_id
                 WHERE p.project_id = ?
                   AND p.include_in_export = 1
                 ORDER BY p.export_order, c.chapter_index, c.id

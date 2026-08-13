@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import sys
 import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
+
+from tests.support import initialized_database
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docx import Document
 
+from rusty.db import session
 from rusty.importers.epub import parse_epub
 from rusty.models import ExportPlanItem
 from rusty.services import PipelineService, ProjectService
@@ -20,7 +25,7 @@ class ProjectServiceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)
             txt_path = root / "delete-me.txt"
-            database_path = root / "rusty.db"
+            database_path = initialized_database(root / "rusty.db")
             txt_path.write_text("1. Opening\nOriginal text.\n", encoding="utf-8")
 
             service = ProjectService(database_path)
@@ -41,7 +46,7 @@ class ProjectServiceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)
             txt_path = root / "manual.txt"
-            database_path = root / "rusty.db"
+            database_path = initialized_database(root / "rusty.db")
             export_path = root / "manual-export.txt"
             txt_path.write_text("1. Opening\nOriginal text.\n", encoding="utf-8")
 
@@ -98,11 +103,87 @@ class ProjectServiceTests(unittest.TestCase):
         self.assertIsNotNone(project_after_clear)
         self.assertEqual(1, project_after_clear.completed_chapters)
 
+    def test_confirm_and_exports_read_the_immutable_current_head(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            source = root / "authority.txt"
+            database_path = initialized_database(root / "rusty.db")
+            output = root / "authority-export.txt"
+            source.write_text("1. One\nOriginal text.\n", encoding="utf-8")
+            projects = ProjectService(database_path)
+            project_id = projects.import_book(source, root)
+            chapter = projects.list_chapters(project_id)[0]
+            projects.save_chapter_rewrite(chapter.id, "Immutable head text.")
+            connection = sqlite3.connect(database_path)
+            try:
+                connection.execute(
+                    "UPDATE chapters SET rewritten_text = 'drifted chapter projection' WHERE id = ?",
+                    (chapter.id,),
+                )
+                connection.execute(
+                    "UPDATE chapter_rewrites SET rewritten_text = 'drifted rewrite projection' WHERE chapter_id = ?",
+                    (chapter.id,),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            pipeline = PipelineService(database_path)
+            pipeline.confirm_rewrite(chapter.id)
+            projects.export_txt(project_id, output)
+
+            self.assertIn("Immutable head text.", output.read_text(encoding="utf-8"))
+            self.assertNotIn("drifted", output.read_text(encoding="utf-8"))
+            self.assertIn("Immutable head text.", pipeline.merge_project_text(project_id))
+
+    def test_confirm_rejects_a_concurrent_head_change(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            source = root / "confirm-race.txt"
+            database_path = initialized_database(root / "rusty.db")
+            source.write_text("1. One\nOriginal text.\n", encoding="utf-8")
+            projects = ProjectService(database_path)
+            project_id = projects.import_book(source, root)
+            chapter = projects.list_chapters(project_id)[0]
+            projects.save_chapter_rewrite(chapter.id, "First head.")
+            pipeline = PipelineService(database_path)
+            interleaved = False
+
+            class InterleavingConnection:
+                def __init__(self, connection):
+                    self.connection = connection
+
+                def execute(self, sql, parameters=()):
+                    nonlocal interleaved
+                    cursor = self.connection.execute(sql, parameters)
+                    if not interleaved and "SELECT h.current_version_id" in sql:
+                        interleaved = True
+                        projects.save_chapter_rewrite(chapter.id, "Concurrent head.")
+                    return cursor
+
+            @contextmanager
+            def interleaving_session(path):
+                with session(path) as connection:
+                    yield InterleavingConnection(connection)
+
+            with (
+                mock.patch(
+                    "rusty.services.pipeline_service.session",
+                    interleaving_session,
+                ),
+                self.assertRaisesRegex(RuntimeError, "head changed"),
+            ):
+                pipeline.confirm_rewrite(chapter.id)
+
+            current = projects.get_chapter(chapter.id)
+            self.assertEqual("Concurrent head.", current.rewritten_text)
+            self.assertEqual("rewritten", current.status)
+
     def test_export_plan_reorders_renames_excludes_and_drives_exports(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)
             txt_path = root / "planned.txt"
-            database_path = root / "rusty.db"
+            database_path = initialized_database(root / "rusty.db")
             txt_export_path = root / "planned-export.txt"
             epub_export_path = root / "planned-export.epub"
             txt_path.write_text(
@@ -173,7 +254,7 @@ class ProjectServiceTests(unittest.TestCase):
             root = Path(directory)
             first_path = root / "first.txt"
             second_path = root / "second.txt"
-            database_path = root / "rusty.db"
+            database_path = initialized_database(root / "rusty.db")
             first_path.write_text("1. One\nAlpha.\n\n2. Two\nBeta.\n", encoding="utf-8")
             second_path.write_text("1. Other\nOther.\n", encoding="utf-8")
 
@@ -218,7 +299,7 @@ class ProjectServiceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)
             docx_path = root / "service.docx"
-            database_path = root / "rusty.db"
+            database_path = initialized_database(root / "rusty.db")
             epub_path = root / "service.epub"
 
             document = Document()

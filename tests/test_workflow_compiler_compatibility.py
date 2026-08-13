@@ -5,6 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.support import initialized_database
+
 from rusty.services.ai_client import AIResponse
 from rusty.services.model_service import ModelService
 from rusty.services.plot_generation_orchestrator import PlotGenerationOrchestrator
@@ -60,7 +62,7 @@ class WorkflowCompilerCompatibilityTests(unittest.TestCase):
 
     def test_workflow_ai_chat_only_client_uses_legacy_compiler(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd(), ignore_cleanup_errors=True) as directory:
-            database = Path(directory) / "rusty.db"
+            database = initialized_database(Path(directory) / "rusty.db")
             ModelService(database).create_model(
                 "Chat only", "openai_compatible", "http://invalid.test", "chat-only",
                 is_default=True,
@@ -81,7 +83,7 @@ class WorkflowCompilerCompatibilityTests(unittest.TestCase):
     def test_plot_orchestrator_start_uses_chat_only_compiler_path(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd(), ignore_cleanup_errors=True) as directory:
             root = Path(directory)
-            database = root / "rusty.db"
+            database = initialized_database(root / "rusty.db")
             source = root / "book.txt"
             source.write_text("1. 第一章\n人物进入院子。\n\n人物返回客栈。", encoding="utf-8")
             ModelService(database).create_model(

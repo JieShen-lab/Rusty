@@ -1,6 +1,5 @@
 import type {
   BranchChapterRecord,
-  BranchCreateRequest,
   ChapterRewriteVersion,
   ChapterSourceSelection,
   PlotGenerationExecuteRequest,
@@ -20,10 +19,6 @@ import { request } from './client';
 
 export function getChapterRewriteVersions(chapterId: number) {
   return request<ChapterRewriteVersion[]>(`/api/chapters/${chapterId}/rewrite-versions`);
-}
-
-export function getChapterRewriteVersion(versionId: number) {
-  return request<ChapterRewriteVersion>(`/api/chapter-rewrite-versions/${versionId}`);
 }
 
 export function getRewriteVersionAnchors(versionId: number) {
@@ -57,13 +52,6 @@ export function getStoryBranches(projectId: number) {
 
 export function getBranchChapters(branchId: number) {
   return request<BranchChapterRecord[]>(`/api/branches/${branchId}/chapters`);
-}
-
-export function createStoryBranch(projectId: number, payload: BranchCreateRequest) {
-  return request<StoryBranch>(`/api/projects/${projectId}/branches`, {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
 }
 
 export function deleteStoryBranch(branchId: number) {

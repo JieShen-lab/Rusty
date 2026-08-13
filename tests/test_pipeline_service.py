@@ -8,6 +8,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.support import initialized_database
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from rusty.services import AnchorService, ModelService, PipelineService, PromptService, ProjectService, StyleTemplateService
@@ -77,7 +79,7 @@ class PipelineServiceTests(unittest.TestCase):
     def test_shared_summary_run_does_not_change_project_kind_or_rewrite_progress(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)
-            database_path = root / "rusty.db"
+            database_path = initialized_database(root / "rusty.db")
             source_path = root / "book.txt"
             source_path.write_text("1. One\nAlpha.\n\n2. Two\nBeta.", encoding="utf-8")
 
@@ -118,7 +120,7 @@ class PipelineServiceTests(unittest.TestCase):
     def test_project_pipeline_rejects_missing_prompt_before_processing(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)
-            database_path = root / "rusty.db"
+            database_path = initialized_database(root / "rusty.db")
             source_path = root / "book.txt"
             source_path.write_text("1. One\nOriginal text.", encoding="utf-8")
 
@@ -144,7 +146,7 @@ class PipelineServiceTests(unittest.TestCase):
     def test_manual_stage_records_missing_prompt_error(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)
-            database_path = root / "rusty.db"
+            database_path = initialized_database(root / "rusty.db")
             source_path = root / "book.txt"
             source_path.write_text("1. One\nOriginal text.", encoding="utf-8")
 
@@ -174,7 +176,7 @@ class PipelineServiceTests(unittest.TestCase):
     def test_chapter_pipeline_persists_outputs_and_merge(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)
-            database_path = root / "rusty.db"
+            database_path = initialized_database(root / "rusty.db")
             source_path = root / "book.txt"
             source_path.write_text("1. One\nOriginal text.", encoding="utf-8")
 
@@ -258,7 +260,7 @@ class PipelineServiceTests(unittest.TestCase):
     def test_pipeline_records_errors_and_supports_retry(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)
-            database_path = root / "rusty.db"
+            database_path = initialized_database(root / "rusty.db")
             source_path = root / "book.txt"
             source_path.write_text("1. One\nOriginal text.", encoding="utf-8")
 
@@ -308,7 +310,7 @@ class PipelineServiceTests(unittest.TestCase):
     def test_run_project_marks_chapters_kept_original_when_scene_does_not_need_rewrite(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)
-            database_path = root / "rusty.db"
+            database_path = initialized_database(root / "rusty.db")
             source_path = root / "book.txt"
             source_path.write_text("1. One\nOriginal text.", encoding="utf-8")
 
@@ -348,7 +350,7 @@ class PipelineServiceTests(unittest.TestCase):
     def test_pipeline_prefers_project_model_and_prompt_settings(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)
-            database_path = root / "rusty.db"
+            database_path = initialized_database(root / "rusty.db")
             source_path = root / "book.txt"
             source_path.write_text("1. One\nOriginal text.", encoding="utf-8")
 
@@ -389,7 +391,7 @@ class PipelineServiceTests(unittest.TestCase):
     def test_pipeline_applies_project_prompt_overrides(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)
-            database_path = root / "rusty.db"
+            database_path = initialized_database(root / "rusty.db")
             source_path = root / "book.txt"
             source_path.write_text("1. One\nOriginal text.", encoding="utf-8")
 
@@ -442,7 +444,7 @@ class PipelineServiceTests(unittest.TestCase):
     def test_rewrite_injects_bound_style_template_and_records_snapshot(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)
-            database_path = root / "rusty.db"
+            database_path = initialized_database(root / "rusty.db")
             source_path = root / "book.txt"
             source_path.write_text("1. One\nOriginal text.", encoding="utf-8")
 
@@ -502,7 +504,7 @@ class PipelineServiceTests(unittest.TestCase):
     def test_rewrite_injects_outline_and_relevant_character_cards_only(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)
-            database_path = root / "rusty.db"
+            database_path = initialized_database(root / "rusty.db")
             source_path = root / "book.txt"
             source_path.write_text("1. One\nBobby makes a choice. Original text.", encoding="utf-8")
 
@@ -590,7 +592,7 @@ class PipelineServiceTests(unittest.TestCase):
     def test_rewrite_uses_project_targets_and_records_target_word_count(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)
-            database_path = root / "rusty.db"
+            database_path = initialized_database(root / "rusty.db")
             source_path = root / "book.txt"
             source_path.write_text("1. One\nOriginal text.", encoding="utf-8")
 
@@ -638,7 +640,7 @@ class PipelineServiceTests(unittest.TestCase):
     def test_rewrite_target_validation_records_error(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)
-            database_path = root / "rusty.db"
+            database_path = initialized_database(root / "rusty.db")
             source_path = root / "book.txt"
             source_path.write_text("1. One\nOriginal text.", encoding="utf-8")
 
@@ -667,7 +669,7 @@ class PipelineServiceTests(unittest.TestCase):
     def test_anchor_rewrite_repairs_invalid_output_and_records_exact_attempts(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)
-            database_path = root / "rusty.db"
+            database_path = initialized_database(root / "rusty.db")
             source_path = root / "book.txt"
             source_path.write_text("1. One\nOriginal text.", encoding="utf-8")
             project_service = ProjectService(database_path)
@@ -715,7 +717,7 @@ class PipelineServiceTests(unittest.TestCase):
     def test_anchor_rewrite_rejects_ambiguous_anchor(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)
-            database_path = root / "rusty.db"
+            database_path = initialized_database(root / "rusty.db")
             source_path = root / "book.txt"
             source_path.write_text("1. One\nAgain and Again.", encoding="utf-8")
             project_service = ProjectService(database_path)
@@ -741,7 +743,7 @@ class PipelineServiceTests(unittest.TestCase):
     def test_full_rewrite_mode_preserves_legacy_whole_chapter_behavior(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)
-            database_path = root / "rusty.db"
+            database_path = initialized_database(root / "rusty.db")
             source_path = root / "book.txt"
             source_path.write_text("1. One\nOriginal text.", encoding="utf-8")
             project_service = ProjectService(database_path)

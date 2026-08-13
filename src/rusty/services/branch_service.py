@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from rusty.content_hash import hash_text
-from rusty.db import default_database_path, initialize_database, session
+from rusty.db import default_database_path, session
 from rusty.domain.plot_workflow import PLOT_ACTIVE_STATUSES
 from rusty.domain.story_anchors import (
     BRANCH_GENERATION_MODES,
@@ -22,8 +22,6 @@ class BranchService:
 
     def __init__(self, database_path: str | Path | None = None) -> None:
         self.database_path = Path(database_path) if database_path is not None else default_database_path()
-        with session(self.database_path) as connection:
-            initialize_database(connection)
 
     def create_branch(
         self,

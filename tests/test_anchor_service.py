@@ -5,6 +5,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+from tests.support import initialized_database
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -82,7 +84,7 @@ class FakeAnchorAIClient(AIClient):
 class AnchorServiceTests(unittest.TestCase):
     def test_outline_template_crud_and_project_binding(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
-            database_path = Path(directory) / "rusty.db"
+            database_path = initialized_database(Path(directory) / "rusty.db")
             service = AnchorService(database_path)
             project_id = _create_project(database_path)
 
@@ -117,7 +119,7 @@ class AnchorServiceTests(unittest.TestCase):
 
     def test_character_card_crud_binding_and_relevance_filtering(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
-            database_path = Path(directory) / "rusty.db"
+            database_path = initialized_database(Path(directory) / "rusty.db")
             service = AnchorService(database_path)
             project_id = _create_project(database_path)
 
@@ -155,7 +157,7 @@ class AnchorServiceTests(unittest.TestCase):
 
     def test_bind_rejects_missing_project_or_deleted_card(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
-            database_path = Path(directory) / "rusty.db"
+            database_path = initialized_database(Path(directory) / "rusty.db")
             service = AnchorService(database_path)
             project_id = _create_project(database_path)
             card_id = service.create_character_card(name="Alice")
@@ -168,7 +170,7 @@ class AnchorServiceTests(unittest.TestCase):
 
     def test_character_copy_creates_independent_versioned_project_copy(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
-            database_path = Path(directory) / "rusty.db"
+            database_path = initialized_database(Path(directory) / "rusty.db")
             service = AnchorService(database_path)
             project_id = _create_project(database_path)
             public_id = service.create_character_card(
@@ -203,7 +205,7 @@ class AnchorServiceTests(unittest.TestCase):
 
     def test_character_categories_atomic_project_copy_and_project_summary(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
-            database_path = Path(directory) / "rusty.db"
+            database_path = initialized_database(Path(directory) / "rusty.db")
             service = AnchorService(database_path)
             project_id = _create_project(database_path)
             lead = service.create_character_category("Lead")
@@ -256,7 +258,7 @@ class AnchorServiceTests(unittest.TestCase):
 
     def test_project_character_publish_creates_independent_public_stable_subset(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
-            database_path = Path(directory) / "rusty.db"
+            database_path = initialized_database(Path(directory) / "rusty.db")
             service = AnchorService(database_path)
             project_id = _create_project(database_path)
             tag = service.create_character_tag("Calm")
@@ -294,7 +296,7 @@ class AnchorServiceTests(unittest.TestCase):
 
     def test_public_character_copy_failure_leaves_no_half_created_card(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
-            database_path = Path(directory) / "rusty.db"
+            database_path = initialized_database(Path(directory) / "rusty.db")
             service = AnchorService(database_path)
             project_id = _create_project(database_path)
             public_id = service.create_character_card(name="Alice")
@@ -322,7 +324,7 @@ class AnchorServiceTests(unittest.TestCase):
 
     def test_ai_outline_extraction_from_text_creates_structured_template(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
-            database_path = Path(directory) / "rusty.db"
+            database_path = initialized_database(Path(directory) / "rusty.db")
             ModelService(database_path).create_model(
                 display_name="Fake",
                 provider="openai_compatible",
@@ -354,7 +356,7 @@ class AnchorServiceTests(unittest.TestCase):
 
     def test_ai_character_extraction_from_text_creates_character_cards(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
-            database_path = Path(directory) / "rusty.db"
+            database_path = initialized_database(Path(directory) / "rusty.db")
             ModelService(database_path).create_model(
                 display_name="Fake",
                 provider="openai_compatible",
@@ -386,7 +388,7 @@ class AnchorServiceTests(unittest.TestCase):
 
     def test_character_extraction_preview_does_not_write_and_apply_is_selective(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
-            database_path = Path(directory) / "rusty.db"
+            database_path = initialized_database(Path(directory) / "rusty.db")
             ModelService(database_path).create_model(
                 display_name="Fake",
                 provider="openai_compatible",
@@ -420,7 +422,7 @@ class AnchorServiceTests(unittest.TestCase):
 
     def test_project_extraction_binds_and_settings_persist_and_reset(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
-            database_path = Path(directory) / "rusty.db"
+            database_path = initialized_database(Path(directory) / "rusty.db")
             ModelService(database_path).create_model(
                 display_name="Fake",
                 provider="openai_compatible",
@@ -454,7 +456,7 @@ class AnchorServiceTests(unittest.TestCase):
 
     def test_preview_token_tampering_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
-            database_path = Path(directory) / "rusty.db"
+            database_path = initialized_database(Path(directory) / "rusty.db")
             ModelService(database_path).create_model(
                 display_name="Fake",
                 provider="openai_compatible",
@@ -488,7 +490,7 @@ class AnchorServiceTests(unittest.TestCase):
     def test_ai_anchor_extraction_from_file_uses_import_parser_sample(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)
-            database_path = root / "rusty.db"
+            database_path = initialized_database(root / "rusty.db")
             source_path = root / "anchor.txt"
             source_path.write_text("1. One\nAlice meets Bob.", encoding="utf-8")
             ModelService(database_path).create_model(
@@ -516,7 +518,7 @@ class AnchorServiceTests(unittest.TestCase):
 
     def test_ai_anchor_extraction_rejects_invalid_json_response(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
-            database_path = Path(directory) / "rusty.db"
+            database_path = initialized_database(Path(directory) / "rusty.db")
             ModelService(database_path).create_model(
                 display_name="Fake",
                 provider="openai_compatible",

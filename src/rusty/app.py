@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import sys
 
+from rusty.db import default_database_path, initialize_database_file
+
 
 def main() -> int:
     try:
@@ -14,6 +16,7 @@ def main() -> int:
 
     from rusty.ui import RustyMainWindow
 
+    initialize_database_file(default_database_path())
     app = QApplication(sys.argv)
     window = RustyMainWindow()
     window.show()

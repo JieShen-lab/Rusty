@@ -12,6 +12,7 @@ SOURCE_ROOT = REPOSITORY_ROOT / "src"
 if str(SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(SOURCE_ROOT))
 
+from rusty.db import initialize_database_file  # noqa: E402
 from rusty.services import AnchorService, ProjectService, PromptService  # noqa: E402
 
 
@@ -25,6 +26,7 @@ def seed_demo(
     database = Path(database_path)
     workspace = Path(workspace_path)
     workspace.mkdir(parents=True, exist_ok=True)
+    initialize_database_file(database)
 
     rewrite_package = (root / "rewrite_prompt.json").read_text(encoding="utf-8")
     project_anchor = json.loads((root / "project_anchor.json").read_text(encoding="utf-8"))

@@ -6,12 +6,13 @@ __all__ = [
     "connect",
     "default_database_path",
     "initialize_database",
+    "initialize_database_file",
     "session",
 ]
 
 
 def __getattr__(name: str):
-    if name in {"CURRENT_SCHEMA_VERSION", "initialize_database"}:
+    if name in {"CURRENT_SCHEMA_VERSION", "initialize_database", "initialize_database_file"}:
         from . import schema
 
         return getattr(schema, name)

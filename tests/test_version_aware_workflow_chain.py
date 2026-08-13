@@ -6,6 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.support import initialized_database
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from rusty.services.chapter_version_service import ChapterVersionService
@@ -82,7 +84,7 @@ class VersionAwareWorkflowChainTests(unittest.TestCase):
     def test_plot_prose_scene_anchor_plot_stays_on_one_version_state_chain(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            database = root / "rusty.db"
+            database = initialized_database(root / "rusty.db")
             source = root / "book.txt"
             original = "Hero enters yard.\n\nHero returns to inn."
             source.write_text(f"1. One\n{original}", encoding="utf-8")

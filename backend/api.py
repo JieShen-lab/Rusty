@@ -17,7 +17,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
-from rusty.db import session
+from rusty.db import initialize_database_file, session
 from rusty.models import ChapterRecord, ExportPlanItem, ParsedBook, ProjectSummary
 from rusty.services.anchor_extraction_service import AnchorExtractionService
 from rusty.services.anchor_service import AnchorService, CharacterCard, OutlineTemplate
@@ -241,6 +241,7 @@ def create_app(
     db_path = Path(database_path) if database_path is not None else Path(
         os.environ.get("RUSTY_DATABASE_PATH", default_database_path())
     )
+    initialize_database_file(db_path)
     project_service = ProjectService(db_path)
     chapter_split_service = ChapterSplitService()
     document_library_service = DocumentLibraryService(db_path)

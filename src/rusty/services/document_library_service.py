@@ -10,7 +10,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from rusty.chapter_titles import format_chapter_heading, normalize_chapter_title
-from rusty.db import initialize_database, session
+from rusty.db import session
 from rusty.exporters import build_txt_export, export_epub
 from rusty.importers import parse_docx, parse_epub, parse_txt, split_document_structure
 from rusty.importers.txt import read_text_with_encoding
@@ -224,7 +224,6 @@ class DocumentLibraryService:
         self.database_path = Path(database_path)
         configured_path = os.environ.get("RUSTY_DOCUMENT_LIBRARY_PATH")
         with session(self.database_path) as connection:
-            initialize_database(connection)
             row = connection.execute(
                 "SELECT storage_path FROM document_library_settings WHERE id = 1"
             ).fetchone()
@@ -1000,8 +999,9 @@ class DocumentLibraryService:
             text=draft.text,
             title=draft.title,
             chapter_id=chapter_id,
+            draft_id=draft.id,
+            draft_base_revision_id=draft.base_revision_id,
         )
-        self.discard_draft(document_id, chapter_id)
         return result
 
     def save_content(
@@ -1101,6 +1101,8 @@ class DocumentLibraryService:
         text: str,
         title: str,
         chapter_id: int | None,
+        draft_id: int,
+        draft_base_revision_id: int,
     ) -> CleanupResult:
         document = self._get_document(document_id)
         current_revision = self._ensure_initial_revision(document_id)
@@ -1160,9 +1162,11 @@ class DocumentLibraryService:
             {},
             chapter_boundaries=chapter_boundaries if chapter_id is not None else None,
             volume_boundaries=volume_boundaries if chapter_id is not None else None,
+            consume_draft_id=draft_id,
+            consume_draft_base_revision_id=draft_base_revision_id,
+            consume_draft_chapter_id=chapter_id,
+            document_title=title.strip() if chapter_id is None else None,
         )
-        if chapter_id is None and title.strip() and title.strip() != document.title:
-            self.update_document_metadata(document_id, title=title.strip(), author=document.author)
         return CleanupResult(document=self._get_document(document_id), revision=revision, created=True)
 
     def merge_documents(self, document_ids: list[int], title: str, author: str | None = None) -> LibraryDocument:
@@ -1503,22 +1507,41 @@ class DocumentLibraryService:
         text = Path(current.storage_path).read_text(encoding="utf-8")
         normalized = _validate_continuous_boundaries(text, boundaries)
         current_volumes = self.list_volumes(document_id)
-        volume_index_by_id = {volume.id: volume.index for volume in current_volumes}
+        final_boundaries: list[dict[str, object]] = []
+        for boundary in normalized:
+            start = int(boundary["start_offset"])
+            end = int(boundary["end_offset"])
+            volume = next(
+                (
+                    item
+                    for item in current_volumes
+                    if item.start_offset <= start < item.end_offset
+                ),
+                None,
+            )
+            if volume is not None and start == volume.start_offset:
+                heading_end = text.find("\n", start, end)
+                if heading_end >= 0:
+                    content_start = heading_end + 1
+                    while content_start < end and text[content_start] == "\n":
+                        content_start += 1
+                    if content_start < end:
+                        start = content_start
+            final_boundaries.append(
+                {
+                    "title": boundary["title"],
+                    "start_offset": start,
+                    "end_offset": end,
+                    "volume_index": volume.index if volume is not None else None,
+                }
+            )
         revision = self._create_text_revision(
             document,
             current,
             text,
             revision_type,
             metadata or {},
-            chapter_boundaries=[
-                {
-                    "title": chapter.title,
-                    "start_offset": self._chapter_offsets(text, chapter)[0],
-                    "end_offset": self._chapter_offsets(text, chapter)[1],
-                    "volume_index": volume_index_by_id.get(chapter.volume_id),
-                }
-                for chapter in self.list_chapters(document_id)
-            ],
+            chapter_boundaries=final_boundaries,
             volume_boundaries=[
                 {
                     "volume_index": volume.index,
@@ -1529,61 +1552,6 @@ class DocumentLibraryService:
                 for volume in current_volumes
             ],
         )
-        with session(self.database_path) as connection:
-            connection.execute("DELETE FROM library_document_chapters WHERE revision_id = ?", (revision.id,))
-            revision_volumes = connection.execute(
-                "SELECT id, start_offset, end_offset FROM library_document_volumes WHERE revision_id = ?",
-                (revision.id,),
-            ).fetchall()
-            for index, boundary in enumerate(normalized, start=1):
-                start = int(boundary["start_offset"])
-                end = int(boundary["end_offset"])
-                volume_row = next(
-                    (
-                        row
-                        for row in revision_volumes
-                        if int(row["start_offset"]) <= start < int(row["end_offset"])
-                    ),
-                    None,
-                )
-                volume_id = int(volume_row["id"]) if volume_row is not None else None
-                if volume_row is not None and start == int(volume_row["start_offset"]):
-                    heading_end = text.find("\n", start, end)
-                    if heading_end >= 0:
-                        content_start = heading_end + 1
-                        while content_start < end and text[content_start] == "\n":
-                            content_start += 1
-                        if content_start < end:
-                            start = content_start
-                connection.execute(
-                    """
-                    INSERT INTO library_document_chapters (
-                        document_id, revision_id, chapter_index, title,
-                        start_line, end_line, start_offset, end_offset, word_count,
-                        volume_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        document_id,
-                        revision.id,
-                        index,
-                        normalize_chapter_title(str(boundary["title"])),
-                        text.count("\n", 0, start) + 1,
-                        text.count("\n", 0, end) + 1,
-                        start,
-                        end,
-                        count_text_units(text[start:end]),
-                        volume_id,
-                    ),
-                )
-            connection.execute(
-                """
-                UPDATE library_documents
-                SET chapter_count = ?, word_count = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-                """,
-                (len(normalized), count_text_units(text), document_id),
-            )
         return revision, self.list_chapters(document_id)
 
     def mark_chapter(self, document_id: int, revision_id: int, title: str, start_offset: int, end_offset: int) -> list[LibraryChapter]:
@@ -1832,6 +1800,10 @@ class DocumentLibraryService:
         metadata: dict[str, object],
         chapter_boundaries: list[dict[str, object]] | None = None,
         volume_boundaries: list[dict[str, object]] | None = None,
+        consume_draft_id: int | None = None,
+        consume_draft_base_revision_id: int | None = None,
+        consume_draft_chapter_id: int | None = None,
+        document_title: str | None = None,
     ) -> DocumentRevision:
         encoded_text = self._normalize_text(text).encode("utf-8")
         content_hash = hashlib.sha256(encoded_text).hexdigest()
@@ -1841,10 +1813,12 @@ class DocumentLibraryService:
         temporary_path = storage_path.with_suffix(".tmp")
         temporary_path.write_bytes(encoded_text)
         temporary_path.replace(storage_path)
-        book = parse_txt(storage_path)
-        parsed_chapters = book.chapters
-        parsed_volumes = book.volumes or []
+        parsed_chapters = []
+        parsed_volumes = []
         if chapter_boundaries is None:
+            book = parse_txt(storage_path)
+            parsed_chapters = book.chapters
+            parsed_volumes = book.volumes or []
             known_volume_titles = {
                 volume.title for volume in self.list_volumes(document.id)
             }
@@ -1946,15 +1920,17 @@ class DocumentLibraryService:
                             ),
                         )
                     chapter_count = len(ordered)
-                connection.execute(
+                updated = connection.execute(
                     """
                     UPDATE library_documents
-                    SET storage_path = ?, content_hash = ?, stored_size_bytes = ?,
+                    SET title = COALESCE(?, title),
+                        storage_path = ?, content_hash = ?, stored_size_bytes = ?,
                         chapter_count = ?, word_count = ?, current_revision_id = ?,
                         status = 'processed', updated_at = CURRENT_TIMESTAMP
-                    WHERE id = ?
+                    WHERE id = ? AND current_revision_id = ?
                     """,
                     (
+                        document_title,
                         str(storage_path),
                         content_hash,
                         len(encoded_text),
@@ -1962,8 +1938,34 @@ class DocumentLibraryService:
                         count_text_units(encoded_text.decode("utf-8")),
                         revision_id,
                         document.id,
+                        parent_revision.id,
                     ),
                 )
+                if updated.rowcount != 1:
+                    if consume_draft_id is not None:
+                        raise DraftConflictError(
+                            "The draft base revision is no longer the document head."
+                        )
+                    raise ValueError("The document changed before the revision was finalized.")
+                if consume_draft_id is not None:
+                    deleted = connection.execute(
+                        """
+                        DELETE FROM library_document_drafts
+                        WHERE id = ? AND document_id = ? AND base_revision_id = ?
+                          AND ((? IS NULL AND chapter_id IS NULL) OR chapter_id = ?)
+                        """,
+                        (
+                            consume_draft_id,
+                            document.id,
+                            consume_draft_base_revision_id,
+                            consume_draft_chapter_id,
+                            consume_draft_chapter_id,
+                        ),
+                    )
+                    if deleted.rowcount != 1:
+                        raise DraftConflictError(
+                            "The committed draft changed before its revision was finalized."
+                        )
         except Exception:
             storage_path.unlink(missing_ok=True)
             raise

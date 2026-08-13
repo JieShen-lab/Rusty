@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from rusty.db import default_database_path, initialize_database, session
+from rusty.db import default_database_path, session
 
 
 PROMPT_KINDS = {"master", "workflow_task", "common_task"}
@@ -31,8 +31,6 @@ class PromptDefinitionService:
 
     def __init__(self, database_path: str | Path | None = None) -> None:
         self.database_path = Path(database_path) if database_path is not None else default_database_path()
-        with session(self.database_path) as connection:
-            initialize_database(connection)
 
     def list_definitions(self) -> list[PromptDefinition]:
         with session(self.database_path) as connection:

@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from rusty.db import initialize_database, session
+from rusty.db import session
 from rusty.domain.plot_workflow import (
     PLOT_ACTIVE_STATUSES,
     PLOT_STATUS_AWAITING_SEAMS,
@@ -53,8 +53,6 @@ class PlotGenerationOrchestrator:
         self.contexts = ContextService(self.database_path)
         self.rewrite_maps = RewriteVersionMapService(self.database_path)
         self.ai = WorkflowAI(self.database_path, ai_client=ai_client)
-        with session(self.database_path) as connection:
-            initialize_database(connection)
 
     def start(
         self,
@@ -511,6 +509,7 @@ class PlotGenerationOrchestrator:
                         self.rewrite_maps.validate_map_hash(
                             int(run["source_base_version_id"]),
                             str(run["source_map_hash"]),
+                            connection=connection,
                         )
                     inserted = "\n\n".join(scene["text"] for scene in generated)
                     if run["range_operation"] == "replace_range":
