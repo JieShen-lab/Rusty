@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tests.support import initialized_database
 
@@ -152,6 +153,160 @@ class DocumentLibraryServiceTests(unittest.TestCase):
             self.assertEqual(2, len(service.list_revisions(document.id)))
             restored = service.activate_revision(document.id, original.id)
             self.assertEqual(original.storage_path, restored.storage_path)
+
+    def test_explicit_split_writes_final_boundaries_without_reparsing_text(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            source = root / "explicit-split.txt"
+            text = "第一章\n正文一\n第二章\n正文二\n"
+            source.write_text(text, encoding="utf-8")
+            service = DocumentLibraryService(
+                initialized_database(root / "rusty.db"), root / "library"
+            )
+            document = service.import_document(source).document
+            original = service.list_revisions(document.id)[0]
+            second_start = text.index("第二章")
+            boundaries = [
+                {"title": "一", "start_offset": 0, "end_offset": second_start},
+                {
+                    "title": "二",
+                    "start_offset": second_start,
+                    "end_offset": len(text),
+                },
+            ]
+
+            with mock.patch(
+                "rusty.services.document_library_service.parse_txt",
+                side_effect=AssertionError("explicit boundaries must not parse"),
+            ):
+                revision, chapters = service.apply_split_boundaries(
+                    document.id,
+                    source_revision_id=original.id,
+                    boundaries=boundaries,
+                    revision_type="split_manual",
+                )
+
+            self.assertEqual(["一", "二"], [chapter.title for chapter in chapters])
+            self.assertEqual(
+                [(0, second_start), (second_start, len(text))],
+                [(chapter.start_offset, chapter.end_offset) for chapter in chapters],
+            )
+            with session(service.database_path) as connection:
+                stored = connection.execute(
+                    "SELECT COUNT(*) FROM library_document_chapters WHERE revision_id = ?",
+                    (revision.id,),
+                ).fetchone()[0]
+            self.assertEqual(2, stored)
+
+    def test_split_failure_rolls_back_revision_head_and_projection(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            source = root / "split-rollback.txt"
+            text = "第一章\n正文一\n第二章\n正文二\n"
+            source.write_text(text, encoding="utf-8")
+            service = DocumentLibraryService(
+                initialized_database(root / "rusty.db"), root / "library"
+            )
+            document = service.import_document(source).document
+            original = service.list_revisions(document.id)[0]
+            original_chapters = service.list_chapters(document.id)
+            second_start = text.index("第二章")
+
+            with (
+                mock.patch(
+                    "rusty.services.document_library_service.count_text_units",
+                    side_effect=RuntimeError("injected split failure"),
+                ),
+                self.assertRaisesRegex(RuntimeError, "injected split failure"),
+            ):
+                service.apply_split_boundaries(
+                    document.id,
+                    source_revision_id=original.id,
+                    boundaries=[
+                        {"title": "一", "start_offset": 0, "end_offset": second_start},
+                        {
+                            "title": "二",
+                            "start_offset": second_start,
+                            "end_offset": len(text),
+                        },
+                    ],
+                    revision_type="split_manual",
+                )
+
+            self.assertEqual(original.id, service._ensure_initial_revision(document.id).id)
+            self.assertEqual(1, len(service.list_revisions(document.id)))
+            self.assertEqual(
+                [(item.title, item.start_offset, item.end_offset) for item in original_chapters],
+                [
+                    (item.title, item.start_offset, item.end_offset)
+                    for item in service.list_chapters(document.id)
+                ],
+            )
+
+    def test_draft_commit_failure_rolls_back_revision_and_preserves_exact_draft(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            source = root / "draft-rollback.txt"
+            source.write_text("第一章\n正文\n", encoding="utf-8")
+            service = DocumentLibraryService(
+                initialized_database(root / "rusty.db"), root / "library"
+            )
+            document = service.import_document(source).document
+            content = service.get_content(document.id)
+            draft = service.save_draft(
+                document.id,
+                base_revision_id=content.revision_id,
+                title=content.title,
+                text="替换正文",
+            )
+
+            with (
+                mock.patch.object(
+                    service,
+                    "_insert_chapters",
+                    side_effect=RuntimeError("injected draft failure"),
+                ),
+                self.assertRaisesRegex(RuntimeError, "injected draft failure"),
+            ):
+                service.commit_draft(document.id)
+
+            self.assertEqual(1, len(service.list_revisions(document.id)))
+            self.assertEqual(draft.id, service.get_draft(document.id).id)
+            self.assertEqual(
+                content.revision_id, service._ensure_initial_revision(document.id).id
+            )
+
+    def test_committing_one_chapter_draft_does_not_delete_another(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            source = root / "two-drafts.txt"
+            source.write_text("第一章\n正文一\n第二章\n正文二\n", encoding="utf-8")
+            service = DocumentLibraryService(
+                initialized_database(root / "rusty.db"), root / "library"
+            )
+            document = service.import_document(source).document
+            first, second = service.list_chapters(document.id)
+            first_content = service.get_content(document.id, first.id)
+            second_content = service.get_content(document.id, second.id)
+            service.save_draft(
+                document.id,
+                chapter_id=first.id,
+                base_revision_id=first_content.revision_id,
+                title=first_content.title,
+                text="第一章新正文",
+            )
+            other = service.save_draft(
+                document.id,
+                chapter_id=second.id,
+                base_revision_id=second_content.revision_id,
+                title=second_content.title,
+                text="第二章未提交正文",
+            )
+
+            service.commit_draft(document.id, first.id)
+
+            self.assertIsNone(service.get_draft(document.id, first.id))
+            self.assertEqual(other.id, service.get_draft(document.id, second.id).id)
 
     def test_categories_are_many_to_many_and_independent_from_tags(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
