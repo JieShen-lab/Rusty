@@ -241,22 +241,24 @@ class PhaseTwoRemediationTests(unittest.TestCase):
         with patch.dict("os.environ", {"RUSTY_DOCUMENT_LIBRARY_PATH": str(self.root / "library")}):
             document_service = DocumentLibraryService(self.database)
             document = document_service.import_document(source).document
-            normalized = document_service.get_content(document.id).text
-            split = normalized.index("第二章")
+            current_chapter = document_service.list_chapters(document.id)[0]
+            content = document_service.get_content(document.id, current_chapter.id)
+            split = max(1, len(content.body_text) // 2)
             fake = QueueAI({"chapters": [
-                {"title": "第一章", "start_offset": 0, "end_offset": split, "reason": "标题边界"},
-                {"title": "第二章", "start_offset": split, "end_offset": len(normalized), "reason": "标题边界"},
+                {"title": "前半章", "start_offset": 0, "end_offset": split},
+                {"title": "后半章", "start_offset": split, "end_offset": len(content.body_text)},
             ]})
             before = document_service.list_revisions(document.id)
             service = DocumentSplitAIService(
                 self.database,
                 structured_model_service=StructuredModelService(self.database, ai_client=fake),
             )
-            proposal = service.preview(document.id)
+            proposal = service.preview(document.id, chapter_id=current_chapter.id, prompt="按事件转折分章")
             self.assertEqual(len(before), len(document_service.list_revisions(document.id)))
             applied = service.apply(proposal["proposal_id"])
             self.assertEqual(len(before) + 1, len(document_service.list_revisions(document.id)))
-            self.assertEqual(2, len(applied["chapters"]))
+            self.assertEqual(3, len(applied["chapters"]))
+            self.assertEqual(["前半章", "后半章"], [item["title"] for item in applied["chapters"][:2]])
 
 
 if __name__ == "__main__":
