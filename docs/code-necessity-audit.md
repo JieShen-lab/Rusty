@@ -190,7 +190,17 @@ source text/file/selection → extraction endpoint → `AnchorExtractionService.
 
 ## 6. Removed / merged
 
-初版报告提交时生产代码未修改。RED-002～009 将在报告提交后逐组实施；RED-001 只有在专项与全量 regression 均通过后才保留。不得通过修改测试证明成功。
+初版报告提交 `7889af2` 时生产代码未修改。之后只实施了以下有完整证据的删除：
+
+| 项目 | 实际删除 | 为什么安全 | 验证 |
+| --- | ---: | --- | --- |
+| RED-001 v52 重复 column validation | 1 LOC / 1 schema check | 同 transaction/connection；两次之间只有建 index 与补行，不能改变 columns；第一次仍拒绝损坏布局，最终 index check仍在 | deletion experiment 5/5；最终专项 5/5；全量 281 + 21 subtests |
+| RED-002 `_priority` | 8 LOC / 1 function | 全仓静态引用仅定义，无注册/反射路径 | 全量 Python；hash/consumer scan |
+| RED-003 `create_empty_state` | 17 LOC / 1 function | 全仓无 import/caller，Qt 页面不消费 | 全量 Python；静态引用 scan |
+| RED-004/008 style/project-style frontend wrappers/imports | 55 LOC / 11 wrappers + 5 imports | src、TSX、全部 E2E均零消费者；backend routes与types保留 | build；最终 bundle hash与 baseline 相同；47/8/5/1 E2E |
+| RED-009 workflow client wrappers | 12 LOC / 2 wrappers + 1 import | singular get/create exports零消费者；使用中的 list/restore/delete flows未动 | build、相同 bundle hash、全部 E2E |
+
+合计删除 **93 LOC、15 个函数、1 次重复 schema check、6 个随 wrapper 失效的 type imports**。没有为了合并而创建新 abstraction；本轮 **MERGE = 0**。RED-005～007 虽为静态零消费者候选，但为了让单个提交保持高度聚焦，留作下一轮独立 frontend surface cleanup，不夸大为已完成成果。
 
 ## 7. Kept defensive code
 
@@ -240,6 +250,31 @@ source text/file/selection → extraction endpoint → `AnchorExtractionService.
 
 ## 10. Before / After
 
-初版 before：production Python LOC 37,252；frontend production TS/TSX LOC 13,494；Python functions 1,743（含 tests）；重点五文件 useState 224（根组件 119，余下为子组件表单状态）；8 条核心 flow。After、实际 REMOVE/MERGE、wrapper count、flow hops 与最终测试在清理完成后更新。
+| 指标 | Before | After | 说明 |
+| --- | ---: | ---: | --- |
+| production LOC（Python + frontend TS/TSX） | 50,746 | 50,653 | -93；tests 0 LOC change |
+| production Python LOC | 37,252 | 37,226 | -26 |
+| frontend production TS/TSX LOC | 13,494 | 13,427 | -67 |
+| production functions removed | 0 | 15 | 2 dead Python + 13 frontend wrappers |
+| duplicate validation count（已证明项） | 1 | 0 | v52 second column check |
+| audited core flows | 8 | 8 | 产品流程未删 |
+| Flow A schema checks (v52 repair path) | column×2 + index×1 | column×1 + index×1 | 减少 1 个 function/check hop |
+| other core-flow hops/DB reads/serialization/hash | baseline | unchanged | 无足够 deletion proof，不动 |
+| key frontend useState | 224 | 224 | 没有把 form/autosave state误删成 derived state |
+| Python regression | 281 + 21 subtests | 281 + 21 subtests | final 121.10s |
+| build | pass | pass | JS/CSS asset hashes相同 |
+| mock / real / Electron / production E2E | 47 / 8 / 5 / 1 | 47 / 8 / 5 / 1 | 全绿 |
 
-初始可量化候选：25 个 RED 条目；计划 REMOVE 9 组、MERGE/REVIEW 3 组、KEEP defensive 8 组、KEEP LEGACY/FUTURE 5 组。这里的“组”按共同 failure mode 计，不把每个 endpoint wrapper夸大成一个成果。
+最终候选总数 **25**；实际 REMOVE **5 组（16 个可执行项：15 functions + 1 check）**；MERGE **0**；明确 KEEP defensive **8 组**；LEGACY/FUTURE **5 组**；HUMAN REVIEW **20 项**。未实施项保留在 candidate 与 priority 表中，不能把“发现”写成“已清理”。
+
+## 11. Final commits and conclusion
+
+| SHA | 内容 |
+| --- | --- |
+| `7889af2` | `audit: map code necessity and redundancy`；仅初版报告 |
+| `c286542` | `refactor: remove proven low-risk redundancy`；92 LOC dead code/zero-consumer wrapper |
+| `bd5c259` | `refactor: remove duplicate workflow schema guard`；1 LOC，完整 deletion proof |
+
+核心结论：Rusty 的大部分 hash、migration、revision、offset、Preview/Apply 与 autosave 防御都跨越真实的不可信、持久化、并发或历史边界，不能因“看起来重复”删除。可证明的无效复杂度集中在零消费者 frontend surface、两个真实 dead helper，以及 v52 同一事务同一 DB state 内的第二次列布局验证。
+
+**这次减少的是经过证明的无效复杂度，而不是为了追求代码短而降低 Rusty 的数据一致性和版本可靠性。**
