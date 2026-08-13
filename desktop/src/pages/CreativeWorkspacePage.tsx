@@ -1016,6 +1016,11 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
             {boundaryEditing ? <SceneBoundaryEditor boundaries={boundaryDrafts} busy={busy} onApply={() => void applyBoundaries()} onChange={setBoundaryDrafts} onConfirm={() => void confirmBoundaries()} scenes={scenes} /> : null}
           </section>
 
+          <fieldset
+            aria-busy={busy || sceneContextLoading}
+            className="scene-editor-ownership"
+            disabled={busy || sceneContextLoading}
+          >
           {viewStage === 'preanalysis' ? (
             <PreanalysisEditor analysis={preanalysis} boundariesConfirmed={scenes.find((item) => item.id === activeSceneId)?.user_confirmed ?? false} busy={busy || sceneContextLoading} dirty={analysisDirty} onAnalyze={() => void analyzeScene()} onChange={patchAnalysis} onConfirm={() => void confirmAnalysis()} />
           ) : null}
@@ -1027,6 +1032,7 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
           {viewStage === 'writing' ? <WritingStage busy={busy || sceneContextLoading} currentDraft={currentDraft} draftDirty={currentDraftDirty} draftEditorRef={draftEditorRef} onDraftText={patchCurrentDraftText} onGenerate={() => void generateDraft()} onPlan={patchWritingPlan} onPlanWriting={() => void planWriting()} onReview={() => void beginReview()} onSelectedEdit={() => void aiEditSelection()} onView={setWritingView} plan={writingPlan} planDirty={writingPlanDirty} target={target} view={writingView} /> : null}
           {viewStage === 'review' ? <ReviewStage busy={busy || sceneContextLoading} currentDraft={currentDraft} diff={reviewDiff} onAccept={() => void acceptReviewRework()} onAddNote={() => void addReviewNote()} onConfirm={() => void confirmSceneFromReview()} onRestore={() => void restoreSelectedReview()} onRework={() => void aiReworkSelected()} onReworkAll={() => void reworkAllMarks()} onUndo={() => void undoReviewRework()} sourceRef={reviewSourceRef} targetRef={reviewTargetRef} undoAvailable={reviewUndo !== null} /> : null}
           {!['preanalysis', 'direction', 'special_analysis', 'target_design', 'writing', 'review'].includes(viewStage) ? <section className="stage-placeholder"><h2>{stageLabels[viewStage]}</h2><p>场景已确认。</p></section> : null}
+          </fieldset>
         </main>
 
         <aside className="creative-context-panel">
