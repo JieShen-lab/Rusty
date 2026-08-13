@@ -31,12 +31,24 @@ class ContractAIClient(AIClient):
     def chat(self, model, api_key, messages):
         self.calls.append(messages)
         user_prompt = messages[-1]["content"]
-        if "structured character cards" in user_prompt:
+        if "Only extract the character named" in user_prompt:
             payload = {
-                "characters": [
-                    {"name": "Alpha", "suggested_tags": ["主角"]},
-                    {"name": "Beta", "suggested_tags": ["配角"]},
-                ]
+                "evidence_found": True,
+                "name": "Alpha",
+                "aliases": [],
+                "identity": "",
+                "age": "",
+                "description": "",
+                "stable_fields": [
+                    {"dimension_id": "appearance", "label": "外貌", "value": ""},
+                    {"dimension_id": "relationships", "label": "人物关系", "value": "Meets Beta."},
+                    {"dimension_id": "personality", "label": "性格", "value": ""},
+                    {"dimension_id": "speech_style", "label": "语言风格", "value": ""},
+                    {"dimension_id": "action_constraints", "label": "动作习惯 / 动作约束", "value": ""},
+                    {"dimension_id": "abilities_background", "label": "能力与背景", "value": ""},
+                    {"dimension_id": "anti_ooc_rules", "label": "反 OOC 规则", "value": ""},
+                ],
+                "suggested_tags": ["主角"],
             }
         else:
             payload = {
@@ -77,29 +89,20 @@ class PreviewApplyContractV23Tests(unittest.TestCase):
         client = ContractAIClient()
         return database_path, AnchorExtractionService(database_path, ai_client=client), client
 
-    def test_character_token_is_consumed_only_after_success(self) -> None:
+    def test_character_preview_is_draft_and_apply_is_deprecated(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             database_path, extraction, _ = self._service(directory)
-            preview = extraction.preview_characters_from_text("Alpha meets Beta.")
-            payload = [{**candidate.__dict__, "confirmed_tags": []} for candidate in preview.candidates]
-            selected = [candidate.candidate_id for candidate in preview.candidates]
-            first = extraction.apply_character_extraction(
-                preview_token=preview.preview_token,
-                candidates=payload,
-                selected_candidate_ids=selected,
-                scope="public",
-                project_id=None,
-            )
-            self.assertEqual(2, len(first["created"]))
-            with self.assertRaisesRegex(ValueError, "already used"):
+            preview = extraction.preview_characters_from_text("Alpha meets Beta.", "Alpha")
+            self.assertEqual("Alpha", preview.character.name)
+            self.assertEqual([], AnchorService(database_path).list_character_cards())
+            with self.assertRaisesRegex(ValueError, "deprecated"):
                 extraction.apply_character_extraction(
                     preview_token=preview.preview_token,
-                    candidates=payload,
-                    selected_candidate_ids=selected,
+                    candidates=[],
+                    selected_candidate_ids=[],
                     scope="public",
                     project_id=None,
                 )
-            self.assertEqual(2, len(AnchorService(database_path).list_character_cards()))
 
     def test_material_token_is_consumed_only_after_success(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
@@ -189,11 +192,11 @@ class PreviewApplyContractV23Tests(unittest.TestCase):
     def test_preview_lookup_and_creation_prune_only_expired_tokens(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             database_path, extraction, _ = self._service(directory)
-            character = extraction.preview_characters_from_text("Alpha meets Beta.")
+            character = extraction.preview_characters_from_text("Alpha meets Beta.", "Alpha")
             character_key = (str(database_path.resolve()), character.preview_token)
             extraction_module._CHARACTER_PREVIEWS[character_key].expires_at = 0.0
 
-            extraction.preview_characters_from_text("Alpha meets Beta again.")
+            extraction.preview_characters_from_text("Alpha meets Beta again.", "Alpha")
             self.assertNotIn(character_key, extraction_module._CHARACTER_PREVIEWS)
 
             material = extraction.preview_materials_from_text(
@@ -209,60 +212,23 @@ class PreviewApplyContractV23Tests(unittest.TestCase):
                 )
             self.assertNotIn(material_key, extraction_module._MATERIAL_PREVIEWS)
 
-    def test_character_token_rejects_concurrent_apply(self) -> None:
+    def test_character_preview_save_and_project_binding_do_not_create_copy(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             database_path, extraction, _ = self._service(directory)
+            preview = extraction.preview_characters_from_text("Alpha meets Beta.", "Alpha")
+            service = AnchorService(database_path)
+            card_id = service.create_character_card(
+                name=preview.character.name,
+                stable_fields=preview.character.stable_fields,
+                source_metadata=preview.character.source_metadata,
+                raw_text=preview.character.raw_text,
+            )
             with session(database_path) as connection:
-                project_id = int(
-                    connection.execute(
-                        "INSERT INTO projects(name, status, current_stage) VALUES ('P', 'imported', 'split')"
-                    ).lastrowid
-                )
-            preview = extraction.preview_characters_from_text("Alpha meets Beta.")
-            payload = [
-                {**candidate.__dict__, "confirmed_tags": ["atomic"]}
-                for candidate in preview.candidates
-            ]
-            selected = [candidate.candidate_id for candidate in preview.candidates]
-            entered = threading.Event()
-            release = threading.Event()
-            original = extraction.anchor_service.create_extracted_character_batch
-
-            def blocked_batch(**kwargs):
-                entered.set()
-                self.assertTrue(release.wait(5), "character batch was not released")
-                return original(**kwargs)
-
-            def apply():
-                return extraction.apply_character_extraction(
-                    preview_token=preview.preview_token,
-                    candidates=payload,
-                    selected_candidate_ids=selected,
-                    scope="project",
-                    project_id=project_id,
-                )
-
-            with patch.object(
-                extraction.anchor_service,
-                "create_extracted_character_batch",
-                side_effect=blocked_batch,
-            ), ThreadPoolExecutor(max_workers=2) as executor:
-                first = executor.submit(apply)
-                self.assertTrue(entered.wait(5), "character batch did not start")
-                second = executor.submit(apply)
-                with self.assertRaisesRegex(ValueError, "currently being applied"):
-                    second.result(timeout=5)
-                release.set()
-                result = first.result(timeout=5)
-
-            self.assertEqual(2, len(result["created"]))
-            key = (str(database_path.resolve()), preview.preview_token)
-            self.assertEqual("consumed", extraction_module._CHARACTER_PREVIEWS[key].state)
-            with session(database_path) as connection:
-                self.assertEqual(2, connection.execute("SELECT COUNT(*) FROM character_cards").fetchone()[0])
-                self.assertEqual(1, connection.execute("SELECT COUNT(*) FROM character_tags").fetchone()[0])
-                self.assertEqual(2, connection.execute("SELECT COUNT(*) FROM character_tag_links").fetchone()[0])
-                self.assertEqual(2, connection.execute("SELECT COUNT(*) FROM project_character_bindings").fetchone()[0])
+                project_id = int(connection.execute("INSERT INTO projects(name, status, current_stage) VALUES ('P', 'imported', 'split')").lastrowid)
+            before = len(service.list_character_cards())
+            service.bind_project_character(project_id, card_id)
+            self.assertEqual(before, len(service.list_character_cards()))
+            self.assertEqual([card_id], [card.id for card in service.list_project_character_cards(project_id)])
 
     def test_material_token_rejects_concurrent_apply(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
@@ -320,84 +286,23 @@ class PreviewApplyContractV23Tests(unittest.TestCase):
                 self.assertEqual(4, connection.execute("SELECT COUNT(*) FROM material_tag_links").fetchone()[0])
                 self.assertEqual(2, connection.execute("SELECT COUNT(*) FROM material_category_links").fetchone()[0])
 
-    def test_first_character_candidate_failure_is_attributed_and_token_can_retry(self) -> None:
+    def test_character_preview_rejects_candidates_array(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             database_path, extraction, _ = self._service(directory)
-            anchor_service = AnchorService(database_path)
-            with session(database_path) as connection:
-                project_id = int(
-                    connection.execute(
-                        "INSERT INTO projects(name, status, current_stage) VALUES ('P', 'imported', 'split')"
-                    ).lastrowid
-                )
-                connection.execute(
-                    """
-                    CREATE TRIGGER fail_character_candidate
-                    BEFORE INSERT ON character_cards
-                    WHEN NEW.name = 'FAIL'
-                    BEGIN SELECT RAISE(ABORT, 'forced character failure'); END
-                    """
-                )
-            preview = extraction.preview_characters_from_text("Alpha meets Beta.")
-            payload = [
-                {
-                    **candidate.__dict__,
-                    "name": "FAIL" if index == 0 else candidate.name,
-                    "confirmed_tags": ["原子标签"],
-                }
-                for index, candidate in enumerate(preview.candidates)
-            ]
-            selected = [candidate.candidate_id for candidate in preview.candidates]
-            failed = extraction.apply_character_extraction(
-                preview_token=preview.preview_token,
-                candidates=payload,
-                selected_candidate_ids=selected,
-                scope="project",
-                project_id=project_id,
-            )
-            self.assertEqual([], failed["created"])
-            self.assertEqual(selected[0], failed["errors"][0]["candidate_id"])
-            self.assertNotEqual(selected[-1], failed["errors"][0]["candidate_id"])
-            with session(database_path) as connection:
-                self.assertEqual(0, connection.execute("SELECT COUNT(*) FROM character_cards").fetchone()[0])
-                self.assertEqual(0, connection.execute("SELECT COUNT(*) FROM character_tags").fetchone()[0])
-                self.assertEqual(0, connection.execute("SELECT COUNT(*) FROM project_character_bindings").fetchone()[0])
-                connection.execute("DROP TRIGGER fail_character_candidate")
-            key = (str(database_path.resolve()), preview.preview_token)
-            self.assertEqual("pending", extraction_module._CHARACTER_PREVIEWS[key].state)
-            payload[0]["name"] = "Alpha fixed"
-            retried = extraction.apply_character_extraction(
-                preview_token=preview.preview_token,
-                candidates=payload,
-                selected_candidate_ids=selected,
-                scope="project",
-                project_id=project_id,
-            )
-            self.assertEqual(2, len(retried["created"]))
-            self.assertEqual(2, len(anchor_service.list_project_character_cards(project_id)))
+            with patch.object(
+                extraction.ai_client,
+                "chat",
+                return_value=AIResponse(text='{"candidates":[{"name":"Alpha"}]}', token_usage={}, elapsed_ms=1),
+            ):
+                with self.assertRaisesRegex(ValueError, "not candidates"):
+                    extraction.preview_characters_from_text("Alpha meets Beta.", "Alpha")
+            self.assertEqual([], AnchorService(database_path).list_character_cards())
 
-    def test_validation_failure_keeps_token_for_corrected_retry(self) -> None:
+    def test_character_preview_requires_target_name(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             _, extraction, _ = self._service(directory)
-            preview = extraction.preview_characters_from_text("Alpha meets Beta.")
-            payload = [{**candidate.__dict__, "confirmed_tags": []} for candidate in preview.candidates]
-            selected = [candidate.candidate_id for candidate in preview.candidates]
-            with self.assertRaisesRegex(ValueError, "duplicate candidate_id"):
-                extraction.apply_character_extraction(
-                    preview_token=preview.preview_token,
-                    candidates=[payload[0], payload[0]],
-                    selected_candidate_ids=selected,
-                    scope="public",
-                    project_id=None,
-                )
-            retried = extraction.apply_character_extraction(
-                preview_token=preview.preview_token,
-                candidates=payload,
-                selected_candidate_ids=selected,
-                scope="public",
-                project_id=None,
-            )
-            self.assertEqual(2, len(retried["created"]))
+            with self.assertRaisesRegex(ValueError, "Target character name"):
+                extraction.preview_characters_from_text("Alpha meets Beta.", "")
 
     def test_first_material_candidate_failure_is_attributed_and_token_can_retry(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
@@ -452,63 +357,31 @@ class PreviewApplyContractV23Tests(unittest.TestCase):
             )
             self.assertEqual(2, len(retried["created"]))
 
-    def test_batch_level_failure_has_no_candidate_id_and_can_retry(self) -> None:
+    def test_character_suggested_tags_are_not_created_by_preview(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             database_path, extraction, _ = self._service(directory)
-            preview = extraction.preview_characters_from_text("Alpha meets Beta.")
-            payload = [{**candidate.__dict__, "confirmed_tags": []} for candidate in preview.candidates]
-            selected = [candidate.candidate_id for candidate in preview.candidates]
-            with patch.object(
-                extraction.anchor_service,
-                "create_extracted_character_batch",
-                side_effect=sqlite3.OperationalError("shared commit failure"),
-            ):
-                failed = extraction.apply_character_extraction(
-                    preview_token=preview.preview_token,
-                    candidates=payload,
-                    selected_candidate_ids=selected,
-                    scope="public",
-                    project_id=None,
-                )
-            self.assertEqual([], failed["created"])
-            self.assertEqual("", failed["errors"][0]["candidate_id"])
-            self.assertIn("complete character batch was rolled back", failed["errors"][0]["error"])
-            key = (str(database_path.resolve()), preview.preview_token)
-            self.assertEqual("pending", extraction_module._CHARACTER_PREVIEWS[key].state)
-            retried = extraction.apply_character_extraction(
-                preview_token=preview.preview_token,
-                candidates=payload,
-                selected_candidate_ids=selected,
-                scope="public",
-                project_id=None,
-            )
-            self.assertEqual(2, len(retried["created"]))
+            preview = extraction.preview_characters_from_text("Alpha meets Beta.", "Alpha")
+            self.assertEqual(["主角"], preview.character.suggested_tags)
+            self.assertEqual([], AnchorService(database_path).list_character_tags())
 
     def test_full_source_is_saved_while_model_sample_is_limited(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             database_path, extraction, client = self._service(directory)
             source = "甲" * 50000
-            character_preview = extraction.preview_characters_from_text(source)
-            character_payload = [
-                {**candidate.__dict__, "confirmed_tags": []}
-                for candidate in character_preview.candidates
-            ]
-            character_result = extraction.apply_character_extraction(
-                preview_token=character_preview.preview_token,
-                candidates=character_payload,
-                selected_candidate_ids=[character_preview.candidates[0].candidate_id],
-                scope="public",
-                project_id=None,
+            character_preview = extraction.preview_characters_from_text(source, "Alpha")
+            card_id = AnchorService(database_path).create_character_card(
+                name=character_preview.character.name,
+                stable_fields=character_preview.character.stable_fields,
+                source_metadata=character_preview.character.source_metadata,
+                raw_text=character_preview.character.raw_text,
             )
-            card = AnchorService(database_path).get_character_card(
-                int(character_result["created"][0]["card_id"])
-            )
+            card = AnchorService(database_path).get_character_card(card_id)
             assert card is not None
             self.assertEqual(source, card.raw_text)
             self.assertEqual(50000, card.source_metadata["source_character_count"])
             self.assertEqual(16000, card.source_metadata["model_sample_character_count"])
             self.assertTrue(card.source_metadata["source_truncated_for_model"])
-            character_sample = client.calls[0][-1]["content"].split("Sample prose:\n", 1)[1]
+            character_sample = client.calls[0][-1]["content"].split("Source text:\n", 1)[1]
             self.assertEqual(16000, len(character_sample))
 
             material_preview = extraction.preview_materials_from_text(
@@ -545,7 +418,7 @@ class PreviewApplyContractV23Tests(unittest.TestCase):
             _, extraction, client = self._service(directory)
             oversized = "甲" * 50001
             with self.assertRaisesRegex(ValueError, "50,000"):
-                extraction.preview_characters_from_text(oversized)
+                extraction.preview_characters_from_text(oversized, "Alpha")
             with self.assertRaisesRegex(ValueError, "50,000"):
                 extraction.preview_materials_from_text(
                     oversized,

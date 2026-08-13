@@ -35,18 +35,19 @@ class FakeStyleAIClient(AIClient):
                 token_usage={"total_tokens": 12},
                 elapsed_ms=6,
             )
-        if "structured character cards" in user_text:
+        if "Only extract the character named" in user_text:
             return AIResponse(
                 text=(
-                    '{"characters":['
-                    '{"name":"Alice","aliases":["A"],"description":"Main role","priority":90,"is_main":true,'
-                    '"relationship_notes":"Protects Bob.","personality":"Direct.","speech_style":"Short.",'
-                    '"action_constraints":"Acts quickly.","anti_ooc_rules":"Do not make her passive.",'
-                    '"profile":{"role":"lead"}},'
-                    '{"name":"Bob","aliases":["Bobby"],"description":"Support role","priority":40,"is_main":false,'
-                    '"relationship_notes":"Trusts Alice.","personality":"Careful.","speech_style":"Plain.",'
-                    '"action_constraints":"Avoids rash action.","anti_ooc_rules":"Do not make him reckless.",'
-                    '"profile":{"role":"support"}}]}'
+                    '{"evidence_found":true,"name":"Alice","aliases":["A"],"identity":"Lead","age":"",'
+                    '"description":"Main role","stable_fields":['
+                    '{"dimension_id":"appearance","label":"外貌","value":""},'
+                    '{"dimension_id":"relationships","label":"人物关系","value":"Protects Bob."},'
+                    '{"dimension_id":"personality","label":"性格","value":"Direct."},'
+                    '{"dimension_id":"speech_style","label":"语言风格","value":"Short."},'
+                    '{"dimension_id":"action_constraints","label":"动作习惯 / 动作约束","value":"Acts quickly."},'
+                    '{"dimension_id":"abilities_background","label":"能力与背景","value":""},'
+                    '{"dimension_id":"anti_ooc_rules","label":"反 OOC 规则","value":"Do not make her passive."}],'
+                    '"suggested_tags":["主角"]}'
                 ),
                 token_usage={"total_tokens": 18},
                 elapsed_ms=7,
@@ -790,15 +791,13 @@ class BackendApiTests(unittest.TestCase):
                 json={"name": "Seed outline", "detail_level": "detailed", "sample_text": "Alice chooses."},
                 headers=headers,
             )
-            rejected_characters = client.post(
-                "/api/characters/extract",
-                json={"sample_text": "Alice protects Bob."},
-            )
-            extracted_characters = client.post(
-                "/api/characters/extract",
-                json={"detail_level": "standard", "source_path": str(source)},
-                headers=headers,
-            )
+            rejected_characters = client.post("/api/characters/extract/preview", json={"target_character_name": "Alice", "source_text": "Alice protects Bob."})
+            missing_target = client.post("/api/characters/extract/preview", json={"source_text": "Alice protects Bob."}, headers=headers)
+            before_preview = len(client.get("/api/characters").json())
+            extracted_character = client.post("/api/characters/extract/preview", json={"target_character_name": "Alice", "source_text": "Alice protects Bob.", "source_metadata": {"source_type": "file", "source_file_name": "anchor.txt"}}, headers=headers)
+            after_preview = len(client.get("/api/characters").json())
+            draft = extracted_character.json()["character"]
+            saved_character = client.post("/api/characters", json={**draft, "priority": 50, "is_main": False, "relationship_notes": "Protects Bob.", "personality": "Direct.", "speech_style": "Short.", "action_constraints": "Acts quickly.", "anti_ooc_rules": "Do not make her passive.", "profile": {}, "scope": "public", "project_id": None, "custom_fields": [], "analysis_status": "analyzed", "tag_ids": []}, headers=headers)
 
         self.assertEqual(403, rejected_outline.status_code)
         self.assertEqual(400, invalid_source.status_code)
@@ -808,10 +807,13 @@ class BackendApiTests(unittest.TestCase):
         self.assertEqual(["choice", "fallout"], extracted_outline.json()["outline"]["fixed_plot_beats"])
         self.assertEqual("ai_outline_extraction", extracted_outline.json()["import_metadata"]["created_by"])
         self.assertEqual(403, rejected_characters.status_code)
-        self.assertEqual(200, extracted_characters.status_code)
-        self.assertEqual(["Alice", "Bob"], [item["name"] for item in extracted_characters.json()["character_cards"]])
-        self.assertEqual("file", extracted_characters.json()["character_cards"][0]["source_metadata"]["source_type"])
-        self.assertEqual("anchor.txt", extracted_characters.json()["character_cards"][0]["source_metadata"]["source_file_name"])
+        self.assertEqual(422, missing_target.status_code)
+        self.assertEqual(200, extracted_character.status_code)
+        self.assertNotIn("candidates", extracted_character.json())
+        self.assertEqual("Alice", extracted_character.json()["character"]["name"])
+        self.assertEqual(before_preview, after_preview)
+        self.assertEqual(200, saved_character.status_code)
+        self.assertEqual("Alice", saved_character.json()["name"])
 
 
 if __name__ == "__main__":

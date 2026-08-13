@@ -25,11 +25,36 @@ from rusty.db.schema import (
     _migrate_to_v20,
     _migrate_to_v21,
     _migrate_to_v37,
+    _migrate_to_v53,
 )
 from rusty.services.project_service import ProjectService
 
 
 class SchemaTests(unittest.TestCase):
+    def test_v53_preserves_unknown_character_stable_fields_and_dimension_order(self) -> None:
+        connection = sqlite3.connect(":memory:")
+        connection.row_factory = sqlite3.Row
+        connection.executescript(
+            """
+            CREATE TABLE character_cards (
+                id INTEGER PRIMARY KEY, setting_text TEXT, relationship_notes TEXT,
+                personality TEXT, speech_style TEXT, action_constraints TEXT,
+                anti_ooc_rules TEXT, profile_json TEXT, custom_fields_json TEXT
+            );
+            CREATE TABLE character_extraction_settings (id INTEGER PRIMARY KEY);
+            INSERT INTO character_cards VALUES (
+                1, '旧背景', '', '冷静', '', '', '', '{}',
+                '[{"id":"legacy_faith","label":"宗教信仰","value":"守夜仪式","sort_order":0}]'
+            );
+            INSERT INTO character_extraction_settings(id) VALUES (1);
+            """
+        )
+        _migrate_to_v53(connection)
+        fields = json.loads(connection.execute("SELECT stable_fields_json FROM character_cards WHERE id = 1").fetchone()[0])
+        dimensions = json.loads(connection.execute("SELECT dimensions_json FROM character_extraction_settings WHERE id = 1").fetchone()[0])
+        self.assertEqual("守夜仪式", next(item["value"] for item in fields if item["id"] == "legacy_faith"))
+        self.assertEqual(list(range(len(dimensions))), [item["sort_order"] for item in dimensions])
+
     def test_v14_database_migrates_to_v15_with_immutable_source_snapshot(self) -> None:
         connection = sqlite3.connect(":memory:")
         connection.row_factory = sqlite3.Row
