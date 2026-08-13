@@ -21,7 +21,7 @@ from rusty.db import initialize_database_file, session
 from rusty.models import ChapterRecord, ExportPlanItem, ParsedBook, ProjectSummary
 from rusty.services.anchor_extraction_service import AnchorExtractionService
 from rusty.services.anchor_service import AnchorService, CharacterCard, OutlineTemplate
-from rusty.services.material_service import Material, MaterialService
+from rusty.services.material_service import Material, MaterialService, compile_material_ai_prompt
 from rusty.services.analysis_service import AnalysisService
 from rusty.services.chapter_split_service import ChapterSplitService
 from rusty.services.chapter_version_service import ChapterVersionService
@@ -63,6 +63,9 @@ from .schemas import (
     AnalysisPromptTemplateOut,
     AnalysisPromptTemplateWriteRequest,
     AnchorExtractRequest,
+    AuthorStyleDimensionApplyRequest,
+    AuthorStyleDimensionPreviewOut,
+    AuthorStyleDimensionPreviewRequest,
     AISplitApplyRequest,
     AISplitPreviewRequest,
     CharacterAnalyzeRequest,
@@ -119,6 +122,7 @@ from .schemas import (
     LibraryDocumentRevisionOut,
     MaterialAnalyzeRequest,
     MaterialAISettingsOut,
+    MaterialAISettingsImportRequest,
     MaterialAISettingsWriteRequest,
     MaterialAnalysisApplyRequest,
     MaterialCategoryCreateRequest,
@@ -2241,11 +2245,11 @@ def create_app(
 
     @app.get("/api/material-ai-settings", response_model=list[MaterialAISettingsOut])
     def list_material_ai_settings() -> list[MaterialAISettingsOut]:
-        return [MaterialAISettingsOut(**item.__dict__) for item in material_service.list_ai_settings()]
+        return [_material_ai_settings_out(item) for item in material_service.list_ai_settings()]
 
     @app.get("/api/material-ai-settings/{task_type}", response_model=MaterialAISettingsOut)
     def get_material_ai_settings(task_type: str) -> MaterialAISettingsOut:
-        return MaterialAISettingsOut(**material_service.get_ai_settings(task_type).__dict__)
+        return _material_ai_settings_out(material_service.get_ai_settings(task_type))
 
     @app.post(
         "/api/material-ai-settings/{task_type}",
@@ -2256,17 +2260,21 @@ def create_app(
         task_type: str,
         payload: MaterialAISettingsWriteRequest,
     ) -> MaterialAISettingsOut:
-        return MaterialAISettingsOut(
-            **material_service.update_ai_settings(task_type, **payload.model_dump()).__dict__
+        return _material_ai_settings_out(
+            material_service.update_ai_settings(task_type, **payload.model_dump())
         )
 
+    @app.get("/api/author-style-settings/export")
+    def export_author_style_settings() -> dict[str, Any]:
+        return material_service.export_author_style_settings()
+
     @app.post(
-        "/api/material-ai-settings/{task_type}/reset",
+        "/api/author-style-settings/import",
         response_model=MaterialAISettingsOut,
         dependencies=[Depends(_require_token)],
     )
-    def reset_material_ai_settings(task_type: str) -> MaterialAISettingsOut:
-        return MaterialAISettingsOut(**material_service.reset_ai_settings(task_type).__dict__)
+    def import_author_style_settings(payload: MaterialAISettingsImportRequest) -> MaterialAISettingsOut:
+        return _material_ai_settings_out(material_service.import_author_style_settings(payload.value))
 
     @app.post("/api/materials", response_model=MaterialOut, dependencies=[Depends(_require_token)])
     def create_material(payload: MaterialWriteRequest) -> MaterialOut:
@@ -2413,6 +2421,36 @@ def create_app(
         return MaterialExtractionApplyOut(
             created=result["created"],
             errors=result["errors"],
+        )
+
+    @app.post(
+        "/api/materials/{material_id}/author-style/dimensions/preview",
+        response_model=AuthorStyleDimensionPreviewOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def preview_author_style_dimension(
+        material_id: int,
+        payload: AuthorStyleDimensionPreviewRequest,
+    ) -> AuthorStyleDimensionPreviewOut:
+        return AuthorStyleDimensionPreviewOut(
+            **anchor_extraction_service.preview_author_style_dimension(
+                material_id, **payload.model_dump()
+            )
+        )
+
+    @app.post(
+        "/api/materials/{material_id}/author-style/dimensions/apply",
+        response_model=MaterialOut,
+        dependencies=[Depends(_require_token)],
+    )
+    def apply_author_style_dimension(
+        material_id: int,
+        payload: AuthorStyleDimensionApplyRequest,
+    ) -> MaterialOut:
+        return _material_out(
+            anchor_extraction_service.apply_author_style_dimension(
+                material_id, preview_token=payload.preview_token
+            )
         )
 
     @app.post("/api/material-extractions", response_model=MaterialExtractOut, dependencies=[Depends(_require_token)])
@@ -3208,6 +3246,13 @@ def _outline_out(template: OutlineTemplate) -> OutlineTemplateOut:
         source_metadata=_json_object(template.source_metadata_json),
         import_metadata=_json_object(template.import_metadata_json),
         version=template.version,
+    )
+
+
+def _material_ai_settings_out(settings) -> MaterialAISettingsOut:
+    return MaterialAISettingsOut(
+        **settings.__dict__,
+        prompt_preview=compile_material_ai_prompt(settings),
     )
 
 

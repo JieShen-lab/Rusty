@@ -11,61 +11,12 @@ from rusty.db import default_database_path
 from rusty.services.style_service import DETAIL_LEVELS
 
 
-MATERIAL_TYPES = {"scene_reference", "plot_skeleton"}
+MATERIAL_TYPES = {"plot_skeleton", "author_style"}
 MATERIAL_SCOPES = {"public", "project"}
 ANALYSIS_STATUSES = {"unanalyzed", "analyzed"}
 MATERIAL_TAG_GROUPS = {"general", "applicable_scene"}
 PROJECT_FILTER_MATCH_MODES = {"any", "all"}
-MATERIAL_AI_TASK_TYPES = {
-    "narrative_to_plot_skeleton",
-    "plot_text_to_normalized_skeleton",
-    "source_text_to_scene_material",
-}
-MATERIAL_AI_DEFAULTS: dict[str, dict[str, Any]] = {
-    "narrative_to_plot_skeleton": {
-        "detail_level": "standard",
-        "max_candidates": 6,
-        "system_prompt": (
-            "Extract a reusable plot skeleton from narrative text. Use only supported facts, "
-            "preserve causal order, and leave missing dimensions empty."
-        ),
-        "user_prompt_template": "Identify the premise, stages, conflicts, turns, climax, resolution, and hooks.",
-        "analysis_dimensions": [
-            "premise", "stages", "conflicts", "turning_points", "climax", "resolution", "hooks",
-        ],
-        "generate_general_tags": True,
-        "generate_applicable_scene_tags": False,
-    },
-    "plot_text_to_normalized_skeleton": {
-        "detail_level": "standard",
-        "max_candidates": 6,
-        "system_prompt": (
-            "Normalize existing plot text into a structured plot skeleton without adding events "
-            "or changing the source order."
-        ),
-        "user_prompt_template": "Normalize the supplied plot while preserving every supported causal link.",
-        "analysis_dimensions": [
-            "premise", "stages", "conflicts", "turning_points", "climax", "resolution", "hooks",
-        ],
-        "generate_general_tags": True,
-        "generate_applicable_scene_tags": False,
-    },
-    "source_text_to_scene_material": {
-        "detail_level": "standard",
-        "max_candidates": 6,
-        "system_prompt": (
-            "Extract reusable scene-writing material from source text. Do not generate a plot skeleton "
-            "or invent unsupported details."
-        ),
-        "user_prompt_template": "Extract scene beats, actions, environment, sensory cues, and writing guidance.",
-        "analysis_dimensions": [
-            "summary", "key_beats", "actions", "environment", "sensory",
-            "writing_guidance", "source_cues", "avoidances", "applicable_conditions",
-        ],
-        "generate_general_tags": True,
-        "generate_applicable_scene_tags": True,
-    },
-}
+MATERIAL_AI_TASK_TYPES = {"plot_skeleton_extraction", "author_style_extraction"}
 
 
 @dataclass(frozen=True)
@@ -113,19 +64,11 @@ class MaterialAISettings:
     task_type: str
     model_id: int | None
     detail_level: str
-    max_candidates: int
     system_prompt: str
-    user_prompt_template: str
-    analysis_dimensions: tuple[str, ...]
-    generate_general_tags: bool
-    generate_applicable_scene_tags: bool
-    custom_requirements: str
+    base_instruction: str
+    dimensions: tuple[dict[str, str], ...]
+    extra_requirements: str
     updated_at: str
-
-    @property
-    def generate_tags(self) -> bool:
-        """Legacy read compatibility; new callers use the two independent switches."""
-        return self.generate_general_tags and self.generate_applicable_scene_tags
 
 
 @dataclass(frozen=True)
@@ -1020,7 +963,7 @@ class MaterialService:
         return [
             by_type.get(material_type)
             or ProjectMaterialFilter(project_id, material_type, "any", (), (), True, True)
-            for material_type in ("plot_skeleton", "scene_reference")
+            for material_type in ("plot_skeleton", "author_style")
         ]
 
     def set_project_material_filter(
@@ -1157,37 +1100,14 @@ class MaterialService:
         *,
         model_id: int | None,
         detail_level: str,
-        max_candidates: int,
         system_prompt: str,
-        custom_requirements: str,
-        user_prompt_template: str | None = None,
-        analysis_dimensions: list[str] | None = None,
-        generate_general_tags: bool | None = None,
-        generate_applicable_scene_tags: bool | None = None,
-        generate_tags: bool | None = None,
+        base_instruction: str,
+        dimensions: list[dict[str, str]],
+        extra_requirements: str,
     ) -> MaterialAISettings:
         _validate_ai_task_type(task_type)
         _validate_detail_level(detail_level)
-        if max_candidates < 1 or max_candidates > 20:
-            raise ValueError("max_candidates must be between 1 and 20.")
-        current = self.get_ai_settings(task_type)
-        dimensions = _normalized_dimensions(
-            list(current.analysis_dimensions) if analysis_dimensions is None else analysis_dimensions
-        )
-        general_tags = (
-            generate_tags if generate_general_tags is None and generate_tags is not None
-            else current.generate_general_tags if generate_general_tags is None
-            else generate_general_tags
-        )
-        applicable_tags = (
-            generate_tags if generate_applicable_scene_tags is None and generate_tags is not None
-            else current.generate_applicable_scene_tags
-            if generate_applicable_scene_tags is None
-            else generate_applicable_scene_tags
-        )
-        prompt_template = (
-            current.user_prompt_template if user_prompt_template is None else user_prompt_template
-        )
+        normalized_dimensions = _normalized_dimension_definitions(dimensions)
         with session(self.database_path) as connection:
             if model_id is not None:
                 model = connection.execute(
@@ -1199,56 +1119,56 @@ class MaterialService:
             connection.execute(
                 """
                 UPDATE material_ai_settings
-                SET model_id = ?, detail_level = ?, max_candidates = ?,
-                    system_prompt = ?, user_prompt_template = ?,
-                    analysis_dimensions_json = ?,
-                    generate_general_tags = ?, generate_applicable_scene_tags = ?,
-                    generate_tags = ?, custom_requirements = ?,
+                SET model_id = ?, detail_level = ?, system_prompt = ?,
+                    base_instruction = ?, dimensions_json = ?, extra_requirements = ?,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE task_type = ?
                 """,
                 (
-                    model_id,
-                    detail_level,
-                    max_candidates,
-                    system_prompt,
-                    prompt_template,
-                    json.dumps(dimensions, ensure_ascii=False),
-                    int(general_tags),
-                    int(applicable_tags),
-                    int(general_tags or applicable_tags),
-                    custom_requirements,
-                    task_type,
+                    model_id, detail_level, system_prompt, base_instruction,
+                    json.dumps(normalized_dimensions, ensure_ascii=False),
+                    extra_requirements, task_type,
                 ),
             )
         return self.get_ai_settings(task_type)
 
-    def reset_ai_settings(self, task_type: str) -> MaterialAISettings:
-        _validate_ai_task_type(task_type)
-        defaults = MATERIAL_AI_DEFAULTS[task_type]
-        with session(self.database_path) as connection:
-            connection.execute(
-                """
-                UPDATE material_ai_settings
-                SET model_id = NULL, detail_level = 'standard', max_candidates = 6,
-                    generate_tags = ?,
-                    generate_general_tags = ?, generate_applicable_scene_tags = ?,
-                    custom_requirements = '', system_prompt = ?,
-                    user_prompt_template = ?, analysis_dimensions_json = ?,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE task_type = ?
-                """,
-                (
-                    int(defaults["generate_general_tags"] or defaults["generate_applicable_scene_tags"]),
-                    int(defaults["generate_general_tags"]),
-                    int(defaults["generate_applicable_scene_tags"]),
-                    defaults["system_prompt"],
-                    defaults["user_prompt_template"],
-                    json.dumps(defaults["analysis_dimensions"], ensure_ascii=False),
-                    task_type,
-                ),
-            )
-        return self.get_ai_settings(task_type)
+    def export_author_style_settings(self) -> dict[str, Any]:
+        settings = self.get_ai_settings("author_style_extraction")
+        return {
+            "schema_version": 1,
+            "config_type": "author_style_extraction",
+            "detail_level": settings.detail_level,
+            "system_prompt": settings.system_prompt,
+            "base_instruction": settings.base_instruction,
+            "dimensions": [dict(item) for item in settings.dimensions],
+            "extra_requirements": settings.extra_requirements,
+        }
+
+    def import_author_style_settings(self, value: object) -> MaterialAISettings:
+        if not isinstance(value, dict):
+            raise ValueError("Author style settings JSON must be an object.")
+        if value.get("schema_version") != 1:
+            raise ValueError("schema_version must be 1.")
+        if value.get("config_type") != "author_style_extraction":
+            raise ValueError("config_type must be author_style_extraction.")
+        dimensions = value.get("dimensions")
+        if not isinstance(dimensions, list):
+            raise ValueError("dimensions must be an array.")
+        if any(not isinstance(item, dict) for item in dimensions):
+            raise ValueError("Every dimension must be an object.")
+        detail_level = value.get("detail_level")
+        if not isinstance(detail_level, str):
+            raise ValueError("detail_level must be a string.")
+        current = self.get_ai_settings("author_style_extraction")
+        return self.update_ai_settings(
+            "author_style_extraction",
+            model_id=current.model_id,
+            detail_level=detail_level,
+            system_prompt=_limited_setting_text(value.get("system_prompt"), "system_prompt"),
+            base_instruction=_limited_setting_text(value.get("base_instruction"), "base_instruction"),
+            dimensions=[dict(item) for item in dimensions],
+            extra_requirements=_limited_setting_text(value.get("extra_requirements"), "extra_requirements"),
+        )
 
     @staticmethod
     def _require_project(connection, project_id: int) -> None:
@@ -1388,13 +1308,10 @@ class MaterialService:
             task_type=str(row["task_type"]),
             model_id=int(row["model_id"]) if row["model_id"] is not None else None,
             detail_level=str(row["detail_level"]),
-            max_candidates=int(row["max_candidates"]),
             system_prompt=str(row["system_prompt"]),
-            user_prompt_template=str(row["user_prompt_template"]),
-            analysis_dimensions=tuple(_json_string_list(row["analysis_dimensions_json"])),
-            generate_general_tags=bool(row["generate_general_tags"]),
-            generate_applicable_scene_tags=bool(row["generate_applicable_scene_tags"]),
-            custom_requirements=str(row["custom_requirements"]),
+            base_instruction=str(row["base_instruction"]),
+            dimensions=tuple(_json_dimension_definitions(row["dimensions_json"])),
+            extra_requirements=str(row["extra_requirements"]),
             updated_at=str(row["updated_at"]),
         )
 
@@ -1495,11 +1412,36 @@ def _validate_ai_task_type(value: str) -> str:
     return value
 
 
+def compile_material_ai_prompt(settings: MaterialAISettings) -> str:
+    dimensions = "\n\n".join(
+        f"{index}. {item['name']}\nID: {item['id']}\n提取要求：{item['requirement']}"
+        for index, item in enumerate(settings.dimensions, 1)
+    )
+    output = (
+        "返回一份包含 summary 与 dimensions 的 JSON；每个维度必须返回输入 ID、name、analysis、"
+        "features 字符串数组和 examples 原文字符串数组。"
+        if settings.task_type == "author_style_extraction"
+        else "返回一份包含 premise、stages、conflicts、turning_points、climax、resolution 和 hooks 的剧情骨架 JSON。"
+    )
+    return (
+        f"{settings.system_prompt}\n\n任务：\n{settings.base_instruction}\n\n"
+        f"分析维度：\n{dimensions or '无'}\n\n附加要求：\n"
+        f"{settings.extra_requirements or '无'}\n\n输出协议：\n{output}"
+    )
+
+
+def _limited_setting_text(value: object, field: str) -> str:
+    text = str(value or "")
+    if len(text) > 12000:
+        raise ValueError(f"{field} must be 12000 characters or fewer.")
+    return text
+
+
 def normalize_material_content(material_type: str, value: object) -> dict[str, Any]:
     if material_type == "plot_skeleton":
         return normalize_plot_skeleton_content(value)
-    if material_type == "scene_reference":
-        return normalize_scene_reference_content(value)
+    if material_type == "author_style":
+        return normalize_author_style_content(value)
     raise ValueError(f"Unsupported material type: {material_type}")
 
 
@@ -1524,30 +1466,61 @@ def normalize_plot_skeleton_content(value: object) -> dict[str, Any]:
     }
 
 
-def normalize_scene_reference_content(value: object) -> dict[str, Any]:
+def normalize_author_style_content(value: object) -> dict[str, Any]:
     source = dict(value) if isinstance(value, dict) else {}
-    known = {
-        "schema_version", "summary", "key_beats", "actions", "environment",
-        "sensory", "writing_guidance", "source_cues", "avoidances",
-        "applicable_conditions", "legacy_extra",
-    }
-    legacy_extra = _json_object_value(source.get("legacy_extra")) if isinstance(source.get("legacy_extra"), dict) else {}
-    legacy_extra.update({key: item for key, item in source.items() if key not in known})
+    dimensions: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for index, item in enumerate(source.get("dimensions") if isinstance(source.get("dimensions"), list) else []):
+        if not isinstance(item, dict):
+            continue
+        dimension_id = str(item.get("id") or f"dimension-{index + 1}").strip()
+        if not dimension_id or dimension_id in seen_ids:
+            continue
+        seen_ids.add(dimension_id)
+        dimensions.append({
+            "id": dimension_id,
+            "name": str(item.get("name") or "未命名维度").strip(),
+            "requirement": str(item.get("requirement") or "").strip(),
+            "analysis": str(item.get("analysis") or "").strip(),
+            "features": _string_values(item.get("features")),
+            "examples": _string_values(item.get("examples")),
+        })
     return {
         "schema_version": 1,
         "summary": str(source.get("summary") or "").strip(),
-        "key_beats": _normalize_structured_items(source.get("key_beats"), "beat"),
-        "actions": _normalize_structured_items(source.get("actions"), "action"),
-        "environment": _normalize_structured_items(source.get("environment"), "environment"),
-        "sensory": _normalize_structured_items(source.get("sensory"), "sensory"),
-        "writing_guidance": _normalize_structured_items(source.get("writing_guidance"), "guidance"),
-        "source_cues": _normalize_structured_items(source.get("source_cues"), "source-cue"),
-        "avoidances": _normalize_structured_items(source.get("avoidances"), "avoidance"),
-        "applicable_conditions": _normalize_structured_items(
-            source.get("applicable_conditions"), "condition"
-        ),
-        "legacy_extra": legacy_extra,
+        "dimensions": dimensions,
+        **({"legacy_scene_reference": source["legacy_scene_reference"]} if "legacy_scene_reference" in source else {}),
     }
+
+
+def _string_values(value: object) -> list[str]:
+    return [str(item).strip() for item in value if str(item).strip()] if isinstance(value, list) else []
+
+
+def _normalized_dimension_definitions(value: list[dict[str, str]]) -> list[dict[str, str]]:
+    if len(value) > 50:
+        raise ValueError("Material AI settings support at most 50 dimensions.")
+    result: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, dict):
+            raise ValueError("Every dimension must be an object.")
+        if not isinstance(item.get("name"), str):
+            raise ValueError("Dimension name must be a string.")
+        if not isinstance(item.get("requirement"), str):
+            raise ValueError("Dimension requirement must be a string.")
+        dimension_id = str(item.get("id") or "").strip()
+        name = str(item.get("name") or "").strip()
+        requirement = str(item.get("requirement") or "").strip()
+        if not dimension_id or dimension_id in seen:
+            raise ValueError("Each dimension must have a unique stable id.")
+        if not name:
+            raise ValueError("Dimension name is required.")
+        if len(dimension_id) > 100 or len(name) > 100 or len(requirement) > 4000:
+            raise ValueError("Material AI dimension field is too long.")
+        seen.add(dimension_id)
+        result.append({"id": dimension_id, "name": name, "requirement": requirement})
+    return result
 
 
 def _normalize_structured_items(value: object, prefix: str) -> list[dict[str, Any]]:
@@ -1666,6 +1639,24 @@ def _json_string_list(value: object) -> list[str]:
     except (TypeError, json.JSONDecodeError):
         return []
     return [str(item) for item in parsed if str(item).strip()] if isinstance(parsed, list) else []
+
+
+def _json_dimension_definitions(value: object) -> list[dict[str, str]]:
+    try:
+        parsed = json.loads(str(value or "[]"))
+    except (TypeError, json.JSONDecodeError):
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [
+        {
+            "id": str(item.get("id") or "").strip(),
+            "name": str(item.get("name") or "").strip(),
+            "requirement": str(item.get("requirement") or "").strip(),
+        }
+        for item in parsed
+        if isinstance(item, dict) and str(item.get("id") or "").strip()
+    ]
 
 
 def _json_object(value: str) -> dict[str, Any]:

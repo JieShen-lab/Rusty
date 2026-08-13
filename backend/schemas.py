@@ -651,7 +651,7 @@ class SceneWorkflowPlanRequest(BaseModel):
     model_id: int | None = None
     character_ids: list[int] = Field(default_factory=list)
     material_mappings: list[dict[str, Any]] = Field(default_factory=list)
-    scene_reference_ids: list[int] = Field(default_factory=list)
+    author_style_ids: list[int] = Field(default_factory=list)
 
 
 class SceneWorkflowExecuteRequest(BaseModel):
@@ -659,7 +659,7 @@ class SceneWorkflowExecuteRequest(BaseModel):
     model_id: int | None = None
     character_ids: list[int] = Field(default_factory=list)
     plot_skeleton_material_ids: list[int] = Field(default_factory=list)
-    scene_reference_ids: list[int] = Field(default_factory=list)
+    author_style_ids: list[int] = Field(default_factory=list)
     material_ids: list[int] = Field(default_factory=list)
     chapter_id: int | None = None
     scene_id: int | None = None
@@ -897,7 +897,7 @@ class AnchorExtractRequest(BaseModel):
 
 class MaterialCategoryOut(BaseModel):
     id: int
-    material_type: Literal["scene_reference", "plot_skeleton"]
+    material_type: Literal["plot_skeleton", "author_style"]
     name: str
     normalized_name: str
     sort_order: int = 0
@@ -905,7 +905,7 @@ class MaterialCategoryOut(BaseModel):
 
 
 class MaterialCategoryCreateRequest(BaseModel):
-    material_type: Literal["scene_reference", "plot_skeleton"]
+    material_type: Literal["plot_skeleton", "author_style"]
     name: str = Field(min_length=1, max_length=80)
 
 
@@ -928,7 +928,7 @@ class MaterialSourceSummaryOut(BaseModel):
 
 class MaterialOut(BaseModel):
     id: int
-    material_type: Literal["scene_reference", "plot_skeleton"]
+    material_type: Literal["plot_skeleton", "author_style"]
     scope: Literal["public", "project"]
     project_id: int | None = None
     project_name: str | None = None
@@ -957,7 +957,7 @@ class MaterialOut(BaseModel):
 
 
 class MaterialWriteRequest(BaseModel):
-    material_type: Literal["scene_reference", "plot_skeleton"]
+    material_type: Literal["plot_skeleton", "author_style"]
     scope: Literal["public", "project"] = "public"
     project_id: int | None = None
     name: str = Field(min_length=1)
@@ -1014,7 +1014,7 @@ class MaterialJsonImportRequest(BaseModel):
 
 
 class MaterialExtractRequest(AnchorExtractRequest):
-    material_type: Literal["scene_reference", "plot_skeleton"]
+    material_type: Literal["plot_skeleton", "author_style"]
 
 
 class MaterialExtractOut(BaseModel):
@@ -1023,7 +1023,7 @@ class MaterialExtractOut(BaseModel):
 
 class ProjectMaterialFilterOut(BaseModel):
     project_id: int
-    material_type: Literal["scene_reference", "plot_skeleton"]
+    material_type: Literal["plot_skeleton", "author_style"]
     match_mode: Literal["any", "all"]
     tag_ids: list[int] = Field(default_factory=list)
     manual_material_ids: list[int] = Field(default_factory=list)
@@ -1039,43 +1039,39 @@ class ProjectMaterialFilterWriteRequest(BaseModel):
     include_applicable_scene_tags: bool = True
 
 
+class MaterialAIDimension(BaseModel):
+    id: str = Field(min_length=1, max_length=100)
+    name: str = Field(min_length=1, max_length=100)
+    requirement: str = Field(default="", max_length=4000)
+
+
 class MaterialAISettingsOut(BaseModel):
-    task_type: Literal[
-        "narrative_to_plot_skeleton",
-        "plot_text_to_normalized_skeleton",
-        "source_text_to_scene_material",
-    ]
+    task_type: Literal["plot_skeleton_extraction", "author_style_extraction"]
     model_id: int | None = None
     detail_level: Literal["brief", "standard", "detailed"]
-    max_candidates: int
     system_prompt: str
-    user_prompt_template: str
-    analysis_dimensions: list[str] = Field(default_factory=list)
-    generate_general_tags: bool
-    generate_applicable_scene_tags: bool
-    custom_requirements: str
+    base_instruction: str
+    dimensions: list[MaterialAIDimension] = Field(default_factory=list, max_length=50)
+    extra_requirements: str
+    prompt_preview: str = ""
     updated_at: str
+
+
+class MaterialAISettingsImportRequest(BaseModel):
+    value: Any
 
 
 class MaterialAISettingsWriteRequest(BaseModel):
     model_id: int | None = None
     detail_level: Literal["brief", "standard", "detailed"] = "standard"
-    max_candidates: int = Field(default=6, ge=1, le=20)
-    system_prompt: str = ""
-    user_prompt_template: str | None = None
-    analysis_dimensions: list[str] | None = None
-    generate_general_tags: bool | None = None
-    generate_applicable_scene_tags: bool | None = None
-    generate_tags: bool | None = None
-    custom_requirements: str = ""
+    system_prompt: str = Field(default="", max_length=12000)
+    base_instruction: str = Field(default="", max_length=12000)
+    dimensions: list[MaterialAIDimension] = Field(default_factory=list, max_length=50)
+    extra_requirements: str = Field(default="", max_length=12000)
 
 
 class MaterialExtractionPreviewRequest(BaseModel):
-    task_type: Literal[
-        "narrative_to_plot_skeleton",
-        "plot_text_to_normalized_skeleton",
-        "source_text_to_scene_material",
-    ]
+    task_type: Literal["plot_skeleton_extraction", "author_style_extraction"]
     name: str | None = None
     sample_text: str | None = Field(default=None, max_length=50000)
     source_path: str | None = None
@@ -1087,7 +1083,7 @@ class MaterialExtractionPreviewRequest(BaseModel):
 
 class MaterialExtractionCandidateOut(BaseModel):
     candidate_id: str
-    material_type: Literal["scene_reference", "plot_skeleton"]
+    material_type: Literal["plot_skeleton", "author_style"]
     selected: bool = True
     name: str
     description: str = ""
@@ -1103,12 +1099,8 @@ class MaterialExtractionCandidateOut(BaseModel):
 class MaterialExtractionPreviewOut(BaseModel):
     preview_token: str
     expires_at: str
-    task_type: Literal[
-        "narrative_to_plot_skeleton",
-        "plot_text_to_normalized_skeleton",
-        "source_text_to_scene_material",
-    ]
-    material_type: Literal["scene_reference", "plot_skeleton"]
+    task_type: Literal["plot_skeleton_extraction", "author_style_extraction"]
+    material_type: Literal["plot_skeleton", "author_style"]
     source_summary: MaterialSourceSummaryOut
     prompt_snapshot: dict[str, Any] = Field(default_factory=dict)
     candidates: list[MaterialExtractionCandidateOut]
@@ -1129,6 +1121,25 @@ class MaterialExtractionApplyItemOut(BaseModel):
 class MaterialExtractionApplyOut(BaseModel):
     created: list[MaterialExtractionApplyItemOut] = Field(default_factory=list)
     errors: list[MaterialExtractionApplyItemOut] = Field(default_factory=list)
+
+
+class AuthorStyleDimensionPreviewRequest(BaseModel):
+    dimension_id: str = Field(min_length=1, max_length=100)
+    dimension_name: str = Field(min_length=1, max_length=100)
+    dimension_requirement: str = Field(default="", max_length=4000)
+    model_id: int | None = None
+
+
+class AuthorStyleDimensionPreviewOut(BaseModel):
+    preview_token: str
+    dimension_id: str
+    analysis: str
+    features: list[str] = Field(default_factory=list)
+    examples: list[str] = Field(default_factory=list)
+
+
+class AuthorStyleDimensionApplyRequest(BaseModel):
+    preview_token: str = Field(min_length=1)
 
 
 class CharacterSourceSummaryOut(BaseModel):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import secrets
 import time
@@ -63,14 +64,7 @@ MATERIAL_DIMENSIONS = {
         "resolution",
         "hooks",
     ],
-    "scene_reference": [
-        "summary",
-        "writing_guidance",
-        "key_beats",
-        "source_cues",
-        "applicable_conditions",
-        "avoidances",
-    ],
+    "author_style": ["summary", "dimensions"],
 }
 
 
@@ -168,6 +162,20 @@ _MATERIAL_PREVIEWS: dict[tuple[str, str], _StoredMaterialPreview] = {}
 _MATERIAL_PREVIEWS_LOCK = Lock()
 
 
+@dataclass(frozen=True)
+class _StoredAuthorStyleDimensionPreview:
+    material_id: int
+    dimension_id: str
+    dimension_name: str
+    dimension_requirement: str
+    source_hash: str
+    result: dict[str, Any]
+    expires_at: float
+
+
+_AUTHOR_STYLE_DIMENSION_PREVIEWS: dict[tuple[str, str], _StoredAuthorStyleDimensionPreview] = {}
+
+
 def _prune_expired_previews(previews: dict[tuple[str, str], Any]) -> None:
     now = time.monotonic()
     for key in [key for key, stored in previews.items() if stored.expires_at <= now]:
@@ -205,11 +213,7 @@ class AnchorExtractionService:
             raise ValueError(
                 f"Material extraction text must be {MAX_MATERIAL_EXTRACTION_TEXT_CHARS:,} characters or fewer."
             )
-        material_type = (
-            "scene_reference"
-            if task_type == "source_text_to_scene_material"
-            else "plot_skeleton"
-        )
+        material_type = "author_style" if task_type == "author_style_extraction" else "plot_skeleton"
         settings = self.material_service.get_ai_settings(task_type)
         full_source_text = normalized_text
         model_sample = _sample_text(full_source_text)
@@ -220,12 +224,10 @@ class AnchorExtractionService:
             material_type=material_type,
             detail_level=settings.detail_level,
             name=name,
-            generate_general_tags=settings.generate_general_tags,
-            generate_applicable_scene_tags=settings.generate_applicable_scene_tags,
-            custom_requirements=settings.custom_requirements,
             system_prompt=settings.system_prompt,
-            user_prompt_template=settings.user_prompt_template,
-            analysis_dimensions=settings.analysis_dimensions,
+            base_instruction=settings.base_instruction,
+            dimensions=settings.dimensions,
+            extra_requirements=settings.extra_requirements,
         )
         response = self.ai_client.chat(
             model,
@@ -237,7 +239,7 @@ class AnchorExtractionService:
         if not isinstance(items, list) or not items:
             raise ValueError("Material extraction response must contain a non-empty materials list.")
         candidates: list[MaterialExtractionCandidate] = []
-        for item in items[: settings.max_candidates]:
+        for item in items[:1]:
             if not isinstance(item, dict):
                 continue
             candidate_name = str(item.get("name") or name or "").strip()
@@ -261,15 +263,9 @@ class AnchorExtractionService:
                     name=candidate_name,
                     description=str(item.get("description") or ""),
                     content=normalize_material_content(material_type, raw_content),
-                    suggested_general_tags=(
-                        _suggested_tags(item.get("suggested_general_tags"))
-                        if settings.generate_general_tags else []
-                    ),
-                    suggested_applicable_scene_tags=(
-                        _suggested_tags(item.get("suggested_applicable_scene_tags"))
-                        if settings.generate_applicable_scene_tags else []
-                    ),
-                    evidence=_structured_evidence(item.get("evidence")),
+                    suggested_general_tags=_suggested_tags(item.get("suggested_general_tags")),
+                    suggested_applicable_scene_tags=_suggested_tags(item.get("suggested_applicable_scene_tags")),
+                    evidence=[],
                     evidence_summary=str(item.get("evidence_summary") or ""),
                     confidence=_confidence(item.get("confidence")),
                     warnings=_string_list(item.get("warnings")),
@@ -303,13 +299,10 @@ class AnchorExtractionService:
             "material_type": material_type,
             "model_id": model.id,
             "detail_level": settings.detail_level,
-            "max_candidates": settings.max_candidates,
             "system_prompt": settings.system_prompt,
-            "user_prompt_template": settings.user_prompt_template,
-            "analysis_dimensions": list(settings.analysis_dimensions),
-            "generate_general_tags": settings.generate_general_tags,
-            "generate_applicable_scene_tags": settings.generate_applicable_scene_tags,
-            "custom_requirements": settings.custom_requirements,
+            "base_instruction": settings.base_instruction,
+            "dimensions": [dict(item) for item in settings.dimensions],
+            "extra_requirements": settings.extra_requirements,
             "messages": [
                 {"role": message["role"], "content": message["content"]}
                 for message in messages
@@ -428,6 +421,93 @@ class AnchorExtractionService:
             ],
             "errors": [],
         }
+
+    def preview_author_style_dimension(
+        self,
+        material_id: int,
+        *,
+        dimension_id: str,
+        dimension_name: str,
+        dimension_requirement: str,
+        model_id: int | None = None,
+    ) -> dict[str, Any]:
+        material = self.material_service.get_material(material_id)
+        if material is None:
+            raise FileNotFoundError(f"Material not found: {material_id}")
+        if material.material_type != "author_style":
+            raise ValueError("Single-dimension extraction requires an author_style material.")
+        source_text = material.raw_text.strip()
+        if not source_text:
+            raise ValueError("无法进行 AI 提取：该作者风格没有保存可分析的来源文本。请先补充来源文本。")
+        clean_id = dimension_id.strip()
+        clean_name = dimension_name.strip()
+        if not clean_id or not clean_name:
+            raise ValueError("Dimension id and name are required.")
+        settings = self.material_service.get_ai_settings("author_style_extraction")
+        model = self._resolve_model(model_id if model_id is not None else settings.model_id)
+        messages = [
+            {"role": "system", "content": (
+                f"{settings.system_prompt}\n{settings.base_instruction}\n"
+                "只分析请求中的一个维度。原文实例必须逐字来自输入文本。只返回严格 JSON。"
+            )},
+            {"role": "user", "content": (
+                f"维度 ID：{clean_id}\n维度名称：{clean_name}\n提取要求：{dimension_requirement}\n"
+                f"附加要求：{settings.extra_requirements or '无'}\n"
+                '输出协议：{"id":"","analysis":"","features":[],"examples":[]}\n\n'
+                f"原始文本：\n{_sample_text(source_text)}"
+            )},
+        ]
+        response = self.ai_client.chat(model, self.model_service.get_api_key(model.id), messages)
+        value = _parse_json_object(response.text, "Author style dimension extraction")
+        if str(value.get("id") or "") != clean_id:
+            raise ValueError("AI returned an unknown dimension id.")
+        result = {
+            "analysis": str(value.get("analysis") or "").strip(),
+            "features": _string_list(value.get("features")),
+            "examples": _string_list(value.get("examples")),
+        }
+        token = secrets.token_urlsafe(24)
+        source_hash = hashlib.sha256(source_text.encode("utf-8")).hexdigest()
+        _AUTHOR_STYLE_DIMENSION_PREVIEWS[(str(self.database_path.resolve()), token)] = (
+            _StoredAuthorStyleDimensionPreview(
+                material_id, clean_id, clean_name, dimension_requirement,
+                source_hash, result, time.monotonic() + MATERIAL_PREVIEW_TTL_SECONDS,
+            )
+        )
+        return {"preview_token": token, "dimension_id": clean_id, **result}
+
+    def apply_author_style_dimension(self, material_id: int, *, preview_token: str) -> Material:
+        key = (str(self.database_path.resolve()), preview_token)
+        preview = _AUTHOR_STYLE_DIMENSION_PREVIEWS.get(key)
+        if preview is None or preview.expires_at <= time.monotonic():
+            raise ValueError("Author style dimension preview token is invalid or expired.")
+        if preview.material_id != material_id:
+            raise ValueError("Author style dimension preview does not belong to this material.")
+        material = self.material_service.get_material(material_id)
+        if material is None:
+            raise FileNotFoundError(f"Material not found: {material_id}")
+        source_hash = hashlib.sha256(material.raw_text.strip().encode("utf-8")).hexdigest()
+        if source_hash != preview.source_hash:
+            raise ValueError("Source text changed after preview; run extraction again.")
+        content = normalize_material_content("author_style", json.loads(material.content_json))
+        dimensions = list(content.get("dimensions", []))
+        target = next((item for item in dimensions if item.get("id") == preview.dimension_id), None)
+        if target is None:
+            raise ValueError("The dimension was deleted after preview.")
+        target.update(preview.result)
+        target["name"] = preview.dimension_name
+        target["requirement"] = preview.dimension_requirement
+        self.material_service.update_material(
+            material_id, name=material.name, description=material.description,
+            detail_level=material.detail_level, raw_text=material.raw_text, content=content,
+            analysis_status="analyzed", timeline_start_chapter=material.timeline_start_chapter,
+            timeline_end_chapter=material.timeline_end_chapter, sort_order=material.sort_order,
+        )
+        _AUTHOR_STYLE_DIMENSION_PREVIEWS.pop(key, None)
+        updated = self.material_service.get_material(material_id)
+        if updated is None:
+            raise RuntimeError("Author style disappeared after dimension apply.")
+        return updated
 
     def extract_materials_from_text(
         self,
@@ -984,52 +1064,46 @@ class AnchorExtractionService:
         material_type: str,
         detail_level: str,
         name: str | None,
-        generate_general_tags: bool,
-        generate_applicable_scene_tags: bool,
-        custom_requirements: str,
         system_prompt: str,
-        user_prompt_template: str,
-        analysis_dimensions: tuple[str, ...],
+        base_instruction: str,
+        dimensions: tuple[dict[str, str], ...],
+        extra_requirements: str,
     ) -> list[dict[str, str]]:
         requested_name = name.strip() if name and name.strip() else "derive from source"
-        general_tag_rule = (
-            "Suggest 0-8 short retrieval tags in suggested_general_tags."
-            if generate_general_tags
-            else "Return an empty suggested_general_tags array."
+        dimension_text = "\n\n".join(
+            f"{index}. {item['name']}\nID: {item['id']}\n提取要求：{item['requirement']}"
+            for index, item in enumerate(dimensions, 1)
         )
-        applicable_tag_rule = (
-            "Suggest 0-8 scene applicability tags in suggested_applicable_scene_tags."
-            if generate_applicable_scene_tags
-            else "Return an empty suggested_applicable_scene_tags array."
-        )
-        separation_rule = (
-            "This task only creates scene material. Never create, derive, or reference a plot skeleton."
-            if task_type == "source_text_to_scene_material"
-            else "This task only creates a plot skeleton. Never derive scene material."
-        )
+        if material_type == "author_style":
+            output_protocol = (
+                '{"materials":[{"name":"","description":"","content":{"schema_version":1,'
+                '"summary":"","dimensions":[{"id":"输入维度 id","name":"","requirement":"",'
+                '"analysis":"","features":[],"examples":[]}]},"suggested_general_tags":[],'
+                '"suggested_applicable_scene_tags":[],"evidence_summary":"","confidence":0.0,"warnings":[]}]}'
+            )
+            separation_rule = "只创建一份完整作者风格档案。维度必须按稳定 ID 返回，examples 只能逐字引用输入文本，不得包含来源位置字段。"
+        else:
+            output_protocol = (
+                '{"materials":[{"name":"","description":"","content":{"schema_version":1,'
+                '"premise":"","stages":[],"conflicts":[],"turning_points":[],"climax":{},'
+                '"resolution":{},"hooks":[]},"suggested_general_tags":[],"suggested_applicable_scene_tags":[],'
+                '"evidence_summary":"","confidence":0.0,"warnings":[]}]}'
+            )
+            separation_rule = "只创建一份剧情骨架。抽象人物、地点和物品，但保留事件顺序与因果；不得补写剧情，不保存原文证据或 offset。"
         return [
             {
                 "role": "system",
                 "content": (
-                    f"{system_prompt}\n{separation_rule}\n"
-                    "Return strict JSON only. Never invent unsupported facts. "
-                    "Missing dimensions must be empty."
+                    f"{system_prompt}\n\n{separation_rule}\n"
+                    "只返回严格 JSON。缺少依据时保持空值或说明样本不足，不得编造。"
                 ),
             },
             {
                 "role": "user",
                 "content": (
-                    f"Task type: {task_type}\nMaterial type: {material_type}\n"
-                    f"Suggested name: {requested_name}\nDetail level: {detail_level}\n"
-                    f"Analysis dimensions: {json.dumps(list(analysis_dimensions), ensure_ascii=False)}\n"
-                    f"{general_tag_rule}\n{applicable_tag_rule}\n"
-                    "Tags must be short labels, not sentences.\n"
-                    f"Task prompt template: {user_prompt_template or 'Use the default extraction instructions.'}\n"
-                    f"Additional requirements: {custom_requirements or 'None'}\n"
-                    "Return {\"materials\":[{\"name\":\"\",\"description\":\"\","
-                    "\"content\":{},\"suggested_general_tags\":[],"
-                    "\"suggested_applicable_scene_tags\":[],\"evidence\":[],"
-                    "\"evidence_summary\":\"\",\"confidence\":0.0,\"warnings\":[]}]}.\n\n"
+                    f"任务：{task_type}\n素材类型：{material_type}\n建议名称：{requested_name}\n细化程度：{detail_level}\n\n"
+                    f"任务说明：\n{base_instruction}\n\n分析维度：\n{dimension_text}\n\n"
+                    f"附加要求：\n{extra_requirements or '无'}\n\n输出协议：\n{output_protocol}\n\n"
                     f"Source text:\n{sample_text}"
                 ),
             },
@@ -1045,8 +1119,8 @@ class AnchorExtractionService:
         dimensions = "\n".join(f"- {item}" for item in MATERIAL_DIMENSIONS[material_type])
         requested_name = name.strip() if name and name.strip() else "derive from source"
         shape = (
-            "scene_reference content keys: summary, writing_guidance, key_beats, source_cues, applicable_conditions, avoidances."
-            if material_type == "scene_reference"
+            "author_style content keys: summary, dimensions[{id,name,requirement,analysis,features[],examples[]}]."
+            if material_type == "author_style"
             else "plot_skeleton content keys: premise, stages, conflicts, turning_points, climax, resolution, hooks."
         )
         return [

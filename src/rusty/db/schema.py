@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .connection import session
 
-CURRENT_SCHEMA_VERSION = 53
+CURRENT_SCHEMA_VERSION = 54
 
 logger = logging.getLogger(__name__)
 
@@ -278,7 +278,7 @@ CREATE TABLE IF NOT EXISTS character_cards (
 
 CREATE TABLE IF NOT EXISTS materials (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    material_type TEXT NOT NULL CHECK (material_type IN ('scene_reference', 'plot_skeleton')),
+    material_type TEXT NOT NULL CHECK (material_type IN ('plot_skeleton', 'author_style')),
     scope TEXT NOT NULL DEFAULT 'public' CHECK (scope IN ('public', 'project')),
     project_id INTEGER,
     name TEXT NOT NULL,
@@ -4374,6 +4374,319 @@ def _migrate_to_v53(connection: sqlite3.Connection) -> None:
         )
 
 
+def _migrate_to_v54(connection: sqlite3.Connection) -> None:
+    """Replace scene references with modular author styles without losing user data."""
+    material_sql_row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'materials'"
+    ).fetchone()
+    material_sql = str(material_sql_row[0] or "") if material_sql_row else ""
+    if "'author_style'" not in material_sql:
+        tag_links = connection.execute(
+            "SELECT material_id, tag_id, created_at FROM material_tag_links"
+        ).fetchall()
+        category_links = connection.execute(
+            "SELECT material_id, category_id, created_at FROM material_category_links"
+        ).fetchall()
+        rows = connection.execute("SELECT * FROM materials ORDER BY id").fetchall()
+        connection.execute("DROP TABLE material_tag_links")
+        connection.execute("DROP TABLE material_category_links")
+        connection.execute("DROP TABLE IF EXISTS materials_v54")
+        connection.execute(
+            """
+            CREATE TABLE materials_v54 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                material_type TEXT NOT NULL CHECK (material_type IN ('plot_skeleton', 'author_style')),
+                scope TEXT NOT NULL DEFAULT 'public' CHECK (scope IN ('public', 'project')),
+                project_id INTEGER,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                detail_level TEXT NOT NULL DEFAULT 'standard' CHECK (detail_level IN ('brief', 'standard', 'detailed')),
+                raw_text TEXT NOT NULL DEFAULT '',
+                content_json TEXT NOT NULL DEFAULT '{}',
+                analysis_status TEXT NOT NULL DEFAULT 'analyzed' CHECK (analysis_status IN ('unanalyzed', 'analyzed')),
+                source_metadata_json TEXT NOT NULL DEFAULT '{}',
+                import_metadata_json TEXT NOT NULL DEFAULT '{}',
+                source_material_id INTEGER,
+                source_version INTEGER,
+                legacy_outline_id INTEGER UNIQUE,
+                timeline_start_chapter INTEGER,
+                timeline_end_chapter INTEGER,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                version INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                deleted_at TEXT,
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+                FOREIGN KEY (source_material_id) REFERENCES materials_v54(id) ON DELETE SET NULL
+            )
+            """
+        )
+        for row in rows:
+            old_type = str(row["material_type"])
+            content = _safe_json_object(row["content_json"])
+            if old_type == "scene_reference":
+                content = {
+                    "schema_version": 1,
+                    "summary": "",
+                    "dimensions": [],
+                    "legacy_scene_reference": content,
+                }
+            connection.execute(
+                """
+                INSERT INTO materials_v54 (
+                    id, material_type, scope, project_id, name, description, detail_level,
+                    raw_text, content_json, analysis_status, source_metadata_json,
+                    import_metadata_json, source_material_id, source_version, legacy_outline_id,
+                    timeline_start_chapter, timeline_end_chapter, sort_order, version,
+                    created_at, updated_at, deleted_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    row["id"], "author_style" if old_type == "scene_reference" else old_type,
+                    row["scope"], row["project_id"], row["name"], row["description"],
+                    row["detail_level"], row["raw_text"], json.dumps(content, ensure_ascii=False),
+                    row["analysis_status"], row["source_metadata_json"], row["import_metadata_json"],
+                    row["source_material_id"], row["source_version"], row["legacy_outline_id"],
+                    row["timeline_start_chapter"], row["timeline_end_chapter"], row["sort_order"],
+                    row["version"], row["created_at"], row["updated_at"], row["deleted_at"],
+                ),
+            )
+        connection.execute("DROP TABLE materials")
+        connection.execute("ALTER TABLE materials_v54 RENAME TO materials")
+        connection.executescript(
+            """
+            CREATE INDEX IF NOT EXISTS idx_materials_scope_project_timeline
+                ON materials(scope, project_id, timeline_start_chapter, sort_order);
+            CREATE INDEX IF NOT EXISTS idx_materials_public_type
+                ON materials(scope, material_type, updated_at);
+            CREATE TABLE material_tag_links (
+                material_id INTEGER NOT NULL,
+                tag_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (material_id, tag_id),
+                FOREIGN KEY (material_id) REFERENCES materials(id) ON DELETE CASCADE,
+                FOREIGN KEY (tag_id) REFERENCES material_tags(id) ON DELETE CASCADE
+            );
+            CREATE TABLE material_category_links (
+                material_id INTEGER NOT NULL,
+                category_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (material_id, category_id),
+                FOREIGN KEY (material_id) REFERENCES materials(id) ON DELETE CASCADE,
+                FOREIGN KEY (category_id) REFERENCES material_categories(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_material_category_links_category
+                ON material_category_links(category_id);
+            CREATE INDEX IF NOT EXISTS idx_material_category_links_material
+                ON material_category_links(material_id);
+            """
+        )
+        connection.executemany(
+            "INSERT INTO material_tag_links(material_id, tag_id, created_at) VALUES (?, ?, ?)",
+            [(row["material_id"], row["tag_id"], row["created_at"]) for row in tag_links],
+        )
+        connection.executemany(
+            "INSERT INTO material_category_links(material_id, category_id, created_at) VALUES (?, ?, ?)",
+            [(row["material_id"], row["category_id"], row["created_at"]) for row in category_links],
+        )
+
+    category_sql_row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'material_categories'"
+    ).fetchone()
+    if category_sql_row and "'author_style'" not in str(category_sql_row[0] or ""):
+        links = connection.execute("SELECT * FROM material_category_links").fetchall()
+        rows = connection.execute("SELECT * FROM material_categories").fetchall()
+        connection.execute("DROP TABLE material_category_links")
+        connection.execute("DROP INDEX IF EXISTS idx_material_categories_type_name_active")
+        connection.execute("DROP INDEX IF EXISTS idx_material_categories_type_sort")
+        connection.execute("ALTER TABLE material_categories RENAME TO material_categories_v53")
+        connection.executescript(
+            """
+            CREATE TABLE material_categories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                material_type TEXT NOT NULL CHECK (material_type IN ('plot_skeleton', 'author_style')),
+                name TEXT NOT NULL,
+                normalized_name TEXT NOT NULL,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                deleted_at TEXT
+            );
+            CREATE UNIQUE INDEX idx_material_categories_type_name_active
+                ON material_categories(material_type, normalized_name) WHERE deleted_at IS NULL;
+            CREATE INDEX idx_material_categories_type_sort
+                ON material_categories(material_type, sort_order);
+            INSERT INTO material_categories
+            SELECT id, CASE material_type WHEN 'scene_reference' THEN 'author_style' ELSE material_type END,
+                   name, normalized_name, sort_order, created_at, updated_at, deleted_at
+            FROM material_categories_v53;
+            DROP TABLE material_categories_v53;
+            CREATE TABLE material_category_links (
+                material_id INTEGER NOT NULL,
+                category_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (material_id, category_id),
+                FOREIGN KEY (material_id) REFERENCES materials(id) ON DELETE CASCADE,
+                FOREIGN KEY (category_id) REFERENCES material_categories(id) ON DELETE CASCADE
+            );
+            CREATE INDEX idx_material_category_links_category ON material_category_links(category_id);
+            CREATE INDEX idx_material_category_links_material ON material_category_links(material_id);
+            """
+        )
+        connection.executemany(
+            "INSERT INTO material_category_links(material_id, category_id, created_at) VALUES (?, ?, ?)",
+            [(row["material_id"], row["category_id"], row["created_at"]) for row in links],
+        )
+
+    filter_sql_row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'project_material_filters'"
+    ).fetchone()
+    if filter_sql_row and "'author_style'" not in str(filter_sql_row[0] or ""):
+        connection.executescript(
+            """
+            DROP INDEX IF EXISTS idx_project_material_filter_tags_tag;
+            ALTER TABLE project_material_filter_tags RENAME TO project_material_filter_tags_v53;
+            ALTER TABLE project_material_filters RENAME TO project_material_filters_v53;
+            CREATE TABLE project_material_filters (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id INTEGER NOT NULL,
+                material_type TEXT NOT NULL CHECK (material_type IN ('plot_skeleton', 'author_style')),
+                match_mode TEXT NOT NULL DEFAULT 'any' CHECK (match_mode IN ('any', 'all')),
+                manual_material_ids_json TEXT NOT NULL DEFAULT '[]',
+                include_scene_keywords INTEGER NOT NULL DEFAULT 1,
+                include_applicable_scene_tags INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (project_id, material_type),
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+            );
+            INSERT INTO project_material_filters
+            SELECT id, project_id,
+                   CASE material_type WHEN 'scene_reference' THEN 'author_style' ELSE material_type END,
+                   match_mode, manual_material_ids_json, include_scene_keywords,
+                   include_applicable_scene_tags, created_at, updated_at
+            FROM project_material_filters_v53;
+            CREATE TABLE project_material_filter_tags (
+                filter_id INTEGER NOT NULL,
+                tag_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (filter_id, tag_id),
+                FOREIGN KEY (filter_id) REFERENCES project_material_filters(id) ON DELETE CASCADE,
+                FOREIGN KEY (tag_id) REFERENCES material_tags(id) ON DELETE CASCADE
+            );
+            INSERT INTO project_material_filter_tags SELECT * FROM project_material_filter_tags_v53;
+            DROP TABLE project_material_filter_tags_v53;
+            DROP TABLE project_material_filters_v53;
+            CREATE INDEX idx_project_material_filter_tags_tag ON project_material_filter_tags(tag_id);
+            """
+        )
+
+    if _table_exists(connection, "material_ai_settings"):
+        settings_cursor = connection.execute("SELECT * FROM material_ai_settings")
+        settings_columns = [str(column[0]) for column in settings_cursor.description or ()]
+        old_settings = {
+            str(values["task_type"]): values
+            for values in (
+                dict(zip(settings_columns, row, strict=True))
+                for row in settings_cursor.fetchall()
+            )
+        }
+    else:
+        old_settings = {}
+    settings_sql_row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'material_ai_settings'"
+    ).fetchone()
+    if not settings_sql_row or "'author_style_extraction'" not in str(settings_sql_row[0] or ""):
+        connection.execute("DROP TABLE IF EXISTS material_ai_settings")
+        connection.execute(
+            """
+            CREATE TABLE material_ai_settings (
+                task_type TEXT PRIMARY KEY CHECK (task_type IN ('plot_skeleton_extraction', 'author_style_extraction')),
+                model_id INTEGER,
+                detail_level TEXT NOT NULL DEFAULT 'standard' CHECK (detail_level IN ('brief', 'standard', 'detailed')),
+                system_prompt TEXT NOT NULL DEFAULT '',
+                base_instruction TEXT NOT NULL DEFAULT '',
+                dimensions_json TEXT NOT NULL DEFAULT '[]',
+                extra_requirements TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (model_id) REFERENCES ai_models(id) ON DELETE SET NULL
+            )
+            """
+        )
+
+    defaults = _material_ai_v54_defaults()
+    legacy_sources = {
+        "plot_skeleton_extraction": old_settings.get("narrative_to_plot_skeleton"),
+        "author_style_extraction": old_settings.get("source_text_to_scene_material"),
+    }
+    for task_type, default in defaults.items():
+        legacy = legacy_sources[task_type]
+        legacy_keys = set(legacy) if legacy is not None else set()
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO material_ai_settings (
+                task_type, model_id, detail_level, system_prompt, base_instruction,
+                dimensions_json, extra_requirements, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+            """,
+            (
+                task_type,
+                legacy["model_id"] if legacy is not None and "model_id" in legacy_keys else None,
+                legacy["detail_level"] if legacy is not None and "detail_level" in legacy_keys else "standard",
+                default["system_prompt"], default["base_instruction"],
+                json.dumps(default["dimensions"], ensure_ascii=False),
+                legacy["custom_requirements"] if legacy is not None and "custom_requirements" in legacy_keys else "",
+                legacy["updated_at"] if legacy is not None and "updated_at" in legacy_keys else None,
+            ),
+        )
+
+
+def _material_ai_v54_defaults() -> dict[str, dict[str, object]]:
+    plot_names = [
+        ("overall-structure", "整体剧情结构", "分析这段剧情整体要完成什么叙事目标，抽象出开始状态、发展过程、核心变化和结束状态，不保留没有复用价值的具体人名和专有名词。"),
+        ("time-progression", "时间与阶段推进", "分析剧情按什么阶段推进，各阶段之间是否发生时间变化、等待、追赶、延迟、突然中断等，整理事件的先后顺序。"),
+        ("space-transition", "地点与空间转换", "分析人物在不同空间之间如何移动，以及地点改变对剧情推进产生什么作用；具体地点应尽量抽象为可复用的空间类型。"),
+        ("goals-actions", "人物目标与行动", "分析各关键人物当前想完成什么、采取了什么行动，以及行动如何推动下一步剧情；具体人物身份尽量抽象成剧情角色。"),
+        ("causal-chain", "事件与因果链", "按照“发生什么 → 为什么发生 → 导致什么”的方式整理关键事件，保留真正推动剧情的因果关系。"),
+        ("conflict-resistance", "冲突与阻力", "分析人物目标受到什么阻碍，冲突如何出现、升级和变化，区分外部阻力、人物之间的矛盾以及内部选择冲突。"),
+        ("turns-information", "转折与信息变化", "提取使剧情方向发生改变的信息、发现、失败、误判、选择、介入或意外，并说明该转折如何改变后续行动。"),
+        ("climax-outcome-hook", "高潮、结果与后续钩子", "分析当前剧情的主要高潮如何形成、最终得到什么结果，以及是否留下可以继续推动后续剧情的未完成问题或新目标。"),
+    ]
+    style_names = [
+        ("sentence-features", "句子特征", "分析长句、短句的使用倾向和组合方式；句子长度变化规律；常用标点及其作用；是否偏好断句、连续短句、长串修饰或复句；偏好直写、比喻、类比还是间接表达；常见类比对象属于器物、动物、自然、食物、动作还是抽象概念；总结具有辨识度的句法习惯，并给出代表性原文实例。"),
+        ("wording", "词汇与措辞特征", "分析整体用词是朴素、华丽、口语化、书面化、古典化还是现代化；常用动词、形容词、副词和程度词的特点；是否偏爱特定类型的词汇组合；人物、动作、身体、环境等对象通常使用什么性质的词语描述；总结具有辨识度的常用表达，并给出原文实例。"),
+        ("paragraph-rhythm", "段落与行文节奏", "分析段落通常长还是短；一个段落通常承担一个动作、一个信息还是多个连续事件；对白、动作、心理和环境如何穿插；高潮、过渡、平静场景时段落长度如何变化；是否习惯以短句或特定信息收尾；总结作者控制阅读节奏的方式，并给出实例。"),
+        ("narration-viewpoint", "叙事方式与视角", "分析常用叙事人称和视角距离；叙述者是否解释人物行为和情绪；偏向直接告诉读者还是通过动作、语言和环境让读者判断；是否频繁进入人物内心；观察范围如何在人物、环境和事件之间移动；总结作者组织叙述信息的基本方式，并给出实例。"),
+        ("information-order", "信息展开与描写顺序", "分析作者描述一个人物、地点、物品或事件时通常从哪里开始、按照什么顺序展开；是整体到局部还是局部到整体；是否存在固定的视线移动方式；重要信息是先说结论再补细节，还是逐层揭示；总结典型的信息展开路径，并给出实例。"),
+        ("appearance-body", "人物外貌与身体描写", "分析作者描写人物外貌时关注哪些部位；通常从哪里开始，按照怎样的顺序描写面部、身体、衣着、动作和整体气质；偏重静态外貌还是动态姿态；身体特征如何与动作、视线和环境结合；常用哪些词汇、修辞和类比方式，并给出原文实例。"),
+        ("action-behavior", "人物动作与行为描写", "分析人物行动通常描写到什么细致程度；是否拆分连续动作；是否强调身体部位、姿势、力量、速度或动作结果；动作与对白、心理、环境如何穿插；作者如何通过小动作表现人物性格和状态；总结动作描写的典型结构，并给出实例。"),
+        ("dialogue", "对话风格", "分析对白长度、轮次和节奏；人物说话是否完整、简短、含蓄、直接或带有大量语气词；对白与动作、神态、心理描写如何组合；作者如何表现潜台词、停顿、打断、犹豫或情绪变化；是否经常省略说话人提示；总结对话组织规律并给出实例。"),
+        ("psychology-emotion", "心理与情绪表达", "分析作者如何表现人物情绪和心理活动；偏向直接说明、内心独白、身体反应、动作表现还是环境映射；情绪通常突然释放还是逐渐积累；强烈情绪和克制情绪分别如何处理；总结常见表现路径以及用词特点，并给出实例。"),
+        ("environment-atmosphere", "环境与氛围描写", "分析环境描写的信息选择、观察顺序和篇幅；重点使用视觉、声音、气味、触觉还是温度等感官；环境是单独描写还是随着人物行动逐渐呈现；如何利用环境制造压迫、暧昧、轻松、危险、孤独等氛围；总结常用描写方法并给出实例。"),
+        ("scene-rhythm", "场景推进与节奏控制", "分析一个完整场景通常如何开始、发展、转折和结束；作者如何在对白、动作、描写和信息揭示之间调整速度；冲突发生前是否蓄势；高潮部分是否缩短句段或增加动作密度；缓慢场景如何避免停滞；总结典型的场景节奏模式并给出实例。"),
+        ("rhetoric-signature", "修辞与作者辨识度", "综合分析反复出现、最能区别于普通写法的表达习惯，包括比喻、拟人、夸张、反差、重复、排比、留白等；分析作者特别偏爱的意象、类比对象、句式或表达动作；不要泛泛总结“细腻”“生动”等标签，而要指出具体如何实现，并给出最能体现这些规律的原文实例。"),
+    ]
+    shared_style_rules = (
+        "必须分析具体、可操作的写作规律，不得仅使用“细腻、自然、生动、节奏明快、文笔优美”等抽象评价替代分析。\n\n"
+        "需要说明作者具体“怎么写”：\n- 从哪里开始；\n- 按什么顺序展开；\n- 使用什么词；\n- 如何组织句子；\n"
+        "- 如何组织段落；\n- 如何切换描写对象；\n- 如何控制信息与节奏。\n\n"
+        "每个主要规律应尽可能给出能够直接体现该规律的原文实例。\n\n"
+        "原文实例必须来自用户提供的文本，不得编造、不允许改写后冒充原文。如果输入文本无法支持某项结论，应明确说明样本不足，而不是补全。"
+    )
+    return {
+        "plot_skeleton_extraction": {
+            "system_prompt": "你负责从用户文本提取可复用剧情骨架，只使用输入支持的事件与因果，不补写剧情。",
+            "base_instruction": "从原文抽象人物、地点和物品，保留事件顺序、因果、冲突、转折、高潮与结果；避免摘要化或空泛化。",
+            "dimensions": [{"id": item[0], "name": item[1], "requirement": item[2]} for item in plot_names],
+        },
+        "author_style_extraction": {
+            "system_prompt": "你负责分析输入文本的作者写作风格，并返回严格结构化 JSON。",
+            "base_instruction": "分析输入文本的作者写作风格，以便后续写作复现其可操作的表达规律。\n\n" + shared_style_rules,
+            "dimensions": [{"id": item[0], "name": item[1], "requirement": item[2]} for item in style_names],
+        },
+    }
+
+
 def _safe_json_list(value: object) -> list[dict[str, object]]:
     try:
         parsed = json.loads(str(value or "[]"))
@@ -4777,6 +5090,7 @@ MIGRATIONS = {
     51: _migrate_to_v51,
     52: _migrate_to_v52,
     53: _migrate_to_v53,
+    54: _migrate_to_v54,
 }
 
 
