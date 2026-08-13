@@ -2718,3 +2718,115 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 @media (max-width: 900px) {
   .prompt-definition-layout { grid-template-columns: 180px minmax(220px, .72fr) minmax(420px, 1.28fr); overflow: auto; }
 }
+
+/* Document library/workspace polish: one interaction and modal vocabulary. */
+.default-book-cover .document-project-marker {
+  position: absolute;
+  z-index: 2;
+  top: 8px;
+  right: 8px;
+  margin: 0;
+  border: 1px solid rgb(255 255 255 / 45%);
+  border-radius: 999px;
+  background: rgb(15 40 78 / 72%);
+  color: #fff;
+  padding: 3px 6px;
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: .04em;
+}
+.library-detail-footer { grid-template-columns: repeat(2, max-content) !important; justify-content: end; }
+.library-detail-footer .button { min-height: 40px !important; width: auto; font-size: 13px !important; }
+.document-metadata-input { border: 0; border-bottom: 1px solid var(--border-strong); border-radius: 0; background: transparent; padding: 3px 1px; }
+.document-metadata-input:focus { border-bottom-color: var(--accent); box-shadow: 0 1px 0 var(--accent); }
+.document-editable-title,
+.document-editable-author { width: max-content; border-bottom: 1px solid var(--border-strong); }
+
+.manuscript-pane > header.document-editor-heading {
+  display: grid;
+  grid-template-columns: 1fr minmax(0, auto) 1fr;
+  align-items: center;
+  gap: 14px;
+}
+.document-editor-heading-spacer { min-width: 0; }
+.document-editor-title { grid-column: 2; justify-self: center; text-align: center; }
+.document-editor-title input { max-width: min(52vw, 620px); border-bottom: 1px solid var(--border-strong); text-align: left; }
+.document-editor-heading > .button,
+.document-editor-heading > .document-readonly-badge { grid-column: 3; justify-self: end; }
+.document-readonly-badge,
+.document-project-inline-badge { display: inline-flex; align-items: center; border: 1px solid var(--info-border); border-radius: 999px; background: var(--info-soft); color: var(--info); padding: 4px 8px; font-size: 10px; font-weight: 700; }
+.document-project-inline-badge { margin-left: 8px; padding: 2px 6px; }
+.document-readonly-note { border: 1px solid var(--info-border); border-radius: 8px; background: var(--info-soft); color: var(--muted); padding: 10px; font-size: 12px; line-height: 1.55; }
+.document-workspace-metadata input { border-bottom-color: var(--border-strong); }
+.document-workspace-metadata input[readonly] { cursor: default; border-bottom-color: transparent; color: var(--muted); }
+.chapter-row { min-height: 48px; }
+.chapter-name { font-size: 14px; font-weight: 680; color: var(--ink); }
+.chapter-number { font-size: 12px; font-weight: 650; }
+.chapter-state { font-size: 10px; }
+
+.document-processing-backdrop { inset: 0; padding: 24px; }
+.document-modal {
+  display: grid;
+  width: min(760px, calc(100vw - 48px));
+  max-height: calc(100vh - 48px);
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  overflow: hidden;
+  border: 1px solid var(--border-default);
+  border-radius: 14px;
+  background: var(--surface-elevated);
+  color: var(--text-primary);
+  box-shadow: 0 24px 70px rgb(0 0 0 / 24%);
+}
+.document-modal > header { position: relative; display: grid; min-height: 64px; place-items: center; border-bottom: 1px solid var(--border-default); padding: 12px 56px; }
+.document-modal > header h2 { margin: 0; font-size: 20px; text-align: center; }
+.document-modal > header .icon-button { position: absolute; top: 14px; right: 16px; }
+.document-modal > footer { display: flex; justify-content: flex-end; gap: 8px; border-top: 1px solid var(--border-default); padding: 12px 18px; }
+.document-modal-body { min-height: 0; overflow: auto; padding: 18px; }
+.document-modal-row { display: grid; grid-template-columns: 110px minmax(0, 1fr); align-items: center; gap: 12px; margin-bottom: 14px; }
+.document-modal-row > span,
+.document-modal-stack > span { color: var(--text-primary); font-size: 14px; font-weight: 700; }
+.document-modal-stack { display: grid; min-height: 0; gap: 8px; }
+.document-modal input,
+.document-modal select,
+.document-modal textarea { border-color: var(--border-strong); background: var(--surface-input); color: var(--text-primary); }
+.document-modal textarea { resize: none; }
+.document-cleanup-dialog { width: min(760px, calc(100vw - 48px)); height: min(620px, calc(100vh - 48px)); }
+.document-cleanup-body { display: grid; grid-template-rows: auto minmax(0, 1fr); }
+.document-cleanup-body textarea { min-height: 260px; height: 100%; }
+.document-revision-dialog { width: min(660px, calc(100vw - 48px)); height: min(620px, calc(100vh - 48px)); }
+.document-revision-dialog .document-revision-list { min-height: 0; max-height: none; overflow: auto; margin: 0; padding: 16px 18px; }
+.document-revision-list h3 { margin: 6px 0 2px; font-size: 14px; }
+.document-revision-list h3:not(:first-child) { margin-top: 16px; }
+.document-action-dialog { width: min(840px, calc(100vw - 48px)); max-height: calc(100vh - 48px); overflow: hidden; }
+.document-action-dialog.action-create-chapter { height: min(760px, calc(100vh - 48px)); }
+.document-create-chapter-body { display: grid; grid-template-rows: auto auto auto minmax(240px, 1fr); }
+.document-action-anchor { margin: -4px 0 12px 122px; font-size: 12px; }
+.document-chapter-text textarea { min-height: 240px; height: 100%; overflow: auto; }
+.document-merge-columns { display: grid; min-height: 360px; grid-template-columns: 1fr 1fr; gap: 16px; }
+.document-merge-columns > section { display: grid; min-height: 0; grid-template-rows: auto minmax(0, 1fr); }
+.document-merge-columns h3 { margin: 0 0 8px; font-size: 14px; }
+.document-merge-list { min-height: 0; overflow: auto; margin: 0; align-content: start; }
+.document-merge-list > div { gap: 10px; background: var(--surface-subtle); }
+.document-merge-list > div > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.document-merge-controls { display: flex; align-items: center; gap: 5px; }
+.document-merge-controls button { cursor: pointer; border: 0; background: transparent; color: var(--accent); padding: 4px; }
+.document-split-body { display: grid; gap: 18px; }
+.document-split-tabs { justify-self: center; border: 1px solid var(--border-default); border-radius: 9px; padding: 3px; }
+.document-split-tabs button { min-height: 36px; }
+.document-cursor-position { margin: 0 0 0 122px; color: var(--muted); font-size: 12px; }
+.document-split-body textarea { min-height: 220px; }
+.document-resource-dialog { width: min(520px, calc(100vw - 48px)); }
+.document-category-name-dialog > header { position: relative; justify-content: center; text-align: center; }
+.document-category-name-dialog > header .icon-button { position: absolute; right: 16px; }
+.document-category-name-dialog .library-name-field { display: grid; grid-template-columns: 90px minmax(0, 1fr); align-items: center; gap: 12px; }
+
+@media (max-width: 1280px) {
+  .document-library-layout { grid-template-columns: 180px minmax(360px, 1fr) 270px; }
+  .workbench-grid.document-workspace-layout { grid-template-columns: 220px minmax(0, 1fr) 260px; min-width: 0; overflow: hidden; }
+}
+@media (max-width: 900px) {
+  .document-merge-columns { grid-template-columns: 1fr; }
+  .document-modal-row { grid-template-columns: 1fr; gap: 7px; }
+  .document-action-anchor,
+  .document-cursor-position { margin-left: 0; }
+}

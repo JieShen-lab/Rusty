@@ -1072,7 +1072,8 @@ export type AISplitProposal = {
   proposal_id: number;
   document_id: number;
   source_revision_id: number;
-  chapters: Array<{ title: string; start_offset: number; end_offset: number; reason: string }>;
+  chapter_id: number;
+  chapters: Array<{ title: string; start_offset: number; end_offset: number; reason?: string }>;
   model_invocation_id: number;
 };
 
