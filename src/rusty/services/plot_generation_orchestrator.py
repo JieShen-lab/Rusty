@@ -509,6 +509,7 @@ class PlotGenerationOrchestrator:
                         self.rewrite_maps.validate_map_hash(
                             int(run["source_base_version_id"]),
                             str(run["source_map_hash"]),
+                            connection=connection,
                         )
                     inserted = "\n\n".join(scene["text"] for scene in generated)
                     if run["range_operation"] == "replace_range":

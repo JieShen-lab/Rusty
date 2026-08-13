@@ -214,6 +214,7 @@ class ProseRewriteOrchestrator:
                     self.rewrite_maps.validate_map_hash(
                         int(run["source_base_version_id"]),
                         str(run["source_map_hash"]),
+                        connection=connection,
                     )
                 source = self.chapter_versions.resolve_chapter_source(
                     int(run["chapter_id"]),
