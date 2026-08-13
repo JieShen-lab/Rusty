@@ -158,7 +158,7 @@ class LongformRewriteServiceTests(unittest.TestCase):
     def test_manual_retrieval_precedes_layered_automatic_results(self) -> None:
         scene = SceneService(self.database_path).split_chapter(self.chapter.id)[0]
         material_id = MaterialService(self.database_path).create_material(
-            material_type="scene_reference",
+            material_type="author_style",
             scope="project",
             project_id=self.project_id,
             name="Key clue",

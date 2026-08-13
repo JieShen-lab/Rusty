@@ -61,7 +61,7 @@ class MaterialLibraryV22Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             service = MaterialService(initialized_database(Path(directory) / "rusty.db"))
             plot_category = service.create_category("plot_skeleton", "主线")
-            scene_category = service.create_category("scene_reference", "战斗场景")
+            style_category = service.create_category("author_style", "动作风格")
             material_id = service.create_material(
                 material_type="plot_skeleton",
                 scope="public",
@@ -73,7 +73,7 @@ class MaterialLibraryV22Tests(unittest.TestCase):
             assert material is not None
             self.assertEqual((plot_category.id,), material.category_ids)
             with self.assertRaisesRegex(ValueError, "type"):
-                service.set_material_category(material_id, scene_category.id, True)
+                service.set_material_category(material_id, style_category.id, True)
             service.delete_category(plot_category.id)
             material = service.get_material(material_id)
             self.assertIsNotNone(material)
@@ -94,7 +94,7 @@ class MaterialLibraryV22Tests(unittest.TestCase):
             applicable = service.create_tag("战斗", tag_group="applicable_scene")
             self.assertNotEqual(general.id, applicable.id)
             analyzed_id = service.create_material(
-                material_type="scene_reference",
+                material_type="author_style",
                 scope="public",
                 name="近身战",
                 content={"summary": "短距离交锋。"},
@@ -102,7 +102,7 @@ class MaterialLibraryV22Tests(unittest.TestCase):
                 tag_ids=[general.id],
             )
             pending_id = service.create_material(
-                material_type="scene_reference",
+                material_type="author_style",
                 scope="public",
                 name="待整理战斗",
                 content={},
@@ -111,23 +111,23 @@ class MaterialLibraryV22Tests(unittest.TestCase):
             )
             service.set_project_material_filter(
                 project_id,
-                "scene_reference",
+                "author_style",
                 tag_ids=[general.id],
                 manual_material_ids=[],
             )
             self.assertEqual(
                 [analyzed_id],
-                [item.id for item in service.list_materials_for_project(project_id, material_type="scene_reference")],
+                [item.id for item in service.list_materials_for_project(project_id, material_type="author_style")],
             )
             service.set_project_material_filter(
                 project_id,
-                "scene_reference",
+                "author_style",
                 tag_ids=[],
                 manual_material_ids=[pending_id],
             )
             self.assertEqual(
                 [pending_id],
-                [item.id for item in service.list_materials_for_project(project_id, material_type="scene_reference")],
+                [item.id for item in service.list_materials_for_project(project_id, material_type="author_style")],
             )
 
     def test_preview_is_pure_apply_is_confirmed_and_token_is_single_use(self) -> None:
@@ -146,7 +146,7 @@ class MaterialLibraryV22Tests(unittest.TestCase):
             extraction = AnchorExtractionService(database_path, ai_client=fake)
             preview = extraction.preview_materials_from_text(
                 "主角进入遗迹，遭遇守卫；同行者对路线发生争执。",
-                task_type="narrative_to_plot_skeleton",
+                task_type="plot_skeleton_extraction",
             )
             self.assertEqual([], service.list_materials())
             self.assertEqual([], service.list_tags())
@@ -178,28 +178,26 @@ class MaterialLibraryV22Tests(unittest.TestCase):
                     selected_candidate_ids=[],
                 )
             prompt = "\n".join(item["content"] for item in fake.calls[0])
-            self.assertIn("Never derive scene material", prompt)
+            self.assertIn("plot_skeleton_extraction", prompt)
 
-    def test_ai_settings_persist_and_reset_for_exact_three_tasks(self) -> None:
+    def test_ai_settings_persist_for_exact_two_tasks_without_reset_flow(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             database_path = initialized_database(Path(directory) / "rusty.db")
             service = MaterialService(database_path)
-            self.assertEqual(3, len(service.list_ai_settings()))
+            self.assertEqual(2, len(service.list_ai_settings()))
             updated = service.update_ai_settings(
-                "source_text_to_scene_material",
+                "author_style_extraction",
                 model_id=None,
                 detail_level="detailed",
-                max_candidates=9,
-                generate_tags=False,
-                custom_requirements="只保留有直接证据的感官线索。",
-                system_prompt="严格提取场景写法。",
+                extra_requirements="只保留原文支持的表达规律。",
+                system_prompt="严格分析作者风格。",
+                base_instruction="分析可操作的写作方法。",
+                dimensions=[{"id": "sentence", "name": "句子特征", "requirement": "分析句式。"}],
             )
-            self.assertEqual(9, updated.max_candidates)
-            persisted = MaterialService(database_path).get_ai_settings("source_text_to_scene_material")
-            self.assertFalse(persisted.generate_tags)
-            reset = service.reset_ai_settings("source_text_to_scene_material")
-            self.assertEqual("standard", reset.detail_level)
-            self.assertTrue(reset.generate_tags)
+            self.assertEqual("detailed", updated.detail_level)
+            persisted = MaterialService(database_path).get_ai_settings("author_style_extraction")
+            self.assertEqual("sentence", persisted.dimensions[0]["id"])
+            self.assertFalse(hasattr(service, "reset_ai_settings"))
 
     def test_v21_to_v22_migration_unifies_project_material_and_builds_filter(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:

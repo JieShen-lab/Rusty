@@ -449,7 +449,7 @@ class PhaseTwoContractRegressionTests(unittest.TestCase):
         self.assertIn("STYLE-EXAMPLE-UNIQUE", context["examples"])
         self.assertIn("repeated-technique-unique", context["forbidden_repetitions"])
 
-    def test_plot_skeleton_and_scene_reference_remain_semantically_separate(self) -> None:
+    def test_plot_skeleton_and_author_style_remain_semantically_separate(self) -> None:
         project_id, chapter_id = self.create_project("EXPANSION-ORIGINAL")
         scene = SceneService(self.database).split_chapter(chapter_id)[0]
         SceneService(self.database).confirm_boundaries(chapter_id)
@@ -465,11 +465,11 @@ class PhaseTwoContractRegressionTests(unittest.TestCase):
                 ]
             },
         )
-        reference_id = materials.create_material(
-            material_type="scene_reference",
+        style_id = materials.create_material(
+            material_type="author_style",
             scope="public",
             name="Reference",
-            raw_text="SCENE-REFERENCE-UNIQUE",
+            raw_text="AUTHOR-STYLE-UNIQUE",
         )
         extra_plot_id = materials.create_material(
             material_type="plot_skeleton",
@@ -478,8 +478,8 @@ class PhaseTwoContractRegressionTests(unittest.TestCase):
             content={"event_nodes": [{"id": "EXTRA", "event": "Extra", "required": True}]},
         )
         other_project_id, _ = self.create_project("OTHER")
-        other_reference_id = materials.create_material(
-            material_type="scene_reference",
+        other_style_id = materials.create_material(
+            material_type="author_style",
             scope="project",
             project_id=other_project_id,
             name="Other project reference",
@@ -512,7 +512,7 @@ class PhaseTwoContractRegressionTests(unittest.TestCase):
         run = orchestrator.start(
             scene.id,
             mode="expansion",
-            material_ids=[plot_id, reference_id],
+            material_ids=[plot_id, style_id],
         )
         confirmed = RewriteWorkflowService(self.database).confirm_skeleton(run["skeleton_id"])
         planned = orchestrator.generate_plan(
@@ -526,28 +526,28 @@ class PhaseTwoContractRegressionTests(unittest.TestCase):
                     "impact": {"events": ["PLOT-MATERIAL-UNIQUE"]},
                 }
             ],
-            scene_reference_ids=[reference_id],
+            author_style_ids=[style_id],
         )
         RewriteWorkflowService(self.database).confirm_plan(planned["plan_id"])
         with self.assertRaisesRegex(ValueError, "must be plot_skeleton"):
             orchestrator.execute(
                 run["id"],
-                plot_skeleton_material_ids=[reference_id],
-                scene_reference_ids=[],
+                plot_skeleton_material_ids=[style_id],
+                author_style_ids=[],
             )
-        with self.assertRaisesRegex(ValueError, "must be scene_reference"):
+        with self.assertRaisesRegex(ValueError, "must be author_style"):
             orchestrator.execute(
                 run["id"],
                 plot_skeleton_material_ids=[plot_id],
-                scene_reference_ids=[extra_plot_id],
+                author_style_ids=[extra_plot_id],
             )
-        with self.assertRaisesRegex(ValueError, "both a plot skeleton and a scene reference"):
+        with self.assertRaisesRegex(ValueError, "both a plot skeleton and an author style"):
             orchestrator.execute(
                 run["id"],
                 plot_skeleton_material_ids=[plot_id],
-                scene_reference_ids=[plot_id],
+                author_style_ids=[plot_id],
             )
-        migrated_reference = materials.get_material(other_reference_id)
+        migrated_reference = materials.get_material(other_style_id)
         self.assertIsNotNone(migrated_reference)
         assert migrated_reference is not None
         self.assertEqual("public", migrated_reference.scope)
@@ -555,7 +555,7 @@ class PhaseTwoContractRegressionTests(unittest.TestCase):
         orchestrator.execute(
             run["id"],
             plot_skeleton_material_ids=[plot_id],
-            scene_reference_ids=[reference_id],
+            author_style_ids=[style_id],
         )
         planning_prompt = queue.messages[2][-1]["content"]
         rewrite_prompt = queue.messages[3][-1]["content"]
@@ -563,9 +563,9 @@ class PhaseTwoContractRegressionTests(unittest.TestCase):
         self.assertIn(f'"material_id": {plot_id}', planning_prompt)
         self.assertIn('"insertion_after_node": "BASE-NODE"', planning_prompt)
         plot_block = json.loads(_prompt_block(rewrite_prompt, "PLOT_SKELETON_MAPPINGS"))
-        reference_block = json.loads(_prompt_block(rewrite_prompt, "SCENE_REFERENCE_CONSTRAINTS"))
+        reference_block = json.loads(_prompt_block(rewrite_prompt, "AUTHOR_STYLE_CONTEXT"))
         self.assertEqual([plot_id], [item["material_id"] for item in plot_block])
-        self.assertEqual([reference_id], reference_block["material_ids"])
+        self.assertEqual([style_id], reference_block["material_ids"])
 
 def _prompt_block(prompt: str, key: str) -> str:
     marker = f"## {key}\n"

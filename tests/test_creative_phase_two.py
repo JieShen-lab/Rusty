@@ -454,25 +454,25 @@ class CreativePhaseTwoTests(unittest.TestCase):
             materials = MaterialService(service.database_path)
             plot_id = materials.create_material(material_type="plot_skeleton",scope="public",name="Plot",
                                                 raw_text="PLOT-CONTENT-ONLY",content={"premise":"PLOT-CONTENT-ONLY"})
-            scene_id_ref = materials.create_material(material_type="scene_reference",scope="public",name="SceneRef",
-                                                     raw_text="SCENE-REFERENCE-CONTENT")
+            style_id = materials.create_material(material_type="author_style",scope="public",name="AuthorStyle",
+                                                 raw_text="AUTHOR-STYLE-CONTENT", content={"summary": "Style"})
             intent = service.get_intent(scene_id)
             with session(service.database_path) as connection:
                 connection.execute("UPDATE creative_intents SET selected_plot_material_ids_json=?,selected_scene_material_ids_json=? WHERE scene_id=?",
-                                   (json.dumps([plot_id]), json.dumps([scene_id_ref]), scene_id))
+                                   (json.dumps([plot_id]), json.dumps([style_id]), scene_id))
             ai = ContextAI(); service = CreativeWorkflowService(service.database_path, ai_client=ai)
             service.run_target_design(scene_id, replace_existing=True)
             target_payload = ai.calls[-1][1]
             self.assertIn("PLOT-CONTENT-ONLY", json.dumps(target_payload, ensure_ascii=False))
-            self.assertNotIn("SCENE-REFERENCE-CONTENT", json.dumps(target_payload, ensure_ascii=False))
+            self.assertNotIn("AUTHOR-STYLE-CONTENT", json.dumps(target_payload, ensure_ascii=False))
             self.assertIn("惯用剑", json.dumps(target_payload["character_cards"], ensure_ascii=False))
             service.confirm_target(scene_id)
             service.run_writing_plan(scene_id, replace_existing=True)
             writing_payload = ai.calls[-1][1]
-            self.assertIn("SCENE-REFERENCE-CONTENT", json.dumps(writing_payload["scene_references"], ensure_ascii=False))
+            self.assertIn("AUTHOR-STYLE-CONTENT", json.dumps(writing_payload["author_styles"], ensure_ascii=False))
             service.generate_current_draft(scene_id)
             generation_payload = ai.calls[-1][1]
-            self.assertIn("SCENE-REFERENCE-CONTENT", json.dumps(generation_payload["scene_references"], ensure_ascii=False))
+            self.assertIn("AUTHOR-STYLE-CONTENT", json.dumps(generation_payload["author_styles"], ensure_ascii=False))
             self.assertIn("惯用剑", json.dumps(generation_payload["character_cards"], ensure_ascii=False))
 
     def test_preanalysis_and_character_analysis_noop_saves_preserve_confirmation(self) -> None:
