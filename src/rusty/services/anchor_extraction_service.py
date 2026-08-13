@@ -1338,14 +1338,6 @@ def _extraction_source_summary(metadata: dict[str, Any]) -> dict[str, Any]:
     return {"kind": "ai_extraction", "label": "AI 文本提取"}
 
 
-def _priority(value: Any) -> int:
-    try:
-        priority = int(value)
-    except (TypeError, ValueError):
-        return 50
-    return max(0, min(100, priority))
-
-
 def _positive_int_or_none(value: Any) -> int | None:
     try:
         number = int(value)

@@ -92,23 +92,6 @@ def create_danger_button(text: str) -> QPushButton:
     return button
 
 
-def create_empty_state(title: str, subtitle: str, button: QPushButton | None = None) -> QFrame:
-    card, layout = create_card(object_name="Card")
-    layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    title_label = QLabel(title)
-    title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    title_label.setStyleSheet("font-size: 22px; font-weight: 700; color: #ffffff;")
-    subtitle_label = QLabel(subtitle)
-    subtitle_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    subtitle_label.setWordWrap(True)
-    subtitle_label.setObjectName("SubtleText")
-    layout.addWidget(title_label)
-    layout.addWidget(subtitle_label)
-    if button is not None:
-        layout.addWidget(button, 0, Qt.AlignmentFlag.AlignCenter)
-    return card
-
-
 def create_progress_bar(value: int, maximum: int) -> QProgressBar:
     bar = QProgressBar()
     bar.setRange(0, max(1, maximum))

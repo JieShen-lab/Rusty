@@ -63,7 +63,6 @@ import type {
   ProjectMaterialFilter,
   ProjectKind,
   ProjectSettingsWrite,
-  ProjectStyleBinding,
   PromptTemplate,
   PromptTemplateWrite,
   PromptDefinition,
@@ -71,11 +70,7 @@ import type {
   ProjectMasterPrompt,
   PipelineRunResult,
   StructuredSkeleton,
-  StyleTemplateExtractWrite,
-  StyleTemplate,
-  StyleTrialWrite,
   StyleAnalysis,
-  StyleTemplateWrite,
 } from './types';
 
 function queryValue(name: string): string {
@@ -646,56 +641,6 @@ export function extractProjectPromptPackage(projectId: number, modelId?: number 
   return request<PromptTemplate>(`/api/projects/${projectId}/prompt-package/extract`, {
     method: 'POST',
     body: JSON.stringify({ model_id: modelId ?? null }),
-  });
-}
-
-export function getStyleTemplates() {
-  return request<StyleTemplate[]>('/api/styles');
-}
-
-export function getStyleTemplate(templateId: number) {
-  return request<StyleTemplate>(`/api/styles/${templateId}`);
-}
-
-export function createStyleTemplate(payload: StyleTemplateWrite) {
-  return request<StyleTemplate>('/api/styles', { method: 'POST', body: JSON.stringify(payload) });
-}
-
-export function importStyleTemplate(content: string) {
-  return request<StyleTemplate>('/api/styles/import', { method: 'POST', body: JSON.stringify({ content }) });
-}
-
-export function extractStyleTemplate(payload: StyleTemplateExtractWrite) {
-  return request<StyleTemplate>('/api/styles/extract', { method: 'POST', body: JSON.stringify(payload) });
-}
-
-export function updateStyleTemplate(templateId: number, payload: StyleTemplateWrite) {
-  return request<StyleTemplate>(`/api/styles/${templateId}`, { method: 'POST', body: JSON.stringify(payload) });
-}
-
-export function deleteStyleTemplate(templateId: number) {
-  return request<{ ok: boolean }>(`/api/styles/${templateId}/delete`, { method: 'POST' });
-}
-
-export function exportStyleTemplate(templateId: number) {
-  return request<{ content: string }>(`/api/styles/${templateId}/export`, { method: 'POST' });
-}
-
-export function trialWriteStyleTemplate(templateId: number, payload: StyleTrialWrite) {
-  return request<{ ok: boolean; text: string }>(`/api/styles/${templateId}/trial-write`, {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
-}
-
-export function getProjectStyle(projectId: number) {
-  return request<ProjectStyleBinding>(`/api/projects/${projectId}/style`);
-}
-
-export function bindProjectStyle(projectId: number, styleTemplateId: number | null) {
-  return request<ProjectStyleBinding>(`/api/projects/${projectId}/style`, {
-    method: 'POST',
-    body: JSON.stringify({ style_template_id: styleTemplateId }),
   });
 }
 
