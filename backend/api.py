@@ -76,6 +76,7 @@ from .schemas import (
     CharacterExtractionApplyOut,
     CharacterExtractionApplyRequest,
     CharacterExtractionCandidateOut,
+    CharacterExtractionDraftOut,
     CharacterExtractionPreviewOut,
     CharacterExtractionPreviewRequest,
     CharacterExtractionSettingsOut,
@@ -2628,12 +2629,15 @@ def create_app(
     def _character_extraction_settings_out() -> CharacterExtractionSettingsOut:
         settings = anchor_extraction_service.get_character_extraction_settings()
         return CharacterExtractionSettingsOut(
-            **settings.__dict__,
+            **{**settings.__dict__, "dimensions": list(settings.dimensions)},
             prompt_preview=(
                 f"{settings.system_prompt}\n\n"
                 f"Detail level: {settings.detail_level}\n"
-                f"Maximum candidates: {settings.max_candidates}\n"
-                f"Additional requirements: {settings.custom_requirements or 'None'}"
+                "Target character: {{TARGET_CHARACTER_NAME}}\n"
+                f"Enabled dimensions: {json.dumps([item for item in settings.dimensions if item['enabled']], ensure_ascii=False)}\n"
+                f"Additional requirements: {settings.custom_requirements or 'None'}\n"
+                "JSON schema: {evidence_found,name,aliases,identity,age,description,stable_fields,suggested_tags}\n"
+                "Source text: {{SOURCE_TEXT}}"
             ),
         )
 
@@ -2673,8 +2677,8 @@ def create_app(
         payload: CharacterExtractionPreviewRequest,
     ) -> CharacterExtractionPreviewOut:
         preview = anchor_extraction_service.preview_characters_from_text(
-            payload.sample_text,
-            name=payload.name,
+            payload.source_text,
+            target_character_name=payload.target_character_name,
             detail_level=payload.detail_level,
             model_id=payload.model_id,
             source_metadata=payload.source_metadata,
@@ -2682,17 +2686,14 @@ def create_app(
         return CharacterExtractionPreviewOut(
             preview_token=preview.preview_token,
             expires_at=preview.expires_at,
-            source_summary=CharacterSourceSummaryOut(**preview.source_summary),
-            candidates=[
-                CharacterExtractionCandidateOut(**candidate.__dict__)
-                for candidate in preview.candidates
-            ],
+            character=CharacterExtractionDraftOut(**preview.character.__dict__),
         )
 
     @app.post(
         "/api/characters/extract/apply",
         response_model=CharacterExtractionApplyOut,
         dependencies=[Depends(_require_token)],
+        deprecated=True,
     )
     def apply_character_extraction(
         payload: CharacterExtractionApplyRequest,
@@ -2710,8 +2711,8 @@ def create_app(
             errors=[CharacterExtractionApplyItemOut(**item) for item in result["errors"]],
         )
 
-    # Legacy compatibility endpoint. New clients must use preview/apply.
-    @app.post("/api/characters/extract", response_model=CharacterCardsExtractOut, dependencies=[Depends(_require_token)])
+    # Legacy compatibility endpoint. New clients must use preview then the normal character editor/save API.
+    @app.post("/api/characters/extract", response_model=CharacterCardsExtractOut, dependencies=[Depends(_require_token)], deprecated=True)
     def extract_character_cards(payload: AnchorExtractRequest) -> CharacterCardsExtractOut:
         text, source_metadata = _resolve_anchor_source(
             payload,
@@ -2760,7 +2761,7 @@ def create_app(
             raise _http_error(500, "character_card_import_failed", "角色卡已导入但无法读取。")
         return _character_out(card)
 
-    @app.post("/api/characters/{card_id}/copy", response_model=CharacterCardOut, dependencies=[Depends(_require_token)])
+    @app.post("/api/characters/{card_id}/copy", response_model=CharacterCardOut, dependencies=[Depends(_require_token)], deprecated=True)
     def copy_character_card(card_id: int, payload: CharacterCardCopyRequest) -> CharacterCardOut:
         copied_id = anchor_service.copy_character_card(
             card_id,
@@ -2776,6 +2777,7 @@ def create_app(
         "/api/characters/{card_id}/copy-to-project",
         response_model=CharacterCardOut,
         dependencies=[Depends(_require_token)],
+        deprecated=True,
     )
     def copy_public_character_to_project(
         card_id: int,
@@ -2805,6 +2807,7 @@ def create_app(
         "/api/characters/{card_id}/project-copy",
         response_model=CharacterCardOut | None,
         dependencies=[Depends(_require_token)],
+        deprecated=True,
     )
     def get_existing_character_project_copy(
         card_id: int,
@@ -2817,6 +2820,7 @@ def create_app(
         "/api/characters/{card_id}/publish-to-public",
         response_model=CharacterCardOut,
         dependencies=[Depends(_require_token)],
+        deprecated=True,
     )
     def publish_character_to_public(
         card_id: int,
@@ -3269,6 +3273,7 @@ def _character_out(card: CharacterCard) -> CharacterCardOut:
         age=card.age,
         setting_text=card.setting_text,
         custom_fields=card.custom_fields,
+        stable_fields=card.stable_fields,
         raw_text=card.raw_text,
         analysis_status=card.analysis_status,
         cover_path=card.cover_path,

@@ -1173,6 +1173,7 @@ class CharacterCardOut(BaseModel):
     age: str = ""
     setting_text: str = ""
     custom_fields: list[dict[str, Any]] = Field(default_factory=list)
+    stable_fields: list[dict[str, Any]] = Field(default_factory=list)
     raw_text: str = ""
     analysis_status: Literal["unanalyzed", "analyzed"] = "analyzed"
     cover_path: str | None = None
@@ -1220,6 +1221,7 @@ class CharacterCardWriteRequest(BaseModel):
     age: str = ""
     setting_text: str = ""
     custom_fields: list[dict[str, Any]] = Field(default_factory=list)
+    stable_fields: list[dict[str, Any]] = Field(default_factory=list)
     raw_text: str = ""
     analysis_status: Literal["unanalyzed", "analyzed"] = "analyzed"
     tag_ids: list[int] = Field(default_factory=list)
@@ -1242,71 +1244,52 @@ class CharacterPublishRequest(BaseModel):
 class CharacterExtractionSettingsOut(BaseModel):
     model_id: int | None = None
     detail_level: Literal["brief", "standard", "detailed"] = "standard"
-    max_candidates: int = Field(default=8, ge=1, le=20)
-    extract_all_characters: bool = True
     generate_tags: bool = True
-    generate_appearance: bool = True
-    generate_relationships: bool = True
-    generate_personality: bool = True
-    generate_speech_style: bool = True
-    generate_action_constraints: bool = True
-    generate_anti_ooc_rules: bool = True
-    generate_abilities_background: bool = True
     custom_requirements: str = ""
     system_prompt: str = ""
+    dimensions: list[dict[str, Any]] = Field(default_factory=list)
     prompt_preview: str = ""
 
 
 class CharacterExtractionSettingsWriteRequest(BaseModel):
     model_id: int | None = None
     detail_level: Literal["brief", "standard", "detailed"] = "standard"
-    max_candidates: int = Field(default=8, ge=1, le=20)
-    extract_all_characters: bool = True
     generate_tags: bool = True
-    generate_appearance: bool = True
-    generate_relationships: bool = True
-    generate_personality: bool = True
-    generate_speech_style: bool = True
-    generate_action_constraints: bool = True
-    generate_anti_ooc_rules: bool = True
-    generate_abilities_background: bool = True
     custom_requirements: str = ""
     system_prompt: str = ""
+    dimensions: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class CharacterExtractionPreviewRequest(BaseModel):
-    sample_text: str = Field(min_length=1, max_length=50000)
-    name: str | None = None
+    target_character_name: str = Field(min_length=1)
+    source_text: str = Field(min_length=1, max_length=50000)
     detail_level: Literal["brief", "standard", "detailed"] | None = None
     model_id: int | None = None
     source_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-class CharacterExtractionCandidateOut(BaseModel):
-    candidate_id: str
-    selected: bool = True
+class CharacterExtractionDraftOut(BaseModel):
     name: str
     aliases: list[str] = Field(default_factory=list)
     description: str = ""
     identity: str = ""
     age: str = ""
-    setting_text: str = ""
-    relationship_notes: str = ""
-    personality: str = ""
-    speech_style: str = ""
-    action_constraints: str = ""
-    anti_ooc_rules: str = ""
-    profile: dict[str, Any] = Field(default_factory=dict)
-    custom_fields: list[dict[str, Any]] = Field(default_factory=list)
+    stable_fields: list[dict[str, Any]] = Field(default_factory=list)
     suggested_tags: list[str] = Field(default_factory=list)
-    evidence_summary: str = ""
+    source_metadata: dict[str, Any] = Field(default_factory=dict)
+    import_metadata: dict[str, Any] = Field(default_factory=dict)
+    raw_text: str = ""
 
 
 class CharacterExtractionPreviewOut(BaseModel):
     preview_token: str
     expires_at: str
-    source_summary: CharacterSourceSummaryOut
-    candidates: list[CharacterExtractionCandidateOut]
+    character: CharacterExtractionDraftOut
+
+
+class CharacterExtractionCandidateOut(CharacterExtractionDraftOut):
+    candidate_id: str = "legacy"
+    selected: bool = True
 
 
 class CharacterExtractionCandidateApply(CharacterExtractionCandidateOut):

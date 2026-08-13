@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .connection import session
 
-CURRENT_SCHEMA_VERSION = 52
+CURRENT_SCHEMA_VERSION = 53
 
 logger = logging.getLogger(__name__)
 
@@ -258,6 +258,7 @@ CREATE TABLE IF NOT EXISTS character_cards (
     age TEXT NOT NULL DEFAULT '',
     setting_text TEXT NOT NULL DEFAULT '',
     custom_fields_json TEXT NOT NULL DEFAULT '[]',
+    stable_fields_json TEXT NOT NULL DEFAULT '[]',
     raw_text TEXT NOT NULL DEFAULT '',
     analysis_status TEXT NOT NULL DEFAULT 'analyzed'
         CHECK (analysis_status IN ('unanalyzed', 'analyzed')),
@@ -398,6 +399,7 @@ CREATE TABLE IF NOT EXISTS character_extraction_settings (
     generate_abilities_background INTEGER NOT NULL DEFAULT 1,
     custom_requirements TEXT NOT NULL DEFAULT '',
     system_prompt TEXT NOT NULL DEFAULT '',
+    dimensions_json TEXT NOT NULL DEFAULT '[]',
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (model_id) REFERENCES ai_models(id) ON DELETE SET NULL
 );
@@ -4298,6 +4300,80 @@ def _migrate_to_v52(connection: sqlite3.Connection) -> None:
     _validate_chapter_workflow_state_schema(connection)
 
 
+def _migrate_to_v53(connection: sqlite3.Connection) -> None:
+    """Unify character stable fields and persist ordered extraction dimensions."""
+    _add_column_if_missing(
+        connection,
+        "character_cards",
+        "stable_fields_json",
+        "stable_fields_json TEXT NOT NULL DEFAULT '[]'",
+    )
+    _add_column_if_missing(
+        connection,
+        "character_extraction_settings",
+        "dimensions_json",
+        "dimensions_json TEXT NOT NULL DEFAULT '[]'",
+    )
+    default_dimensions = [
+        {"id": "appearance", "label": "外貌", "instruction": "只提取原文明确描述的外貌特征。", "sort_order": 0, "enabled": True, "is_default": True},
+        {"id": "relationships", "label": "人物关系", "instruction": "只记录目标人物与其他人物的明确关系。", "sort_order": 1, "enabled": True, "is_default": True},
+        {"id": "personality", "label": "性格", "instruction": "基于明确行为和叙述提取性格，不进行猜测。", "sort_order": 2, "enabled": True, "is_default": True},
+        {"id": "speech_style", "label": "语言风格", "instruction": "提取措辞、语气和说话习惯。", "sort_order": 3, "enabled": True, "is_default": True},
+        {"id": "action_constraints", "label": "动作习惯 / 动作约束", "instruction": "提取反复出现的动作习惯与明确动作约束。", "sort_order": 4, "enabled": True, "is_default": True},
+        {"id": "abilities_background", "label": "能力与背景", "instruction": "提取有文本证据的能力、经历与背景。", "sort_order": 5, "enabled": True, "is_default": True},
+        {"id": "anti_ooc_rules", "label": "反 OOC 规则", "instruction": "根据明确证据总结不可违背的行为边界。", "sort_order": 6, "enabled": True, "is_default": True},
+    ]
+    connection.execute(
+        """
+        UPDATE character_extraction_settings
+        SET dimensions_json = ?
+        WHERE id = 1 AND (dimensions_json IS NULL OR trim(dimensions_json) IN ('', '[]'))
+        """,
+        (json.dumps(default_dimensions, ensure_ascii=False),),
+    )
+    rows = connection.execute(
+        """
+        SELECT id, stable_fields_json, setting_text, relationship_notes, personality,
+               speech_style, action_constraints, anti_ooc_rules, profile_json,
+               custom_fields_json
+        FROM character_cards
+        """
+    ).fetchall()
+    for row in rows:
+        if _safe_json_list(row["stable_fields_json"]):
+            continue
+        profile = _safe_json_object(row["profile_json"])
+        values = {
+            "appearance": str(profile.get("appearance") or ""),
+            "relationships": str(row["relationship_notes"] or ""),
+            "personality": str(row["personality"] or ""),
+            "speech_style": str(row["speech_style"] or ""),
+            "action_constraints": str(row["action_constraints"] or ""),
+            "abilities_background": str(row["setting_text"] or profile.get("abilities") or profile.get("background") or ""),
+            "anti_ooc_rules": str(row["anti_ooc_rules"] or ""),
+        }
+        fields = [
+            {"id": item["id"], "label": item["label"], "value": values[item["id"]], "sort_order": index}
+            for index, item in enumerate(default_dimensions)
+        ]
+        known_ids = {field["id"] for field in fields}
+        for custom in _safe_json_list(row["custom_fields_json"]):
+            field_id = str(custom.get("id") or f"legacy_custom_{len(fields)}")
+            if field_id in known_ids:
+                field_id = f"legacy_{field_id}_{len(fields)}"
+            known_ids.add(field_id)
+            fields.append({
+                "id": field_id,
+                "label": str(custom.get("label") or field_id),
+                "value": str(custom.get("value") or ""),
+                "sort_order": len(fields),
+            })
+        connection.execute(
+            "UPDATE character_cards SET stable_fields_json = ? WHERE id = ?",
+            (json.dumps(fields, ensure_ascii=False), int(row["id"])),
+        )
+
+
 def _safe_json_list(value: object) -> list[dict[str, object]]:
     try:
         parsed = json.loads(str(value or "[]"))
@@ -4700,6 +4776,7 @@ MIGRATIONS = {
     50: _migrate_to_v50,
     51: _migrate_to_v51,
     52: _migrate_to_v52,
+    53: _migrate_to_v53,
 }
 
 

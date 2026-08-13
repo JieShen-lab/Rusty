@@ -26,7 +26,6 @@ from rusty.services.project_service import ProjectService
 
 MAX_ANCHOR_SAMPLE_CHARS = 16000
 MAX_CHARACTER_EXTRACTION_TEXT_CHARS = 50000
-MAX_CHARACTER_CANDIDATES = 20
 CHARACTER_PREVIEW_TTL_SECONDS = 15 * 60
 MATERIAL_PREVIEW_TTL_SECONDS = 15 * 60
 MAX_MATERIAL_EXTRACTION_TEXT_CHARS = 50000
@@ -39,21 +38,20 @@ OUTLINE_DIMENSIONS = [
     "forbidden_changes",
     "chapter_expansion_hooks",
 ]
-CHARACTER_DIMENSIONS = [
-    "aliases",
-    "role_in_story",
-    "relationships",
-    "personality",
-    "speech_style",
-    "action_habits",
-    "emotional_triggers",
-    "anti_ooc_rules",
-]
+DEFAULT_CHARACTER_DIMENSIONS = (
+    {"id": "appearance", "label": "外貌", "instruction": "只提取原文明确描述的外貌特征。", "sort_order": 0, "enabled": True, "is_default": True},
+    {"id": "relationships", "label": "人物关系", "instruction": "只记录目标人物与其他人物的明确关系。", "sort_order": 1, "enabled": True, "is_default": True},
+    {"id": "personality", "label": "性格", "instruction": "基于明确行为和叙述提取性格，不进行猜测。", "sort_order": 2, "enabled": True, "is_default": True},
+    {"id": "speech_style", "label": "语言风格", "instruction": "提取措辞、语气和说话习惯。", "sort_order": 3, "enabled": True, "is_default": True},
+    {"id": "action_constraints", "label": "动作习惯 / 动作约束", "instruction": "提取反复出现的动作习惯与明确动作约束。", "sort_order": 4, "enabled": True, "is_default": True},
+    {"id": "abilities_background", "label": "能力与背景", "instruction": "提取有文本证据的能力、经历与背景。", "sort_order": 5, "enabled": True, "is_default": True},
+    {"id": "anti_ooc_rules", "label": "反 OOC 规则", "instruction": "根据明确证据总结不可违背的行为边界。", "sort_order": 6, "enabled": True, "is_default": True},
+)
 DEFAULT_CHARACTER_SYSTEM_PROMPT = (
     "[RUSTY NATIVE RULES: rusty.native.character_extraction.v2]\n"
-    "You extract reusable character cards and return strict JSON only. "
+    "You extract exactly one explicitly named character and return strict JSON only. "
     "Never invent facts unsupported by the source. Missing dimensions must be empty. "
-    "Merge aliases that refer to the same person."
+    "Other people may only appear as relationship evidence for the target character."
 )
 MATERIAL_DIMENSIONS = {
     "plot_skeleton": [
@@ -80,47 +78,31 @@ MATERIAL_DIMENSIONS = {
 class CharacterExtractionSettings:
     model_id: int | None = None
     detail_level: str = "standard"
-    max_candidates: int = 8
-    extract_all_characters: bool = True
     generate_tags: bool = True
-    generate_appearance: bool = True
-    generate_relationships: bool = True
-    generate_personality: bool = True
-    generate_speech_style: bool = True
-    generate_action_constraints: bool = True
-    generate_anti_ooc_rules: bool = True
-    generate_abilities_background: bool = True
     custom_requirements: str = ""
     system_prompt: str = DEFAULT_CHARACTER_SYSTEM_PROMPT
+    dimensions: tuple[dict[str, Any], ...] = DEFAULT_CHARACTER_DIMENSIONS
 
 
 @dataclass(frozen=True)
-class CharacterExtractionCandidate:
-    candidate_id: str
-    selected: bool
+class CharacterExtractionDraft:
     name: str
     aliases: list[str]
     description: str
     identity: str
     age: str
-    setting_text: str
-    relationship_notes: str
-    personality: str
-    speech_style: str
-    action_constraints: str
-    anti_ooc_rules: str
-    profile: dict[str, Any]
-    custom_fields: list[dict[str, Any]]
+    stable_fields: list[dict[str, Any]]
     suggested_tags: list[str]
-    evidence_summary: str
+    source_metadata: dict[str, Any]
+    import_metadata: dict[str, Any]
+    raw_text: str
 
 
 @dataclass(frozen=True)
 class CharacterExtractionPreview:
     preview_token: str
     expires_at: str
-    source_summary: dict[str, Any]
-    candidates: list[CharacterExtractionCandidate]
+    character: CharacterExtractionDraft
 
 
 @dataclass
@@ -128,7 +110,6 @@ class _StoredCharacterPreview:
     expires_at: float
     expires_at_iso: str
     state: str
-    candidate_ids: set[str]
     source_metadata: dict[str, Any]
     source_summary: dict[str, Any]
     import_metadata: dict[str, Any]
@@ -598,21 +579,14 @@ class AnchorExtractionService:
             ).fetchone()
         if row is None:
             return CharacterExtractionSettings()
+        dimensions = _dimension_definitions(row["dimensions_json"])
         return CharacterExtractionSettings(
             model_id=row["model_id"],
             detail_level=str(row["detail_level"]),
-            max_candidates=int(row["max_candidates"]),
-            extract_all_characters=bool(row["extract_all_characters"]),
             generate_tags=bool(row["generate_tags"]),
-            generate_appearance=bool(row["generate_appearance"]),
-            generate_relationships=bool(row["generate_relationships"]),
-            generate_personality=bool(row["generate_personality"]),
-            generate_speech_style=bool(row["generate_speech_style"]),
-            generate_action_constraints=bool(row["generate_action_constraints"]),
-            generate_anti_ooc_rules=bool(row["generate_anti_ooc_rules"]),
-            generate_abilities_background=bool(row["generate_abilities_background"]),
             custom_requirements=str(row["custom_requirements"]),
             system_prompt=str(row["system_prompt"] or DEFAULT_CHARACTER_SYSTEM_PROMPT),
+            dimensions=dimensions,
         )
 
     def update_character_extraction_settings(
@@ -624,7 +598,7 @@ class AnchorExtractionService:
         detail_level = str(current["detail_level"])
         if detail_level not in {"brief", "standard", "detailed"}:
             raise ValueError(f"Unsupported detail level: {detail_level}")
-        max_candidates = max(1, min(MAX_CHARACTER_CANDIDATES, int(current["max_candidates"])))
+        dimensions = _normalize_dimensions(current.get("dimensions"))
         model_id = current.get("model_id")
         if model_id is not None and self.model_service.get_model(int(model_id)) is None:
             raise ValueError(f"Model not found: {model_id}")
@@ -632,44 +606,25 @@ class AnchorExtractionService:
             connection.execute(
                 """
                 INSERT INTO character_extraction_settings (
-                    id, model_id, detail_level, max_candidates,
-                    extract_all_characters, generate_tags, generate_appearance,
-                    generate_relationships, generate_personality, generate_speech_style,
-                    generate_action_constraints, generate_anti_ooc_rules,
-                    generate_abilities_background, custom_requirements, system_prompt
-                ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    id, model_id, detail_level, generate_tags, custom_requirements,
+                    system_prompt, dimensions_json
+                ) VALUES (1, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     model_id = excluded.model_id,
                     detail_level = excluded.detail_level,
-                    max_candidates = excluded.max_candidates,
-                    extract_all_characters = excluded.extract_all_characters,
                     generate_tags = excluded.generate_tags,
-                    generate_appearance = excluded.generate_appearance,
-                    generate_relationships = excluded.generate_relationships,
-                    generate_personality = excluded.generate_personality,
-                    generate_speech_style = excluded.generate_speech_style,
-                    generate_action_constraints = excluded.generate_action_constraints,
-                    generate_anti_ooc_rules = excluded.generate_anti_ooc_rules,
-                    generate_abilities_background = excluded.generate_abilities_background,
                     custom_requirements = excluded.custom_requirements,
                     system_prompt = excluded.system_prompt,
+                    dimensions_json = excluded.dimensions_json,
                     updated_at = CURRENT_TIMESTAMP
                 """,
                 (
                     model_id,
                     detail_level,
-                    max_candidates,
-                    int(bool(current["extract_all_characters"])),
                     int(bool(current["generate_tags"])),
-                    int(bool(current["generate_appearance"])),
-                    int(bool(current["generate_relationships"])),
-                    int(bool(current["generate_personality"])),
-                    int(bool(current["generate_speech_style"])),
-                    int(bool(current["generate_action_constraints"])),
-                    int(bool(current["generate_anti_ooc_rules"])),
-                    int(bool(current["generate_abilities_background"])),
                     str(current["custom_requirements"] or ""),
                     str(current["system_prompt"] or DEFAULT_CHARACTER_SYSTEM_PROMPT),
+                    json.dumps(dimensions, ensure_ascii=False),
                 ),
             )
         return self.get_character_extraction_settings()
@@ -682,11 +637,14 @@ class AnchorExtractionService:
     def preview_characters_from_text(
         self,
         sample_text: str,
-        name: str | None = None,
+        target_character_name: str,
         detail_level: str | None = None,
         model_id: int | None = None,
         source_metadata: dict[str, Any] | None = None,
     ) -> CharacterExtractionPreview:
+        target_name = target_character_name.strip()
+        if not target_name:
+            raise ValueError("Target character name is required.")
         normalized_text = sample_text.replace("\r\n", "\n").replace("\r", "\n").strip()
         if not normalized_text:
             raise ValueError("Character extraction text is empty.")
@@ -702,12 +660,19 @@ class AnchorExtractionService:
         response = self.ai_client.chat(
             model,
             self.model_service.get_api_key(model.id),
-            self._character_messages(model_sample, selected_detail, name, settings),
+            self._character_messages(model_sample, selected_detail, target_name, settings),
         )
         extracted = _parse_json_object(response.text, "Character extraction")
-        characters = extracted.get("characters")
-        if not isinstance(characters, list) or not characters:
-            raise ValueError("Character extraction response must contain a non-empty characters list.")
+        if "candidates" in extracted or "characters" in extracted:
+            raise ValueError("Character extraction must return one character object, not candidates.")
+        if extracted.get("evidence_found") is False:
+            raise ValueError(f'The source text does not contain enough evidence for "{target_name}".')
+        returned_name = str(extracted.get("name") or "").strip()
+        aliases = _string_list(extracted.get("aliases"))
+        if returned_name.casefold() != target_name.casefold() and target_name.casefold() not in {
+            alias.casefold() for alias in aliases
+        }:
+            raise ValueError("Character extraction returned a different character than the requested target.")
         metadata = {
             **(source_metadata or {}),
             "source_type": (source_metadata or {}).get("source_type", "paste"),
@@ -724,49 +689,28 @@ class AnchorExtractionService:
             "token_usage": response.token_usage,
             "elapsed_ms": response.elapsed_ms,
         }
-        candidates: list[CharacterExtractionCandidate] = []
-        for item in characters[: settings.max_candidates]:
-            if not isinstance(item, dict):
-                continue
-            candidate_name = str(item.get("name") or "").strip()
-            if not candidate_name:
-                continue
-            profile = _object_or_empty(item.get("profile"))
-            candidates.append(
-                CharacterExtractionCandidate(
-                    candidate_id=secrets.token_hex(8),
-                    selected=True,
-                    name=candidate_name,
-                    aliases=_string_list(item.get("aliases")),
-                    description=str(item.get("description") or ""),
-                    identity=str(item.get("identity") or profile.get("identity") or ""),
-                    age=str(item.get("age") or profile.get("age") or ""),
-                    setting_text=str(item.get("setting_text") or ""),
-                    relationship_notes=str(item.get("relationship_notes") or ""),
-                    personality=str(item.get("personality") or ""),
-                    speech_style=str(item.get("speech_style") or ""),
-                    action_constraints=str(item.get("action_constraints") or ""),
-                    anti_ooc_rules=str(item.get("anti_ooc_rules") or ""),
-                    profile=profile,
-                    custom_fields=_custom_fields(item.get("custom_fields")),
-                    suggested_tags=(
-                        _suggested_tags(item.get("suggested_tags"))
-                        if settings.generate_tags
-                        else []
-                    ),
-                    evidence_summary=str(item.get("evidence_summary") or ""),
-                )
-            )
-        if name and name.strip():
-            target = name.strip().casefold()
-            candidates = [
-                candidate
-                for candidate in candidates
-                if candidate.name.casefold() == target
-                or target in {alias.casefold() for alias in candidate.aliases}
-            ][:1]
-        if not candidates:
-            raise ValueError("Character extraction did not produce any valid character cards.")
+        enabled_dimensions = [item for item in settings.dimensions if item["enabled"]]
+        returned_fields = extracted.get("stable_fields")
+        if not isinstance(returned_fields, list):
+            raise ValueError("Character extraction response must contain stable_fields.")
+        returned_by_id: dict[str, dict[str, Any]] = {}
+        enabled_ids = {str(item["id"]) for item in enabled_dimensions}
+        for field in returned_fields:
+            if not isinstance(field, dict):
+                raise ValueError("Every stable field must be an object.")
+            dimension_id = str(field.get("dimension_id") or field.get("id") or "").strip()
+            if dimension_id not in enabled_ids:
+                raise ValueError(f"Unexpected character dimension: {dimension_id or '(empty)' }")
+            returned_by_id[dimension_id] = field
+        stable_fields = [
+            {
+                "id": str(dimension["id"]),
+                "label": str(dimension["label"]),
+                "value": str(returned_by_id.get(str(dimension["id"]), {}).get("value") or ""),
+                "sort_order": index,
+            }
+            for index, dimension in enumerate(enabled_dimensions)
+        ]
         token = secrets.token_urlsafe(24)
         expires_at_monotonic, expires_at_iso = _preview_expiry(CHARACTER_PREVIEW_TTL_SECONDS)
         source_summary = _extraction_source_summary(metadata)
@@ -778,7 +722,6 @@ class AnchorExtractionService:
                 expires_at=expires_at_monotonic,
                 expires_at_iso=expires_at_iso,
                 state="pending",
-                candidate_ids={candidate.candidate_id for candidate in candidates},
                 source_metadata=metadata,
                 source_summary=source_summary,
                 import_metadata=import_metadata,
@@ -787,8 +730,18 @@ class AnchorExtractionService:
         return CharacterExtractionPreview(
             preview_token=token,
             expires_at=expires_at_iso,
-            source_summary=source_summary,
-            candidates=candidates,
+            character=CharacterExtractionDraft(
+                name=target_name,
+                aliases=aliases,
+                description=str(extracted.get("description") or ""),
+                identity=str(extracted.get("identity") or ""),
+                age=str(extracted.get("age") or ""),
+                stable_fields=stable_fields,
+                suggested_tags=_suggested_tags(extracted.get("suggested_tags")) if settings.generate_tags else [],
+                source_metadata=metadata,
+                import_metadata=import_metadata,
+                raw_text=full_source_text,
+            ),
         )
 
     def apply_character_extraction(
@@ -801,6 +754,8 @@ class AnchorExtractionService:
         project_id: int | None,
         category_ids: list[int] | None = None,
     ) -> dict[str, list[dict[str, Any]]]:
+        """Deprecated: previews are drafts and are saved through the normal character API."""
+        raise ValueError("Character extraction apply is deprecated; save the edited draft through /api/characters.")
         key = (str(self.database_path.resolve()), preview_token)
         with _CHARACTER_PREVIEWS_LOCK:
             stored = _CHARACTER_PREVIEWS.get(key)
@@ -888,27 +843,31 @@ class AnchorExtractionService:
         scope: str = "public",
         project_id: int | None = None,
     ) -> list[int]:
+        target_name = (name or "").strip()
+        if not target_name:
+            raise ValueError("Target character name is required.")
         preview = self.preview_characters_from_text(
             sample_text,
-            name=name,
+            target_character_name=target_name,
             detail_level=detail_level,
             model_id=model_id,
             source_metadata=source_metadata,
         )
-        result = self.apply_character_extraction(
-            preview_token=preview.preview_token,
-            candidates=[
-                {**asdict(candidate), "confirmed_tags": []}
-                for candidate in preview.candidates
-            ],
-            selected_candidate_ids=[candidate.candidate_id for candidate in preview.candidates],
+        draft = preview.character
+        card_id = self.anchor_service.create_character_card(
+            name=draft.name,
+            aliases=draft.aliases,
+            description=draft.description,
+            identity=draft.identity,
+            age=draft.age,
+            stable_fields=draft.stable_fields,
+            source_metadata=draft.source_metadata,
+            import_metadata=draft.import_metadata,
+            raw_text=draft.raw_text,
             scope=scope,
             project_id=project_id,
-            category_ids=[],
         )
-        if result["errors"]:
-            raise ValueError(str(result["errors"][0]["error"]))
-        return [int(item["card_id"]) for item in result["created"]]
+        return [card_id]
 
     def extract_characters_from_file(
         self,
@@ -972,37 +931,20 @@ class AnchorExtractionService:
         self,
         sample_text: str,
         detail_level: str,
-        name: str | None = None,
+        name: str,
         settings: CharacterExtractionSettings | None = None,
     ) -> list[dict[str, str]]:
         settings = settings or self.get_character_extraction_settings()
-        dimensions = [
-            "aliases",
-            "role_in_story",
-            "identity",
-            "age",
-            "setting_text",
-        ]
-        if settings.generate_appearance:
-            dimensions.append("appearance")
-        if settings.generate_relationships:
-            dimensions.append("relationships")
-        if settings.generate_personality:
-            dimensions.append("personality")
-        if settings.generate_speech_style:
-            dimensions.append("speech_style")
-        if settings.generate_action_constraints:
-            dimensions.append("action_constraints")
-        if settings.generate_anti_ooc_rules:
-            dimensions.append("anti_ooc_rules")
-        if settings.generate_abilities_background:
-            dimensions.extend(["abilities", "background"])
-        dimensions_text = "\n".join(f"- {item}" for item in dimensions)
-        target_rule = (
-            f"Only extract the target character named “{name.strip()}”; use aliases and context to merge references to that person."
-            if name and name.strip()
-            else "Extract every identifiable character with enough textual evidence; merge aliases that refer to the same person."
+        target_name = name.strip()
+        enabled_dimensions = [item for item in settings.dimensions if item["enabled"]]
+        dimensions_text = "\n".join(
+            f'- {item["id"]} ({item["label"]}): {item["instruction"] or "No additional instruction."}'
+            for item in enabled_dimensions
         )
+        stable_schema = [
+            {"dimension_id": item["id"], "label": item["label"], "value": ""}
+            for item in enabled_dimensions
+        ]
         tag_rule = (
             "Return 0-8 short suggested_tags useful for retrieval (for example protagonist, antagonist, first-person, calm, combat). "
             "Never use sentences as tags and never infer unsupported tags."
@@ -1017,20 +959,19 @@ class AnchorExtractionService:
             {
                 "role": "user",
                 "content": (
-                    "Extract structured character cards from the sample prose.\n"
-                    f"{target_rule}\n"
+                    f'Only extract the character named "{target_name}". Other people may only be used as relationship evidence for the target; never create another character.\n'
                     f"Detail level: {detail_level}\n"
-                    f"Maximum candidates: {settings.max_candidates}\n"
-                    "Required character dimensions:\n"
+                    "Enabled stable dimensions:\n"
                     f"{dimensions_text}\n\n"
-                    "Return JSON with key characters, an array of objects. Each object must include: "
-                    "name, aliases, description, identity, age, setting_text, relationship_notes, personality, "
-                    "speech_style, action_constraints, anti_ooc_rules, profile, custom_fields, suggested_tags, evidence_summary.\n"
-                    "Analyze each character dimension independently. Put uncertain or absent dimensions as empty strings, empty arrays, or empty objects; do not speculate.\n"
-                    "The profile object should contain reusable visual fields such as identity, appearance, abilities, goals, background, strengths, weaknesses, and evidence when supported.\n"
+                    "Return exactly one JSON object and no Markdown, code fence, explanation, or text outside JSON. "
+                    "The object must contain only: evidence_found, name, aliases, identity, age, description, stable_fields, suggested_tags. "
+                    f"stable_fields must follow this schema and order: {json.dumps(stable_schema, ensure_ascii=False)}.\n"
+                    "If a field has no direct evidence, return an empty string or empty array. Never guess for completeness. "
+                    "Set evidence_found=false if the named character cannot be found; never switch to another person. "
+                    f'The name field must identify "{target_name}" and aliases for the same person must be merged.\n'
                     f"{tag_rule}\n"
                     f"Additional requirements: {settings.custom_requirements or 'None'}\n\n"
-                    f"Sample prose:\n{sample_text}"
+                    f"Source text:\n{sample_text}"
                 ),
             },
         ]
@@ -1315,6 +1256,40 @@ def _custom_fields(value: Any) -> list[dict[str, Any]]:
             }
         )
     return fields
+
+
+def _dimension_definitions(value: Any) -> tuple[dict[str, Any], ...]:
+    try:
+        parsed = json.loads(str(value or "[]")) if not isinstance(value, (list, tuple)) else value
+    except (TypeError, ValueError):
+        parsed = []
+    return tuple(_normalize_dimensions(parsed or DEFAULT_CHARACTER_DIMENSIONS))
+
+
+def _normalize_dimensions(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, (list, tuple)):
+        value = DEFAULT_CHARACTER_DIMENSIONS
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            raise ValueError(f"Character dimension {index + 1} must be an object.")
+        dimension_id = str(item.get("id") or "").strip()
+        label = " ".join(str(item.get("label") or "").strip().split())
+        if not dimension_id or not label:
+            raise ValueError(f"Character dimension {index + 1} requires an id and label.")
+        if dimension_id in seen:
+            raise ValueError(f"Duplicate character dimension id: {dimension_id}")
+        seen.add(dimension_id)
+        normalized.append({
+            "id": dimension_id,
+            "label": label,
+            "instruction": str(item.get("instruction") or "").strip(),
+            "sort_order": len(normalized),
+            "enabled": bool(item.get("enabled", True)),
+            "is_default": bool(item.get("is_default", False)),
+        })
+    return normalized
 
 
 def _extraction_source_summary(metadata: dict[str, Any]) -> dict[str, Any]:

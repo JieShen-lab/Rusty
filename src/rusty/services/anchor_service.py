@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import secrets
 import struct
 from dataclasses import dataclass
 from pathlib import Path
@@ -88,6 +89,7 @@ class CharacterCard:
     age: str = ""
     setting_text: str = ""
     custom_fields_json: str = "[]"
+    stable_fields_json: str = "[]"
     raw_text: str = ""
     analysis_status: str = "analyzed"
     cover_path: str | None = None
@@ -124,6 +126,11 @@ class CharacterCard:
     @property
     def custom_fields(self) -> list[dict[str, Any]]:
         value = _loads_json(self.custom_fields_json, [])
+        return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+    @property
+    def stable_fields(self) -> list[dict[str, Any]]:
+        value = _loads_json(self.stable_fields_json, [])
         return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
 
 
@@ -349,13 +356,33 @@ class AnchorService:
         age: str = "",
         setting_text: str = "",
         custom_fields: list[dict[str, Any]] | None = None,
+        stable_fields: list[dict[str, Any]] | None = None,
         raw_text: str = "",
         analysis_status: str = "analyzed",
         tag_ids: list[int] | None = None,
     ) -> int:
         _validate_character_scope(scope, project_id)
         analysis_status = _validate_analysis_status(analysis_status)
-        custom_fields_json = json.dumps(_normalize_custom_fields(custom_fields), ensure_ascii=False)
+        normalized_stable_fields = _normalize_stable_fields(
+            stable_fields if stable_fields is not None else _legacy_stable_fields(
+                relationship_notes=relationship_notes,
+                personality=personality,
+                speech_style=speech_style,
+                action_constraints=action_constraints,
+                anti_ooc_rules=anti_ooc_rules,
+                setting_text=setting_text,
+                custom_fields=custom_fields,
+            )
+        )
+        stable_values = {str(field["id"]): str(field["value"]) for field in normalized_stable_fields}
+        if stable_fields is not None:
+            relationship_notes = stable_values.get("relationships", relationship_notes)
+            personality = stable_values.get("personality", personality)
+            speech_style = stable_values.get("speech_style", speech_style)
+            action_constraints = stable_values.get("action_constraints", action_constraints)
+            anti_ooc_rules = stable_values.get("anti_ooc_rules", anti_ooc_rules)
+            setting_text = stable_values.get("abilities_background", setting_text)
+        custom_fields_json = json.dumps(_custom_fields_from_stable(normalized_stable_fields), ensure_ascii=False)
         with session(self.database_path) as connection:
             if project_id is not None:
                 if connection.execute(
@@ -370,8 +397,8 @@ class AnchorService:
                     personality, speech_style, action_constraints, anti_ooc_rules,
                     profile_json, source_metadata_json, import_metadata_json,
                     scope, project_id, source_character_card_id, source_version,
-                    identity, age, setting_text, custom_fields_json, raw_text, analysis_status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    identity, age, setting_text, custom_fields_json, stable_fields_json, raw_text, analysis_status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     _required_name(name, "Character card name is required."),
@@ -395,6 +422,7 @@ class AnchorService:
                     age.strip(),
                     setting_text,
                     custom_fields_json,
+                    json.dumps(normalized_stable_fields, ensure_ascii=False),
                     raw_text,
                     analysis_status,
                 ),
@@ -575,13 +603,33 @@ class AnchorService:
         age: str = "",
         setting_text: str = "",
         custom_fields: list[dict[str, Any]] | None = None,
+        stable_fields: list[dict[str, Any]] | None = None,
         raw_text: str | None = None,
         analysis_status: str | None = None,
         tag_ids: list[int] | None = None,
     ) -> None:
         _validate_character_scope(scope, project_id)
         status = _validate_analysis_status(analysis_status) if analysis_status is not None else None
-        custom_fields_json = json.dumps(_normalize_custom_fields(custom_fields), ensure_ascii=False)
+        normalized_stable_fields = _normalize_stable_fields(
+            stable_fields if stable_fields is not None else _legacy_stable_fields(
+                relationship_notes=relationship_notes,
+                personality=personality,
+                speech_style=speech_style,
+                action_constraints=action_constraints,
+                anti_ooc_rules=anti_ooc_rules,
+                setting_text=setting_text,
+                custom_fields=custom_fields,
+            )
+        )
+        stable_values = {str(field["id"]): str(field["value"]) for field in normalized_stable_fields}
+        if stable_fields is not None:
+            relationship_notes = stable_values.get("relationships", relationship_notes)
+            personality = stable_values.get("personality", personality)
+            speech_style = stable_values.get("speech_style", speech_style)
+            action_constraints = stable_values.get("action_constraints", action_constraints)
+            anti_ooc_rules = stable_values.get("anti_ooc_rules", anti_ooc_rules)
+            setting_text = stable_values.get("abilities_background", setting_text)
+        custom_fields_json = json.dumps(_custom_fields_from_stable(normalized_stable_fields), ensure_ascii=False)
         with session(self.database_path) as connection:
             if project_id is not None:
                 if connection.execute(
@@ -612,6 +660,7 @@ class AnchorService:
                     age = ?,
                     setting_text = ?,
                     custom_fields_json = ?,
+                    stable_fields_json = ?,
                     raw_text = COALESCE(?, raw_text),
                     analysis_status = COALESCE(?, analysis_status),
                     version = version + 1,
@@ -638,6 +687,7 @@ class AnchorService:
                     age.strip(),
                     setting_text,
                     custom_fields_json,
+                    json.dumps(normalized_stable_fields, ensure_ascii=False),
                     raw_text,
                     status,
                     card_id,
@@ -1052,7 +1102,6 @@ class AnchorService:
         if category_id is not None:
             clauses.extend(
                 [
-                    "c.scope = 'public'",
                     (
                         "EXISTS (SELECT 1 FROM character_category_links category_filter "
                         "WHERE category_filter.character_card_id = c.id "
@@ -1356,13 +1405,11 @@ class AnchorService:
             ).fetchone() is None:
                 raise ValueError(f"Character category not found: {category_id}")
             card = connection.execute(
-                "SELECT scope FROM character_cards WHERE id = ? AND deleted_at IS NULL",
+                "SELECT id FROM character_cards WHERE id = ? AND deleted_at IS NULL",
                 (card_id,),
             ).fetchone()
             if card is None:
                 raise ValueError(f"Character card not found: {card_id}")
-            if str(card["scope"]) != "public":
-                raise ValueError("Only public character cards can belong to character categories.")
             if selected:
                 connection.execute(
                     """
@@ -1741,6 +1788,7 @@ class AnchorService:
             age=row["age"],
             setting_text=row["setting_text"],
             custom_fields_json=row["custom_fields_json"],
+            stable_fields_json=row["stable_fields_json"] if "stable_fields_json" in keys else "[]",
             raw_text=row["raw_text"],
             analysis_status=row["analysis_status"],
             cover_path=row["cover_path"],
@@ -1793,6 +1841,7 @@ def _stable_character_fields(card: CharacterCard) -> dict[str, Any]:
         "anti_ooc_rules": card.anti_ooc_rules,
         "profile": card.profile,
         "custom_fields": card.custom_fields,
+        "stable_fields": card.stable_fields,
         "tags": list(card.tags),
         "cover": card.cover_path,
     }
@@ -1887,13 +1936,60 @@ def _normalize_custom_fields(fields: list[dict[str, Any]] | None) -> list[dict[s
         seen.add(key)
         normalized.append(
             {
-                "id": str(field.get("id") or f"field_{index}"),
+                "id": str(field.get("id") or f"custom_{secrets.token_hex(6)}"),
                 "label": label,
                 "value": str(field.get("value") or ""),
                 "sort_order": len(normalized),
             }
         )
     return normalized
+
+
+def _normalize_stable_fields(fields: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, field in enumerate(fields or []):
+        field_id = str(field.get("id") or field.get("dimension_id") or f"custom_{secrets.token_hex(6)}").strip()
+        label = " ".join(str(field.get("label") or "").strip().split())
+        if not field_id or not label:
+            raise ValueError(f"Stable field {index + 1} requires an id and label.")
+        if field_id in seen:
+            raise ValueError(f"Duplicate stable field id: {field_id}")
+        seen.add(field_id)
+        normalized.append({
+            "id": field_id,
+            "label": label,
+            "value": str(field.get("value") or ""),
+            "sort_order": len(normalized),
+        })
+    return normalized
+
+
+def _legacy_stable_fields(
+    *,
+    relationship_notes: str,
+    personality: str,
+    speech_style: str,
+    action_constraints: str,
+    anti_ooc_rules: str,
+    setting_text: str,
+    custom_fields: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    fields = [
+        {"id": "relationships", "label": "人物关系", "value": relationship_notes},
+        {"id": "personality", "label": "性格", "value": personality},
+        {"id": "speech_style", "label": "语言风格", "value": speech_style},
+        {"id": "action_constraints", "label": "动作习惯 / 动作约束", "value": action_constraints},
+        {"id": "abilities_background", "label": "能力与背景", "value": setting_text},
+        {"id": "anti_ooc_rules", "label": "反 OOC 规则", "value": anti_ooc_rules},
+    ]
+    fields.extend(_normalize_custom_fields(custom_fields))
+    return fields
+
+
+def _custom_fields_from_stable(fields: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    default_ids = {"appearance", "relationships", "personality", "speech_style", "action_constraints", "abilities_background", "anti_ooc_rules"}
+    return [dict(field) for field in fields if str(field["id"]) not in default_ids]
 
 
 def _inspect_cover(data: bytes) -> tuple[str, int | None, int | None]:
