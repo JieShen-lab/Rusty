@@ -186,6 +186,12 @@ _MATERIAL_PREVIEWS: dict[tuple[str, str], _StoredMaterialPreview] = {}
 _MATERIAL_PREVIEWS_LOCK = Lock()
 
 
+def _prune_expired_previews(previews: dict[tuple[str, str], Any]) -> None:
+    now = time.monotonic()
+    for key in [key for key, stored in previews.items() if stored.expires_at <= now]:
+        previews.pop(key, None)
+
+
 class AnchorExtractionService:
     def __init__(
         self,
@@ -328,6 +334,7 @@ class AnchorExtractionService:
             ],
         }
         with _MATERIAL_PREVIEWS_LOCK:
+            _prune_expired_previews(_MATERIAL_PREVIEWS)
             _MATERIAL_PREVIEWS[
                 (str(self.database_path.resolve()), token)
             ] = _StoredMaterialPreview(
@@ -363,6 +370,7 @@ class AnchorExtractionService:
         key = (str(self.database_path.resolve()), preview_token)
         with _MATERIAL_PREVIEWS_LOCK:
             stored = _MATERIAL_PREVIEWS.get(key)
+            _prune_expired_previews(_MATERIAL_PREVIEWS)
         if stored is None:
             raise ValueError("Material extraction preview token is invalid.")
         with stored.lock:
@@ -373,7 +381,6 @@ class AnchorExtractionService:
                 stored.candidate_ids,
                 label="Material",
             )
-            settings = self.material_service.get_ai_settings(stored.task_type)
             prepared: list[dict[str, Any]] = []
             for sort_order, candidate_id in enumerate(selected_ids):
                 candidate = by_id[candidate_id]
@@ -406,7 +413,7 @@ class AnchorExtractionService:
             material_ids = self.material_service.create_extracted_material_batch(
                 material_type=stored.material_type,
                 candidates=prepared,
-                detail_level=settings.detail_level,
+                detail_level=str(stored.prompt_snapshot["detail_level"]),
                 raw_text=stored.raw_text,
                 source_metadata=stored.source_metadata,
                 import_metadata=stored.import_metadata,
@@ -763,6 +770,7 @@ class AnchorExtractionService:
         expires_at_monotonic, expires_at_iso = _preview_expiry(CHARACTER_PREVIEW_TTL_SECONDS)
         source_summary = _extraction_source_summary(metadata)
         with _CHARACTER_PREVIEWS_LOCK:
+            _prune_expired_previews(_CHARACTER_PREVIEWS)
             _CHARACTER_PREVIEWS[
                 (str(self.database_path.resolve()), token)
             ] = _StoredCharacterPreview(
@@ -795,6 +803,7 @@ class AnchorExtractionService:
         key = (str(self.database_path.resolve()), preview_token)
         with _CHARACTER_PREVIEWS_LOCK:
             stored = _CHARACTER_PREVIEWS.get(key)
+            _prune_expired_previews(_CHARACTER_PREVIEWS)
         if stored is None:
             raise ValueError("Character extraction preview token is invalid.")
         with stored.lock:
