@@ -3823,7 +3823,6 @@ def _validate_chapter_workflow_state_columns(connection: sqlite3.Connection) -> 
 
 
 def _validate_chapter_workflow_state_schema(connection: sqlite3.Connection) -> None:
-    _validate_chapter_workflow_state_columns(connection)
     indexes = {
         str(row[1])
         for row in connection.execute("PRAGMA index_list(chapter_workflow_state)").fetchall()
