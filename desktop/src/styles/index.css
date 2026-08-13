@@ -1856,6 +1856,35 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 
 /* Unified material library */
 .material-library-unified { min-width: 0; }
+.material-type-switcher { display: inline-flex; min-height: 36px; align-items: center; gap: 4px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); padding: 2px; }
+.material-type-switcher strong { min-width: 74px; text-align: center; font-size: 12px; }
+.material-type-switcher button { display: grid; width: 30px; height: 30px; cursor: pointer; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--muted); }
+.material-type-switcher button:hover { background: var(--surface-hover); color: var(--accent); }
+.material-book-grid .document-book-title { width: 124px; overflow: hidden; margin-top: 8px; font-size: 11px; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
+.material-preview-editor, .material-settings-grid, .author-dimension-editor { display: grid; gap: 14px; }
+.material-preview-editor label, .material-extra-requirements, .material-json-editor { display: grid; gap: 6px; }
+.material-preview-editor textarea, .material-extra-requirements textarea, .material-json-editor textarea,
+.author-dimension-body input, .author-dimension-body textarea { width: 100%; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-input); color: var(--ink); padding: 9px; }
+.material-preview-editor pre, .material-prompt-preview pre { max-height: 360px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--paper-muted); padding: 12px; font: 10px/1.6 Consolas, monospace; white-space: pre-wrap; }
+.material-dimension-settings { display: grid; gap: 9px; }
+.material-dimension-settings .section-heading, .author-dimension-editor .section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.material-dimension-settings article { display: grid; grid-template-columns: auto minmax(130px, .45fr) minmax(240px, 1fr) auto; gap: 9px; align-items: start; border: 1px solid var(--line); border-radius: 8px; background: var(--paper-muted); padding: 10px; }
+.material-dimension-settings article label { display: grid; gap: 5px; }
+.material-dimension-settings article input, .material-dimension-settings article textarea { width: 100%; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-input); color: var(--ink); padding: 8px; }
+.dimension-order { display: grid; gap: 4px; }
+.material-dimension-settings button, .author-dimension-actions button, .author-dimension-editor .section-heading button { display: inline-flex; min-height: 30px; cursor: pointer; align-items: center; justify-content: center; gap: 5px; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); color: var(--ink); padding: 4px 8px; }
+.material-dimension-settings button.danger, .author-dimension-actions button.danger { color: var(--danger); }
+.material-settings-transfer { display: flex; gap: 8px; }
+.material-prompt-preview h3 { margin: 0 0 8px; }
+.author-dimension-editor > details { border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
+.author-dimension-editor > details > summary { display: flex; min-height: 44px; cursor: pointer; align-items: center; justify-content: space-between; gap: 12px; padding: 0 12px; font-weight: 700; }
+.author-dimension-editor > details > summary small { color: var(--muted); font-weight: 400; }
+.author-dimension-body { display: grid; gap: 10px; border-top: 1px solid var(--line); padding: 12px; }
+.author-dimension-body label { display: grid; gap: 5px; font-size: 11px; }
+.author-dimension-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.author-dimension-body blockquote { margin: 0; border-left: 3px solid var(--accent); padding-left: 10px; white-space: pre-wrap; }
+.author-style-editor-dialog, .material-settings-dialog { width: min(980px, calc(100vw - 36px)); }
+.material-json-editor textarea { min-height: 420px; font-family: Consolas, monospace; }
 .material-library-sidebar nav { padding-bottom: 18px; }
 .material-sidebar-section { display: grid; gap: 3px; padding-bottom: 12px; }
 .material-sidebar-section + .material-sidebar-section { border-top: 1px solid var(--line); padding-top: 9px; }

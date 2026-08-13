@@ -250,8 +250,8 @@ function LegacyProjectWorkspacePage({ onNavigate, projectId }: Props) {
     if (kind !== 'character') {
       onNavigate('/materials', {
         materialExtraction: {
-          materialType: kind === 'plot' ? 'plot_skeleton' : 'scene_reference',
-          taskType: kind === 'scene' ? 'source_text_to_scene_material' : undefined,
+          materialType: kind === 'plot' ? 'plot_skeleton' : 'author_style',
+          taskType: kind === 'scene' ? 'author_style_extraction' : undefined,
           selectedText: selectionMenu.text,
           sourceMetadata: {
             source_kind: 'project_selection',
@@ -368,7 +368,7 @@ function LegacyProjectWorkspacePage({ onNavigate, projectId }: Props) {
       {selectionMenu ? (
         <div className="selection-resource-menu" style={{ left: selectionMenu.x, top: selectionMenu.y }}>
           <button onClick={() => void saveSelection('plot')} type="button">添加为剧情骨架来源</button>
-          <button onClick={() => void saveSelection('scene')} type="button">添加为场景素材来源</button>
+          <button onClick={() => void saveSelection('scene')} type="button">添加为作者风格来源</button>
           <button onClick={() => void saveSelection('character')} type="button">添加到角色卡</button>
         </div>
       ) : null}
@@ -380,7 +380,7 @@ function LegacyProjectWorkspacePage({ onNavigate, projectId }: Props) {
 
 function SelectionDialog({ initialName, kind, onClose, onSave }: { initialName: string; kind: SelectionKind; onClose: () => void; onSave: (name: string) => void }) {
   const [name, setName] = useState(initialName);
-  return <div className="document-processing-backdrop"><form className="document-tag-dialog" role="dialog" onSubmit={(event) => { event.preventDefault(); onSave(name); }}><header><h2>{kind === 'character' ? '添加到角色卡' : kind === 'scene' ? '添加为场景素材' : '添加为剧情骨架'}</h2><button className="icon-button" onClick={onClose} type="button"><X size={16} /></button></header><label><span>名称</span><input autoFocus value={name} onChange={(event) => setName(event.target.value)} /></label><footer><button className="button secondary" onClick={onClose} type="button">取消</button><button className="button primary" disabled={!name.trim()} type="submit">保存</button></footer></form></div>;
+  return <div className="document-processing-backdrop"><form className="document-tag-dialog" role="dialog" onSubmit={(event) => { event.preventDefault(); onSave(name); }}><header><h2>{kind === 'character' ? '添加到角色卡' : kind === 'scene' ? '添加为作者风格' : '添加为剧情骨架'}</h2><button className="icon-button" onClick={onClose} type="button"><X size={16} /></button></header><label><span>名称</span><input autoFocus value={name} onChange={(event) => setName(event.target.value)} /></label><footer><button className="button secondary" onClick={onClose} type="button">取消</button><button className="button primary" disabled={!name.trim()} type="submit">保存</button></footer></form></div>;
 }
 
 function SceneRewritePanel(props: {
@@ -427,17 +427,17 @@ function SceneRewritePanel(props: {
     void Promise.all([
       getCharacterCards(),
       getProjectMaterials(projectId, 'plot_skeleton'),
-      getProjectMaterials(projectId, 'scene_reference'),
+      getProjectMaterials(projectId, 'author_style'),
     ]).then(([characterCards, projectPlots, projectScenes]) => {
       setCharacters(characterCards);
       setPlotMaterials(projectPlots.filter((item) => item.material_type === 'plot_skeleton'));
-      setSceneMaterials(projectScenes.filter((item) => item.material_type === 'scene_reference'));
+      setSceneMaterials(projectScenes.filter((item) => item.material_type === 'author_style'));
     }).catch((reason) => props.setError(messageOf(reason)));
   }, [props.scenes]);
   async function reloadProjectMaterials(projectId: number) {
     const [projectPlots, projectScenes] = await Promise.all([
       getProjectMaterials(projectId, 'plot_skeleton'),
-      getProjectMaterials(projectId, 'scene_reference'),
+      getProjectMaterials(projectId, 'author_style'),
     ]);
     setPlotMaterials(projectPlots);
     setSceneMaterials(projectScenes);
@@ -486,7 +486,7 @@ function SceneRewritePanel(props: {
       const revised = await reviseStorySkeleton(currentRun.skeleton_id!, nodes, '用户在工作台确认前编辑');
       const skeleton = await confirmStorySkeleton(currentRun.skeleton_id!, revised.version);
       const mappings = mode === 'expansion' ? plotMaterialIds.map((materialId) => ({ material_id: materialId, insertion_after_node: insertion, usage_mode: 'required' })) : [];
-      const next = await generateSceneWorkflowPlan(currentRun.id, { skeleton_version_id: skeleton.version_id, user_instruction: instruction, character_ids: characterIds, material_mappings: mappings, scene_reference_ids: sceneMaterialIds });
+      const next = await generateSceneWorkflowPlan(currentRun.id, { skeleton_version_id: skeleton.version_id, user_instruction: instruction, character_ids: characterIds, material_mappings: mappings, author_style_ids: sceneMaterialIds });
       setRun(next);
       props.setMessage('改写规划已生成，等待确认。');
     });
@@ -511,7 +511,7 @@ function SceneRewritePanel(props: {
         user_instruction: instruction,
         character_ids: characterIds,
         plot_skeleton_material_ids: plotMaterialIds,
-        scene_reference_ids: sceneMaterialIds,
+        author_style_ids: sceneMaterialIds,
       });
       setRun(result);
       setConsistency((result as SceneWorkflowRun & { consistency?: Record<string, unknown> }).consistency ?? null);
@@ -554,7 +554,7 @@ function SceneRewritePanel(props: {
                 describe={(item) => `${item.scope === 'project' ? '当前工程' : '公共库'} · ${item.tags.join('、') || '无标签'}`}
               /> : null}
               <ResourcePicker
-                label="场景素材（仅写法参考，不产生新增剧情事件）"
+                label="作者风格（仅作风格指导，不产生剧情事实）"
                 items={sceneMaterials.filter((item) => resourceMatches(item.name, item.description, item.tags, resourceQuery))}
                 selected={sceneMaterialIds}
                 onChange={setSceneMaterialIds}
@@ -651,7 +651,7 @@ function ProjectMaterialFilterDialog({
           {filters.map((filterValue) => (
             <section className="material-project-filter-section" key={filterValue.material_type}>
               <header>
-                <h3>{filterValue.material_type === 'plot_skeleton' ? '剧情骨架' : '场景素材'}</h3>
+                <h3>{filterValue.material_type === 'plot_skeleton' ? '剧情骨架调用' : '作者风格调用'}</h3>
                 <select value={filterValue.match_mode} onChange={(event) => patch(filterValue.material_type, { match_mode: event.target.value as 'any' | 'all' })}>
                   <option value="any">匹配任一标签</option>
                   <option value="all">匹配全部标签</option>

@@ -1,5 +1,6 @@
 import type {
   AnalysisPromptTemplate,
+  AuthorStyleDimensionPreview,
   BaseSceneAnalysis,
   AnalysisPromptTemplateWrite,
   Chapter,
@@ -826,7 +827,7 @@ export function getMaterialAISettings(taskType?: MaterialAITask) {
 
 export function updateMaterialAISettings(
   taskType: MaterialAITask,
-  payload: Omit<MaterialAISettings, 'task_type' | 'updated_at'>,
+  payload: Omit<MaterialAISettings, 'task_type' | 'updated_at' | 'prompt_preview'>,
 ) {
   return request<MaterialAISettings>(`/api/material-ai-settings/${taskType}`, {
     method: 'POST',
@@ -834,8 +835,34 @@ export function updateMaterialAISettings(
   });
 }
 
-export function resetMaterialAISettings(taskType: MaterialAITask) {
-  return request<MaterialAISettings>(`/api/material-ai-settings/${taskType}/reset`, { method: 'POST' });
+export function exportAuthorStyleSettings() {
+  return request<Record<string, unknown>>('/api/author-style-settings/export');
+}
+
+export function importAuthorStyleSettings(value: unknown) {
+  return request<MaterialAISettings>('/api/author-style-settings/import', {
+    method: 'POST',
+    body: JSON.stringify({ value }),
+  });
+}
+
+export function previewAuthorStyleDimension(materialId: number, payload: {
+  dimension_id: string;
+  dimension_name: string;
+  dimension_requirement: string;
+  model_id?: number | null;
+}) {
+  return request<AuthorStyleDimensionPreview>(`/api/materials/${materialId}/author-style/dimensions/preview`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function applyAuthorStyleDimension(materialId: number, previewToken: string) {
+  return request<Material>(`/api/materials/${materialId}/author-style/dimensions/apply`, {
+    method: 'POST',
+    body: JSON.stringify({ preview_token: previewToken }),
+  });
 }
 
 export function previewMaterialExtraction(payload: {

@@ -901,13 +901,16 @@ export type CharacterExtractionPreview = {
 };
 
 export type AnalysisStatus = 'unanalyzed' | 'analyzed';
-export type MaterialType = 'scene_reference' | 'plot_skeleton';
+export type MaterialType = 'plot_skeleton' | 'author_style';
 export type MaterialScope = 'public' | 'project';
 export type MaterialTagGroup = 'general' | 'applicable_scene';
-export type MaterialAITask =
-  | 'narrative_to_plot_skeleton'
-  | 'plot_text_to_normalized_skeleton'
-  | 'source_text_to_scene_material';
+export type MaterialAITask = 'plot_skeleton_extraction' | 'author_style_extraction';
+
+export type MaterialAIDimension = {
+  id: string;
+  name: string;
+  requirement: string;
+};
 
 export type MaterialSourceSummary = {
   kind:
@@ -999,13 +1002,11 @@ export type MaterialAISettings = {
   task_type: MaterialAITask;
   model_id: number | null;
   detail_level: StyleDetailLevel;
-  max_candidates: number;
   system_prompt: string;
-  user_prompt_template: string;
-  analysis_dimensions: string[];
-  generate_general_tags: boolean;
-  generate_applicable_scene_tags: boolean;
-  custom_requirements: string;
+  base_instruction: string;
+  dimensions: MaterialAIDimension[];
+  extra_requirements: string;
+  prompt_preview: string;
   updated_at: string;
 };
 
@@ -1040,6 +1041,14 @@ export type MaterialExtractionPreview = {
 export type MaterialExtractionApplyResult = {
   created: Array<{ candidate_id: string; material_id: number | null; error: string | null }>;
   errors: Array<{ candidate_id: string; material_id: number | null; error: string | null }>;
+};
+
+export type AuthorStyleDimensionPreview = {
+  preview_token: string;
+  dimension_id: string;
+  analysis: string;
+  features: string[];
+  examples: string[];
 };
 
 export type SelectionResourceCreate = {
@@ -1087,7 +1096,7 @@ export type SceneWorkflowExecutePayload = {
   model_id?: number | null;
   character_ids?: number[];
   plot_skeleton_material_ids?: number[];
-  scene_reference_ids?: number[];
+  author_style_ids?: number[];
 };
 
 export type SplitChapterCandidate = {
