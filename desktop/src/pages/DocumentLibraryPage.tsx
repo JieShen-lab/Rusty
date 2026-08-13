@@ -78,7 +78,7 @@ import type {
 import { PrimaryButton } from '../components/PrimaryButton';
 import { SecondaryButton } from '../components/SecondaryButton';
 import { DangerButton } from '../components/DangerButton';
-import { LibraryContextMenu, LibraryDialog, LibrarySidebarSectionTitle } from '../components/LibraryPrimitives';
+import { LibraryContextMenu, LibraryDetailSection, LibraryDialog, LibraryDivider, LibraryResourceCard, LibraryResourceGrid, LibrarySidebarSectionTitle, LibraryTagChip } from '../components/LibraryPrimitives';
 import { TopBar } from '../components/TopBar';
 import { useAutoDismiss } from '../hooks/useAutoDismiss';
 
@@ -478,6 +478,7 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
     }
     if (kind === 'character') {
       const chapter = chapters.find((item) => item.id === documentContent.chapter_id);
+      const volume = volumes.find((item) => item.id === chapter?.volume_id);
       onNavigate('/characters', {
         characterExtraction: {
           selectedText: selected,
@@ -486,10 +487,12 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
             source_type: 'document',
             document_id: documentContent.document_id,
             revision_id: documentContent.revision_id,
+            volume_id: volume?.id ?? null,
             chapter_id: documentContent.chapter_id,
             start_offset: startOffset,
             end_offset: endOffset,
             document_title: selectedDocument?.title ?? '',
+            volume_title: volume?.title ?? '',
             chapter_title: chapter ? chapterDisplayTitle(chapter) : '',
           },
         },
@@ -825,6 +828,7 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
                 setSystemFilter(key);
               }} />
             ))}
+            <LibraryDivider />
             <LibrarySidebarSectionTitle action={<button aria-label="新建文档分类" className="document-add-tag" disabled={busy} onClick={() => setCategoryCreateOpen(true)} title="新建分类" type="button"><Plus size={15} /></button>}>我的分类</LibrarySidebarSectionTitle>
             {categories.length ? categories.map((category) => (
               <TagFilterButton
@@ -854,21 +858,19 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
           </header>
           {loading ? <ShelfMessage title="正在读取文档库…" /> : visibleDocuments.length ? (
             <div className="document-shelf-scroll">
-              <div className="document-shelf-grid">
+              <LibraryResourceGrid>
                 {visibleDocuments.map((document) => (
-                  <button
-                    aria-label={`${document.title}，${document.author || '未知作者'}`}
-                    aria-pressed={selectedDocument?.id === document.id}
-                    className={`document-book ${selectedDocument?.id === document.id ? 'selected' : ''}`}
+                  <LibraryResourceCard
+                    ariaLabel={`${document.title}，${document.author || '未知作者'}`}
                     key={document.id}
                     onClick={() => setSelectedId(document.id)}
                     onDoubleClick={() => void openProcessing(document)}
-                    type="button"
+                    selected={selectedDocument?.id === document.id}
                   >
                     <DefaultBookCover document={document} />
-                  </button>
+                  </LibraryResourceCard>
                 ))}
-              </div>
+              </LibraryResourceGrid>
             </div>
           ) : documents.length === 0 ? (
             <ShelfMessage action={<PrimaryButton disabled={busy} onClick={() => void importDocument()}><FileInput size={16} />导入第一本文档</PrimaryButton>} title="文档库还是空的" />
@@ -928,16 +930,13 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
                   <Definition label="章节" value={selectedDocument.chapter_count ? `${selectedDocument.chapter_count} 章` : '尚未识别'} />
                   <Definition label="字数" value={formatNumber(selectedDocument.word_count)} />
                 </section>
-                <section>
-                  <div className="document-detail-heading"><span>标签</span><button aria-label="管理当前文档标签" className="document-inline-plus" onClick={() => setResourceManager('tag')} type="button"><Plus size={14} /></button></div>
+                <LibraryDetailSection action={<button aria-label="管理当前文档标签" className="document-inline-plus" onClick={() => setResourceManager('tag')} type="button"><Plus size={14} /></button>} title="标签">
                   {selectedDocument.tags.length ? (
                     <div className="document-tag-checks">
                       {tags.filter((tag) => selectedDocument.tags.includes(tag.name)).map((tag) => (
-                        <button
-                          aria-pressed={activeTagIds.includes(tag.id)}
-                          className={activeTagIds.includes(tag.id) ? 'selected' : ''}
+                        <LibraryTagChip
+                          active={activeTagIds.includes(tag.id)}
                           key={tag.id}
-                          type="button"
                           onClick={() => setActiveTagIds((current) => (
                             current.includes(tag.id)
                               ? current.filter((id) => id !== tag.id)
@@ -945,11 +944,11 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
                           ))}
                         >
                           {tag.name}
-                        </button>
+                        </LibraryTagChip>
                       ))}
                     </div>
                   ) : <p className="document-resource-empty">未设置标签</p>}
-                </section>
+                </LibraryDetailSection>
               </div>
               <section className="document-library-location">
                 <span>文档库存储目录</span>

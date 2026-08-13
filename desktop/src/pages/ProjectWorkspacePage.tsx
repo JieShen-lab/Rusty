@@ -369,7 +369,7 @@ function LegacyProjectWorkspacePage({ onNavigate, projectId }: Props) {
         <div className="selection-resource-menu" style={{ left: selectionMenu.x, top: selectionMenu.y }}>
           <button onClick={() => void saveSelection('plot')} type="button">添加为剧情骨架来源</button>
           <button onClick={() => void saveSelection('scene')} type="button">添加为场景素材来源</button>
-          <button onClick={() => void saveSelection('character')} type="button">添加到公共角色卡</button>
+          <button onClick={() => void saveSelection('character')} type="button">添加到角色卡</button>
         </div>
       ) : null}
       {selectionKind && selectionMenu ? <SelectionDialog initialName={selectionMenu.text.slice(0, 24)} kind={selectionKind} onClose={() => setSelectionKind(null)} onSave={(name) => void confirmSelection(name)} /> : null}
@@ -380,7 +380,7 @@ function LegacyProjectWorkspacePage({ onNavigate, projectId }: Props) {
 
 function SelectionDialog({ initialName, kind, onClose, onSave }: { initialName: string; kind: SelectionKind; onClose: () => void; onSave: (name: string) => void }) {
   const [name, setName] = useState(initialName);
-  return <div className="document-processing-backdrop"><form className="document-tag-dialog" role="dialog" onSubmit={(event) => { event.preventDefault(); onSave(name); }}><header><h2>{kind === 'character' ? '添加到公共角色卡' : kind === 'scene' ? '添加为场景素材' : '添加为剧情骨架'}</h2><button className="icon-button" onClick={onClose} type="button"><X size={16} /></button></header><label><span>名称</span><input autoFocus value={name} onChange={(event) => setName(event.target.value)} /></label><footer><button className="button secondary" onClick={onClose} type="button">取消</button><button className="button primary" disabled={!name.trim()} type="submit">保存</button></footer></form></div>;
+  return <div className="document-processing-backdrop"><form className="document-tag-dialog" role="dialog" onSubmit={(event) => { event.preventDefault(); onSave(name); }}><header><h2>{kind === 'character' ? '添加到角色卡' : kind === 'scene' ? '添加为场景素材' : '添加为剧情骨架'}</h2><button className="icon-button" onClick={onClose} type="button"><X size={16} /></button></header><label><span>名称</span><input autoFocus value={name} onChange={(event) => setName(event.target.value)} /></label><footer><button className="button secondary" onClick={onClose} type="button">取消</button><button className="button primary" disabled={!name.trim()} type="submit">保存</button></footer></form></div>;
 }
 
 function SceneRewritePanel(props: {
@@ -425,12 +425,11 @@ function SceneRewritePanel(props: {
     const projectId = props.scenes[0]?.project_id;
     if (!projectId) return;
     void Promise.all([
-      getCharacterCards('public'),
-      getCharacterCards('project', projectId),
+      getCharacterCards(),
       getProjectMaterials(projectId, 'plot_skeleton'),
       getProjectMaterials(projectId, 'scene_reference'),
-    ]).then(([publicCharacters, projectCharacters, projectPlots, projectScenes]) => {
-      setCharacters(dedupeResources([...projectCharacters, ...publicCharacters]));
+    ]).then(([characterCards, projectPlots, projectScenes]) => {
+      setCharacters(characterCards);
       setPlotMaterials(projectPlots.filter((item) => item.material_type === 'plot_skeleton'));
       setSceneMaterials(projectScenes.filter((item) => item.material_type === 'scene_reference'));
     }).catch((reason) => props.setError(messageOf(reason)));

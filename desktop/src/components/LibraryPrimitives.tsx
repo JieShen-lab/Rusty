@@ -36,6 +36,38 @@ export function LibrarySidebarSectionTitle({ action, children }: { action?: Reac
   return <div className="library-sidebar-section-title"><strong>{children}</strong>{action}</div>;
 }
 
+export function LibraryDivider() {
+  return <div aria-hidden="true" className="library-sidebar-divider" />;
+}
+
+export function LibraryResourceGrid({ children, className = '' }: { children: ReactNode; className?: string }) {
+  return <div className={`document-shelf-grid ${className}`}>{children}</div>;
+}
+
+export function LibraryResourceCard({
+  ariaLabel,
+  children,
+  onClick,
+  onDoubleClick,
+  selected,
+}: {
+  ariaLabel: string;
+  children: ReactNode;
+  onClick: () => void;
+  onDoubleClick?: () => void;
+  selected: boolean;
+}) {
+  return <button aria-label={ariaLabel} aria-pressed={selected} className={`document-book ${selected ? 'selected' : ''}`} onClick={onClick} onDoubleClick={onDoubleClick} type="button">{children}</button>;
+}
+
+export function LibraryTagChip({ active = false, children, onClick }: { active?: boolean; children: ReactNode; onClick?: () => void }) {
+  return <button aria-pressed={active} className={active ? 'selected' : ''} onClick={onClick} type="button">{children}</button>;
+}
+
+export function LibraryDetailSection({ action, children, title }: { action?: ReactNode; children: ReactNode; title: string }) {
+  return <section className="library-detail-section"><div className="document-detail-heading"><span>{title}</span>{action}</div>{children}</section>;
+}
+
 export type LibraryContextMenuAction = {
   danger?: boolean;
   icon?: ReactNode;

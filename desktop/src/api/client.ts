@@ -15,8 +15,6 @@ import type {
   CharacterModificationAnalysis,
   CharacterCardWrite,
   CharacterCategory,
-  CharacterExtractionApplyResult,
-  CharacterExtractionCandidate,
   CharacterExtractionPreview,
   CharacterExtractionSettings,
   CharacterProjectSummary,
@@ -929,26 +927,6 @@ export function importCharacterCard(payload: CharacterCardWrite) {
   return request<CharacterCard>('/api/characters/import', { method: 'POST', body: JSON.stringify(payload) });
 }
 
-export function copyPublicCharacterToProject(cardId: number, targetProjectId: number, force = false) {
-  return request<CharacterCard>(`/api/characters/${cardId}/copy-to-project`, {
-    method: 'POST',
-    body: JSON.stringify({ target_project_id: targetProjectId, force }),
-  });
-}
-
-export function getExistingCharacterProjectCopy(cardId: number, targetProjectId: number) {
-  return request<CharacterCard | null>(
-    `/api/characters/${cardId}/project-copy?target_project_id=${targetProjectId}`,
-  );
-}
-
-export function publishProjectCharacterToPublic(cardId: number, selectedFields: string[]) {
-  return request<CharacterCard>(`/api/characters/${cardId}/publish-to-public`, {
-    method: 'POST',
-    body: JSON.stringify({ selected_fields: selectedFields }),
-  });
-}
-
 export function getCharacterExtractionSettings() {
   return request<CharacterExtractionSettings>('/api/character-extraction/settings');
 }
@@ -965,27 +943,13 @@ export function resetCharacterExtractionSettings() {
 }
 
 export function previewCharacterExtraction(payload: {
-  sample_text: string;
-  name?: string | null;
+  target_character_name: string;
+  source_text: string;
   detail_level?: 'brief' | 'standard' | 'detailed' | null;
   model_id?: number | null;
   source_metadata?: Record<string, unknown>;
 }) {
   return request<CharacterExtractionPreview>('/api/characters/extract/preview', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
-}
-
-export function applyCharacterExtraction(payload: {
-  preview_token: string;
-  candidates: Array<CharacterExtractionCandidate & { confirmed_tags: string[] }>;
-  selected_candidate_ids: string[];
-  scope: 'public' | 'project';
-  project_id: number | null;
-  category_ids: number[];
-}) {
-  return request<CharacterExtractionApplyResult>('/api/characters/extract/apply', {
     method: 'POST',
     body: JSON.stringify(payload),
   });

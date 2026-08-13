@@ -774,6 +774,7 @@ export type CharacterCard = {
   age: string;
   setting_text: string;
   custom_fields: CharacterCustomField[];
+  stable_fields: CharacterStableField[];
   raw_text: string;
   analysis_status: AnalysisStatus;
   cover_path: string | null;
@@ -818,15 +819,12 @@ export type CharacterProjectSummary = {
 };
 
 export type CharacterLibrarySelection =
-  | { kind: 'project'; projectId: number }
-  | { kind: 'public-all' }
-  | { kind: 'public-category'; categoryId: number };
+  | { kind: 'all' }
+  | { kind: 'category'; categoryId: number };
 
 export type CharacterQueryState = {
   query: string;
   activeTagId: number | null;
-  analysisStatus: 'all' | 'unanalyzed' | 'analyzed';
-  untaggedOnly: boolean;
 };
 
 export type CharacterCustomField = {
@@ -835,6 +833,8 @@ export type CharacterCustomField = {
   value: string;
   sort_order: number;
 };
+
+export type CharacterStableField = CharacterCustomField;
 
 export type CharacterCardWrite = {
   name: string;
@@ -856,6 +856,7 @@ export type CharacterCardWrite = {
   age?: string;
   setting_text?: string;
   custom_fields?: CharacterCustomField[];
+  stable_fields?: CharacterStableField[];
   raw_text?: string;
   analysis_status?: AnalysisStatus;
   tag_ids?: number[];
@@ -864,52 +865,39 @@ export type CharacterCardWrite = {
 export type CharacterExtractionSettings = {
   model_id: number | null;
   detail_level: StyleDetailLevel;
-  max_candidates: number;
-  extract_all_characters: boolean;
   generate_tags: boolean;
-  generate_appearance: boolean;
-  generate_relationships: boolean;
-  generate_personality: boolean;
-  generate_speech_style: boolean;
-  generate_action_constraints: boolean;
-  generate_anti_ooc_rules: boolean;
-  generate_abilities_background: boolean;
   custom_requirements: string;
   system_prompt: string;
+  dimensions: CharacterDimensionDefinition[];
   prompt_preview: string;
 };
 
-export type CharacterExtractionCandidate = {
-  candidate_id: string;
-  selected: boolean;
+export type CharacterDimensionDefinition = {
+  id: string;
+  label: string;
+  instruction: string;
+  sort_order: number;
+  enabled: boolean;
+  is_default: boolean;
+};
+
+export type CharacterDraft = {
   name: string;
   aliases: string[];
   description: string;
   identity: string;
   age: string;
-  setting_text: string;
-  relationship_notes: string;
-  personality: string;
-  speech_style: string;
-  action_constraints: string;
-  anti_ooc_rules: string;
-  profile: Record<string, unknown>;
-  custom_fields: CharacterCustomField[];
+  stable_fields: CharacterStableField[];
   suggested_tags: string[];
-  confirmed_tags?: string[];
-  evidence_summary: string;
+  source_metadata: Record<string, unknown>;
+  import_metadata: Record<string, unknown>;
+  raw_text: string;
 };
 
 export type CharacterExtractionPreview = {
   preview_token: string;
   expires_at: string;
-  source_summary: CharacterSourceSummary;
-  candidates: CharacterExtractionCandidate[];
-};
-
-export type CharacterExtractionApplyResult = {
-  created: Array<{ candidate_id: string; card_id: number | null; error: string | null }>;
-  errors: Array<{ candidate_id: string; card_id: number | null; error: string | null }>;
+  character: CharacterDraft;
 };
 
 export type AnalysisStatus = 'unanalyzed' | 'analyzed';
