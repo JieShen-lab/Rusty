@@ -63,7 +63,7 @@ class PhaseTwoRemediationTests(unittest.TestCase):
         result = service.import_json_items(
             [
                 {"material_type": "outline", "name": "旧大纲", "raw_text": "原始内容"},
-                {"material_type": "scene_reference", "name": "场景动作"},
+                {"material_type": "author_style", "name": "动作风格"},
                 {"material_type": "unknown", "name": "非法项"},
             ],
             default_scope="public",
@@ -80,13 +80,9 @@ class PhaseTwoRemediationTests(unittest.TestCase):
             model_name="fake", is_default=True,
         )
         material_id = MaterialService(self.database).create_material(
-            material_type="scene_reference", scope="public", name="雨夜", raw_text="雨打在石阶上。", content={"old": True},
+            material_type="author_style", scope="public", name="雨夜文风", raw_text="雨打在石阶上。", content={"summary": "", "dimensions": []},
         )
-        valid = {
-            "summary": "雨夜动作写法", "applicable_scenes": ["追逐"], "writing_method": ["短句"],
-            "key_actions": ["滑步"], "sensory_details": ["雨声"], "rhythm": "渐快",
-            "constraints": ["不新增事件"], "source_hints": ["石阶"],
-        }
+        valid = {"summary": "雨夜动作写法", "dimensions": [{"id": "sentence", "name": "句子特征", "requirement": "分析句式", "analysis": "短句", "features": ["节奏快"], "examples": ["雨打在石阶上。"]}]}
         fake = QueueAI("not json", valid)
         structured = StructuredModelService(self.database, ai_client=fake)
         updated, result = ResourceAnalysisService(self.database, structured_model_service=structured).analyze_material(material_id)
@@ -172,7 +168,7 @@ class PhaseTwoRemediationTests(unittest.TestCase):
         service = MaterialService(self.database)
         tag_id = service.create_tag(" 气氛 ").id
         material_id = service.create_material(
-            material_type="scene_reference", scope="public", name="灯影", content={}, tag_ids=[tag_id],
+            material_type="author_style", scope="public", name="灯影", content={}, tag_ids=[tag_id],
         )
         service.rename_tag(tag_id, "夜景")
         self.assertIn("夜景", service.get_material(material_id).tags)

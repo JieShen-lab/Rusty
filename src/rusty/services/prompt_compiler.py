@@ -67,8 +67,8 @@ class PromptCompiler:
     ) -> CompiledRequest:
         system = (
             "You are Rusty's structured novel-workflow component. Use only the supplied "
-            "story state and user direction. Return valid JSON only. Scene and style "
-            "references guide expression and must not introduce unconfirmed key facts."
+            "story state and user direction. Return valid JSON only. Author style context "
+            "guides expression and must never introduce unconfirmed story facts."
         )
         user = (
             f"WORKFLOW STAGE: {stage}\n\n"

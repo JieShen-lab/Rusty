@@ -19,7 +19,7 @@ from rusty.services.ai_client import AIClient, AIResponse
 from rusty.services.anchor_extraction_service import AnchorExtractionService
 from rusty.services import anchor_extraction_service as extraction_module
 from rusty.services.anchor_service import AnchorService
-from rusty.services.material_service import MATERIAL_AI_DEFAULTS, MaterialService
+from rusty.services.material_service import MaterialService
 from rusty.services.model_service import ModelService
 from tests.support import initialized_database
 
@@ -109,7 +109,7 @@ class PreviewApplyContractV23Tests(unittest.TestCase):
             database_path, extraction, _ = self._service(directory)
             preview = extraction.preview_materials_from_text(
                 "A then B.",
-                task_type="narrative_to_plot_skeleton",
+                task_type="plot_skeleton_extraction",
             )
             payload = [
                 {
@@ -126,19 +126,19 @@ class PreviewApplyContractV23Tests(unittest.TestCase):
                 candidates=payload,
                 selected_candidate_ids=selected,
             )
-            self.assertEqual(2, len(first["created"]))
+            self.assertEqual(1, len(first["created"]))
             with self.assertRaisesRegex(ValueError, "already used"):
                 extraction.apply_material_extraction(
                     preview_token=preview.preview_token,
                     candidates=payload,
                     selected_candidate_ids=selected,
                 )
-            self.assertEqual(2, len(MaterialService(database_path).list_materials()))
+            self.assertEqual(1, len(MaterialService(database_path).list_materials()))
 
     def test_material_apply_uses_preview_detail_level_snapshot(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             database_path, extraction, _ = self._service(directory)
-            task_type = "narrative_to_plot_skeleton"
+            task_type = "plot_skeleton_extraction"
             settings = extraction.material_service.get_ai_settings(task_type)
 
             def set_detail_level(detail_level: str) -> None:
@@ -146,9 +146,10 @@ class PreviewApplyContractV23Tests(unittest.TestCase):
                     task_type,
                     model_id=settings.model_id,
                     detail_level=detail_level,
-                    max_candidates=settings.max_candidates,
                     system_prompt=settings.system_prompt,
-                    custom_requirements=settings.custom_requirements,
+                    base_instruction=settings.base_instruction,
+                    dimensions=[dict(item) for item in settings.dimensions],
+                    extra_requirements=settings.extra_requirements,
                 )
 
             set_detail_level("detailed")
@@ -180,7 +181,7 @@ class PreviewApplyContractV23Tests(unittest.TestCase):
                     ],
                 )
 
-            self.assertEqual(2, len(result["created"]))
+            self.assertEqual(1, len(result["created"]))
             self.assertEqual(
                 {"detailed"},
                 {
@@ -200,7 +201,7 @@ class PreviewApplyContractV23Tests(unittest.TestCase):
             self.assertNotIn(character_key, extraction_module._CHARACTER_PREVIEWS)
 
             material = extraction.preview_materials_from_text(
-                "A then B.", task_type="narrative_to_plot_skeleton"
+                "A then B.", task_type="plot_skeleton_extraction"
             )
             material_key = (str(database_path.resolve()), material.preview_token)
             extraction_module._MATERIAL_PREVIEWS[material_key].expires_at = 0.0
@@ -236,7 +237,7 @@ class PreviewApplyContractV23Tests(unittest.TestCase):
             category = MaterialService(database_path).create_category("plot_skeleton", "atomic")
             preview = extraction.preview_materials_from_text(
                 "A then B.",
-                task_type="narrative_to_plot_skeleton",
+                task_type="plot_skeleton_extraction",
             )
             payload = [
                 {
@@ -277,14 +278,14 @@ class PreviewApplyContractV23Tests(unittest.TestCase):
                 release.set()
                 result = first.result(timeout=5)
 
-            self.assertEqual(2, len(result["created"]))
+            self.assertEqual(1, len(result["created"]))
             key = (str(database_path.resolve()), preview.preview_token)
             self.assertEqual("consumed", extraction_module._MATERIAL_PREVIEWS[key].state)
             with session(database_path) as connection:
-                self.assertEqual(2, connection.execute("SELECT COUNT(*) FROM materials").fetchone()[0])
+                self.assertEqual(1, connection.execute("SELECT COUNT(*) FROM materials").fetchone()[0])
                 self.assertEqual(2, connection.execute("SELECT COUNT(*) FROM material_tags").fetchone()[0])
-                self.assertEqual(4, connection.execute("SELECT COUNT(*) FROM material_tag_links").fetchone()[0])
-                self.assertEqual(2, connection.execute("SELECT COUNT(*) FROM material_category_links").fetchone()[0])
+                self.assertEqual(2, connection.execute("SELECT COUNT(*) FROM material_tag_links").fetchone()[0])
+                self.assertEqual(1, connection.execute("SELECT COUNT(*) FROM material_category_links").fetchone()[0])
 
     def test_character_preview_rejects_candidates_array(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
@@ -320,7 +321,7 @@ class PreviewApplyContractV23Tests(unittest.TestCase):
                 )
             preview = extraction.preview_materials_from_text(
                 "A then B.",
-                task_type="narrative_to_plot_skeleton",
+                task_type="plot_skeleton_extraction",
             )
             payload = [
                 {
@@ -340,7 +341,7 @@ class PreviewApplyContractV23Tests(unittest.TestCase):
             )
             self.assertEqual([], failed["created"])
             self.assertEqual(selected[0], failed["errors"][0]["candidate_id"])
-            self.assertNotEqual(selected[-1], failed["errors"][0]["candidate_id"])
+            self.assertEqual(selected[0], failed["errors"][0]["candidate_id"])
             with session(database_path) as connection:
                 self.assertEqual(0, connection.execute("SELECT COUNT(*) FROM materials").fetchone()[0])
                 self.assertEqual(0, connection.execute("SELECT COUNT(*) FROM material_tags").fetchone()[0])
@@ -355,7 +356,7 @@ class PreviewApplyContractV23Tests(unittest.TestCase):
                 candidates=payload,
                 selected_candidate_ids=selected,
             )
-            self.assertEqual(2, len(retried["created"]))
+            self.assertEqual(1, len(retried["created"]))
 
     def test_character_suggested_tags_are_not_created_by_preview(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
@@ -386,7 +387,7 @@ class PreviewApplyContractV23Tests(unittest.TestCase):
 
             material_preview = extraction.preview_materials_from_text(
                 source,
-                task_type="narrative_to_plot_skeleton",
+                task_type="plot_skeleton_extraction",
             )
             material_payload = [
                 {
@@ -422,40 +423,30 @@ class PreviewApplyContractV23Tests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "50,000"):
                 extraction.preview_materials_from_text(
                     oversized,
-                    task_type="narrative_to_plot_skeleton",
+                    task_type="plot_skeleton_extraction",
                 )
             self.assertEqual([], client.calls)
 
-    def test_material_settings_are_independent_persistent_and_resettable(self) -> None:
+    def test_material_settings_are_two_independent_current_defaults(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             database_path = initialized_database(Path(directory) / "rusty.db")
             service = MaterialService(database_path)
-            for index, task_type in enumerate(sorted(MATERIAL_AI_DEFAULTS)):
+            for index, task_type in enumerate(("plot_skeleton_extraction", "author_style_extraction")):
                 service.update_ai_settings(
                     task_type,
                     model_id=None,
                     detail_level=("brief", "standard", "detailed")[index],
-                    max_candidates=index + 2,
                     system_prompt=f"system-{index}",
-                    user_prompt_template=f"user-{index}",
-                    analysis_dimensions=[f"dimension-{index}"],
-                    generate_general_tags=index != 1,
-                    generate_applicable_scene_tags=index == 2,
-                    custom_requirements=f"custom-{index}",
+                    base_instruction=f"instruction-{index}",
+                    dimensions=[{"id": f"dimension-{index}", "name": f"Dimension {index}", "requirement": "Analyze it."}],
+                    extra_requirements=f"custom-{index}",
                 )
             persisted = {
                 item.task_type: item
                 for item in MaterialService(database_path).list_ai_settings()
             }
-            self.assertEqual({"system-0", "system-1", "system-2"}, {item.system_prompt for item in persisted.values()})
-            reset_task = "source_text_to_scene_material"
-            reset = service.reset_ai_settings(reset_task)
-            self.assertEqual(
-                tuple(MATERIAL_AI_DEFAULTS[reset_task]["analysis_dimensions"]),
-                reset.analysis_dimensions,
-            )
-            self.assertTrue(reset.generate_general_tags)
-            self.assertTrue(reset.generate_applicable_scene_tags)
+            self.assertEqual({"system-0", "system-1"}, {item.system_prompt for item in persisted.values()})
+            self.assertEqual({"plot_skeleton_extraction", "author_style_extraction"}, set(persisted))
 
     def test_v22_generate_tags_migrates_to_both_v23_switches(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
@@ -484,26 +475,19 @@ class PreviewApplyContractV23Tests(unittest.TestCase):
                 """
             )
             initialize_database(connection)
-            rows = connection.execute(
-                """
-                SELECT task_type, generate_tags, generate_general_tags,
-                       generate_applicable_scene_tags, analysis_dimensions_json
-                FROM material_ai_settings ORDER BY task_type
-                """
-            ).fetchall()
+            rows = connection.execute("SELECT task_type, dimensions_json FROM material_ai_settings ORDER BY task_type").fetchall()
             version = connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
             connection.close()
             self.assertEqual(CURRENT_SCHEMA_VERSION, version)
+            self.assertEqual(["author_style_extraction", "plot_skeleton_extraction"], [row["task_type"] for row in rows])
             for row in rows:
-                self.assertEqual(row["generate_tags"], row["generate_general_tags"])
-                self.assertEqual(row["generate_tags"], row["generate_applicable_scene_tags"])
-                self.assertIsInstance(json.loads(row["analysis_dimensions_json"]), list)
+                self.assertIsInstance(json.loads(row["dimensions_json"]), list)
 
     def test_material_preview_schema_contains_complete_contract(self) -> None:
         value = MaterialExtractionPreviewOut(
             preview_token="token",
             expires_at="2030-01-01T00:00:00+00:00",
-            task_type="narrative_to_plot_skeleton",
+            task_type="plot_skeleton_extraction",
             material_type="plot_skeleton",
             source_summary={"kind": "project_selection", "label": "工程选区"},
             prompt_snapshot={"system_prompt": "safe"},

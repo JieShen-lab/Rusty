@@ -10,18 +10,9 @@ from rusty.db import default_database_path
 from rusty.services.structured_model_service import StructuredModelResult, StructuredModelService
 
 
-SCENE_MATERIAL_SCHEMA = {
+AUTHOR_STYLE_SCHEMA = {
     "type": "object",
-    "required": [
-        "summary",
-        "applicable_scenes",
-        "writing_method",
-        "key_actions",
-        "sensory_details",
-        "rhythm",
-        "constraints",
-        "source_hints",
-    ],
+    "required": ["summary", "dimensions"],
 }
 PLOT_SKELETON_SCHEMA = {
     "type": "object",
@@ -70,15 +61,15 @@ class ResourceAnalysisService:
         material = self.material_service.get_material(material_id)
         if material is None:
             raise FileNotFoundError(f"Material not found: {material_id}")
-        schema = SCENE_MATERIAL_SCHEMA if material.material_type == "scene_reference" else PLOT_SKELETON_SCHEMA
+        schema = AUTHOR_STYLE_SCHEMA if material.material_type == "author_style" else PLOT_SKELETON_SCHEMA
         result = self.model_service.run(
             invocation_kind="material_analysis",
             stage=material.material_type,
             messages=_material_messages(material),
             output_schema=schema,
             validator=(
-                _validate_scene_material
-                if material.material_type == "scene_reference"
+                _validate_author_style
+                if material.material_type == "author_style"
                 else _validate_plot_skeleton
             ),
             model_id=model_id,
@@ -146,15 +137,12 @@ class ResourceAnalysisService:
 
 def _material_messages(material: Material) -> list[dict[str, str]]:
     tags = " / ".join(material.tags) or "none"
-    if material.material_type == "scene_reference":
+    if material.material_type == "author_style":
         role = (
-            "Analyze a scene-writing reference. It guides how to render actions, sensory detail, "
-            "rhythm, and local prose. It must not introduce new plot events."
+            "Analyze one complete author style profile. Describe concrete writing methods and "
+            "quote examples exactly from the source. Style must not introduce story facts."
         )
-        fields = (
-            "summary, applicable_scenes[], writing_method[], key_actions[], sensory_details[], "
-            "rhythm, constraints[], source_hints[]"
-        )
+        fields = "summary, dimensions[{id,name,requirement,analysis,features[],examples[]}]"
     else:
         role = (
             "Analyze a plot skeleton that may introduce new story events. Preserve causal order "
@@ -211,18 +199,26 @@ def _character_messages(card: CharacterCard) -> list[dict[str, str]]:
     ]
 
 
-def _validate_scene_material(value: dict[str, Any]) -> dict[str, Any]:
-    required = tuple(SCENE_MATERIAL_SCHEMA["required"])
+def _validate_author_style(value: dict[str, Any]) -> dict[str, Any]:
+    required = tuple(AUTHOR_STYLE_SCHEMA["required"])
     _require_keys(value, required)
+    if not isinstance(value["dimensions"], list):
+        raise ValueError("dimensions must be an array.")
+    dimensions: list[dict[str, Any]] = []
+    for index, item in enumerate(value["dimensions"]):
+        if not isinstance(item, dict) or not str(item.get("id") or "").strip():
+            raise ValueError(f"dimensions[{index}] requires a stable id.")
+        dimensions.append({
+            "id": str(item["id"]).strip(),
+            "name": str(item.get("name") or "").strip(),
+            "requirement": str(item.get("requirement") or "").strip(),
+            "analysis": str(item.get("analysis") or "").strip(),
+            "features": _string_list(item.get("features", [])),
+            "examples": _string_list(item.get("examples", [])),
+        })
     return {
         "summary": _string(value["summary"]),
-        "applicable_scenes": _string_list(value["applicable_scenes"]),
-        "writing_method": _string_list(value["writing_method"]),
-        "key_actions": _string_list(value["key_actions"]),
-        "sensory_details": _string_list(value["sensory_details"]),
-        "rhythm": _string(value["rhythm"]),
-        "constraints": _string_list(value["constraints"]),
-        "source_hints": _string_list(value["source_hints"]),
+        "dimensions": dimensions,
     }
 
 

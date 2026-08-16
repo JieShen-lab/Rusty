@@ -503,8 +503,8 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
     const volume = volumes.find((item) => item.id === chapter?.volume_id);
     onNavigate('/materials', {
       materialExtraction: {
-        materialType: kind === 'plot' ? 'plot_skeleton' : 'scene_reference',
-        taskType: kind === 'scene' ? 'source_text_to_scene_material' : undefined,
+        materialType: kind === 'plot' ? 'plot_skeleton' : 'author_style',
+        taskType: kind === 'scene' ? 'author_style_extraction' : undefined,
         selectedText: selected,
         sourceMetadata: {
           source_kind: 'document_selection',
@@ -1493,7 +1493,7 @@ const EditableTextPreview = forwardRef<DocumentEditorController, {
       {menu ? (
         <div className="selection-resource-menu" ref={menuRef} style={{ left: menu.x, top: menu.y }}>
           <button onClick={() => { onSelectionResource('plot', menu.text, menu.startOffset, menu.endOffset); setMenu(null); }} type="button">添加为剧情骨架来源</button>
-          <button onClick={() => { onSelectionResource('scene', menu.text, menu.startOffset, menu.endOffset); setMenu(null); }} type="button">添加为场景素材来源</button>
+          <button onClick={() => { onSelectionResource('scene', menu.text, menu.startOffset, menu.endOffset); setMenu(null); }} type="button">添加为作者风格来源</button>
           <button onClick={() => { onSelectionResource('character', menu.text, menu.startOffset, menu.endOffset); setMenu(null); }} type="button">提取角色卡</button>
         </div>
       ) : null}

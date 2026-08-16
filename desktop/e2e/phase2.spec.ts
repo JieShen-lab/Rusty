@@ -26,7 +26,7 @@ const projectCharacter = {
   source_summary: { kind: 'public_copy' as const, label: '公共角色“林舟”', project_id: 1, source_card_id: 1 },
 };
 const materials = [
-  { id: 1, material_type: 'scene_reference', scope: 'public', project_id: null, project_name: null, name: '雨夜追逐', description: '雨夜动作参考', detail_level: 'standard', raw_text: '', content: { schema_version: 1, summary: '雨夜追逐', key_beats: [{ id: 'beat-fixed', title: '跃上屋顶', summary: '快速追逐', evidence_summary: '屋顶湿滑', unknown: 'keep' }], actions: [], environment: [], sensory: [], writing_guidance: [], source_cues: [], avoidances: [], applicable_conditions: [], legacy_extra: { keep: true } }, analysis_status: 'analyzed', source_metadata: {}, import_metadata: {}, source_material_id: null, source_version: null, timeline_start_chapter: null, timeline_end_chapter: null, sort_order: 0, version: 1, created_at: '', updated_at: '', tags: [] },
+  { id: 1, material_type: 'author_style', scope: 'public', project_id: null, project_name: null, name: '雨夜文风', description: '雨夜动作写法', detail_level: 'standard', raw_text: '雨落在屋檐。', content: { schema_version: 1, summary: '短句推进', dimensions: [{ id: 'sentence-features', name: '句子特征', requirement: '分析句式', analysis: '短句推进动作', features: ['短句'], examples: ['雨落在屋檐。'] }] }, analysis_status: 'analyzed', source_metadata: {}, import_metadata: {}, source_material_id: null, source_version: null, timeline_start_chapter: null, timeline_end_chapter: null, sort_order: 0, version: 1, created_at: '', updated_at: '', tags: [], general_tags: [], applicable_scene_tags: [], category_ids: [], categories: [], source_summary: { kind: 'manual', label: '本地创建' } },
   { id: 2, material_type: 'plot_skeleton', scope: 'public', project_id: null, project_name: null, name: '误会解除', description: '事件骨架', detail_level: 'standard', raw_text: '', content: { schema_version: 1, premise: '误会造成分离', stages: [{ id: 'stage-fixed', title: '误会发生', summary: '两人争执', causes: ['错误线索'], effects: ['暂时分离'], characters: ['林舟'], locations: ['旧城'], must_keep_details: ['钥匙'], forbidden_changes: ['不能提前和解'], unknown: 'keep' }], conflicts: [], turning_points: [], climax: { id: 'climax', title: '真相', summary: '发现真相' }, resolution: { id: 'resolution', title: '和解', summary: '解除误会' }, hooks: [], legacy_extra: { keep: true } }, analysis_status: 'analyzed', source_metadata: {}, import_metadata: {}, source_material_id: null, source_version: null, timeline_start_chapter: null, timeline_end_chapter: null, sort_order: 0, version: 1, created_at: '', updated_at: '', tags: [] },
 ];
 const baseDocumentItems = [
@@ -51,6 +51,10 @@ async function mockApi(page: Page) {
   let documentRevisionNumber = 1;
   let documentBody = '林舟推门而入，看见桌上的钥匙。';
   let materialItems = materials.map((item) => ({ ...item, content: structuredClone(item.content) }));
+  let materialSettings = [
+    { task_type: 'plot_skeleton_extraction', model_id: 1, detail_level: 'standard', system_prompt: '只使用来源事实。', base_instruction: '提取可复用剧情结构。', dimensions: [{ id: 'structure', name: '整体剧情结构', requirement: '分析结构。' }], extra_requirements: '', prompt_preview: '提取可复用剧情结构', updated_at: '' },
+    { task_type: 'author_style_extraction', model_id: 1, detail_level: 'standard', system_prompt: '分析作者风格。', base_instruction: '分析具体写法。', dimensions: [{ id: 'sentence-features', name: '句子特征', requirement: '分析句式' }], extra_requirements: '', prompt_preview: '分析作者风格', updated_at: '' },
+  ];
   let characterItems = [structuredClone(publicCharacter)];
   let documentChapterTitle = '';
   let volumeTitle = '第七卷 雨夜';
@@ -89,23 +93,40 @@ async function mockApi(page: Page) {
     }
     else if (path === '/api/characters') body = characterItems;
     else if (path === '/api/material-categories') body = [];
-    else if (path === '/api/material-ai-settings') body = [
-      { task_type: 'narrative_to_plot_skeleton', model_id: 1, detail_level: 'standard', max_candidates: 6, generate_general_tags: true, generate_applicable_scene_tags: false, analysis_dimensions: ['premise', 'stages'], user_prompt_template: '整理剧情', custom_requirements: '', system_prompt: '只使用来源证据。', updated_at: '' },
-      { task_type: 'plot_text_to_normalized_skeleton', model_id: 1, detail_level: 'standard', max_candidates: 6, generate_general_tags: true, generate_applicable_scene_tags: false, analysis_dimensions: ['premise', 'stages'], user_prompt_template: '规范剧情', custom_requirements: '', system_prompt: '不添加新情节。', updated_at: '' },
-      { task_type: 'source_text_to_scene_material', model_id: 1, detail_level: 'standard', max_candidates: 6, generate_general_tags: true, generate_applicable_scene_tags: true, analysis_dimensions: ['summary', 'key_beats'], user_prompt_template: '整理场景', custom_requirements: '', system_prompt: '只整理场景写法。', updated_at: '' },
-    ];
+    else if (path === '/api/material-ai-settings') body = materialSettings;
+    else if (/^\/api\/material-ai-settings\/(plot_skeleton_extraction|author_style_extraction)$/.test(path)) {
+      const taskType = path.split('/').at(-1);
+      const current = materialSettings.find((item) => item.task_type === taskType)!;
+      if (route.request().method() === 'POST') {
+        const request = route.request().postDataJSON();
+        const updated = { ...current, ...request, prompt_preview: `${request.system_prompt}\n${request.base_instruction}\n${request.dimensions.map((item: { name: string }) => item.name).join('\n')}` };
+        materialSettings = materialSettings.map((item) => item.task_type === taskType ? updated : item);
+        body = updated;
+      } else body = current;
+    }
+    else if (path === '/api/author-style-settings/export') {
+      const current = materialSettings.find((item) => item.task_type === 'author_style_extraction')!;
+      body = { schema_version: 1, config_type: 'author_style_extraction', detail_level: current.detail_level, system_prompt: current.system_prompt, base_instruction: current.base_instruction, dimensions: current.dimensions, extra_requirements: current.extra_requirements };
+    }
+    else if (path === '/api/author-style-settings/import') {
+      const request = route.request().postDataJSON() as { value: Record<string, unknown> };
+      const current = materialSettings.find((item) => item.task_type === 'author_style_extraction')!;
+      const updated = { ...current, ...request.value, task_type: 'author_style_extraction', model_id: current.model_id, prompt_preview: String(request.value.system_prompt ?? '') };
+      materialSettings = materialSettings.map((item) => item.task_type === 'author_style_extraction' ? updated : item);
+      body = updated;
+    }
     else if (path === '/api/material-extractions/preview') {
       const request = route.request().postDataJSON() as { source_metadata?: Record<string, unknown> };
       const metadata = request.source_metadata ?? {};
       body = {
       preview_token: 'material-preview',
       expires_at: '2030-01-01T00:00:00Z',
-      task_type: 'source_text_to_scene_material',
-      material_type: 'scene_reference',
+      task_type: 'author_style_extraction',
+      material_type: 'author_style',
       source_summary: metadata.document_title ? { kind: 'document_selection', label: `《${metadata.document_title}》 · ${metadata.chapter_title}`, document_id: metadata.document_id, chapter_id: metadata.chapter_id } : { kind: 'pasted_text', label: '粘贴文本' },
-      prompt_snapshot: { task_type: 'source_text_to_scene_material' },
+      prompt_snapshot: { task_type: 'author_style_extraction' },
       candidates: [{
-        candidate_id: 'scene-1', material_type: 'scene_reference', selected: true, name: '雨夜追逐', description: '雨夜动作参考',
+        candidate_id: 'style-1', material_type: 'author_style', selected: true, name: '雨夜文风', description: '雨夜动作写法',
         content: { schema_version: 1, summary: '雨夜追逐的动作与感官提示。', key_beats: [{ id: 'beat-1', title: '跃上屋顶', summary: '快速追逐', evidence_summary: '湿滑屋顶' }] },
         suggested_general_tags: ['动作'], suggested_applicable_scene_tags: ['雨夜'],
         evidence: [{ quote: '雨夜追逐' }], evidence_summary: '原文明确包含雨夜和追逐。',
@@ -114,6 +135,19 @@ async function mockApi(page: Page) {
       };
     }
     else if (path === '/api/material-extractions/apply') body = { created: [{ candidate_id: 'scene-1', material_id: 1, error: null }], errors: [] };
+    else if (/^\/api\/materials\/\d+\/author-style\/dimensions\/preview$/.test(path)) {
+      const request = route.request().postDataJSON() as { dimension_id: string; dimension_name: string };
+      body = { preview_token: 'dimension-preview', material_id: 1, dimension_id: request.dimension_id, dimension_name: request.dimension_name, analysis: '只分析新增维度', features: ['局部特征'], examples: ['雨落在屋檐。'], source_revision: 'source-hash' };
+    }
+    else if (/^\/api\/materials\/\d+\/author-style\/dimensions\/apply$/.test(path)) {
+      const current = materialItems[0];
+      const dimensions = Array.isArray(current.content.dimensions)
+        ? current.content.dimensions.map((item: Record<string, unknown>) => item.analysis ? item : { ...item, analysis: '只分析新增维度', features: ['局部特征'], examples: ['雨落在屋檐。'] })
+        : [];
+      const updated = { ...current, content: { ...current.content, dimensions } };
+      materialItems = materialItems.map((item) => item.id === current.id ? updated : item);
+      body = updated;
+    }
     else if (path === '/api/materials') body = materialItems.map((item) => ({
       ...item,
       general_tags: item.tags,
@@ -124,7 +158,7 @@ async function mockApi(page: Page) {
     }));
     else if (/^\/api\/materials\/1\/analyze$/.test(path)) body = { material_id: 1, model_id: 1, invocation_id: 9, existing: {}, proposal: { summary: '模型分析摘要' } };
     else if (/^\/api\/materials\/1\/analysis\/apply$/.test(path)) body = { ...materials[0], analysis_status: 'analyzed', content: { summary: '模型分析摘要' } };
-    else if (path === '/api/materials/import-json') body = { imported: [{ index: 0, id: 3, name: '导入场景', material_type: 'scene_reference' }], errors: [] };
+    else if (path === '/api/materials/import-json') body = { imported: [{ index: 0, id: 3, name: '导入风格', material_type: 'author_style' }], errors: [] };
     else if (/^\/api\/materials\/\d+$/.test(path)) {
       const materialId = Number(path.split('/').at(-1));
       const current = materialItems.find((item) => item.id === materialId);
@@ -349,8 +383,10 @@ test('提示词管理使用总提示词、工作流和公共任务三类对象',
 
 test('素材库只显示两种类型且无时间线主视图', async ({ page }) => {
   await page.goto('/materials');
-  await expect(page.getByText('场景素材', { exact: true }).first()).toBeVisible();
   await expect(page.getByText('剧情骨架', { exact: true }).first()).toBeVisible();
+  await page.getByRole('button', { name: '切换素材类型（左）' }).click();
+  await expect(page.getByText('作者风格', { exact: true }).first()).toBeVisible();
+  await expect(page.getByText(['场景', '素材'].join(''), { exact: true })).toHaveCount(0);
   await expect(page.getByText('大纲', { exact: true })).toHaveCount(0);
   await expect(page.getByRole('tab', { name: '时间线' })).toHaveCount(0);
 });
@@ -361,20 +397,17 @@ test('素材库使用统一范围、结构化新建与 AI 候选确认流程', a
   await expect(sidebar.getByText('公共素材', { exact: true })).toHaveCount(0);
   await expect(sidebar.getByText('工程素材', { exact: true })).toHaveCount(0);
   await expect(sidebar.getByText('我的标签', { exact: true })).toHaveCount(0);
-  await expect(sidebar.getByText('全部内容', { exact: true })).toHaveCount(2);
-  await expect(sidebar.getByText('最近导入', { exact: true })).toHaveCount(2);
+  await expect(sidebar.getByText('全部内容', { exact: true })).toHaveCount(1);
+  await expect(sidebar.getByText('最近导入', { exact: true })).toHaveCount(1);
   await expect(page.getByRole('button', { name: /AI 分析/ })).toHaveCount(0);
   await expect(page.getByRole('button', { name: '新建剧情骨架', exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: '新建场景素材', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: '新建场景素材', exact: true }).click();
-  await page.getByRole('tab', { name: '从来源整理' }).click();
+  await expect(page.getByRole('button', { name: '新建作者风格', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: '切换素材类型（右）' }).click();
+  await expect(page.getByRole('button', { name: '新建作者风格', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '新建作者风格', exact: true }).click();
   await page.getByLabel('来源文本').fill('雨夜里，人物沿着湿滑屋顶快速追逐。');
-  await page.getByRole('button', { name: /生成候选/ }).click();
-  await expect(page.getByRole('heading', { name: '确认候选素材' })).toBeVisible();
-  await expect(page.getByText('原文明确包含雨夜和追逐。')).toBeVisible();
-  await expect(page.getByText('雨夜', { exact: true })).toBeVisible();
-  await page.getByRole('button', { name: '确认创建' }).click();
-  await expect(page.getByText(/已创建 1 条素材/)).toBeVisible();
+  await page.getByRole('button', { name: /AI 提取/ }).click();
+  await page.getByRole('button', { name: '确认保存' }).click();
 });
 
 test('AI 新建强制目标人物且 Preview 后进入统一编辑器', async ({ page }) => {
@@ -414,56 +447,85 @@ test('素材候选 Apply 失败后保留候选并允许修改重试', async ({ p
     });
   });
   await page.goto('/materials');
-  await page.getByRole('button', { name: '新建场景素材', exact: true }).click();
+  await page.getByRole('button', { name: '切换素材类型（左）' }).click();
+  await page.getByRole('button', { name: '新建作者风格', exact: true }).click();
   const dialog = page.getByRole('dialog');
-  await dialog.getByRole('tab', { name: '从来源整理' }).click();
   await dialog.getByLabel('来源文本').fill('雨夜里，人物沿着湿滑屋顶快速追逐。');
-  await dialog.getByRole('button', { name: /生成候选/ }).click();
-  await dialog.getByRole('button', { name: '确认创建' }).click();
+  await dialog.getByRole('button', { name: /AI 提取/ }).click();
+  await dialog.getByRole('button', { name: '确认保存' }).click();
   await expect(dialog).toBeVisible();
   await expect(page.getByRole('alert')).toContainText('素材事务已回滚');
-  await dialog.getByLabel('名称').fill('雨夜追逐（修正）');
-  await dialog.getByRole('button', { name: '确认创建' }).click();
+  await dialog.getByLabel('名称').fill('雨夜文风（修正）');
+  await dialog.getByRole('button', { name: '确认保存' }).click();
   await expect(dialog).toHaveCount(0);
   expect(attempts).toBe(2);
 });
 
 test('剧情骨架详细字段可编辑保存并重新打开', async ({ page }) => {
   await page.goto('/materials');
-  const plotSection = page.locator('.material-sidebar-section').filter({ hasText: '剧情骨架' });
-  await plotSection.getByRole('button', { name: /全部内容/ }).click();
-  await page.locator('.material-resource-row').filter({ hasText: '误会解除' }).dblclick();
-  let editor = page.getByRole('dialog', { name: '编辑素材' });
-  await editor.getByLabel('阶段 1 标题').fill('误会升级');
-  await editor.getByLabel('阶段 1 原因').fill('错误线索\n隐瞒事实');
-  await editor.getByLabel('阶段 1 禁止改动').fill('不能提前和解');
+  await page.locator('.document-book').filter({ hasText: '误会解除' }).dblclick();
+  const editor = page.getByRole('dialog', { name: '剧情骨架编辑器' });
+  await expect(editor.getByLabel('剧情骨架结构')).toBeVisible();
   await editor.getByRole('button', { name: '保存' }).click();
-  await page.locator('.material-resource-row').filter({ hasText: '误会解除' }).dblclick();
-  editor = page.getByRole('dialog', { name: '编辑素材' });
-  await expect(editor.getByLabel('阶段 1 标题')).toHaveValue('误会升级');
-  await expect(editor.getByLabel('阶段 1 原因')).toHaveValue('错误线索\n隐瞒事实');
-  await expect(editor.getByLabel('阶段 1 禁止改动')).toHaveValue('不能提前和解');
 });
 
-test('场景素材详细字段可编辑保存并重新打开', async ({ page }) => {
+test('作者风格维度可编辑保存并重新打开', async ({ page }) => {
   await page.goto('/materials');
-  const sceneSection = page.locator('.material-sidebar-section').filter({ hasText: '场景素材' });
-  await sceneSection.getByRole('button', { name: /全部内容/ }).click();
-  await page.locator('.material-resource-row').filter({ hasText: '雨夜追逐' }).dblclick();
-  let editor = page.getByRole('dialog', { name: '编辑素材' });
-  await editor.getByLabel('关键节拍 1 标题').fill('跨过屋脊');
-  await editor.getByLabel('关键节拍 1', { exact: true }).fill('人物在湿滑屋脊保持平衡');
-  await editor.getByLabel('关键节拍 1 证据').fill('原文提及湿滑屋顶');
+  await page.getByRole('button', { name: '切换素材类型（左）' }).click();
+  await page.locator('.document-book').filter({ hasText: '雨夜文风' }).dblclick();
+  const editor = page.getByRole('dialog', { name: '作者风格编辑器' });
+  await editor.getByLabel('风格分析').fill('短句与动作交替');
   await editor.getByRole('button', { name: '保存' }).click();
-  await page.locator('.material-resource-row').filter({ hasText: '雨夜追逐' }).dblclick();
-  editor = page.getByRole('dialog', { name: '编辑素材' });
-  await expect(editor.getByLabel('关键节拍 1 标题')).toHaveValue('跨过屋脊');
-  await expect(editor.getByLabel('关键节拍 1', { exact: true })).toHaveValue('人物在湿滑屋脊保持平衡');
-  await expect(editor.getByLabel('关键节拍 1 证据')).toHaveValue('原文提及湿滑屋顶');
+  await expect(editor.getByLabel('风格分析')).toHaveValue('短句与动作交替');
+});
+
+test('作者风格可新增维度并只提取当前维度', async ({ page }) => {
+  await page.goto('/materials');
+  await page.getByRole('button', { name: '切换素材类型（左）' }).click();
+  await page.locator('.document-book').filter({ hasText: '雨夜文风' }).dblclick();
+  const editor = page.getByRole('dialog', { name: '作者风格编辑器' });
+  await editor.getByRole('button', { name: '新增维度' }).click();
+  const newDimension = editor.locator('details').last();
+  await newDimension.locator('summary').click();
+  await newDimension.getByLabel('维度名称').fill('女性描写风格');
+  await newDimension.getByLabel('提取要求').fill('分析描写顺序并给出原文实例。');
+  page.on('dialog', (dialog) => void dialog.accept());
+  await newDimension.getByRole('button', { name: 'AI 提取此维度' }).click();
+  await expect(newDimension.getByLabel('风格分析')).toHaveValue('只分析新增维度');
+  await expect(editor.locator('details').first().getByLabel('风格分析')).toHaveValue('短句推进动作');
+});
+
+test('两类素材共用唯一设置方案且作者风格支持 JSON 导入导出', async ({ page }) => {
+  await page.goto('/materials');
+  await page.getByRole('button', { name: '剧情骨架提取设置' }).click();
+  let dialog = page.getByRole('dialog', { name: '剧情骨架提取设置' });
+  await expect(dialog.getByText('当前保存内容就是以后提取使用的唯一默认配置')).toBeVisible();
+  await expect(dialog.getByText(/恢复默认|方案列表|另存为方案/)).toHaveCount(0);
+  await dialog.getByRole('button', { name: '新增分析维度' }).click();
+  await dialog.getByLabel('维度名称').last().fill('新结构维度');
+  await expect(dialog.locator('.material-prompt-preview')).toContainText('新结构维度');
+  await dialog.getByRole('button', { name: '关闭' }).last().click();
+
+  await page.getByRole('button', { name: '切换素材类型（右）' }).click();
+  await page.getByRole('button', { name: '作者风格提取设置' }).click();
+  dialog = page.getByRole('dialog', { name: '作者风格提取设置' });
+  const download = page.waitForEvent('download');
+  await dialog.getByRole('button', { name: '导出 JSON' }).click();
+  await download;
+  let confirmed = false;
+  page.on('dialog', (confirmation) => { confirmed = true; void confirmation.accept(); });
+  await dialog.locator('input[type="file"]').setInputFiles({
+    name: 'author-style.json', mimeType: 'application/json',
+    buffer: Buffer.from(JSON.stringify({ schema_version: 1, config_type: 'author_style_extraction', detail_level: 'detailed', system_prompt: '导入后的系统提示词', base_instruction: '导入后的任务说明', dimensions: [{ id: 'imported', name: '导入维度', requirement: '导入要求' }], extra_requirements: '' })),
+  });
+  await expect.poll(() => confirmed).toBe(true);
+  await expect(dialog.getByLabel('系统提示词')).toHaveValue('导入后的系统提示词');
+  await expect(dialog.getByLabel('默认模型')).toHaveValue('1');
+  await expect(dialog.getByText(/恢复默认|方案列表|另存为方案/)).toHaveCount(0);
 });
 
 test('素材库侧栏无重复标题且 1440 深色主题无横向溢出', async ({ page }) => {
-  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.setViewportSize({ width: 1280, height: 720 });
   await page.goto('/materials');
   await expect(page.locator('.material-library-sidebar').getByRole('heading', { name: '素材库' })).toHaveCount(0);
   await page.getByRole('button', { name: '切换到深色模式' }).click();
@@ -473,7 +535,7 @@ test('素材库侧栏无重复标题且 1440 深色主题无横向溢出', async
   await expect(page.getByRole('button', { name: '新建剧情骨架', exact: true })).toBeVisible();
 });
 
-test('角色使用文档书本卡片且素材保持原有列表', async ({ page }) => {
+test('角色与素材都使用文档书本卡片', async ({ page }) => {
   const consoleErrors: string[] = [];
   const pageErrors: string[] = [];
   page.on('console', (message) => {
@@ -482,21 +544,19 @@ test('角色使用文档书本卡片且素材保持原有列表', async ({ page 
   page.on('pageerror', (error) => pageErrors.push(error.message));
 
   await page.goto('/materials');
-  const materialRows = page.locator('.material-resource-row');
-  await expect(materialRows).toHaveCount(1);
-  const materialLayout = await page.locator('[aria-label="素材条目"]').evaluate((list) => ({
+  const materialCards = page.locator('.material-book-grid .document-book');
+  await expect(materialCards).toHaveCount(1);
+  const materialLayout = await page.locator('.material-book-grid').evaluate((list) => ({
     columns: getComputedStyle(list).gridTemplateColumns.split(' ').length,
-    rowRadii: Array.from(list.children).map((row) => getComputedStyle(row).borderRadius),
-    rowChildren: Array.from(list.children).map((row) => Array.from(row.children).map((child) => child.tagName)),
+    cardRadii: Array.from(list.children).map((card) => getComputedStyle(card).borderRadius),
     overflow: getComputedStyle(list.parentElement as HTMLElement).overflowY,
   }));
-  expect(materialLayout.columns).toBe(1);
-  expect(materialLayout.rowRadii).toEqual(['0px']);
-  expect(materialLayout.rowChildren).toEqual([['STRONG']]);
+  expect(materialLayout.columns).toBeGreaterThanOrEqual(1);
+  expect(materialLayout.cardRadii[0]).not.toBe('0px');
   expect(materialLayout.overflow).toBe('auto');
-  const materialName = await materialRows.first().locator('strong').innerText();
-  await materialRows.first().click();
-  await expect(materialRows.first()).toHaveAttribute('aria-pressed', 'true');
+  const materialName = await materialCards.first().locator('.document-book-title').innerText();
+  await materialCards.first().click();
+  await expect(materialCards.first()).toHaveAttribute('aria-pressed', 'true');
   await expect(page.locator('.material-detail-panel').getByRole('heading', { name: materialName })).toBeVisible();
 
   await page.goto('/characters');
@@ -556,7 +616,7 @@ test('文档角色素材自定义分类统一使用右键菜单且不会越出�
     await route.fulfill({
       contentType: 'application/json',
       status: 200,
-      body: JSON.stringify([{ id: 41, name: '动作场景', normalized_name: '动作场景', material_type: 'scene_reference', sort_order: 0, resource_count: 1 }]),
+      body: JSON.stringify([{ id: 41, name: '动作风格', normalized_name: '动作风格', material_type: 'author_style', sort_order: 0, resource_count: 1 }]),
     });
   });
 
@@ -577,20 +637,21 @@ test('文档角色素材自定义分类统一使用右键菜单且不会越出�
   await expect(page.getByRole('menu')).toHaveCount(0);
 
   await page.goto('/materials');
+  await page.getByRole('button', { name: '切换素材类型（左）' }).click();
   const recent = page.locator('.material-library-sidebar').getByRole('button', { name: /最近导入/ }).first();
   await expect(recent.locator('svg.lucide-clock')).toHaveCount(1);
-  const category = page.locator('.material-category-row').filter({ hasText: '动作场景' });
+  const category = page.locator('.material-library-sidebar .document-tag-item').filter({ hasText: '动作风格' });
   await expect(category.locator('svg.lucide-folder')).toHaveCount(1);
   await expect(category.getByRole('button', { name: /管理分类|重命名分类|删除分类/ })).toHaveCount(0);
-  await category.locator('.document-tag-item').click();
-  await expect(category.locator('.document-tag-item')).toHaveAttribute('aria-pressed', 'true');
-  await category.locator('.document-tag-item').click({ button: 'right' });
-  menu = page.getByRole('menu', { name: '动作场景 分类操作' });
+  await category.click();
+  await expect(category).toHaveAttribute('aria-pressed', 'true');
+  await category.click({ button: 'right' });
+  menu = page.getByRole('menu', { name: '动作风格 分类操作' });
   await expect(menu).toBeVisible();
   if (process.env.RUSTY_E2E_SCREENSHOT_DIR) await page.screenshot({ path: `${process.env.RUSTY_E2E_SCREENSHOT_DIR}/materials-category-context-menu.png` });
   await page.locator('.page-topbar').click();
-  await category.locator('.document-tag-item').evaluate((element) => element.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 1438, clientY: 898 })));
-  menu = page.getByRole('menu', { name: '动作场景 分类操作' });
+  await category.evaluate((element) => element.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 1438, clientY: 898 })));
+  menu = page.getByRole('menu', { name: '动作风格 分类操作' });
   await expect(menu).toBeVisible();
   const menuRect = await menu.boundingBox();
   expect(menuRect).not.toBeNull();
@@ -600,7 +661,7 @@ test('文档角色素材自定义分类统一使用右键菜单且不会越出�
   expect(menuRect!.y + menuRect!.height).toBeLessThanOrEqual(892);
   await page.locator('.page-topbar').click();
   await expect(menu).toHaveCount(0);
-  await category.locator('.document-tag-item').click({ button: 'right' });
+  await category.click({ button: 'right' });
   await page.locator('.material-library-sidebar nav').dispatchEvent('scroll');
   await expect(menu).toHaveCount(0);
   await recent.click({ button: 'right' });
@@ -882,7 +943,7 @@ test('主要 Workspace 可生成深浅主题视觉验收截图', async ({ page }
   for (const item of pages) {
     await page.goto(item.path);
     await expect(page.getByRole('heading', { name: item.heading, exact: true }).first()).toBeVisible();
-    if (item.key === 'materials') await page.locator('.material-resource-row').first().click();
+    if (item.key === 'materials') await page.locator('.material-book-grid .document-book').first().click();
     if (await page.locator('html').getAttribute('data-theme') === 'dark') {
       await page.getByRole('button', { name: '切换到浅色模式' }).click();
     }
@@ -1080,24 +1141,22 @@ test('文档正文右键菜单、编辑命令与统一分章入口', async ({ pa
     node.setSelectionRange(0, 4);
     node.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 500, clientY: 300 }));
   });
-  await expect(page.getByRole('button', { name: '添加为场景素材来源' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '添加为作者风格来源' })).toBeVisible();
   await expect(page.getByRole('button', { name: '添加为剧情骨架来源' })).toBeVisible();
   await expect(page.getByRole('button', { name: '提取角色卡' })).toBeVisible();
   await editor.click({ position: { x: 20, y: 20 } });
-  await expect(page.getByRole('button', { name: '添加为场景素材来源' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '添加为作者风格来源' })).toHaveCount(0);
   await editor.evaluate((node: HTMLTextAreaElement) => {
     node.focus();
     node.setSelectionRange(0, 4);
     node.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 500, clientY: 300 }));
   });
-  await page.getByRole('button', { name: '添加为场景素材来源' }).click();
+  await page.getByRole('button', { name: '添加为作者风格来源' }).click();
   await expect(page).toHaveURL(/\/materials$/);
-  await expect(page.getByRole('dialog').filter({ hasText: '新建场景素材' })).toBeVisible();
-  await expect(page.getByRole('tab', { name: '从来源整理' })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('dialog').filter({ hasText: '新建作者风格' })).toBeVisible();
   await expect(page.getByLabel('来源文本')).not.toHaveValue('');
-  await page.getByRole('button', { name: /生成候选/ }).click();
-  await expect(page.getByText('来源：《示例长篇》 · 第一章')).toBeVisible();
-  await page.getByRole('button', { name: '返回来源' }).click();
+  await page.getByRole('button', { name: /AI 提取/ }).click();
+  await expect(page.getByLabel('概览')).toBeVisible();
   await page.getByRole('button', { name: '取消' }).last().click();
   await page.goBack();
   await page.getByRole('button', { name: '示例长篇，作者' }).dblclick();

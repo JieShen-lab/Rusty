@@ -380,7 +380,7 @@ class CreativeWorkflowService:
             "user_instruction": str(row["user_instruction"]),
             "selected_character_ids": self._json_int_list(row["selected_character_ids_json"]),
             "selected_plot_material_ids": self._json_int_list(row["selected_plot_material_ids_json"]),
-            "selected_scene_material_ids": self._json_int_list(row["selected_scene_material_ids_json"]),
+            "selected_author_style_ids": self._json_int_list(row["selected_scene_material_ids_json"]),
             "status": str(row["status"]),
             "updated_at": str(row["updated_at"]),
         }
@@ -394,13 +394,13 @@ class CreativeWorkflowService:
             raise ValueError(f"Unsupported creative strategy: {strategy}")
         selected_character_ids = self._normalize_ids(value.get("selected_character_ids"))
         selected_plot_material_ids = self._normalize_ids(value.get("selected_plot_material_ids"))
-        selected_scene_material_ids = self._normalize_ids(value.get("selected_scene_material_ids"))
+        selected_author_style_ids = self._normalize_ids(value.get("selected_author_style_ids"))
         normalized = {
             "strategy": strategy,
             "user_instruction": str(value.get("user_instruction") or ""),
             "selected_character_ids": selected_character_ids,
             "selected_plot_material_ids": selected_plot_material_ids,
-            "selected_scene_material_ids": selected_scene_material_ids,
+            "selected_author_style_ids": selected_author_style_ids,
         }
         existing = self.get_intent(scene_id)
         if existing is not None and all(existing[key] == normalized[key] for key in normalized):
@@ -427,7 +427,7 @@ class CreativeWorkflowService:
                     normalized["user_instruction"],
                     json.dumps(selected_character_ids),
                     json.dumps(selected_plot_material_ids),
-                    json.dumps(selected_scene_material_ids),
+                    json.dumps(selected_author_style_ids),
                 ),
             )
             self._invalidate_downstream(connection, scene_id, "intent")
@@ -773,7 +773,7 @@ class CreativeWorkflowService:
             user_instruction=target["user_instruction"],
             payload={"source_text": scene.original_text, "scene_source_range": {"start_offset": 0, "end_offset": len(scene.original_text)},
                      "target": target, "special_analysis": self.get_character_modification_analysis(scene_id) if target["strategy"] == "faithful" else self.get_strategy_analysis(scene_id),
-                     "scene_references": self._scene_reference_context(intent),
+                     "author_styles": self._author_style_context(intent),
                      "character_cards": self._character_context(intent)},
             output_contract=("Return {blocks:[{title,source_start_offset,source_end_offset,source_text_snapshot,operation,instruction,preserve_constraints,target_requirements,resource_refs}]}. "
                              "Use semantic blocks and cover Source in order. Operations: preserve, transform, rewrite, insert, delete."),
@@ -802,15 +802,15 @@ class CreativeWorkflowService:
             raise ValueError("Writing plan strategy must match the current scene target.")
         blocks = self._normalize_writing_blocks(scene, value.get("blocks"))
         intent = self.get_intent(scene_id) or {}
-        allowed_scene_material_ids = set(intent.get("selected_scene_material_ids", []))
+        allowed_scene_material_ids = set(intent.get("selected_author_style_ids", []))
         for block in blocks:
             invalid_refs = set(block["resource_refs"]) - allowed_scene_material_ids
             if invalid_refs:
-                raise ValueError("Writing block resource_refs must be selected scene_reference materials.")
+                raise ValueError("Writing block resource_refs must be selected author_style materials.")
             for material_id in block["resource_refs"]:
                 material = self.materials.get_material(material_id)
-                if material is None or material.material_type != "scene_reference":
-                    raise ValueError("Writing block resource_refs must resolve to scene_reference materials.")
+                if material is None or material.material_type != "author_style":
+                    raise ValueError("Writing block resource_refs must resolve to author_style materials.")
         self._validate_writing_plan(scene, blocks)
         current = self.get_writing_plan(scene_id)
         if not refresh_status and current is not None and self._writing_plan_semantically_equal(
@@ -874,7 +874,7 @@ class CreativeWorkflowService:
                 payload={"source_reference": scene.original_text, "boundary_conditions": target["design"].get("boundary_conditions", {}),
                          "target_skeleton": target["design"].get("nodes", []), "writing_plan": plan,
                          "character_cards": self._character_context(intent), "preanalysis": self.get_preanalysis(scene_id),
-                         "scene_references": self._scene_reference_context(intent)},
+                         "author_styles": self._author_style_context(intent)},
                 output_contract="Return {text:string}. text is the complete new scene only.",
             )
             text = str(value.get("text") or "")
@@ -1013,7 +1013,7 @@ class CreativeWorkflowService:
             user_instruction=user_instruction,
             payload={"selected_text": draft["text"][start_offset:end_offset], "previous_context": draft["text"][max(0,start_offset-800):start_offset],
                      "next_context": draft["text"][end_offset:end_offset+800], "target": target,
-                     "scene_references": self._scene_reference_context(intent),
+                     "author_styles": self._author_style_context(intent),
                      "character_cards": self._character_context(intent)},
             output_contract="Return {text:string}. text must contain only the replacement for the selected range.",
         )
@@ -1128,7 +1128,7 @@ class CreativeWorkflowService:
             payload={"source_range_text": source_text, "current_draft_range": draft["text"][target_start_offset:target_end_offset],
                      "previous_context": draft["text"][max(0,target_start_offset-800):target_start_offset],
                      "next_context": draft["text"][target_end_offset:target_end_offset+800], "target": target, "writing_plan": plan,
-                     "review_note": note, "scene_references": self._scene_reference_context(intent),
+                     "review_note": note, "author_styles": self._author_style_context(intent),
                      "character_cards": self._character_context(intent)}, output_contract="Return {text:string}. text contains only the selected range replacement.")
         replacement = str(value.get("text") or "")
         before = draft["text"]
@@ -1197,7 +1197,7 @@ class CreativeWorkflowService:
         operation = str(block["operation"])
         task_key = "insert_block" if operation == "insert" else f"{operation}_block"
         intent = self.get_intent(scene.id) or {}
-        selected_scene_ids = block["resource_refs"] or intent.get("selected_scene_material_ids", [])
+        selected_scene_ids = block["resource_refs"] or intent.get("selected_author_style_ids", [])
         value = self.ai.generate_json(
             project_id=scene.project_id, stage=task_key,
             workflow_key=None if operation == "insert" and target["strategy"] == "faithful" else target["strategy"], task_key=task_key,
@@ -1205,7 +1205,7 @@ class CreativeWorkflowService:
             payload={"previous_current_draft_tail": previous_tail, "current_source_block": block["source_text_snapshot"],
                      "next_source_block_beginning": next_source, "target": target, "writing_block": block,
                      "preserve_constraints": block["preserve_constraints"], "target_requirements": block["target_requirements"],
-                     "scene_references": self._material_context(selected_scene_ids, expected_type="scene_reference"),
+                     "author_styles": self._material_context(selected_scene_ids, expected_type="author_style"),
                      "character_cards": self._character_context(intent)},
             output_contract="Return {text:string}. text must contain only the current block, never adjacent blocks.",
         )
@@ -1438,8 +1438,8 @@ class CreativeWorkflowService:
             })
         return resources
 
-    def _scene_reference_context(self, intent: dict[str, Any]) -> list[dict[str, Any]]:
-        return self._material_context(intent.get("selected_scene_material_ids", []), expected_type="scene_reference")
+    def _author_style_context(self, intent: dict[str, Any]) -> list[dict[str, Any]]:
+        return self._material_context(intent.get("selected_author_style_ids", []), expected_type="author_style")
 
     def _character_context(self, intent: dict[str, Any]) -> list[dict[str, Any]]:
         cards: list[dict[str, Any]] = []

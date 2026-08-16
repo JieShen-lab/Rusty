@@ -99,10 +99,10 @@ Rusty 以本地优先方式管理小说项目。当前主界面采用 Electron +
 ### 2.5 素材、角色卡与大纲
 
 - 素材是统一的全局资产，不再区分公共素材和工程素材，也不再为工程创建素材副本；`scope` / `project_id` 仅为 legacy 兼容字段。
-- 素材类型固定为场景素材 `scene_reference` 和剧情骨架 `plot_skeleton`，创建后不可转换。
+- 素材类型固定为剧情骨架 `plot_skeleton` 和作者风格 `author_style`。`scene_reference` 已废弃，只在 v54 数据迁移、明确的历史兼容数据和对应测试中保留。
 - 两类素材分别拥有独立的多对多分类；标签分为 `general` 与 `applicable_scene` 两组，分类和标签是独立命名空间。标签只在右侧详情和管理弹窗显示，但可在当前类型/分类范围内筛选。
-- 剧情骨架和场景素材均使用规范化 `schema_version: 1` 内容；编辑器按条目编辑、排序和删除，未知旧字段保存在 `legacy_extra`，正常 UI 不暴露原始 JSON。
-- 素材 AI 只提供三项任务：`narrative_to_plot_skeleton`、`plot_text_to_normalized_skeleton`、`source_text_to_scene_material`。每项独立保存模型、细化程度、候选上限、系统提示词、用户提示词、JSON 分析维度、两组标签开关和附加要求；禁止从剧情骨架派生场景素材。
+- 作者风格是一份完整档案，采用 `schema_version: 1`、`summary` 与有序 `dimensions`。每个 dimension 包含稳定 ID、名称、提取要求、分析结果、具体特征和原文实例；不记录实例的文档、卷、章节或 offset。`materials.raw_text` 保存最初分析文本，用于以后新增或单独重新提取维度。旧版内容只保存在 `legacy_scene_reference` 中，不会冒充正确提取结果或触发自动 AI 改写。
+- 素材 AI 当前只有 `plot_skeleton_extraction` 与 `author_style_extraction` 两套当前设置。每套保存模型、细化程度、系统提示词、基础任务说明、有稳定 ID 的可编辑有序维度、附加要求及更新时间。保存即成为唯一默认配置；不支持多方案或恢复默认。作者风格设置支持 JSON 导入/导出，导出不含密钥、本机路径、数据库主键或 model ID，导入会覆盖当前设置并保留本机模型。剧情骨架只保存抽象可复用结构，不保存原文事实证据或 offset。
 - AI 整理使用 preview/apply：preview 返回过期时间、Prompt 快照、可编辑候选、结构化证据、置信度、警告及两组标签建议，不写素材/标签/分类；apply 在单一事务中批量创建全部选中候选、标签和分类，任一失败则整批回滚且 Token 保持可重试，全部成功后 Token 单次消费。
 - 角色与素材 Preview 保存最多 50,000 字符的完整规范化来源，模型采样最多 16,000 字符；最终 `raw_text` 始终保存完整来源，来源元数据明确记录完整长度、模型样本长度及是否为模型截断。
 - 来源可只保存为 `analysis_status='unanalyzed'` 的待整理素材并显示在“最近导入”；修改原始来源会重新标记为未分析。
@@ -132,7 +132,7 @@ Rusty 以本地优先方式管理小说项目。当前主界面采用 Electron +
 ### 2.6 正文选区快捷保存
 
 - 文档库正文编辑区、工程原文和工程改写稿支持选中文字后打开右键菜单。
-- 菜单并列提供“添加为剧情骨架来源”“添加为场景素材来源”“提取角色卡”。
+- 菜单并列提供“添加为剧情骨架来源”“添加为作者风格来源”“提取角色卡”。
 - 两个素材入口通过一次性 history state 将选区正文和文档/工程、revision、卷、章节、offset 及标题来源带到素材页；用户可仅保存来源，或生成候选并确认后写库。
 - “提取角色卡”通过 history state 将选区正文与文档、revision、卷、章节、偏移及标题来源传到角色页，读取一次后立即清除；用户仍必须填写目标人物名称，Preview 前后均不会创建角色。
 - 只保存规范化后的纯文本，前后端均限制单次选区不超过 50,000 字符。
@@ -264,7 +264,7 @@ SQLite + OS keyring + 本地文件
 - 剧情运行状态、草稿生成进度、独立分支路线和不可变章节/场景版本快照。
 - 章节/场景创作阶段、预分析、创作方向、strategy 专项分析、SceneTarget、WritingPlan/blocks、Current Draft 和 ReviewMark。
 
-v14 将旧素材类型 `snippet` 映射为 `scene_reference`，将 `outline` 映射为 `plot_skeleton` 并保留旧类型元数据；旧素材分类和文档分类迁移为标签。角色卡旧固定字段迁移为身份、年龄、设定及有序自定义字段。v19 新增文档卷层级；v20 新增 `character_categories` / `character_category_links`，并幂等补齐历史工程角色的有效 `project_character_bindings`；v21 新增单例 `character_extraction_settings`；v22 新增素材分类、标签组、工程素材筛选和三任务 `material_ai_settings`。v53 新增 `character_cards.stable_fields_json` 与 `character_extraction_settings.dimensions_json`，把旧稳定字段和未知自定义字段无损迁入统一 schema，并持久化有序 AI 维度定义。迁移和关系写入均可幂等重放。
+v14 曾将旧 `snippet` 映射为当时的场景素材，将 `outline` 映射为 `plot_skeleton` 并保留旧类型元数据。v19 新增文档卷层级；v20 新增角色分类；v21 新增角色提取设置；v22 新增素材分类、标签组、工程素材筛选和当时的三任务设置；v53 统一角色稳定字段与提取维度。v54 将历史场景素材、同类型分类和工程过滤原地迁移为 `author_style`，保留 ID、关联、来源、时间戳与旧 content，并把当前素材 AI 设置收敛为两套。
 
 兼容性：旧的 `POST /api/characters/extract`、`POST /api/characters/extract/apply`、copy-to-project、project-copy、publish-to-public、角色分析和封面 API 暂时只作为后端 deprecated legacy 接口保留；新角色页不调用它们。素材的单阶段提取、复制与分析接口同样仅为 legacy；新素材页只调用 Preview/Apply。文档选区提取角色统一进入必须填写目标人物名的 AI Preview 流程。
 

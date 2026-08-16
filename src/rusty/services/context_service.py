@@ -30,7 +30,8 @@ DEFAULT_PRIORITIES = {
     "next_original_preview": 8,
     "foreshadowing": 9,
     "character_context": 10,
-    "material_context": 11,
+    "plot_skeleton_context": 11,
+    "author_style_context": 12,
     "scene_style_rules": 12,
     "style_examples": 13,
     "chapter_summary": 14,
@@ -44,7 +45,7 @@ STAGE_BLOCK_PRIORITIES = {
     "rewrite_plan": 4,
     "material_mappings": 5,
     "plot_skeleton_mappings": 5,
-    "scene_reference_constraints": 5,
+    "author_style_context": 5,
     "candidate_rewrite_text": 3,
     "consistency_result": 4,
     "repair_source_text": 3,
@@ -271,7 +272,7 @@ class ContextService:
                     "material",
                     material_id,
                     _material_location(material),
-                    material.description or material.raw_text or json.dumps(json.loads(material.content_json), ensure_ascii=False),
+                    _material_context_content(material),
                     manual_reason,
                     1.0,
                 )
@@ -318,7 +319,7 @@ class ContextService:
                     "material",
                     material.id,
                     _material_location(material),
-                    material.description or material.raw_text or material.content_json,
+                    _material_context_content(material),
                     "命中当前工程配置的素材标签筛选。",
                     0.92,
                 )
@@ -370,7 +371,7 @@ class ContextService:
                         "material",
                         material.id,
                         _material_location(material),
-                        material.description or material.raw_text or material.content_json,
+                        _material_context_content(material),
                         "工程范围和时间线位置与当前场景匹配。",
                         0.88,
                     )
@@ -382,7 +383,7 @@ class ContextService:
                         "material",
                         material.id,
                         _material_location(material),
-                        material.description or material.raw_text or material.content_json,
+                        _material_context_content(material),
                         f"命中关键词：{', '.join(matched_terms[:5])}。",
                         min(0.86, 0.55 + len(matched_terms) * 0.08),
                     )
@@ -396,7 +397,7 @@ class ContextService:
                             "material",
                             material.id,
                             _material_location(material),
-                            material.description or material.raw_text or material.content_json,
+                            _material_context_content(material),
                             "词项向量相似度补充结果。",
                             min(0.7, similarity + 0.35),
                         )
@@ -610,6 +611,8 @@ class ContextService:
             material = self.material_service.get_material(int(material_id))
             if material is not None:
                 materials.append(material.__dict__)
+        plot_skeletons = [item for item in materials if item.get("material_type") == "plot_skeleton"]
+        author_styles = [item for item in materials if item.get("material_type") == "author_style"]
         style = (
             self.style_service.get_template(style_profile_id).__dict__
             if style_profile_id is not None
@@ -627,7 +630,8 @@ class ContextService:
             "foreshadowing": facts.get("foreshadowing", []),
             "global_skeleton": start.get("global_skeleton", {}),
             "user_direction": user_direction,
-            "material_context": materials,
+            "plot_skeleton_context": plot_skeletons,
+            "author_style_context": author_styles,
             "character_context": characters,
             "style_profile": style,
             "previous_generated_scene": start.get("previous_generated_scene", ""),
@@ -1024,8 +1028,12 @@ class ContextService:
         facts = self.scene_service.get_fact_ledger(scene_id)
         character_states = self.scene_service.list_character_states(scene_id)
         retrieval = list(retrieval_results)
-        material_context = [
-            item for item in retrieval if item["source_type"] == "material"
+        material_context = [item for item in retrieval if item["source_type"] == "material"]
+        plot_skeleton_context = [
+            item for item in material_context if item.get("material_type") == "plot_skeleton"
+        ]
+        author_style_context = [
+            item for item in material_context if item.get("material_type") == "author_style"
         ]
         character_context = [
             item for item in retrieval if item["source_type"] == "character_card"
@@ -1037,7 +1045,7 @@ class ContextService:
             "rewrite_plan": task.get("rewrite_plan"),
             "material_mappings": task.get("material_mappings"),
             "plot_skeleton_mappings": task.get("plot_skeleton_mappings"),
-            "scene_reference_constraints": task.get("scene_reference_constraints"),
+            "author_style_context": task.get("author_style_context"),
             "candidate_rewrite_text": task.get("candidate_rewrite_text"),
             "consistency_result": task.get("consistency_result", task.get("consistency")),
             "repair_source_text": task.get("repair_source_text"),
@@ -1075,7 +1083,8 @@ class ContextService:
             PromptBlock("next_original_preview", window["next_original_preview"], 8),
             PromptBlock("foreshadowing", _json_text(facts["foreshadowing"]), 9),
             PromptBlock("character_context", _json_text(character_context), 10),
-            PromptBlock("material_context", _json_text(material_context), 11),
+            PromptBlock("plot_skeleton_context", _json_text(plot_skeleton_context), 11),
+            PromptBlock("author_style_context", _json_text(author_style_context), 12),
             PromptBlock("global_style_rules", _json_text((style_context or {}).get("global_rules", [])), 12),
             PromptBlock("scene_style_rules", _json_text((style_context or {}).get("scene_rules", [])), 12),
             PromptBlock("style_examples", _json_text((style_context or {}).get("examples", [])), 13),
@@ -1144,7 +1153,7 @@ class ContextService:
             included_keys = {block.key for block in compiled.included_blocks()}
             for result in retrieval:
                 context_key = (
-                    "material_context"
+                    ("author_style_context" if result.get("material_type") == "author_style" else "plot_skeleton_context")
                     if result["source_type"] == "material"
                     else "character_context"
                     if result["source_type"] == "character_card"
@@ -1173,7 +1182,8 @@ class ContextService:
                 "local_context": window,
                 "story_state": facts,
                 "character_context": character_states,
-                "material_context": material_context,
+                "plot_skeleton_context": plot_skeleton_context,
+                "author_style_context": author_style_context,
                 "style_context": style_context or {},
                 "user_instruction": user_instruction,
             },
@@ -1224,6 +1234,23 @@ def _material_location(material) -> str:
         f":chapters:{material.timeline_start_chapter or '*'}-{material.timeline_end_chapter or '*'}"
     )
     return f"material:{material.id}@v{material.version}{timeline}"
+
+
+def _material_context_content(material) -> str:
+    """Keep writing style guidance separate from source text and story facts."""
+    if material.material_type == "author_style":
+        try:
+            content = json.loads(material.content_json)
+        except (TypeError, ValueError):
+            content = {}
+        return json.dumps(
+            {
+                "summary": str(content.get("summary") or material.description or ""),
+                "dimensions": content.get("dimensions") if isinstance(content.get("dimensions"), list) else [],
+            },
+            ensure_ascii=False,
+        )
+    return material.description or material.content_json or material.raw_text
 
 
 def _character_content(card) -> str:
