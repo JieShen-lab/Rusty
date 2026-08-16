@@ -238,6 +238,14 @@ async function mockApi(page: Page) {
       documentItems = documentItems.map((item) => item.id === documentId ? { ...item, chapter_count: 2 } : item);
       body = { document: documentItems.find((item) => item.id === documentId), revision: { id: documentId * 10 + documentRevisionNumber, document_id: documentId, revision_number: documentRevisionNumber, revision_type: 'manual_edit', storage_path: `D:/Rusty/novel-v${documentRevisionNumber}.txt`, template_id: null, parent_revision_id: documentId * 10 + documentRevisionNumber - 1, created_at: '' }, created: true, created_chapter_id: 999 };
     }
+    else if (/^\/api\/documents\/\d+\/chapters\/\d+$/.test(path) && route.request().method() === 'DELETE') {
+      const documentId = Number(path.split('/')[3]);
+      const chapterId = Number(path.split('/')[5]);
+      if (chapterId === 999) extraChapter = null;
+      documentRevisionNumber += 1;
+      documentItems = documentItems.map((item) => item.id === documentId ? { ...item, chapter_count: 1 } : item);
+      body = { document: documentItems.find((item) => item.id === documentId), revision: { id: documentId * 10 + documentRevisionNumber, document_id: documentId, revision_number: documentRevisionNumber, revision_type: 'manual_edit', storage_path: `D:/Rusty/novel-v${documentRevisionNumber}.txt`, template_id: null, parent_revision_id: documentId * 10 + documentRevisionNumber - 1, created_at: '' }, created: true };
+    }
     else if (/^\/api\/documents\/\d+\/split\/cursor$/.test(path)) {
       const documentId = Number(path.split('/')[3]);
       const request = route.request().postDataJSON() as { cursor_offset: number; next_title: string };
@@ -300,7 +308,7 @@ async function mockApi(page: Page) {
     else if (path === '/api/projects/1/characters') body = { character_cards: [] };
     else if (path === '/api/projects/1/materials') body = [];
     else if (path === '/api/scenes/1/preanalysis' || path === '/api/scenes/1/creative-intent' || path === '/api/scenes/1/character-modification-analysis') body = null;
-    else if (path === '/api/chapters/1') body = { chapter: { id: 1, project_id: 1, index: 1, title: '第一章', original_text: '林舟推门而入，看见桌上的钥匙。', rewritten_text: '', word_count: 16, status: 'pending', created_at: '', updated_at: '' }, ai_outputs: { plot_summary: '', expanded_plot: '', plot_characters: [], style_analysis: {}, reviewed_style_analysis: {}, style_analysis_status: '' } };
+    else if (path === '/api/chapters/1') body = { chapter: { id: 1, project_id: 1, index: 1, title: '第一章', original_text: '林舟推门而入，看见桌上的钥匙。', rewritten_text: '', word_count: 16, status: 'pending', created_at: '', updated_at: '' }, ai_outputs: { plot_summary: '林舟进入房间并发现钥匙。', expanded_plot: '', plot_characters: [{ name: '林舟', role_in_chapter: '发现线索' }], key_events: ['进入房间', '发现钥匙'], style_analysis: {}, reviewed_style_analysis: {}, style_analysis_status: '' } };
     else if (path.includes('/prompt-preview')) body = { ruleset_id: 'test', provenance: {}, expected_output: 'text', messages: [] };
     else if (path.includes('/generation-attempts')) body = [];
     else if (path === '/api/prompt-definitions') body = [
@@ -391,7 +399,7 @@ test('素材库只显示两种类型且无时间线主视图', async ({ page }) 
   await expect(page.getByRole('tab', { name: '时间线' })).toHaveCount(0);
 });
 
-test('素材库使用统一范围、结构化新建与 AI 候选确认流程', async ({ page }) => {
+test('素材库使用统一范围并由 AI 提取直接创建素材', async ({ page }) => {
   await page.goto('/materials');
   const sidebar = page.locator('.material-library-sidebar');
   await expect(sidebar.getByText('公共素材', { exact: true })).toHaveCount(0);
@@ -400,14 +408,18 @@ test('素材库使用统一范围、结构化新建与 AI 候选确认流程', a
   await expect(sidebar.getByText('全部内容', { exact: true })).toHaveCount(1);
   await expect(sidebar.getByText('最近导入', { exact: true })).toHaveCount(1);
   await expect(page.getByRole('button', { name: /AI 分析/ })).toHaveCount(0);
+  await expect(page.locator('.material-detail-panel').getByText('所属分类', { exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: '新建剧情骨架', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '新建作者风格', exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: '切换素材类型（右）' }).click();
   await expect(page.getByRole('button', { name: '新建作者风格', exact: true })).toBeVisible();
   await page.getByRole('button', { name: '新建作者风格', exact: true }).click();
-  await page.getByLabel('来源文本').fill('雨夜里，人物沿着湿滑屋顶快速追逐。');
-  await page.getByRole('button', { name: /AI 提取/ }).click();
-  await page.getByRole('button', { name: '确认保存' }).click();
+  const dialog = page.getByRole('dialog', { name: '新建作者风格' });
+  await expect(dialog.getByText(/一次创建/)).toHaveCount(0);
+  await expect(dialog.getByRole('button', { name: '确认保存' })).toHaveCount(0);
+  await dialog.getByLabel('来源文本').fill('雨夜里，人物沿着湿滑屋顶快速追逐。');
+  await dialog.getByRole('button', { name: /AI 提取/ }).click();
+  await expect(dialog).toHaveCount(0);
 });
 
 test('AI 新建强制目标人物且 Preview 后进入统一编辑器', async ({ page }) => {
@@ -420,6 +432,13 @@ test('AI 新建强制目标人物且 Preview 后进入统一编辑器', async ({
   await page.goto('/characters');
   await page.getByRole('button', { name: 'AI 新建' }).click();
   const dialog = page.getByRole('dialog', { name: 'AI 新建角色' });
+  await expect(dialog.getByText('一次只提取一个明确指定的人物')).toHaveCount(0);
+  const centered = await dialog.locator('header').evaluate((header) => {
+    const headerRect = header.getBoundingClientRect();
+    const titleRect = header.querySelector('h2')!.getBoundingClientRect();
+    return Math.abs(titleRect.left + titleRect.width / 2 - (headerRect.left + headerRect.width / 2));
+  });
+  expect(centered).toBeLessThanOrEqual(1);
   await dialog.getByLabel('来源文本').fill('林舟接过阿音递来的钥匙。');
   await expect(dialog.getByRole('button', { name: '开始提取' })).toBeDisabled();
   await dialog.getByLabel('角色名称 *').fill('林舟');
@@ -434,7 +453,23 @@ test('AI 新建强制目标人物且 Preview 后进入统一编辑器', async ({
   await expect.poll(() => createRequests).toBe(1);
 });
 
-test('素材候选 Apply 失败后保留候选并允许修改重试', async ({ page }) => {
+test('AI 新建角色可直接读取文本文件并进入同一提取流程', async ({ page }) => {
+  await page.goto('/characters');
+  await page.getByRole('button', { name: 'AI 新建' }).click();
+  const dialog = page.getByRole('dialog', { name: 'AI 新建角色' });
+  await dialog.getByRole('button', { name: '选择文件', exact: true }).click();
+  await dialog.locator('input[type="file"]').setInputFiles({
+    name: 'role-source.txt',
+    mimeType: 'text/plain',
+    buffer: Buffer.from('林舟拿起钥匙。', 'utf-8'),
+  });
+  await expect(dialog.getByText('已选择：role-source.txt')).toBeVisible();
+  await dialog.getByLabel('角色名称 *').fill('林舟');
+  await dialog.getByRole('button', { name: '开始提取' }).click();
+  await expect(page.getByRole('dialog', { name: '新建角色' }).getByLabel('角色名称')).toHaveValue('林舟');
+});
+
+test('素材 AI 提取保存失败后保留来源并允许重试', async ({ page }) => {
   let attempts = 0;
   await page.route('http://127.0.0.1:8765/api/material-extractions/apply', async (route) => {
     attempts += 1;
@@ -452,11 +487,10 @@ test('素材候选 Apply 失败后保留候选并允许修改重试', async ({ p
   const dialog = page.getByRole('dialog');
   await dialog.getByLabel('来源文本').fill('雨夜里，人物沿着湿滑屋顶快速追逐。');
   await dialog.getByRole('button', { name: /AI 提取/ }).click();
-  await dialog.getByRole('button', { name: '确认保存' }).click();
   await expect(dialog).toBeVisible();
   await expect(page.getByRole('alert')).toContainText('素材事务已回滚');
   await dialog.getByLabel('名称').fill('雨夜文风（修正）');
-  await dialog.getByRole('button', { name: '确认保存' }).click();
+  await dialog.getByRole('button', { name: /AI 提取/ }).click();
   await expect(dialog).toHaveCount(0);
   expect(attempts).toBe(2);
 });
@@ -583,8 +617,9 @@ test('角色库统一资产、分类标签搜索取交集且响应式无溢出',
   await expect(sidebar.getByText('系统筛选', { exact: true })).toHaveCount(0);
   await expect(sidebar.getByText('收藏', { exact: true })).toHaveCount(0);
   await expect(sidebar.locator('select')).toHaveCount(0);
-  await expect(detail.getByRole('button', { name: '主要角色', exact: true })).toBeVisible();
-  await expect(detail.getByRole('button', { name: '历史人物', exact: true })).toBeVisible();
+  await expect(detail.getByText('所属分类', { exact: true })).toHaveCount(0);
+  await expect(detail.getByRole('button', { name: '主要角色', exact: true })).toHaveCount(0);
+  await expect(detail.getByRole('button', { name: '历史人物', exact: true })).toHaveCount(0);
   await expect(detail.getByRole('button', { name: '主角', exact: true })).toBeVisible();
   await detail.getByRole('button', { name: '主角', exact: true }).click();
   await expect(page.getByText('标签：主角', { exact: false })).toBeVisible();
@@ -886,7 +921,7 @@ test('工程 Creative Workspace 使用统一 surface 并适配三种桌面尺寸
   }
   await page.getByRole('button', { name: '切换到深色模式' }).click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
-  await expect(page.getByText('自动保存', { exact: false })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '情节概要' })).toBeVisible();
 });
 
 test('模型页保持原有双栏组件和主题交互', async ({ page }) => {
@@ -1004,6 +1039,20 @@ test('统一角色编辑器不显示 scope、封面和工程复制操作', async
   await expect(editor.getByText(/公共角色|工程角色/)).toHaveCount(0);
   await expect(editor.getByRole('button', { name: /添加到工程|保存为公共角色|上传图片/ })).toHaveCount(0);
   await expect(editor.getByText('设定', { exact: true })).toBeVisible();
+  const desktopRows = await editor.locator('.character-basic-grid').evaluate((grid) => {
+    const name = grid.querySelector('.character-name-field')!.getBoundingClientRect();
+    const identity = grid.querySelector('.character-identity-field')!.getBoundingClientRect();
+    const age = grid.querySelector('.character-age-field')!.getBoundingClientRect();
+    const description = grid.querySelector('.character-description-field')!.getBoundingClientRect();
+    return { nameTop: name.top, identityTop: identity.top, ageTop: age.top, descriptionTop: description.top };
+  });
+  expect(Math.abs(desktopRows.nameTop - desktopRows.identityTop)).toBeLessThanOrEqual(1);
+  expect(desktopRows.ageTop).toBeGreaterThan(desktopRows.nameTop);
+  expect(desktopRows.descriptionTop).toBeGreaterThan(desktopRows.ageTop);
+  await page.setViewportSize({ width: 880, height: 720 });
+  const narrowTops = await editor.locator('.character-basic-grid > label').evaluateAll((labels) => labels.map((label) => label.getBoundingClientRect().top));
+  expect(new Set(narrowTops.map(Math.round)).size).toBe(narrowTops.length);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)).toBe(false);
 });
 
 test('文档库在常用桌面窗口无横向溢出', async ({ page }) => {
@@ -1156,8 +1205,7 @@ test('文档正文右键菜单、编辑命令与统一分章入口', async ({ pa
   await expect(page.getByRole('dialog').filter({ hasText: '新建作者风格' })).toBeVisible();
   await expect(page.getByLabel('来源文本')).not.toHaveValue('');
   await page.getByRole('button', { name: /AI 提取/ }).click();
-  await expect(page.getByLabel('概览')).toBeVisible();
-  await page.getByRole('button', { name: '取消' }).last().click();
+  await expect(page.getByRole('dialog').filter({ hasText: '新建作者风格' })).toHaveCount(0);
   await page.goBack();
   await page.getByRole('button', { name: '示例长篇，作者' }).dblclick();
   await expect(page.getByRole('button', { name: '标记章节', exact: true })).toHaveCount(0);
@@ -1213,10 +1261,72 @@ test('正文自动保存草稿、手动保存单一版本并打开文字整理�
   await expect(cleanupDialog.getByText('章节缩进')).toHaveCount(0);
   await expect(cleanupDialog.getByText('章节标题正则')).toHaveCount(0);
   await expect(cleanupDialog.getByLabel('整理提示词')).toBeVisible();
+  await expect(cleanupDialog.getByText('整理范围', { exact: true })).toBeVisible();
+  await expect(cleanupDialog.getByRole('checkbox')).toHaveCount(1);
+  await expect(cleanupDialog.getByRole('checkbox')).toBeChecked();
+  await expect(cleanupDialog.getByText('待处理', { exact: true })).toBeVisible();
   await expect(cleanupDialog.getByLabel('具体要求')).toContainText('禁止改剧情');
   if (process.env.RUSTY_E2E_SCREENSHOT_DIR) {
     await page.screenshot({ path: `${process.env.RUSTY_E2E_SCREENSHOT_DIR}/document-cleanup-dialog.png` });
   }
+});
+
+test('本章搜索只计算当前正文并支持循环前后跳转', async ({ page }) => {
+  await page.goto('/documents');
+  await page.getByRole('button', { name: '示例长篇，作者' }).dblclick();
+  await page.getByRole('button', { name: '本章搜索' }).click();
+  const search = page.locator('.chapter-search-bar input');
+  await search.fill('林舟');
+  await expect(page.getByText('1 / 1', { exact: true })).toBeVisible();
+  await search.press('Enter');
+  const selection = await page.locator('textarea.manuscript-editor').evaluate((node: HTMLTextAreaElement) => ({
+    text: node.value.slice(node.selectionStart, node.selectionEnd),
+    start: node.selectionStart,
+  }));
+  expect(selection.text).toBe('林舟');
+  await search.press('Shift+Enter');
+  await expect(page.getByText('1 / 1', { exact: true })).toBeVisible();
+  await search.press('Escape');
+  await expect(search).toHaveCount(0);
+});
+
+test('章节右键删除需确认并在删除当前章后选择相邻章节', async ({ page }) => {
+  await page.goto('/documents');
+  await page.getByRole('button', { name: '示例长篇，作者' }).dblclick();
+  await page.getByRole('button', { name: '新增章节' }).click();
+  const addDialog = page.getByRole('dialog').filter({ hasText: '新增章节' });
+  await addDialog.getByLabel('章节标题').fill('待删除章节');
+  await addDialog.getByLabel('正文').fill('临时正文');
+  await addDialog.getByRole('button', { name: '保存为新版本' }).click();
+  const deleting = page.locator('.chapter-row').filter({ hasText: '待删除章节' });
+  await deleting.click({ button: 'right' });
+  await expect(page.getByRole('menuitem', { name: '删除章节' })).toBeVisible();
+  page.once('dialog', async (dialog) => {
+    expect(dialog.message()).toContain('待删除章节');
+    await dialog.accept();
+  });
+  await page.getByRole('menuitem', { name: '删除章节' }).click();
+  await expect(page.locator('.chapter-row').filter({ hasText: '待删除章节' })).toHaveCount(0);
+  await expect(page.locator('.chapter-row').first()).toHaveAttribute('aria-current', 'page');
+});
+
+test('文字整理范围默认当前章并可同时选择任意多章', async ({ page }) => {
+  await page.goto('/documents');
+  await page.getByRole('button', { name: '示例长篇，作者' }).dblclick();
+  await page.getByRole('button', { name: '新增章节' }).click();
+  const addDialog = page.getByRole('dialog').filter({ hasText: '新增章节' });
+  await addDialog.getByLabel('章节标题').fill('第二章');
+  await addDialog.getByLabel('正文').fill('第二章正文');
+  await addDialog.getByRole('button', { name: '保存为新版本' }).click();
+  await page.getByRole('button', { name: '文字整理' }).click();
+  const dialog = page.getByRole('dialog', { name: '文字整理' });
+  const checks = dialog.getByRole('checkbox');
+  await expect(checks).toHaveCount(2);
+  await expect(checks.nth(0)).not.toBeChecked();
+  await expect(checks.nth(1)).toBeChecked();
+  await checks.nth(0).check();
+  await expect(checks.nth(0)).toBeChecked();
+  await expect(checks.nth(1)).toBeChecked();
 });
 
 test('章节标题、实时字数及原生输入撤销保持同步', async ({ page }) => {
@@ -1241,13 +1351,18 @@ test('章节标题、实时字数及原生输入撤销保持同步', async ({ pa
   const headingLayout = await page.locator('.document-editor-heading').evaluate((node) => {
     const heading = node.getBoundingClientRect();
     const titleRect = node.querySelector('.document-editor-title')!.getBoundingClientRect();
-    const saveRect = node.querySelector('.button')!.getBoundingClientRect();
+    const titleInput = node.querySelector('.document-editor-title input')!.getBoundingClientRect();
+    const saveRect = node.querySelector('.document-save-button')!.getBoundingClientRect();
     return {
-      centerDelta: Math.abs((titleRect.left + titleRect.width / 2) - (heading.left + heading.width / 2)),
+      titleLeftGap: Math.abs(titleRect.left - heading.left - 18),
+      titleInputWidth: titleInput.width,
+      titleInputHeight: titleInput.height,
       saveRightGap: Math.abs(heading.right - saveRect.right - 18),
     };
   });
-  expect(headingLayout.centerDelta).toBeLessThanOrEqual(1);
+  expect(headingLayout.titleLeftGap).toBeLessThanOrEqual(1);
+  expect(headingLayout.titleInputWidth).toBeGreaterThan(300);
+  expect(headingLayout.titleInputHeight).toBeLessThanOrEqual(36);
   expect(headingLayout.saveRightGap).toBeLessThanOrEqual(1);
   await expect(page.locator('.document-workspace-text').getByText('正文', { exact: true })).toHaveCount(0);
   await title.fill('即时新标题');
@@ -1371,7 +1486,9 @@ test('卷目录在深色主题和桌面宽度下无横向溢出', async ({ page 
 test('普通工程不再通过旧场景改写 modal 开始工作', async ({ page }) => {
   await page.goto('/workspace/1');
   await expect(page.getByLabel('章节导航')).toBeVisible();
-  await expect(page.getByRole('heading', { name: '场景' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '情节概要' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '主要人物' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '关键事件' })).toBeVisible();
   await expect(page.getByRole('button', { name: '场景改写' })).toHaveCount(0);
   await expect(page.getByRole('dialog')).toHaveCount(0);
 });
@@ -1383,14 +1500,18 @@ test('普通工作台启动不发送旧场景规划或执行请求', async ({ pa
     if (path.includes('/workflow/start') || path.includes('/scene-workflows/') || path.includes('/rewrite-plans/')) legacyWorkflowRequests.push(path);
   });
   await page.goto('/workspace/1');
-  await expect(page.getByRole('button', { name: /发现钥匙/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /第一章/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /发现钥匙/ })).toHaveCount(0);
   expect(legacyWorkflowRequests).toHaveLength(0);
   expect(workflowPlanRequests).toHaveLength(0);
 });
 
-test('预分析阶段不会提前解锁目标设计', async ({ page }) => {
+test('内容总结阶段只显示四个明确流程入口', async ({ page }) => {
   await page.goto('/workspace/1');
-  await expect(page.getByRole('button', { name: /发现钥匙/ })).toContainText('进行中');
+  await expect(page.getByRole('button', { name: /贴合原文/ })).toBeEnabled();
+  await expect(page.getByRole('button', { name: /调整剧情/ })).toBeEnabled();
+  await expect(page.getByRole('button', { name: /增加剧情/ })).toBeEnabled();
+  await expect(page.getByRole('button', { name: /重新构思/ })).toBeEnabled();
   await expect(page.getByRole('button', { name: '目标设计' })).toBeDisabled();
   await expect(page.getByRole('button', { name: '写作' })).toBeDisabled();
 });

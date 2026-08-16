@@ -8,7 +8,7 @@ from typing import Any, Callable
 
 from rusty.db import session
 from rusty.models import ChapterAIOutputs, ChapterError, ChapterRecord, StageStatus, count_text_units
-from rusty.services.ai_client import AIClient, AIResponse, OpenAICompatibleClient
+from rusty.services.ai_client import AIClient, AIResponse, create_ai_client
 from rusty.services.anchor_service import AnchorService, CharacterCard, OutlineTemplate
 from rusty.services.chapter_version_service import ChapterVersionService
 from rusty.services.model_service import ModelConfig, ModelService
@@ -41,7 +41,7 @@ class PipelineService:
         self.style_service = StyleTemplateService(self.database_path)
         self.anchor_service = AnchorService(self.database_path)
         self.prompt_compiler = PromptCompiler()
-        self.ai_client = ai_client or OpenAICompatibleClient()
+        self.ai_client = ai_client or create_ai_client(purpose="generation")
 
     def summarize_chapter(
         self,
@@ -410,7 +410,7 @@ class PipelineService:
         with session(self.database_path) as connection:
             summary = connection.execute(
                 """
-                SELECT plot_summary, characters_json
+                SELECT plot_summary, characters_json, key_events_json
                 FROM chapter_summaries
                 WHERE chapter_id = ?
                 """,
@@ -453,6 +453,7 @@ class PipelineService:
         return ChapterAIOutputs(
             plot_summary=summary["plot_summary"] if summary is not None else None,
             plot_characters=_parse_json_dict_list(summary["characters_json"]) if summary is not None else None,
+            key_events=_parse_json_list(summary["key_events_json"]) if summary is not None else None,
             needs_rewrite=bool(scene["needs_rewrite"]) if scene is not None else None,
             scene_labels=scene_labels,
             scene_reasoning=scene["reasoning"] if scene is not None else None,
@@ -616,16 +617,7 @@ class PipelineService:
             raise
 
     def _resolve_model(self, model_id: int | None, project_id: int) -> ModelConfig:
-        settings = self.project_service.get_project_settings(project_id)
-        effective_model_id = model_id if model_id is not None else (settings.model_id if settings else None)
-        model = (
-            self.model_service.get_model(effective_model_id)
-            if effective_model_id is not None
-            else self.model_service.get_default_model()
-        )
-        if model is None:
-            raise ValueError("No model configured.")
-        return model
+        return self.model_service.resolve_model_config(model_id, project_id=project_id)
 
     def _resolve_template(self, template_id: int | None, project_id: int) -> PromptTemplate:
         settings = self.project_service.get_project_settings(project_id)
@@ -684,7 +676,7 @@ class PipelineService:
                 (chapter.id,),
             ).fetchone()
             summary = connection.execute(
-                "SELECT plot_summary, characters_json FROM chapter_summaries WHERE chapter_id = ?",
+                "SELECT plot_summary, characters_json, key_events_json FROM chapter_summaries WHERE chapter_id = ?",
                 (chapter.id,),
             ).fetchone()
         labels = _parse_json_list(scene["scene_labels_json"]) if scene is not None else []
@@ -764,7 +756,7 @@ class PipelineService:
                 (chapter.id,),
             ).fetchone()
             summary = connection.execute(
-                "SELECT plot_summary, characters_json FROM chapter_summaries WHERE chapter_id = ?",
+                "SELECT plot_summary, characters_json, key_events_json FROM chapter_summaries WHERE chapter_id = ?",
                 (chapter.id,),
             ).fetchone()
         labels = set(_parse_json_list(scene["scene_labels_json"]) if scene is not None else [])
@@ -776,11 +768,19 @@ class PipelineService:
         sections: list[str] = []
         if specific_rules:
             sections.append("场景具体改写规则：\n" + "\n\n".join(specific_rules))
-        if summary is not None and summary["plot_summary"].strip():
-            sections.append("本章原始剧情骨架：\n" + summary["plot_summary"].strip())
-        chapter_characters = _parse_json_dict_list(summary["characters_json"]) if summary is not None else []
-        if chapter_characters:
-            sections.append("本章人物卡：\n" + json.dumps(chapter_characters, ensure_ascii=False, indent=2))
+        if summary is not None:
+            summary_context = {
+                "kind": "chapter_summary",
+                "provenance": {"chapter_id": chapter.id},
+                "plot_summary": str(summary["plot_summary"] or ""),
+                "characters": _parse_json_dict_list(summary["characters_json"]),
+                "key_events": _parse_json_list(summary["key_events_json"]),
+            }
+            if summary_context["plot_summary"] or summary_context["characters"] or summary_context["key_events"]:
+                sections.append(
+                    "CHAPTER_SUMMARY_CONTEXT (辅助结构；原文仍是主要事实来源)：\n"
+                    + json.dumps(summary_context, ensure_ascii=False, indent=2)
+                )
         if expansion is not None and bool(expansion["enabled"]) and expansion["expanded_plot"].strip():
             sections.append("本章剧情扩展方案：\n" + expansion["expanded_plot"].strip())
         return "\n\n" + "\n\n".join(sections) if sections else ""

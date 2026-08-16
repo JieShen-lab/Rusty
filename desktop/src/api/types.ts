@@ -86,6 +86,18 @@ export type LibraryDocumentCleanupResult = {
   created: boolean;
 };
 
+export type LibraryDocumentAICleanupResult = {
+  document: LibraryDocument;
+  revision: LibraryDocumentRevision | null;
+  created: boolean;
+  chapters: Array<{
+    chapter_id: number;
+    title: string;
+    status: 'success' | 'failed';
+    error: string | null;
+  }>;
+};
+
 export type DocumentLibrarySettings = {
   storage_path: string;
 };
@@ -204,6 +216,7 @@ export type SceneWorkflowState = {
 export type ChapterAIOutputs = {
   plot_summary: string | null;
   plot_characters: Array<Record<string, unknown>> | null;
+  key_events: string[] | null;
   needs_rewrite: boolean | null;
   scene_labels: string[] | null;
   scene_reasoning: string | null;

@@ -4,6 +4,7 @@ import hashlib
 import base64
 import binascii
 import json
+import logging
 import os
 import re
 import secrets
@@ -20,6 +21,13 @@ from fastapi.responses import FileResponse, JSONResponse
 from rusty.db import initialize_database_file, session
 from rusty.models import ChapterRecord, ExportPlanItem, ParsedBook, ProjectSummary
 from rusty.services.anchor_extraction_service import AnchorExtractionService
+from rusty.services.ai_client import (
+    AIAuthenticationError,
+    AIConnectTimeoutError,
+    AIProviderError,
+    AIReadTimeoutError,
+    AIResponseParseError,
+)
 from rusty.services.anchor_service import AnchorService, CharacterCard, OutlineTemplate
 from rusty.services.material_service import Material, MaterialService, compile_material_ai_prompt
 from rusty.services.analysis_service import AnalysisService
@@ -53,6 +61,9 @@ from rusty.services.scene_boundary_ai_service import SceneBoundaryAIService
 from rusty.services.branch_service import BranchService
 from rusty.services.plot_generation_orchestrator import PlotGenerationOrchestrator
 from rusty.services.prose_rewrite_orchestrator import ProseRewriteOrchestrator
+
+
+logger = logging.getLogger(__name__)
 from rusty.services.rewrite_version_map_service import RewriteVersionMapService
 from rusty.services.style_extraction_service import StyleExtractionService
 from rusty.services.style_service import StyleTemplate, StyleTemplateService
@@ -105,6 +116,8 @@ from .schemas import (
     LibraryDocumentUpdateRequest,
     LibraryDocumentCleanupRequest,
     LibraryDocumentAICleanupRequest,
+    LibraryDocumentAICleanupResponse,
+    LibraryDocumentCleanupChapterStatusOut,
     LibraryDocumentCleanupResponse,
     LibraryDocumentChapterOut,
     LibraryDocumentChapterReorderRequest,
@@ -292,7 +305,7 @@ def create_app(
         CORSMiddleware,
         allow_origins=_allowed_origins(),
         allow_credentials=False,
-        allow_methods=["GET", "POST", "PUT"],
+        allow_methods=["GET", "POST", "PUT", "DELETE"],
         allow_headers=["Content-Type", API_TOKEN_HEADER],
     )
 
@@ -316,8 +329,34 @@ def create_app(
     async def file_not_found_handler(_: Request, exc: FileNotFoundError) -> JSONResponse:
         return _error_response(404, "file_not_found", str(exc))
 
+    @app.exception_handler(AIConnectTimeoutError)
+    async def ai_connect_timeout_handler(_: Request, exc: AIConnectTimeoutError) -> JSONResponse:
+        logger.warning("AI request failed during connection", exc_info=exc)
+        return _error_response(504, "ai_connect_timeout", str(exc))
+
+    @app.exception_handler(AIReadTimeoutError)
+    async def ai_read_timeout_handler(_: Request, exc: AIReadTimeoutError) -> JSONResponse:
+        logger.warning("AI provider response timed out", exc_info=exc)
+        return _error_response(504, "ai_read_timeout", str(exc))
+
+    @app.exception_handler(AIAuthenticationError)
+    async def ai_authentication_handler(_: Request, exc: AIAuthenticationError) -> JSONResponse:
+        logger.warning("AI provider rejected authentication", exc_info=exc)
+        return _error_response(401, "ai_authentication_failed", str(exc))
+
+    @app.exception_handler(AIProviderError)
+    async def ai_provider_error_handler(_: Request, exc: AIProviderError) -> JSONResponse:
+        logger.warning("AI provider request failed", exc_info=exc)
+        return _error_response(502, "ai_provider_error", str(exc))
+
+    @app.exception_handler(AIResponseParseError)
+    async def ai_response_parse_handler(_: Request, exc: AIResponseParseError) -> JSONResponse:
+        logger.warning("AI provider response could not be parsed", exc_info=exc)
+        return _error_response(502, "ai_response_parse_error", str(exc))
+
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(_: Request, exc: Exception) -> JSONResponse:
+        logger.exception("Unhandled API error", exc_info=exc)
         return _error_response(500, "internal_error", str(exc))
 
     app.include_router(
@@ -645,6 +684,22 @@ def create_app(
             created_chapter_id=result.created_chapter_id,
         )
 
+    @app.delete(
+        "/api/documents/{document_id}/chapters/{chapter_id}",
+        response_model=LibraryDocumentCleanupResponse,
+        dependencies=[Depends(_require_token)],
+    )
+    def delete_library_document_chapter(
+        document_id: int,
+        chapter_id: int,
+    ) -> LibraryDocumentCleanupResponse:
+        result = document_library_service.delete_chapter(document_id, chapter_id)
+        return LibraryDocumentCleanupResponse(
+            document=_library_document_out(result.document),
+            revision=_document_revision_out(result.revision),
+            created=result.created,
+        )
+
     @app.post("/api/documents/{document_id}/split/regex/preview", response_model=SplitPreview)
     def preview_regex_document_split(document_id: int, payload: RegexSplitPreviewRequest) -> SplitPreview:
         return SplitPreview(**document_library_service.preview_regex_split(document_id, payload.pattern).__dict__)
@@ -795,20 +850,37 @@ def create_app(
 
     @app.post(
         "/api/documents/{document_id}/cleanup/ai",
-        response_model=LibraryDocumentCleanupResponse,
+        response_model=LibraryDocumentAICleanupResponse,
         dependencies=[Depends(_require_token)],
     )
     def cleanup_library_document_with_ai(
         document_id: int,
         payload: LibraryDocumentAICleanupRequest,
-    ) -> LibraryDocumentCleanupResponse:
+    ) -> LibraryDocumentAICleanupResponse:
+        chapter_ids = payload.chapter_ids or ([payload.chapter_id] if payload.chapter_id is not None else [])
+        if chapter_ids:
+            batch = document_cleanup_ai_service.apply_many(
+                document_id,
+                chapter_ids=chapter_ids,
+                prompt=payload.prompt,
+                model_id=payload.model_id,
+            )
+            document = batch.result.document if batch.result else next(
+                item for item in document_library_service.list_documents() if item.id == document_id
+            )
+            return LibraryDocumentAICleanupResponse(
+                document=_library_document_out(document),
+                revision=_document_revision_out(batch.result.revision) if batch.result else None,
+                created=batch.result is not None,
+                chapters=[LibraryDocumentCleanupChapterStatusOut(**item.__dict__) for item in batch.chapters],
+            )
         result = document_cleanup_ai_service.apply(
             document_id,
-            chapter_id=payload.chapter_id,
+            chapter_id=None,
             prompt=payload.prompt,
             model_id=payload.model_id,
         )
-        return LibraryDocumentCleanupResponse(
+        return LibraryDocumentAICleanupResponse(
             document=_library_document_out(result.document),
             revision=_document_revision_out(result.revision),
             created=result.created,

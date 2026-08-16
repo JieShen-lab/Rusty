@@ -146,6 +146,7 @@ class ChapterError:
 class ChapterAIOutputs:
     plot_summary: str | None = None
     plot_characters: list[dict] | None = None
+    key_events: list[str] | None = None
     needs_rewrite: bool | None = None
     scene_labels: list[str] | None = None
     scene_reasoning: str | None = None

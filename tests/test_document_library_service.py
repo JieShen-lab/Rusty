@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from tests.support import initialized_database
@@ -17,6 +18,7 @@ from ebooklib import epub
 from rusty.db import session
 from rusty.models import ParsedBook, ParsedChapter, count_text_units
 from rusty.services.project_service import ProjectService
+from rusty.services.document_cleanup_ai_service import DocumentCleanupAIService
 from rusty.services.document_library_service import DocumentLibraryService, DraftConflictError
 
 
@@ -483,6 +485,80 @@ class DocumentLibraryServiceTests(unittest.TestCase):
             self.assertEqual("cleanup_ai", result.revision.revision_type)
             self.assertEqual(2, len(service.list_chapters(document.id)))
             self.assertEqual(["", ""], [chapter.title for chapter in service.list_chapters(document.id)])
+
+    def test_delete_chapter_creates_revision_and_reindexes_remaining_chapters(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            source = root / "delete-chapter.txt"
+            source.write_text(
+                "第一章 开始\n\n正文一。\n\n第二章 删除我\n\n正文二。\n\n第三章 结尾\n\n正文三。\n",
+                encoding="utf-8",
+            )
+            service = DocumentLibraryService(initialized_database(root / "rusty.db"), root / "library")
+            document = service.import_document(source).document
+            first, deleted, third = service.list_chapters(document.id)
+            before_revision_count = len(service.list_revisions(document.id))
+            service.save_draft(
+                document.id,
+                chapter_id=deleted.id,
+                base_revision_id=service.get_content(document.id, deleted.id).revision_id,
+                title=deleted.title,
+                text="不应残留的草稿",
+            )
+
+            result = service.delete_chapter(document.id, deleted.id)
+
+            chapters = service.list_chapters(document.id)
+            stored_text = Path(result.revision.storage_path).read_text(encoding="utf-8")
+            self.assertEqual(before_revision_count + 1, len(service.list_revisions(document.id)))
+            self.assertEqual([1, 2], [chapter.index for chapter in chapters])
+            self.assertEqual([first.title, third.title], [chapter.title for chapter in chapters])
+            self.assertEqual(chapters[0].end_offset, chapters[1].start_offset)
+            self.assertNotIn("删除我", stored_text)
+            self.assertNotIn("正文二", stored_text)
+            self.assertIsNone(service.get_draft(document.id, deleted.id))
+            self.assertEqual(count_text_units(stored_text), result.document.word_count)
+
+    def test_multi_chapter_cleanup_preserves_unselected_text_and_commits_partial_success(self) -> None:
+        class FakeCleanupModel:
+            def run(self, **kwargs):
+                chapter_id = kwargs["chapter_id"]
+                if chapter_id == failed_id:
+                    raise RuntimeError("模拟章节失败")
+                source_text = kwargs["messages"][1]["content"].split("Source text:\n", 1)[1]
+                return SimpleNamespace(value={"text": source_text.replace("正文", "已整理")})
+
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            source = root / "batch-cleanup.txt"
+            source.write_text(
+                "第一章 一\n\n正文一。\n\n第二章 二\n\n正文二。\n\n第三章 三\n\n正文三。\n",
+                encoding="utf-8",
+            )
+            database = initialized_database(root / "rusty.db")
+            document_service = DocumentLibraryService(database, root / "library")
+            document = document_service.import_document(source).document
+            first, second, third = document_service.list_chapters(document.id)
+            failed_id = third.id
+            cleanup = DocumentCleanupAIService(database, structured_model_service=FakeCleanupModel())
+            cleanup.document_service = document_service
+
+            batch = cleanup.apply_many(
+                document.id,
+                chapter_ids=[third.id, first.id],
+                prompt="只整理排版",
+            )
+
+            self.assertIsNotNone(batch.result)
+            self.assertEqual(
+                [(first.id, "success"), (third.id, "failed")],
+                [(item.chapter_id, item.status) for item in batch.chapters],
+            )
+            chapters = document_service.list_chapters(document.id)
+            self.assertIn("已整理一", document_service.get_content(document.id, chapters[0].id).body_text)
+            self.assertIn("正文二", document_service.get_content(document.id, chapters[1].id).body_text)
+            self.assertIn("正文三", document_service.get_content(document.id, chapters[2].id).body_text)
+            self.assertEqual(["一", "二", "三"], [chapter.title for chapter in chapters])
 
     def test_default_cleanup_template_versions_text_and_can_restore_import(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:

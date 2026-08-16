@@ -217,6 +217,24 @@ class ModelService:
         models = self.list_models()
         return models[0] if models else None
 
+    def resolve_model_config(
+        self,
+        model_id: int | None = None,
+        *,
+        project_id: int | None = None,
+    ) -> ModelConfig:
+        """Resolve one model consistently for connection tests and generation tasks."""
+        selected_id = model_id
+        if selected_id is None and project_id is not None:
+            from rusty.services.project_service import ProjectService
+
+            settings = ProjectService(self.database_path).get_project_settings(project_id)
+            selected_id = settings.model_id if settings is not None else None
+        model = self.get_model(selected_id) if selected_id is not None else self.get_default_model()
+        if model is None:
+            raise ValueError("No model configured.")
+        return model
+
     def get_api_key(self, model_id: int) -> str | None:
         with session(self.database_path) as connection:
             row = connection.execute(
@@ -228,11 +246,9 @@ class ModelService:
         return self.secret_store.get_secret(row["api_key_secret_ref"])
 
     def test_connection(self, model_id: int, ai_client=None) -> ModelTestResult:
-        from rusty.services.ai_client import OpenAICompatibleClient
+        from rusty.services.ai_client import create_ai_client
 
-        model = self.get_model(model_id)
-        if model is None:
-            raise ValueError(f"Model not found: {model_id}")
+        model = self.resolve_model_config(model_id)
         api_key = self.get_api_key(model_id)
         hostname = (urlparse(model.base_url).hostname or "").lower()
         if not api_key and hostname not in {"localhost", "127.0.0.1", "::1"}:
@@ -241,7 +257,7 @@ class ModelService:
                 message="No API key is available in the system keyring. Enter and save the API key again.",
                 elapsed_ms=None,
             )
-        client = ai_client or OpenAICompatibleClient()
+        client = ai_client or create_ai_client(purpose="connection_test")
         try:
             response = client.chat(
                 model,

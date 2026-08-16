@@ -5,10 +5,9 @@ import re
 from pathlib import Path
 from typing import Any
 
-from rusty.services.ai_client import AIClient, OpenAICompatibleClient
+from rusty.services.ai_client import AIClient, create_ai_client
 from rusty.services.model_service import ModelService
 from rusty.db import default_database_path
-from rusty.services.project_service import ProjectService
 from rusty.services.prompt_compiler import PromptCompiler
 from rusty.services.prompt_definition_service import PromptDefinitionService
 
@@ -25,9 +24,8 @@ class WorkflowAI:
         self.database_path = (
             Path(database_path) if database_path is not None else default_database_path()
         )
-        self.client = ai_client or OpenAICompatibleClient()
+        self.client = ai_client or create_ai_client(purpose="generation")
         self.models = ModelService(self.database_path)
-        self.projects = ProjectService(self.database_path)
         self.compiler = PromptCompiler()
         self.prompts = PromptDefinitionService(self.database_path)
 
@@ -49,14 +47,7 @@ class WorkflowAI:
                 raise ValueError(f"{stage} must return a JSON object.")
             return value
 
-        settings = self.projects.get_project_settings(project_id)
-        model = (
-            self.models.get_model(settings.model_id)
-            if settings is not None and settings.model_id is not None
-            else self.models.get_default_model()
-        )
-        if model is None:
-            raise ValueError("No AI model is configured for this workflow.")
+        model = self.models.resolve_model_config(project_id=project_id)
         if task_key:
             master = self.prompts.get_project_master(project_id)
             definition = self.prompts.find_task(workflow_key=workflow_key, task_key=task_key)

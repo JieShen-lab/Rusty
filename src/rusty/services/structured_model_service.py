@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from rusty.db import session
-from rusty.services.ai_client import AIClient, OpenAICompatibleClient
+from rusty.services.ai_client import AIClient, create_ai_client
 from rusty.services.model_service import ModelConfig, ModelService
 from rusty.db import default_database_path
 from rusty.services.project_service import ProjectService
@@ -38,7 +38,7 @@ class StructuredModelService:
         self.database_path = Path(database_path) if database_path is not None else default_database_path()
         self.model_service = ModelService(self.database_path)
         self.project_service = ProjectService(self.database_path)
-        self.ai_client = ai_client or OpenAICompatibleClient()
+        self.ai_client = ai_client or create_ai_client(purpose="generation")
 
     def run(
         self,
@@ -187,14 +187,7 @@ class StructuredModelService:
             raise
 
     def resolve_model(self, *, model_id: int | None, project_id: int | None) -> ModelConfig:
-        selected_id = model_id
-        if selected_id is None and project_id is not None:
-            settings = self.project_service.get_project_settings(project_id)
-            selected_id = settings.model_id if settings is not None else None
-        model = self.model_service.get_model(selected_id) if selected_id is not None else self.model_service.get_default_model()
-        if model is None:
-            raise ValueError("No model configured.")
-        return model
+        return self.model_service.resolve_model_config(model_id, project_id=project_id)
 
 
 def _parse_json_object(text: str) -> dict[str, Any]:

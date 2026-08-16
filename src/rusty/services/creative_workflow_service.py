@@ -482,7 +482,7 @@ class CreativeWorkflowService:
             "reimagine": "Return initial_state, required_characters, location, time, inherited_facts, required_end_state, downstream_constraints. Analyze boundary conditions only.",
         }
         value = self.ai.generate_json(project_id=scene.project_id, stage="special_analysis", workflow_key=intent["strategy"], task_key="special_analysis",
-                                      user_instruction=intent["user_instruction"], payload={"source_text": scene.original_text, "preanalysis": preanalysis,
+                                      user_instruction=intent["user_instruction"], payload={"source_text": scene.original_text, "chapter_summary_context": self._chapter_summary_context(scene), "preanalysis": preanalysis,
                                       "creative_intent": intent}, output_contract=contracts[intent["strategy"]])
         return self.save_strategy_analysis(scene_id, {"strategy": intent["strategy"], "analysis": value}, user_edited=False)
 
@@ -680,7 +680,7 @@ class CreativeWorkflowService:
         value = self.ai.generate_json(
             project_id=scene.project_id, stage="target_design", workflow_key=intent["strategy"],
             task_key="target_design", user_instruction=intent["user_instruction"],
-            payload={"source_text": scene.original_text, "confirmed_special_analysis": analysis,
+            payload={"source_text": scene.original_text, "chapter_summary_context": self._chapter_summary_context(scene), "confirmed_special_analysis": analysis,
                      "creative_intent": intent, "target_character": target_character,
                      "character_cards": self._character_context(intent),
                      "selected_plot_materials": resources,
@@ -771,7 +771,7 @@ class CreativeWorkflowService:
         value = self.ai.generate_json(
             project_id=scene.project_id, stage="writing_plan", workflow_key=target["strategy"], task_key="writing_plan",
             user_instruction=target["user_instruction"],
-            payload={"source_text": scene.original_text, "scene_source_range": {"start_offset": 0, "end_offset": len(scene.original_text)},
+            payload={"source_text": scene.original_text, "chapter_summary_context": self._chapter_summary_context(scene), "scene_source_range": {"start_offset": 0, "end_offset": len(scene.original_text)},
                      "target": target, "special_analysis": self.get_character_modification_analysis(scene_id) if target["strategy"] == "faithful" else self.get_strategy_analysis(scene_id),
                      "author_styles": self._author_style_context(intent),
                      "character_cards": self._character_context(intent)},
@@ -871,7 +871,7 @@ class CreativeWorkflowService:
             value = self.ai.generate_json(
                 project_id=scene.project_id, stage="full_scene_generation", workflow_key="reimagine", task_key="full_scene_generation",
                 user_instruction=target["user_instruction"],
-                payload={"source_reference": scene.original_text, "boundary_conditions": target["design"].get("boundary_conditions", {}),
+                payload={"source_reference": scene.original_text, "chapter_summary_context": self._chapter_summary_context(scene), "boundary_conditions": target["design"].get("boundary_conditions", {}),
                          "target_skeleton": target["design"].get("nodes", []), "writing_plan": plan,
                          "character_cards": self._character_context(intent), "preanalysis": self.get_preanalysis(scene_id),
                          "author_styles": self._author_style_context(intent)},
@@ -1011,7 +1011,7 @@ class CreativeWorkflowService:
         value = self.ai.generate_json(
             project_id=scene.project_id, stage="selected_text_edit", task_key="selected_text_edit",
             user_instruction=user_instruction,
-            payload={"selected_text": draft["text"][start_offset:end_offset], "previous_context": draft["text"][max(0,start_offset-800):start_offset],
+            payload={"selected_text": draft["text"][start_offset:end_offset], "chapter_summary_context": self._chapter_summary_context(scene), "previous_context": draft["text"][max(0,start_offset-800):start_offset],
                      "next_context": draft["text"][end_offset:end_offset+800], "target": target,
                      "author_styles": self._author_style_context(intent),
                      "character_cards": self._character_context(intent)},
@@ -1125,7 +1125,7 @@ class CreativeWorkflowService:
         intent = self.get_intent(scene_id) or {}
         value = self.ai.generate_json(
             project_id=scene.project_id, stage="review_rework", task_key="review_rework", user_instruction=user_instruction or note,
-            payload={"source_range_text": source_text, "current_draft_range": draft["text"][target_start_offset:target_end_offset],
+            payload={"source_range_text": source_text, "chapter_summary_context": self._chapter_summary_context(scene), "current_draft_range": draft["text"][target_start_offset:target_end_offset],
                      "previous_context": draft["text"][max(0,target_start_offset-800):target_start_offset],
                      "next_context": draft["text"][target_end_offset:target_end_offset+800], "target": target, "writing_plan": plan,
                      "review_note": note, "author_styles": self._author_style_context(intent),
@@ -1202,7 +1202,7 @@ class CreativeWorkflowService:
             project_id=scene.project_id, stage=task_key,
             workflow_key=None if operation == "insert" and target["strategy"] == "faithful" else target["strategy"], task_key=task_key,
             user_instruction=target["user_instruction"],
-            payload={"previous_current_draft_tail": previous_tail, "current_source_block": block["source_text_snapshot"],
+            payload={"previous_current_draft_tail": previous_tail, "chapter_summary_context": self._chapter_summary_context(scene), "current_source_block": block["source_text_snapshot"],
                      "next_source_block_beginning": next_source, "target": target, "writing_block": block,
                      "preserve_constraints": block["preserve_constraints"], "target_requirements": block["target_requirements"],
                      "author_styles": self._material_context(selected_scene_ids, expected_type="author_style"),
@@ -1554,6 +1554,37 @@ class CreativeWorkflowService:
                 normalized.append(item)
             result[category] = normalized
         return result
+
+    def _chapter_summary_context(self, scene: Any) -> dict[str, Any]:
+        """Return a traceable summary block without replacing the chapter source text."""
+        with session(self.database_path) as connection:
+            row = connection.execute(
+                "SELECT plot_summary, characters_json, key_events_json FROM chapter_summaries WHERE chapter_id = ?",
+                (scene.chapter_id,),
+            ).fetchone()
+        if row is None:
+            return {
+                "kind": "chapter_summary",
+                "provenance": {"chapter_id": scene.chapter_id},
+                "plot_summary": "",
+                "characters": [],
+                "key_events": [],
+            }
+        try:
+            characters = json.loads(str(row["characters_json"] or "[]"))
+        except (TypeError, ValueError):
+            characters = []
+        try:
+            key_events = json.loads(str(row["key_events_json"] or "[]"))
+        except (TypeError, ValueError):
+            key_events = []
+        return {
+            "kind": "chapter_summary",
+            "provenance": {"chapter_id": scene.chapter_id},
+            "plot_summary": str(row["plot_summary"] or ""),
+            "characters": characters if isinstance(characters, list) else [],
+            "key_events": key_events if isinstance(key_events, list) else [],
+        }
 
     @staticmethod
     def _json_items(value: Any) -> list[dict[str, Any]]:

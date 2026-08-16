@@ -140,7 +140,8 @@ class PromptCompiler:
         )
         user = (
             _section("USER SUMMARY RULES", template.summary_rules)
-            + "\n\nReturn an object with plot_skeleton, key_events, and characters. "
+            + "\n\nReturn an object with plot_skeleton:string, "
+            "characters:[{name:string, role_in_chapter:string}], and key_events:string[]. "
             "Character entries describe project facts and must not be promoted into a reusable style template."
             + _chapter_section(chapter.title, chapter.original_text)
         )
@@ -148,7 +149,7 @@ class PromptCompiler:
             "summary",
             system,
             user,
-            "JSON object: plot_skeleton, key_events[], characters[]",
+            "JSON object: plot_skeleton:string, characters:[{name,role_in_chapter}], key_events:string[]",
             template,
             ruleset_id=RUSTY_SUMMARY_RULESET_ID,
         )

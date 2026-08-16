@@ -33,6 +33,11 @@ async function mockWorkspace(page: Page, projectKind: 'rewrite' | 'branch' | 'le
   let preanalysis: Record<string, unknown> | null = null;
   let intent: Record<string, unknown> | null = null;
   let characterAnalysis: Record<string, unknown> | null = null;
+  let chapterSummary = {
+    plot_summary: '张三在墙边挡下王五的攻击。',
+    plot_characters: [{ name: '张三', role_in_chapter: '防守者' }, { name: '王五', role_in_chapter: '袭击者' }],
+    key_events: ['王五发动袭击', '张三退到墙边防守'],
+  };
   const draftWrites: Array<{ sceneId: number; resource: string }> = [];
   await page.route('http://127.0.0.1:8765/api/**', async (route) => {
     const path = new URL(route.request().url()).pathname;
@@ -115,8 +120,11 @@ async function mockWorkspace(page: Page, projectKind: 'rewrite' | 'branch' | 'le
       body = null;
     } else if (path === '/api/scenes/801/review-marks') {
       body = [];
+    } else if (path === '/api/chapters/901/summarize') {
+      chapterSummary = { ...chapterSummary, plot_summary: '重新生成：张三守住墙边。' };
+      body = { ok: true, text: chapterSummary.plot_summary };
     } else if (path === '/api/chapters/901') {
-      body = { chapter: { id: 901, project_id: 99, index: 1, title: '第一章', original_text: '张三退到了墙边。\n要不是因为他挡在这里，王五早已经走了。\n刚刚挡下攻击的人握紧了长刀。', rewritten_text: null, word_count: 42, status: 'imported', start_line: 1, end_line: 3 }, ai_outputs: { plot_summary: '', plot_characters: [], style_analysis: null, reviewed_style_analysis: null, style_analysis_status: null }, stage_statuses: [], errors: [] };
+      body = { chapter: { id: 901, project_id: 99, index: 1, title: '第一章', original_text: '张三退到了墙边。\n要不是因为他挡在这里，王五早已经走了。\n刚刚挡下攻击的人握紧了长刀。', rewritten_text: null, word_count: 42, status: 'imported', start_line: 1, end_line: 3 }, ai_outputs: { ...chapterSummary, style_analysis: null, reviewed_style_analysis: null, style_analysis_status: null }, stage_statuses: [], errors: [] };
     } else if (path === '/api/chapters/901/rewrite-versions') {
       body = [{
         id: 1001, project_id: 99, chapter_id: 901, version: 1,
@@ -214,188 +222,96 @@ test('rewrite 工程进入章节中心三栏工作台', async ({ page }) => {
   const chapterRail = page.getByLabel('章节导航');
   await expect(chapterRail).toContainText('第一章');
   await expect(chapterRail).not.toContainText('墙边交锋');
-  await expect(page.getByRole('heading', { name: '场景' })).toBeVisible();
-  await expect(page.getByRole('button', { name: /墙边交锋/ })).toBeVisible();
-  await expect(page.getByLabel('章节创作阶段')).toContainText('预分析');
-  await expect(page.getByRole('heading', { name: '当前上下文' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '情节概要' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '主要人物' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '关键事件' })).toBeVisible();
+  await expect(page.getByLabel('章节创作阶段')).toContainText('内容总结');
+  await expect(page.getByRole('heading', { name: '总结统计' })).toBeVisible();
   await expect(page.getByRole('button', { name: '场景改写' })).toHaveCount(0);
 });
 
-test('新工作台提供轻量场景边界查看与应用控制', async ({ page }) => {
+test('新工作台只提供三类章节总结、简单统计和四个流程入口', async ({ page }) => {
   await mockWorkspace(page, 'rewrite');
   await page.goto('/workspace/99');
-  await page.getByRole('button', { name: '调整场景边界' }).click();
-  await expect(page.getByText('场景切分', { exact: true })).toBeVisible();
-  await expect(page.getByLabel('场景 1 起始位置')).toHaveValue('0');
-  await expect(page.getByLabel('场景 1 结束位置')).toHaveValue('49');
-  await page.getByLabel('场景 1 标题').fill('墙边冲突');
-  await page.getByRole('button', { name: '应用边界' }).click();
-  await expect(page.getByRole('button', { name: /墙边冲突/ })).toBeVisible();
+  await expect(page.getByText('张三在墙边挡下王五的攻击。')).toBeVisible();
+  await expect(page.getByText('防守者')).toBeVisible();
+  await expect(page.getByText('王五发动袭击')).toBeVisible();
+  await expect(page.getByText('总章节', { exact: true })).toBeVisible();
+  await expect(page.getByText('总体进度', { exact: true })).toBeVisible();
+  for (const label of ['贴合原文', '调整剧情', '增加剧情', '重新构思']) {
+    await expect(page.getByRole('button', { name: new RegExp(label) })).toBeVisible();
+  }
+  await expect(page.getByText('场景切分', { exact: true })).toHaveCount(0);
 });
 
-test('离开工作区和 popstate 会先 flush 当前 scene 的 dirty 草稿', async ({ page }) => {
-  const workspace = await mockWorkspace(page, 'rewrite');
+test('章节总结可以重新生成并刷新当前三类结果', async ({ page }) => {
+  await mockWorkspace(page, 'rewrite');
   await page.goto('/workspace/99');
-  await page.getByRole('button', { name: '运行预分析' }).click();
-  await page.getByLabel('摘要').fill('离开前保存的摘要');
-  await page.getByRole('button', { name: '工程列表' }).click();
-  await expect(page.getByRole('heading', { name: '工程', exact: true })).toBeVisible();
-  await expect.poll(() => workspace.getDraftWrites()).toContainEqual({ sceneId: 801, resource: 'preanalysis' });
-
-  await page.goBack();
-  await expect(page.getByLabel('摘要')).toHaveValue('离开前保存的摘要');
-  await page.getByRole('button', { name: '确认预分析' }).click();
-  await page.getByRole('button', { name: /贴合原文/ }).click();
-  await page.getByPlaceholder(/把张三替换成李四/).fill('离开前保存的具体要求');
-  await page.getByRole('button', { name: '提示词', exact: true }).click();
-  await expect(page.getByRole('heading', { name: '提示词', exact: true })).toBeVisible();
-  await expect.poll(() => workspace.getDraftWrites()).toContainEqual({ sceneId: 801, resource: 'intent' });
-
-  await page.goBack();
-  const instruction = page.getByPlaceholder(/把张三替换成李四/);
-  await expect(instruction).toHaveValue('离开前保存的具体要求');
-  await instruction.fill('popstate 保存的具体要求');
-  await page.goForward();
-  await expect(page.getByRole('heading', { name: '提示词', exact: true })).toBeVisible();
-  await expect.poll(() => workspace.getDraftWrites().filter((item) => item.resource === 'intent')).toHaveLength(2);
-  await page.goBack();
-  await expect(page.getByPlaceholder(/把张三替换成李四/)).toHaveValue('popstate 保存的具体要求');
+  await page.getByRole('button', { name: '重新生成' }).click();
+  await expect(page.getByText('重新生成：张三守住墙边。')).toBeVisible();
 });
 
-test('历史 branch 工程也进入同一工作台', async ({ page }) => {
+test('历史 branch 工程也进入同一章节总结工作台', async ({ page }) => {
   await mockWorkspace(page, 'branch');
   await page.goto('/workspace/99');
   await expect(page.getByLabel('章节导航')).toContainText('第一章');
-  await expect(page.getByRole('heading', { name: '场景' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '情节概要' })).toBeVisible();
   await expect(page.getByRole('button', { name: '继续写' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: '写另一种发展' })).toHaveCount(0);
 });
 
-test('预分析、方向和人物专项分析形成可确认纵向流程', async ({ page }) => {
+test('选择流程后只为整章创建一个工作对象并进入对应专项分析', async ({ page }) => {
   const workspace = await mockWorkspace(page, 'rewrite');
   await page.goto('/workspace/99');
-  await page.getByRole('button', { name: '运行预分析' }).click();
-  await expect(page.getByLabel('摘要')).toHaveValue('张三在墙边挡下攻击。');
-  await page.getByRole('button', { name: '确认预分析' }).click();
-  await expect(page.getByRole('heading', { name: '怎样处理这个场景？' })).toBeVisible();
   await page.getByRole('button', { name: /贴合原文/ }).click();
-  await page.getByPlaceholder(/把张三替换成李四/).fill('把张三替换成李四，战斗过程尽量保留。');
-  await page.getByRole('checkbox', { name: '李四' }).check();
-  await page.getByRole('button', { name: '进入专项分析' }).click();
   await expect(page.getByRole('heading', { name: '贴合原文 / 人物修改' })).toBeVisible();
-  await page.getByRole('button', { name: '运行人物专项分析' }).click();
-  await expect(page.locator('input[value="张三退到墙边"]')).toBeVisible();
-  await expect(page.locator('input[value="“他”指张三"]')).toBeVisible();
-  await expect(page.locator('input[value="张三持有长刀"]')).toBeVisible();
-  await expect(page.locator('input[value="存在差异"]')).toBeVisible();
-  await page.getByRole('button', { name: '确认分析' }).click();
-  await expect(page.getByRole('heading', { name: '目标设计' })).toBeVisible();
-  await expect(page.getByText(/可编辑 ChangeSet/)).toBeVisible();
-  await page.getByRole('button', { name: '方向选择', exact: true }).click();
-  await page.getByRole('button', { name: '进入专项分析' }).click();
-  await expect(page.getByRole('button', { name: '目标设计', exact: true })).toBeEnabled();
+  await expect(page.getByText('当前方向：贴合原文')).toBeVisible();
+  await expect(page.locator('.creative-context-panel').getByRole('heading', { name: '原文' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /墙边交锋/ })).toHaveCount(0);
+  await expect.poll(() => workspace.getDraftWrites()).toContainEqual({ sceneId: 801, resource: 'preanalysis' });
   expect(workspace.getDraftWrites().filter((item) => item.resource === 'intent')).toHaveLength(1);
 });
 
-test('上游 intent 修改后 stale 专项分析必须重新分析才能确认', async ({ page }) => {
+test('专项分析确认后方向保持标记且不可再修改', async ({ page }) => {
   await mockWorkspace(page, 'rewrite');
   await page.goto('/workspace/99');
-  await page.getByRole('button', { name: '运行预分析' }).click();
-  await page.getByRole('button', { name: '确认预分析' }).click();
   await page.getByRole('button', { name: /贴合原文/ }).click();
-  await page.getByPlaceholder(/把张三替换成李四/).fill('第一次要求');
-  await page.getByRole('checkbox', { name: '李四' }).check();
-  await page.getByRole('button', { name: '进入专项分析' }).click();
+  await page.getByLabel('目标人物卡').selectOption('501');
   await page.getByRole('button', { name: '运行人物专项分析' }).click();
   await page.getByRole('button', { name: '确认分析' }).click();
-  await page.getByRole('button', { name: '方向选择', exact: true }).click();
-  await page.getByPlaceholder(/把张三替换成李四/).fill('修改后的要求');
-  await page.getByRole('button', { name: '进入专项分析' }).click();
-  await expect(page.getByText('上游已修改，需要重新分析')).toBeVisible();
-  await expect(page.getByRole('button', { name: '确认分析' })).toBeDisabled();
+  await expect(page.getByText('当前方向：贴合原文 · 已锁定')).toBeVisible();
+  await page.getByRole('button', { name: '方向选择' }).click();
+  await expect(page.getByText('专项分析已确认，方向不可更改')).toBeVisible();
+  for (const label of ['贴合原文', '调整剧情', '增加剧情', '重新构思']) {
+    await expect(page.locator('.strategy-grid').getByRole('button', { name: new RegExp(label) })).toBeDisabled();
+  }
 });
 
-test('快速切换场景会先按 loaded scene 身份保存三类 dirty 草稿', async ({ page }) => {
-  const writes: Array<{ sceneId: number; resource: string; value: string }> = [];
-  const stages: Record<number, string> = { 801: 'target_design', 802: 'direction', 803: 'special_analysis' };
-  let activeSceneId = 801;
-  const source = '场景原文。';
-  const preanalyses: Record<number, Record<string, unknown> | null> = {
-    801: { scene_id: 801, summary: 'A 摘要', characters: ['张三'], location: '', time: '', scene_type: '冲突', basic_events: ['事件 A'], status: 'confirmed', user_edited: false, confirmed_at: '', updated_at: '' },
-    802: null, 803: null,
-  };
-  const intents: Record<number, Record<string, unknown> | null> = {
-    801: null,
-    802: { scene_id: 802, strategy: 'faithful', user_instruction: 'B 要求', selected_character_ids: [501], selected_plot_material_ids: [], selected_scene_material_ids: [], status: 'draft', updated_at: '' },
-    803: { scene_id: 803, strategy: 'faithful', user_instruction: 'C 要求', selected_character_ids: [501], selected_plot_material_ids: [], selected_scene_material_ids: [], status: 'draft', updated_at: '' },
-  };
-  const analysisItem = { id: 'item-1', summary: 'C 结论', source_text: source, start_offset: 0, end_offset: 5, inferred: false };
-  const characterAnalyses: Record<number, Record<string, unknown> | null> = {
-    801: null, 802: null,
-    803: { scene_id: 803, source_character: '张三', target_character_card_id: 501, target_character_name: '李四', explicit_mentions: [analysisItem], implicit_references: [], actions: [], dialogue: [], states: [], objects: [], spatial_relations: [], related_events: [], target_character_conflicts: [], status: 'draft', user_edited: false, confirmed_at: null, updated_at: '' },
-  };
-  const scenes = [801, 802, 803].map((id, index) => ({ id, project_id: 99, chapter_id: 901, parent_scene_id: null, scene_index: index + 1, title: `场景 ${String.fromCharCode(65 + index)}`, original_start_offset: index * 5, original_end_offset: index * 5 + 5, original_text: source, source_version: 1, boundary_reasons: [], boundary_status: 'confirmed', scene_type: 'action', user_confirmed: true, confirmed_at: '' }));
-
-  await page.route('http://127.0.0.1:8765/api/**', async (route) => {
-    const path = new URL(route.request().url()).pathname;
-    const sceneMatch = path.match(/^\/api\/scenes\/(\d+)\/(preanalysis|creative-intent|character-modification-analysis)$/);
-    let body: unknown = [];
-    if (path === '/api/projects/99') body = { project: { id: 99, name: 'race project', project_kind: 'rewrite', status: 'ready', current_stage: 'split', source_format: 'txt', total_chapters: 1, total_words: 10, completed_chapters: 0, book_title: '', author: null, created_at: '', updated_at: '', progress: 0 }, metadata: {}, settings: {}, exports: [] };
-    else if (path === '/api/projects/99/chapters') body = [{ id: 901, project_id: 99, index: 1, title: '第一章', original_text: source.repeat(3), rewritten_text: null, word_count: 15, status: 'imported', start_line: 1, end_line: 1 }];
-    else if (path === '/api/projects/99/creative-workflow') body = [{ chapter_id: 901, chapter_index: 1, title: '第一章', active_scene_id: activeSceneId, current_stage: stages[activeSceneId], updated_at: '' }];
-    else if (path === '/api/chapters/901/creative-scene-states') body = scenes.map((scene) => ({ scene_id: scene.id, scene_index: scene.scene_index, title: scene.title, current_stage: stages[scene.id], updated_at: '' }));
-    else if (path === '/api/chapters/901') body = { chapter: { id: 901, project_id: 99, index: 1, title: '第一章', original_text: source.repeat(3), rewritten_text: null, word_count: 15, status: 'imported', start_line: 1, end_line: 1 }, ai_outputs: {}, stage_statuses: [], errors: [] };
-    else if (path === '/api/chapters/901/scenes') body = scenes;
-    else if (path === '/api/projects/99/characters') body = { character_cards: [{ id: 501, name: '李四', aliases: [], description: '', priority: 1, is_main: true, relationship_notes: '', personality: '', speech_style: '', action_constraints: '', anti_ooc_rules: '', profile: {}, source_metadata: {}, import_metadata: {}, scope: 'project', project_id: 99, source_character_card_id: null, source_version: null, version: 1, sort_order: 0, identity: '', age: '', setting_text: '', custom_fields: [], raw_text: '', analysis_status: 'analyzed', cover_path: null, cover_updated_at: null, tags: [], category_ids: [], categories: [], source_summary: {}, created_at: '', updated_at: '' }] };
-    else if (path === '/api/projects/99/materials') body = [];
-    else if (/^\/api\/scenes\/\d+\/(strategy-analysis|target|writing-plan|current-draft)$/.test(path)) body = null;
-    else if (/^\/api\/scenes\/\d+\/review-marks$/.test(path)) body = [];
-    else if (path.match(/^\/api\/scenes\/(\d+)\/creative-workflow\/activate$/)) {
-      await new Promise((resolve) => setTimeout(resolve, 400));
-      activeSceneId = Number(path.split('/')[3]);
-      body = { chapter_id: 901, chapter_index: 1, title: '第一章', active_scene_id: activeSceneId, current_stage: stages[activeSceneId], updated_at: '' };
-    } else if (sceneMatch) {
-      const sceneId = Number(sceneMatch[1]);
-      const resource = sceneMatch[2];
-      if (route.request().method() === 'PUT') {
-        const payload = route.request().postDataJSON() as Record<string, unknown>;
-        await new Promise((resolve) => setTimeout(resolve, 150));
-        writes.push({ sceneId, resource, value: String(payload.summary ?? payload.user_instruction ?? (payload.explicit_mentions as Array<Record<string, unknown>>)?.[0]?.summary ?? '') });
-        if (resource === 'preanalysis') { preanalyses[sceneId] = { ...payload, scene_id: sceneId, status: 'draft', user_edited: true, updated_at: '' }; stages[sceneId] = 'preanalysis'; body = preanalyses[sceneId]; }
-        if (resource === 'creative-intent') { intents[sceneId] = { ...payload, scene_id: sceneId, status: 'draft', updated_at: '' }; stages[sceneId] = 'direction'; body = intents[sceneId]; }
-        if (resource === 'character-modification-analysis') { characterAnalyses[sceneId] = { ...payload, scene_id: sceneId, status: 'draft', user_edited: true, updated_at: '' }; stages[sceneId] = 'special_analysis'; body = characterAnalyses[sceneId]; }
-      } else body = resource === 'preanalysis' ? preanalyses[sceneId] : resource === 'creative-intent' ? intents[sceneId] : characterAnalyses[sceneId];
-    }
-    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+test('进入流程前不会自动创建或拆分场景记录', async ({ page }) => {
+  const sceneMutationRequests: string[] = [];
+  page.on('request', (request) => {
+    const path = new URL(request.url()).pathname;
+    if (path.includes('/scenes/analyze') || path.includes('/scenes/adjust')) sceneMutationRequests.push(path);
   });
-
+  await mockWorkspace(page, 'rewrite');
   await page.goto('/workspace/99');
-  await expect(page.getByRole('heading', { name: '目标设计' })).toBeVisible();
-  await expect(page.getByRole('button', { name: /场景 A/ })).toContainText('待确认');
-  await expect(page.getByRole('button', { name: /场景 B/ })).toContainText('进行中');
-  await expect(page.getByRole('button', { name: /场景 C/ })).toContainText('进行中');
-  await expect(page.getByText('已完成', { exact: true })).toHaveCount(0);
-  await page.getByRole('button', { name: '预分析', exact: true }).click();
-  const sceneASummary = page.getByLabel('摘要');
-  await sceneASummary.fill('A 已编辑');
-  await page.getByRole('button', { name: /场景 B/ }).click();
-  await expect(sceneASummary).toBeDisabled();
-  await expect(sceneASummary).toHaveValue('A 已编辑');
-  await expect(page.getByRole('heading', { name: '怎样处理这个场景？' })).toBeVisible();
-  await page.getByPlaceholder(/把张三替换成李四/).fill('B 已编辑');
-  await page.getByRole('button', { name: /场景 C/ }).click();
-  await expect(page.getByRole('heading', { name: '贴合原文 / 人物修改' })).toBeVisible();
-  await page.getByLabel('结论').first().fill('C 已编辑');
-  const sceneAButton = page.getByRole('button', { name: /场景 A/ });
-  await sceneAButton.click();
-  await expect(sceneAButton).toHaveClass(/active/);
-  await expect(page.getByLabel('摘要')).toHaveValue('A 已编辑');
-  await expect(page.getByRole('button', { name: '目标设计' })).toBeDisabled();
-  expect(writes).toEqual([
-    { sceneId: 801, resource: 'preanalysis', value: 'A 已编辑' },
-    { sceneId: 802, resource: 'creative-intent', value: 'B 已编辑' },
-    { sceneId: 803, resource: 'character-modification-analysis', value: 'C 已编辑' },
-  ]);
+  await expect(page.getByText('张三在墙边挡下王五的攻击。')).toBeVisible();
+  expect(sceneMutationRequests).toHaveLength(0);
+});
+
+test('章节导航复用文档目录行样式并在桌面尺寸无横向溢出', async ({ page }) => {
+  await mockWorkspace(page, 'rewrite');
+  await page.goto('/workspace/99');
+  const row = page.getByLabel('章节导航').locator('.chapter-row');
+  await expect(row).toHaveCount(1);
+  await expect(row.locator('.chapter-number')).toHaveText('1');
+  await expect(row.locator('.chapter-name')).toHaveText('第一章');
+  await expect(row.locator('.chapter-state')).toContainText('42 字');
+  await expect(row).toHaveAttribute('aria-current', 'page');
+  for (const viewport of [{ width: 1280, height: 720 }, { width: 1440, height: 900 }]) {
+    await page.setViewportSize(viewport);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)).toBe(false);
+  }
 });
 
 test('legacy_extract 显示只读兼容提示和迁移入口', async ({ page }) => {

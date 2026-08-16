@@ -93,8 +93,23 @@ class LibraryDocumentCleanupRequest(BaseModel):
 
 class LibraryDocumentAICleanupRequest(BaseModel):
     chapter_id: int | None = None
+    chapter_ids: list[int] | None = None
     prompt: str = Field(min_length=1)
     model_id: int | None = None
+
+
+class LibraryDocumentCleanupChapterStatusOut(BaseModel):
+    chapter_id: int
+    title: str
+    status: Literal["success", "failed"]
+    error: str | None = None
+
+
+class LibraryDocumentAICleanupResponse(BaseModel):
+    document: LibraryDocumentOut
+    revision: LibraryDocumentRevisionOut | None = None
+    created: bool
+    chapters: list[LibraryDocumentCleanupChapterStatusOut] = Field(default_factory=list)
 
 
 class LibraryDocumentCleanupResponse(BaseModel):
@@ -349,6 +364,7 @@ class ChapterErrorOut(BaseModel):
 class ChapterAIOutputsOut(BaseModel):
     plot_summary: str | None = None
     plot_characters: list[dict[str, Any]] | None = None
+    key_events: list[str] | None = None
     needs_rewrite: bool | None = None
     scene_labels: list[str] | None = None
     scene_reasoning: str | None = None

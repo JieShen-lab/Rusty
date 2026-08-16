@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { RefObject } from 'react';
-import { ArrowLeft, Check, RefreshCw, Settings2, Sparkles } from 'lucide-react';
+import { ArrowDownToLine, ArrowLeft, ArrowUpToLine, Check, RefreshCw, Settings2, Sparkles } from 'lucide-react';
 import {
   activateCreativeScene,
   adjustChapterScenes,
@@ -52,6 +52,7 @@ import {
   saveWritingPlan,
   saveCurrentDraft,
   saveProjectMasterPrompt,
+  summarizeChapter,
   exportProjectMasterPrompt,
   updateProjectSettings,
   updateCreativeWorkflowState,
@@ -95,7 +96,7 @@ const stageOrder: CreativeWorkflowStage[] = [
 
 const stageLabels: Record<CreativeWorkflowStage, string> = {
   not_started: '未开始',
-  preanalysis: '预分析',
+  preanalysis: '内容总结',
   direction: '方向选择',
   special_analysis: '专项分析',
   target_design: '目标设计',
@@ -171,7 +172,6 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
   const [reviewUndo, setReviewUndo] = useState<{ beforeText: string; markIds: number[] } | null>(null);
   const [sourceCharacter, setSourceCharacter] = useState('');
   const [targetCharacterId, setTargetCharacterId] = useState<number | null>(null);
-  const [focusedEvidence, setFocusedEvidence] = useState('');
   const [boundaryEditing, setBoundaryEditing] = useState(false);
   const [boundaryDrafts, setBoundaryDrafts] = useState<SceneBoundaryItem[]>([]);
   const loadedDraftRef = useRef<LoadedSceneDraft | null>(null);
@@ -179,6 +179,7 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
   const sceneLoadSequenceRef = useRef(0);
   const switchQueueRef = useRef<Promise<void>>(Promise.resolve());
   const flushPromiseRef = useRef<Promise<void> | null>(null);
+  const chapterListRef = useRef<HTMLDivElement | null>(null);
 
   const stateByChapter = useMemo(
     () => new Map(states.map((item) => [item.chapter_id, item])),
@@ -391,7 +392,6 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
     setTargetDirty(false);
     setWritingPlanDirty(false);
     setCurrentDraftDirty(false);
-    setFocusedEvidence('');
     setSceneContextLoading(false);
   }, []);
 
@@ -458,6 +458,7 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
 
   const activeSceneState = activeSceneId ? sceneStateById.get(activeSceneId) ?? null : null;
   const reachedIndex = workflowIndex(activeSceneState?.current_stage ?? 'not_started');
+  const directionLocked = reachedIndex > stageOrder.indexOf('special_analysis');
 
   async function chooseChapter(chapterId: number) {
     if (chapterId === selectedChapterIdRef.current) return;
@@ -503,6 +504,56 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
       setScenes(items);
       setBoundaryDrafts(boundariesFromScenes(items));
       await refreshWorkflowStates(selectedChapterId);
+    });
+  }
+
+  async function summarizeCurrentChapter() {
+    if (!selectedChapterId) return;
+    await perform(async () => {
+      await summarizeChapter(selectedChapterId);
+      setDetail(await getChapter(selectedChapterId));
+      setViewStage('preanalysis');
+    });
+  }
+
+  async function startChapterFlow(strategy: CreativeStrategy) {
+    if (!selectedChapterId || !selectedChapter || !detail?.ai_outputs.plot_summary) return;
+    await perform(async () => {
+      await flushLoadedScene();
+      const boundary: SceneBoundaryItem = {
+        start_offset: 0,
+        end_offset: selectedChapter.original_text.length,
+        title: selectedChapter.title,
+        reasons: ['chapter_workflow'],
+      };
+      const chapterScenes = scenes.length
+        ? await adjustChapterScenes(selectedChapterId, [boundary])
+        : await analyzeChapterScenes(selectedChapterId, { boundaries: [boundary], source: 'user', confirm: true });
+      const scene = chapterScenes[0];
+      if (!scene) throw new Error('无法创建本章工作对象。');
+      await activateCreativeScene(scene.id);
+      await saveScenePreanalysis(scene.id, {
+        summary: detail.ai_outputs.plot_summary ?? '',
+        characters: (detail.ai_outputs.plot_characters ?? []).map((item) => String(item.name ?? '')).filter(Boolean),
+        location: '',
+        time: '',
+        scene_type: 'chapter',
+        basic_events: detail.ai_outputs.key_events ?? [],
+      });
+      await confirmScenePreanalysis(scene.id);
+      await saveSceneCreativeIntent(scene.id, {
+        strategy,
+        user_instruction: '',
+        selected_character_ids: [],
+        selected_plot_material_ids: [],
+        selected_scene_material_ids: [],
+      });
+      await updateCreativeWorkflowState(selectedChapterId, 'special_analysis', scene.id);
+      setScenes(chapterScenes);
+      setBoundaryDrafts(boundariesFromScenes(chapterScenes));
+      await refreshWorkflowStates(selectedChapterId);
+      await loadSceneContext(selectedChapterId, scene.id);
+      setViewStage('special_analysis');
     });
   }
 
@@ -586,7 +637,7 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
   }
 
   function chooseStrategy(strategy: CreativeStrategy) {
-    if (!activeSceneId) return;
+    if (!activeSceneId || directionLocked) return;
     if (intent) patchIntent({ strategy });
     else {
       const next: CreativeIntent = {
@@ -941,6 +992,7 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
         <div className="creative-project-title">
           <button className="button ghost" onClick={() => onNavigate('/library')} type="button"><ArrowLeft size={17} />工程列表</button>
           <h1>{projectName}</h1>
+          {intent ? <span className="creative-direction-marker">当前方向：{strategies.find((item) => item.key === intent.strategy)?.label ?? intent.strategy}{directionLocked ? ' · 已锁定' : ''}</span> : null}
         </div>
         <div className="creative-top-actions">
           <button className="button ghost" onClick={() => void openSettings()} type="button"><Settings2 size={17} />工程设置</button>
@@ -969,60 +1021,41 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
         </nav>
 
         <aside className="chapter-rail" aria-label="章节导航">
-          <h2>章节</h2>
-          <div className="chapter-only-list">
+          <div className="binder-heading"><h2>章节目录</h2><span>共 {chapters.length} 章</span></div>
+          <div className="chapter-list" ref={chapterListRef}>
             {chapters.map((chapter) => {
               const state = stateByChapter.get(chapter.id);
               return (
                 <button
                   aria-current={chapter.id === selectedChapterId ? 'page' : undefined}
-                  className={chapter.id === selectedChapterId ? 'active' : ''}
+                  className={`chapter-row ${chapter.id === selectedChapterId ? 'selected' : ''}`}
                   disabled={busy}
                   key={chapter.id}
                   onClick={() => void chooseChapter(chapter.id)}
                   type="button"
                 >
-                  <span>{chapter.title}</span>
-                  <small>{stageLabels[state?.current_stage ?? 'not_started']}</small>
+                  <span className="chapter-number">{chapter.index}</span>
+                  <span className="chapter-name" title={chapter.title}>{chapter.title}</span>
+                  <span className="chapter-state">{chapter.word_count.toLocaleString()} 字</span>
                 </button>
               );
             })}
+            {!chapters.length ? <div className="compact-empty">工程中没有章节。</div> : null}
           </div>
-          <div className="rail-save-state">自动保存 · {selectedState ? formatTime(selectedState.updated_at) : '—'}</div>
+          <div className="binder-footer"><button onClick={() => chapterListRef.current?.scrollTo({ behavior: 'smooth', top: 0 })} type="button"><ArrowUpToLine size={14} />回到顶部</button><button onClick={() => chapterListRef.current?.scrollTo({ behavior: 'smooth', top: chapterListRef.current.scrollHeight })} type="button"><ArrowDownToLine size={14} />回到底部</button></div>
         </aside>
 
         <main className="chapter-workspace">
-          <section className="scene-list-section">
-            <div className="section-title"><h2>场景</h2><span>{scenes.length} 个工作对象</span><button className="button ghost" disabled={!scenes.length || busy} onClick={() => setBoundaryEditing((value) => !value)} type="button">调整场景边界</button></div>
-            <div className="creative-scene-list">
-              {scenes.map((scene, index) => {
-                const active = scene.id === selectedState?.active_scene_id;
-                const sceneState = sceneStateById.get(scene.id);
-                return (
-                  <button className={active ? 'active' : ''} disabled={busy} key={scene.id} onClick={() => void chooseScene(scene.id)} type="button">
-                    <span className="scene-number">{String(index + 1).padStart(2, '0')}</span>
-                    <span className="scene-name">{scene.title}</span>
-                    <small>{sceneProgressLabel(sceneState?.current_stage ?? 'not_started')}{active ? ' · 当前' : ''}</small>
-                  </button>
-                );
-              })}
-              {!scenes.length ? <div className="creative-empty"><p>本章尚未生成场景工作对象。</p><button className="button secondary" disabled={busy} onClick={() => void createScenes()} type="button"><Sparkles size={15} />分析并切分</button></div> : null}
-            </div>
-            {boundaryEditing ? <SceneBoundaryEditor boundaries={boundaryDrafts} busy={busy} onApply={() => void applyBoundaries()} onChange={setBoundaryDrafts} onConfirm={() => void confirmBoundaries()} scenes={scenes} /> : null}
-          </section>
-
           <fieldset
             aria-busy={busy || sceneContextLoading}
             className="scene-editor-ownership"
             disabled={busy || sceneContextLoading}
           >
-          {viewStage === 'preanalysis' ? (
-            <PreanalysisEditor analysis={preanalysis} boundariesConfirmed={scenes.find((item) => item.id === activeSceneId)?.user_confirmed ?? false} busy={busy || sceneContextLoading} dirty={analysisDirty} onAnalyze={() => void analyzeScene()} onChange={patchAnalysis} onConfirm={() => void confirmAnalysis()} />
-          ) : null}
+          {viewStage === 'preanalysis' ? <ChapterSummaryPanel busy={busy} detail={detail} onGenerate={() => void summarizeCurrentChapter()} /> : null}
           {viewStage === 'direction' ? (
-            <DirectionEditor intent={intent} busy={busy || sceneContextLoading} onContinue={() => void continueToSpecialAnalysis()} onInstruction={(value) => patchIntent({ user_instruction: value })} onStrategy={chooseStrategy} />
+            <DirectionEditor intent={intent} busy={busy || sceneContextLoading} locked={directionLocked} onContinue={() => void continueToSpecialAnalysis()} onInstruction={(value) => patchIntent({ user_instruction: value })} onStrategy={chooseStrategy} />
           ) : null}
-          {viewStage === 'special_analysis' ? (intent?.strategy === 'faithful' ? <CharacterAnalysisEditor analysis={characterAnalysis} busy={busy || sceneContextLoading} characters={characters} dirty={characterAnalysisDirty} intent={intent} onAnalyze={() => void analyzeCharacterModification()} onChange={patchCharacterAnalysis} onConfirm={() => void confirmCharacterAnalysis()} onEvidence={setFocusedEvidence} onSourceCharacter={setSourceCharacter} onTargetCharacter={setTargetCharacterId} sourceCharacter={sourceCharacter} targetCharacterId={targetCharacterId} /> : <StrategyAnalysisEditor analysis={strategyAnalysis} busy={busy || sceneContextLoading} dirty={strategyAnalysisDirty} intent={intent} onAnalyze={() => void analyzeStrategy()} onChange={patchStrategyAnalysis} onConfirm={() => void confirmGenericAnalysis()} />) : null}
+          {viewStage === 'special_analysis' ? (intent?.strategy === 'faithful' ? <CharacterAnalysisEditor analysis={characterAnalysis} busy={busy || sceneContextLoading} characters={characters} dirty={characterAnalysisDirty} intent={intent} onAnalyze={() => void analyzeCharacterModification()} onChange={patchCharacterAnalysis} onConfirm={() => void confirmCharacterAnalysis()} onSourceCharacter={setSourceCharacter} onTargetCharacter={setTargetCharacterId} sourceCharacter={sourceCharacter} targetCharacterId={targetCharacterId} /> : <StrategyAnalysisEditor analysis={strategyAnalysis} busy={busy || sceneContextLoading} dirty={strategyAnalysisDirty} intent={intent} onAnalyze={() => void analyzeStrategy()} onChange={patchStrategyAnalysis} onConfirm={() => void confirmGenericAnalysis()} />) : null}
           {viewStage === 'target_design' ? (intent?.strategy === 'faithful' ? <TargetDesignEditor busy={busy || sceneContextLoading} dirty={targetDirty} intent={intent} onChange={patchTarget} onConfirm={() => void confirmTargetDesign()} onGenerate={() => void generateTarget()} target={target} /> : <StrategyTargetEditor busy={busy || sceneContextLoading} dirty={targetDirty} intent={intent} materials={materials} onChange={patchTarget} onConfirm={() => void confirmTargetDesign()} onGenerate={() => void generateTarget()} target={target} />) : null}
           {viewStage === 'writing' ? <WritingStage busy={busy || sceneContextLoading} currentDraft={currentDraft} draftDirty={currentDraftDirty} draftEditorRef={draftEditorRef} onDraftText={patchCurrentDraftText} onGenerate={() => void generateDraft()} onPlan={patchWritingPlan} onPlanWriting={() => void planWriting()} onReview={() => void beginReview()} onSelectedEdit={() => void aiEditSelection()} onView={setWritingView} plan={writingPlan} planDirty={writingPlanDirty} target={target} view={writingView} /> : null}
           {viewStage === 'review' ? <ReviewStage busy={busy || sceneContextLoading} currentDraft={currentDraft} diff={reviewDiff} onAccept={() => void acceptReviewRework()} onAddNote={() => void addReviewNote()} onConfirm={() => void confirmSceneFromReview()} onRestore={() => void restoreSelectedReview()} onRework={() => void aiReworkSelected()} onReworkAll={() => void reworkAllMarks()} onUndo={() => void undoReviewRework()} sourceRef={reviewSourceRef} targetRef={reviewTargetRef} undoAvailable={reviewUndo !== null} /> : null}
@@ -1031,18 +1064,47 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
         </main>
 
         <aside className="creative-context-panel">
-          <h2>{viewStage === 'review' ? '备注' : '当前上下文'}</h2>
+          <h2>{viewStage === 'preanalysis' ? '总结统计' : viewStage === 'review' ? '备注' : '当前上下文'}</h2>
+          {viewStage === 'preanalysis' ? <ChapterSummarySidebar chapters={chapters} states={states} busy={busy} canStart={Boolean(detail?.ai_outputs.plot_summary)} onStart={(strategy) => void startChapterFlow(strategy)} /> : null}
           {viewStage === 'direction' ? <ContextResources characters={characters} intent={intent} materials={materials} onIntent={patchIntent} /> : null}
           {viewStage === 'special_analysis' ? (intent?.strategy === 'faithful' ? <CharacterContext characters={characters} targetId={characterAnalysis?.target_character_card_id ?? targetCharacterId} /> : <SelectedMaterials intent={intent} materials={materials} />) : null}
           {viewStage === 'target_design' ? <><CharacterContext characters={characters} targetId={characterAnalysis?.target_character_card_id ?? targetCharacterId} /><SelectedMaterials intent={intent} materials={materials} /></> : null}
           {viewStage === 'writing' ? <><CharacterContext characters={characters} targetId={characterAnalysis?.target_character_card_id ?? targetCharacterId} /><SelectedMaterials intent={intent} materials={materials} /><TargetContext target={target} /></> : null}
           {viewStage === 'review' ? <ReviewMarksPanel marks={reviewMarks} onDelete={(mark) => void deleteMark(mark.id)} onRestore={(mark) => void restoreMark(mark)} onRework={(mark) => void aiReworkMark(mark)} /> : null}
-          {viewStage !== 'review' ? <><h3>原文</h3>{focusedEvidence ? <div className="focused-evidence"><strong>当前证据</strong><p>{focusedEvidence}</p></div> : null}<div className="source-context">{scenes.find((item) => item.id === activeSceneId)?.original_text || selectedChapter?.original_text || '暂无原文'}</div></> : null}
         </aside>
       </div>
       {settingsOpen ? <div className="settings-backdrop" role="presentation"><section aria-label="工程设置" className="creative-settings-panel" role="dialog"><header><div><h2>工程设置</h2><p>AI 配置</p></div><button className="button ghost" onClick={() => setSettingsOpen(false)} type="button">关闭</button></header><label><span>默认模型</span><select value={settingsModelId ?? ''} onChange={(event) => setSettingsModelId(event.target.value ? Number(event.target.value) : null)}><option value="">使用全局默认模型</option>{models.map((model) => <option key={model.id} value={model.id}>{model.display_name}</option>)}</select></label><label className="settings-master-field"><span>总提示词</span><textarea value={masterPrompt} onChange={(event) => { setMasterPrompt(event.target.value); setMasterDirty(true); }} /></label><footer><button className="button secondary" onClick={() => void exportMaster()} type="button">导出到提示词库</button><button className="button primary" disabled={busy || (!masterDirty && settingsModelId === null)} onClick={() => void saveSettings()} type="button">保存设置</button></footer></section></div> : null}
     </div>
   );
+}
+
+function ChapterSummaryPanel({ busy, detail, onGenerate }: { busy: boolean; detail: ChapterDetail | null; onGenerate: () => void }) {
+  const output = detail?.ai_outputs;
+  const characters = output?.plot_characters ?? [];
+  const events = output?.key_events ?? [];
+  return <section className="chapter-summary-panel">
+    <header><div><h2>{detail?.chapter.title || '内容总结'}</h2><span>{detail?.chapter.word_count.toLocaleString() ?? 0} 字</span></div><button className="button secondary" disabled={busy || !detail} onClick={onGenerate} type="button"><RefreshCw size={15} />{output?.plot_summary ? '重新生成' : '生成总结'}</button></header>
+    <div className="chapter-summary-grid">
+      <article className="chapter-summary-plot"><h3>情节概要</h3><p>{output?.plot_summary || '尚未生成情节概要。'}</p></article>
+      <article><h3>主要人物</h3>{characters.length ? <ul>{characters.map((item, index) => <li key={`${String(item.name ?? '')}-${index}`}><strong>{String(item.name ?? '未命名')}</strong><span>{String(item.role_in_chapter ?? item.role ?? '')}</span></li>)}</ul> : <p>尚未识别主要人物。</p>}</article>
+      <article><h3>关键事件</h3>{events.length ? <ol>{events.map((event, index) => <li key={`${event}-${index}`}>{event}</li>)}</ol> : <p>尚未识别关键事件。</p>}</article>
+    </div>
+  </section>;
+}
+
+const chapterFlowOptions: Array<{ strategy: CreativeStrategy; label: string; description: string }> = [
+  { strategy: 'faithful', label: '贴合原文', description: '保持本章结构，重点调整人物表达。' },
+  { strategy: 'plot_adjust', label: '调整剧情', description: '在原事件链上修改剧情走向。' },
+  { strategy: 'expansion', label: '增加剧情', description: '在既有结构中插入新的情节。' },
+  { strategy: 'reimagine', label: '重新构思', description: '保留边界条件后重做本章方案。' },
+];
+
+function ChapterSummarySidebar({ busy, canStart, chapters, onStart, states }: { busy: boolean; canStart: boolean; chapters: Chapter[]; onStart: (strategy: CreativeStrategy) => void; states: ChapterWorkflowState[] }) {
+  const completed = states.filter((item) => item.current_stage === 'confirmed').length;
+  const processed = states.filter((item) => item.current_stage !== 'not_started').length;
+  const pending = Math.max(0, chapters.length - processed);
+  const progress = chapters.length ? Math.round((processed / chapters.length) * 100) : 0;
+  return <div className="chapter-summary-sidebar"><section className="summary-stat-grid"><div><strong>{chapters.length}</strong><span>总章节</span></div><div><strong>{completed}</strong><span>已完成</span></div><div><strong>{pending}</strong><span>待处理</span></div><div className="summary-progress"><span>总体进度</span><strong>{progress}%</strong><i><b style={{ width: `${progress}%` }} /></i></div></section><section className="chapter-flow-options"><h3>进入处理流程</h3>{chapterFlowOptions.map((option) => <button disabled={busy || !canStart} key={option.strategy} onClick={() => onStart(option.strategy)} type="button"><strong>{option.label}</strong><span>{option.description}</span></button>)}{!canStart ? <small>请先生成本章总结。</small> : null}</section></div>;
 }
 
 function PreanalysisEditor({ analysis, boundariesConfirmed, busy, dirty, onAnalyze, onChange, onConfirm }: { analysis: BaseSceneAnalysis | null; boundariesConfirmed: boolean; busy: boolean; dirty: boolean; onAnalyze: () => void; onChange: (patch: Partial<BaseSceneAnalysis>) => void; onConfirm: () => void }) {
@@ -1057,8 +1119,8 @@ const strategies: Array<{ key: CreativeStrategy; label: string; description: str
   { key: 'reimagine', label: '重新构思', description: '以当前 Source 为参照重新设计场景。' },
 ];
 
-function DirectionEditor({ busy, intent, onContinue, onInstruction, onStrategy }: { busy: boolean; intent: CreativeIntent | null; onContinue: () => void; onInstruction: (value: string) => void; onStrategy: (strategy: CreativeStrategy) => void }) {
-  return <section className="direction-editor"><h2>怎样处理这个场景？</h2><div className="strategy-grid">{strategies.map((item) => <button aria-pressed={intent?.strategy === item.key} className={intent?.strategy === item.key ? 'active' : ''} key={item.key} onClick={() => onStrategy(item.key)} type="button"><strong>{item.label}</strong><span>{item.description}</span></button>)}</div><label className="instruction-field"><span>具体要求</span><textarea disabled={!intent} placeholder="例如：把张三替换成李四，战斗过程尽量保留。" value={intent?.user_instruction ?? ''} onChange={(event) => onInstruction(event.target.value)} /></label><div className="analysis-actions"><button className="button primary" disabled={busy || !intent || !intent.user_instruction.trim()} onClick={onContinue} type="button">进入专项分析</button></div></section>;
+function DirectionEditor({ busy, intent, locked, onContinue, onInstruction, onStrategy }: { busy: boolean; intent: CreativeIntent | null; locked: boolean; onContinue: () => void; onInstruction: (value: string) => void; onStrategy: (strategy: CreativeStrategy) => void }) {
+  return <section className="direction-editor"><div className="direction-editor-heading"><h2>怎样处理这个场景？</h2>{locked ? <span>专项分析已确认，方向不可更改</span> : null}</div><div className="strategy-grid">{strategies.map((item) => <button aria-pressed={intent?.strategy === item.key} className={intent?.strategy === item.key ? 'active' : ''} disabled={locked} key={item.key} onClick={() => onStrategy(item.key)} type="button"><strong>{item.label}</strong><span>{item.description}</span></button>)}</div><label className="instruction-field"><span>具体要求</span><textarea disabled={!intent || locked} placeholder="例如：把张三替换成李四，战斗过程尽量保留。" value={intent?.user_instruction ?? ''} onChange={(event) => onInstruction(event.target.value)} /></label>{!locked ? <div className="analysis-actions"><button className="button primary" disabled={busy || !intent || !intent.user_instruction.trim()} onClick={onContinue} type="button">进入专项分析</button></div> : null}</section>;
 }
 
 const analysisCategories = [
@@ -1069,7 +1131,7 @@ const analysisCategories = [
 ] as const;
 type AnalysisCategory = typeof analysisCategories[number][0];
 
-function CharacterAnalysisEditor({ analysis, busy, characters, dirty, intent, onAnalyze, onChange, onConfirm, onEvidence, onSourceCharacter, onTargetCharacter, sourceCharacter, targetCharacterId }: { analysis: CharacterModificationAnalysis | null; busy: boolean; characters: CharacterCard[]; dirty: boolean; intent: CreativeIntent | null; onAnalyze: () => void; onChange: (value: CharacterModificationAnalysis) => void; onConfirm: () => void; onEvidence: (text: string) => void; onSourceCharacter: (value: string) => void; onTargetCharacter: (value: number | null) => void; sourceCharacter: string; targetCharacterId: number | null }) {
+function CharacterAnalysisEditor({ analysis, busy, characters, dirty, intent, onAnalyze, onChange, onConfirm, onSourceCharacter, onTargetCharacter, sourceCharacter, targetCharacterId }: { analysis: CharacterModificationAnalysis | null; busy: boolean; characters: CharacterCard[]; dirty: boolean; intent: CreativeIntent | null; onAnalyze: () => void; onChange: (value: CharacterModificationAnalysis) => void; onConfirm: () => void; onSourceCharacter: (value: string) => void; onTargetCharacter: (value: number | null) => void; sourceCharacter: string; targetCharacterId: number | null }) {
   if (intent?.strategy !== 'faithful') return <section className="stage-placeholder"><h2>专项分析</h2><p>第一阶段只完整接通“贴合原文 → 人物修改”。其他创作方向将在下一阶段实现。</p></section>;
   const availableTargets = intent.selected_character_ids.length ? characters.filter((item) => intent.selected_character_ids.includes(item.id)) : characters;
   if (!analysis) return <section className="analysis-editor character-analysis-setup"><div><h2>贴合原文 / 人物修改</h2><p>识别 Source 中与原人物有关的显式、隐式和行为关联，再对照目标人物卡列出差异。</p></div><div className="analysis-meta-fields"><label><span>Source 人物</span><input value={sourceCharacter} onChange={(event) => onSourceCharacter(event.target.value)} /></label><label><span>目标人物卡</span><select value={targetCharacterId ?? ''} onChange={(event) => onTargetCharacter(event.target.value ? Number(event.target.value) : null)}><option value="">请选择</option>{availableTargets.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label></div><div className="analysis-actions"><button className="button primary" disabled={busy || !sourceCharacter.trim() || !targetCharacterId} onClick={onAnalyze} type="button"><Sparkles size={16} />运行人物专项分析</button></div></section>;
@@ -1087,7 +1149,7 @@ function CharacterAnalysisEditor({ analysis, busy, characters, dirty, intent, on
     onChange({ ...analysis, [category]: [...analysis[category], { id: `${category}-${Date.now()}`, summary: '', source_text: '', start_offset: 0, end_offset: 0, inferred: category === 'implicit_references' }] });
   }
 
-  return <section className="character-analysis-editor"><header><div><h2>贴合原文 / 人物修改</h2><p>{analysis.source_character} → {analysis.target_character_name}</p></div><span>{dirty ? '正在自动保存…' : analysis.status === 'stale' ? '上游已修改，需要重新分析' : analysis.status === 'confirmed' ? '已确认' : '已自动保存'}</span></header>{analysisCategories.map(([category, label]) => <details key={category} open={analysis[category].length > 0}><summary><span>{label}</span><small>{analysis[category].length} 项</small></summary><div className="analysis-item-list">{analysis[category].map((item) => <article key={item.id}><div className="analysis-item-toolbar"><label><input checked={item.inferred} onChange={(event) => updateItem(category, item.id, { inferred: event.target.checked })} type="checkbox" />推断</label><button className="button ghost" onClick={() => onEvidence(item.source_text)} type="button">查看原文</button><button className="button ghost danger-quiet" onClick={() => removeItem(category, item.id)} type="button">删除</button></div><label><span>结论</span><input value={item.summary} onChange={(event) => updateItem(category, item.id, { summary: event.target.value })} /></label><label><span>对应原文</span><textarea value={item.source_text} onChange={(event) => updateItem(category, item.id, { source_text: event.target.value, start_offset: 0, end_offset: 0 })} /></label>{category === 'target_character_conflicts' ? <div className="conflict-fields"><label><span>原文状态</span><input value={item.source_state ?? ''} onChange={(event) => updateItem(category, item.id, { source_state: event.target.value })} /></label><label><span>目标人物卡</span><input value={item.target_state ?? ''} onChange={(event) => updateItem(category, item.id, { target_state: event.target.value })} /></label><label><span>差异</span><input value={item.difference ?? ''} onChange={(event) => updateItem(category, item.id, { difference: event.target.value })} /></label></div> : null}</article>)}<button className="button secondary add-analysis-item" onClick={() => addItem(category)} type="button"><PlusIcon />补充一项</button></div></details>)}<footer><button className="button secondary" disabled={busy} onClick={onAnalyze} type="button"><RefreshCw size={15} />重新分析</button><button className="button primary" disabled={busy || dirty || analysis.status === 'stale'} onClick={onConfirm} type="button"><Check size={16} />确认分析</button></footer></section>;
+  return <section className="character-analysis-editor"><header><div><h2>贴合原文 / 人物修改</h2><p>{analysis.source_character} → {analysis.target_character_name}</p></div><span>{dirty ? '正在自动保存…' : analysis.status === 'stale' ? '上游已修改，需要重新分析' : analysis.status === 'confirmed' ? '已确认' : '已自动保存'}</span></header>{analysisCategories.map(([category, label]) => <details key={category} open={analysis[category].length > 0}><summary><span>{label}</span><small>{analysis[category].length} 项</small></summary><div className="analysis-item-list">{analysis[category].map((item) => <article key={item.id}><div className="analysis-item-toolbar"><label><input checked={item.inferred} onChange={(event) => updateItem(category, item.id, { inferred: event.target.checked })} type="checkbox" />推断</label><button className="button ghost danger-quiet" onClick={() => removeItem(category, item.id)} type="button">删除</button></div><label><span>结论</span><input value={item.summary} onChange={(event) => updateItem(category, item.id, { summary: event.target.value })} /></label><label><span>对应原文</span><textarea value={item.source_text} onChange={(event) => updateItem(category, item.id, { source_text: event.target.value, start_offset: 0, end_offset: 0 })} /></label>{category === 'target_character_conflicts' ? <div className="conflict-fields"><label><span>原文状态</span><input value={item.source_state ?? ''} onChange={(event) => updateItem(category, item.id, { source_state: event.target.value })} /></label><label><span>目标人物卡</span><input value={item.target_state ?? ''} onChange={(event) => updateItem(category, item.id, { target_state: event.target.value })} /></label><label><span>差异</span><input value={item.difference ?? ''} onChange={(event) => updateItem(category, item.id, { difference: event.target.value })} /></label></div> : null}</article>)}<button className="button secondary add-analysis-item" onClick={() => addItem(category)} type="button"><PlusIcon />补充一项</button></div></details>)}<footer><button className="button secondary" disabled={busy} onClick={onAnalyze} type="button"><RefreshCw size={15} />重新分析</button><button className="button primary" disabled={busy || dirty || analysis.status === 'stale'} onClick={onConfirm} type="button"><Check size={16} />确认分析</button></footer></section>;
 }
 
 function CharacterContext({ characters, targetId }: { characters: CharacterCard[]; targetId: number | null }) {

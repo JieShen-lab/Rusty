@@ -1322,6 +1322,98 @@ class DocumentLibraryService:
             metadata={"prompt": prompt},
         )
 
+    def apply_prompt_cleanup_batch(
+        self,
+        document_id: int,
+        *,
+        cleaned_chapters: dict[int, tuple[str, str]],
+        prompt: str,
+    ) -> CleanupResult:
+        """Replace selected chapter bodies together in one complete-document revision."""
+        self._ensure_content_mutable(document_id)
+        if not cleaned_chapters:
+            raise ValueError("至少需要一章成功的整理结果。")
+        document = self._get_document(document_id)
+        current_revision = self._ensure_initial_revision(document_id)
+        source_text = Path(current_revision.storage_path).read_text(encoding="utf-8")
+        chapters = self.list_chapters(document_id)
+        volumes = self.list_volumes(document_id)
+        chapter_by_id = {chapter.id: chapter for chapter in chapters}
+        missing = set(cleaned_chapters) - set(chapter_by_id)
+        if missing:
+            raise FileNotFoundError(f"找不到当前版本章节：{sorted(missing)}")
+        volume_index_by_id = {volume.id: volume.index for volume in volumes}
+        pieces: list[str] = []
+        cursor = 0
+        chapter_boundaries: list[dict[str, object]] = []
+        edits: list[tuple[int, int, int]] = []
+        for chapter in chapters:
+            start, end = self._chapter_offsets(source_text, chapter)
+            pieces.append(source_text[cursor:start])
+            new_start = sum(len(piece) for piece in pieces)
+            if chapter.id in cleaned_chapters:
+                title, cleaned_text = cleaned_chapters[chapter.id]
+                normalized_title = normalize_chapter_title(title)
+                normalized_body = cleaned_text.replace("\r\n", "\n").replace("\r", "\n").replace("\x00", "").strip()
+                body_start = self._chapter_body_start(source_text, chapter, start, end)
+                if body_start > start:
+                    segment = source_text[start:end]
+                    leading_prefix = segment[: len(segment) - len(segment.lstrip("\n"))]
+                    trailing_separator = "\n" if end == len(source_text) else "\n\n"
+                    replacement = f"{leading_prefix}{format_chapter_heading(chapter.index, normalized_title)}\n\n{normalized_body}{trailing_separator}"
+                else:
+                    replacement = self._normalize_text(cleaned_text)
+                segment_title = normalized_title
+                edits.append((start, end, len(replacement)))
+            else:
+                replacement = source_text[start:end]
+                segment_title = chapter.title
+            pieces.append(replacement)
+            new_end = new_start + len(replacement)
+            chapter_boundaries.append(
+                {
+                    "title": segment_title,
+                    "start_offset": new_start,
+                    "end_offset": new_end,
+                    "volume_index": volume_index_by_id.get(chapter.volume_id),
+                }
+            )
+            cursor = end
+        pieces.append(source_text[cursor:])
+        new_text = "".join(pieces)
+
+        def translated(offset: int, *, end: bool = False) -> int:
+            delta = 0
+            for edit_start, edit_end, replacement_length in edits:
+                if offset >= edit_end:
+                    delta += replacement_length - (edit_end - edit_start)
+                    continue
+                if offset > edit_start:
+                    return edit_start + delta + (replacement_length if end else 0)
+                break
+            return offset + delta
+
+        volume_boundaries = [
+            {
+                "volume_index": volume.index,
+                "title": volume.title,
+                "start_offset": translated(volume.start_offset),
+                "end_offset": translated(volume.end_offset, end=True),
+            }
+            for volume in volumes
+        ]
+        revision = self._create_text_revision(
+            document,
+            current_revision,
+            new_text,
+            "cleanup_ai",
+            {"prompt": prompt, "chapter_ids": sorted(cleaned_chapters)},
+            chapter_boundaries=chapter_boundaries,
+            volume_boundaries=volume_boundaries,
+            delete_draft_chapter_ids=list(cleaned_chapters),
+        )
+        return CleanupResult(document=self._get_document(document_id), revision=revision, created=True)
+
     def merge_documents(self, document_ids: list[int], title: str, author: str | None = None) -> LibraryDocument:
         if len(document_ids) < 2:
             raise ValueError("合并文档至少需要选择两份文档。")
@@ -1602,6 +1694,62 @@ class DocumentLibraryService:
             revision=revision,
             created=True,
             created_chapter_id=created_chapter.id if created_chapter else None,
+        )
+
+    def delete_chapter(self, document_id: int, chapter_id: int) -> CleanupResult:
+        """Delete one chapter by creating a full replacement revision."""
+        self._ensure_content_mutable(document_id)
+        document = self._get_document(document_id)
+        current_revision = self._ensure_initial_revision(document_id)
+        source_text = Path(current_revision.storage_path).read_text(encoding="utf-8")
+        chapters = self.list_chapters(document_id)
+        target = next((chapter for chapter in chapters if chapter.id == chapter_id), None)
+        if target is None:
+            raise FileNotFoundError(f"找不到章节：{chapter_id}")
+        volumes = self.list_volumes(document_id)
+        volume_index_by_id = {volume.id: volume.index for volume in volumes}
+        start, end = self._chapter_offsets(source_text, target)
+        removed_length = end - start
+        new_text = source_text[:start] + source_text[end:]
+        chapter_boundaries: list[dict[str, object]] = []
+        for chapter in chapters:
+            if chapter.id == target.id:
+                continue
+            chapter_start, chapter_end = self._chapter_offsets(source_text, chapter)
+            if chapter_start >= end:
+                chapter_start -= removed_length
+                chapter_end -= removed_length
+            chapter_boundaries.append(
+                {
+                    "title": chapter.title,
+                    "start_offset": chapter_start,
+                    "end_offset": chapter_end,
+                    "volume_index": volume_index_by_id.get(chapter.volume_id),
+                }
+            )
+        volume_boundaries = self._shift_volume_boundaries(volumes, start, end, -removed_length)
+        revision = self._create_text_revision(
+            document,
+            current_revision,
+            new_text,
+            "manual_edit",
+            {
+                "operation": "delete_chapter",
+                "source_chapter_id": target.id,
+                "chapter_title": target.title,
+            },
+            chapter_boundaries=chapter_boundaries,
+            volume_boundaries=[
+                boundary
+                for boundary in volume_boundaries
+                if int(boundary["end_offset"]) > int(boundary["start_offset"])
+            ],
+            delete_draft_chapter_id=target.id,
+        )
+        return CleanupResult(
+            document=self._get_document(document_id),
+            revision=revision,
+            created=True,
         )
 
     def split_chapter_at_cursor(
@@ -2127,6 +2275,8 @@ class DocumentLibraryService:
         consume_draft_id: int | None = None,
         consume_draft_base_revision_id: int | None = None,
         consume_draft_chapter_id: int | None = None,
+        delete_draft_chapter_id: int | None = None,
+        delete_draft_chapter_ids: list[int] | None = None,
         document_title: str | None = None,
     ) -> DocumentRevision:
         encoded_text = self._normalize_text(text).encode("utf-8")
@@ -2290,6 +2440,17 @@ class DocumentLibraryService:
                         raise DraftConflictError(
                             "The committed draft changed before its revision was finalized."
                         )
+                if delete_draft_chapter_id is not None:
+                    connection.execute(
+                        "DELETE FROM library_document_drafts WHERE document_id = ? AND chapter_id = ?",
+                        (document.id, delete_draft_chapter_id),
+                    )
+                if delete_draft_chapter_ids:
+                    placeholders = ",".join("?" for _ in delete_draft_chapter_ids)
+                    connection.execute(
+                        f"DELETE FROM library_document_drafts WHERE document_id = ? AND chapter_id IN ({placeholders})",
+                        (document.id, *delete_draft_chapter_ids),
+                    )
         except Exception:
             storage_path.unlink(missing_ok=True)
             raise

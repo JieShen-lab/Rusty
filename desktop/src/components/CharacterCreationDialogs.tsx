@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowDown, ArrowUp, Plus, Trash2 } from 'lucide-react';
 import {
   getCharacterExtractionSettings,
@@ -33,8 +33,11 @@ export function CharacterAIExtractionDialog({
 }) {
   const [name, setName] = useState('');
   const [sourceText, setSourceText] = useState(initialLaunch?.selectedText ?? '');
+  const [sourceMode, setSourceMode] = useState<'paste' | 'file'>('paste');
+  const [fileName, setFileName] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const fileRef = useRef<HTMLInputElement>(null);
 
   async function extract() {
     if (!name.trim() || !sourceText.trim()) return;
@@ -44,7 +47,7 @@ export function CharacterAIExtractionDialog({
       const preview = await previewCharacterExtraction({
         target_character_name: name.trim(),
         source_text: sourceText,
-        source_metadata: initialLaunch?.sourceMetadata ?? { source_type: 'paste' },
+        source_metadata: initialLaunch?.sourceMetadata ?? { source_type: sourceMode, file_name: fileName || undefined },
       });
       onDraft(preview.character);
     } catch (reason) {
@@ -59,13 +62,13 @@ export function CharacterAIExtractionDialog({
       className="character-ai-dialog"
       footer={<><SecondaryButton disabled={busy} onClick={onClose}>取消</SecondaryButton><PrimaryButton disabled={busy || !name.trim() || !sourceText.trim()} onClick={() => void extract()}>开始提取</PrimaryButton></>}
       onClose={onClose}
-      subtitle="一次只提取一个明确指定的人物"
       title="AI 新建角色"
     >
       {error ? <div className="inline-alert error" role="alert">{error}</div> : null}
       <div className="character-ai-form">
         <label><span>角色名称 *</span><input autoFocus maxLength={120} onChange={(event) => setName(event.target.value)} placeholder="例如：林彻" value={name} /></label>
-        <label><span>来源文本</span><textarea onChange={(event) => setSourceText(event.target.value)} rows={14} value={sourceText} /></label>
+        <fieldset className="character-source-picker"><legend>来源</legend><div className="character-source-tabs"><button aria-pressed={sourceMode === 'paste'} onClick={() => setSourceMode('paste')} type="button">粘贴文本</button><button aria-pressed={sourceMode === 'file'} onClick={() => setSourceMode('file')} type="button">选择文件</button></div></fieldset>
+        {sourceMode === 'paste' ? <label><span>来源文本</span><textarea onChange={(event) => setSourceText(event.target.value)} rows={14} value={sourceText} /></label> : <div className="character-file-source"><SecondaryButton onClick={() => fileRef.current?.click()}>选择文本文件</SecondaryButton><input ref={fileRef} hidden accept=".txt,.md,text/plain,text/markdown" type="file" onChange={(event) => { const file = event.target.files?.[0]; if (!file) return; setFileName(file.name); void file.text().then(setSourceText).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason))); }} /><span>{fileName ? `已选择：${fileName}` : '尚未选择文件'}</span></div>}
       </div>
     </LibraryDialog>
   );

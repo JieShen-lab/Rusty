@@ -375,6 +375,12 @@ export function createLibraryDocumentChapter(
   });
 }
 
+export function deleteLibraryDocumentChapter(documentId: number, chapterId: number) {
+  return request<LibraryDocumentCleanupResult>(`/api/documents/${documentId}/chapters/${chapterId}`, {
+    method: 'DELETE',
+  });
+}
+
 export function splitLibraryDocumentChapterAtCursor(
   documentId: number,
   chapterId: number,
@@ -453,13 +459,13 @@ export function cleanupLibraryDocument(documentId: number, templateId: number) {
 
 export function cleanupLibraryDocumentWithAI(
   documentId: number,
-  chapterId: number | null,
+  chapterIds: number[],
   prompt: string,
   modelId?: number | null,
 ) {
-  return request<LibraryDocumentCleanupResult>(`/api/documents/${documentId}/cleanup/ai`, {
+  return request<import('./types').LibraryDocumentAICleanupResult>(`/api/documents/${documentId}/cleanup/ai`, {
     method: 'POST',
-    body: JSON.stringify({ chapter_id: chapterId, prompt, model_id: modelId ?? null }),
+    body: JSON.stringify({ chapter_ids: chapterIds, prompt, model_id: modelId ?? null }),
   });
 }
 

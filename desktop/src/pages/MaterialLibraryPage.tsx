@@ -3,7 +3,6 @@ import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Clock, Folder, Plus, Search,
 import {
   applyAuthorStyleDimension,
   applyMaterialExtraction,
-  createMaterial,
   createMaterialCategory,
   deleteMaterialCategory,
   deleteMaterial,
@@ -24,7 +23,6 @@ import type {
   MaterialAIDimension,
   MaterialAISettings,
   MaterialCategory,
-  MaterialExtractionCandidate,
   MaterialType,
   ModelConfig,
 } from '../api/types';
@@ -217,7 +215,6 @@ export function MaterialLibraryPage() {
                   <div><h3>{selected.name}</h3><p>{TYPE_LABEL[selected.material_type]}</p></div>
                 </section>
                 <section><div className="document-detail-heading"><span>概览</span></div><p className="material-detail-copy">{selected.description || contentSummary(selected)}</p></section>
-                <section><div className="document-detail-heading"><span>分类</span></div><div className="document-detail-categories">{selected.categories.length ? selected.categories.map((name) => <span key={name}>{name}</span>) : <span>未分类</span>}</div></section>
                 <section><div className="document-detail-heading"><span>标签</span></div><div className="document-detail-badges">{selected.tags.length ? selected.tags.map((name) => <span key={name}>{name}</span>) : <span>无标签</span>}</div></section>
                 {selected.material_type === 'author_style' && 'legacy_scene_reference' in selected.content ? <div className="inline-alert">该素材来自旧版素材，可继续编辑或使用来源文本重新提取作者风格。</div> : null}
               </div>
@@ -252,7 +249,6 @@ function CreateMaterialDialog({ busy, categories, launch, materialType, onClose,
 }) {
   const [name, setName] = useState('');
   const [text, setText] = useState(launch?.selectedText ?? '');
-  const [preview, setPreview] = useState<{ token: string; candidate: MaterialExtractionCandidate } | null>(null);
   const [working, setWorking] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   async function extract() {
@@ -265,50 +261,25 @@ function CreateMaterialDialog({ busy, categories, launch, materialType, onClose,
       });
       const candidate = result.candidates[0];
       if (!candidate) throw new Error('AI 未返回可预览内容。');
-      setName(candidate.name);
-      setPreview({ token: result.preview_token, candidate: { ...candidate, selected: true, category_ids: [] } });
+      const finalName = name.trim() || candidate.name.trim();
+      if (!finalName) throw new Error('AI 未返回有效名称。');
+      const applied = await applyMaterialExtraction({
+        preview_token: result.preview_token,
+        selected_candidate_ids: [candidate.candidate_id],
+        candidates: [{ ...candidate, name: finalName, selected: true, category_ids: [] }],
+      });
+      const created = applied.created[0]?.material_id;
+      if (!created) throw new Error(applied.errors[0]?.error || '保存失败。');
+      await onSaved(created);
     } catch (reason) { onError(errorMessage(reason)); } finally { setWorking(false); }
   }
-  async function save() {
-    if (!name.trim()) return;
-    setWorking(true);
-    try {
-      if (preview) {
-        const result = await applyMaterialExtraction({
-          preview_token: preview.token,
-          selected_candidate_ids: [preview.candidate.candidate_id],
-          candidates: [{ ...preview.candidate, name: name.trim(), category_ids: preview.candidate.category_ids ?? [] }],
-        });
-        const created = result.created[0]?.material_id;
-        if (!created) throw new Error(result.errors[0]?.error || '保存失败。');
-        await onSaved(created);
-      } else {
-        const created = await createMaterial({
-          material_type: materialType, scope: 'public', name: name.trim(), raw_text: text,
-          content: materialType === 'author_style' ? { schema_version: 1, summary: '', dimensions: [] } : emptyPlotSkeleton(),
-          analysis_status: 'unanalyzed', category_ids: [], source_metadata: launch?.sourceMetadata ?? { source_type: 'paste' },
-        });
-        await onSaved(created.id);
-      }
-    } catch (reason) { onError(errorMessage(reason)); } finally { setWorking(false); }
-  }
-  return <LibraryDialog className="material-create-dialog" footer={<><SecondaryButton onClick={onClose}>取消</SecondaryButton>{!preview ? <SecondaryButton disabled={working || !text.trim()} onClick={() => void extract()}><Sparkles size={15} />AI 提取</SecondaryButton> : null}<PrimaryButton disabled={busy || working || !name.trim()} onClick={() => void save()}>确认保存</PrimaryButton></>} onClose={onClose} subtitle={`一次创建一份完整${TYPE_LABEL[materialType]}`} title={`新建${TYPE_LABEL[materialType]}`}>
+  return <LibraryDialog className="material-create-dialog" footer={<><SecondaryButton onClick={onClose}>取消</SecondaryButton><PrimaryButton disabled={busy || working || !text.trim()} onClick={() => void extract()}><Sparkles size={15} />AI 提取</PrimaryButton></>} onClose={onClose} title={`新建${TYPE_LABEL[materialType]}`}>
     <div className="library-form-grid">
       <label className="wide"><span>名称</span><input autoFocus value={name} onChange={(event) => setName(event.target.value)} /></label>
-      {!preview ? <label className="wide"><span>来源文本</span><textarea className="tall" maxLength={50000} value={text} onChange={(event) => setText(event.target.value)} /></label> : null}
-      {!preview ? <div className="wide material-source-options"><SecondaryButton onClick={() => fileRef.current?.click()}>选择文本文件</SecondaryButton><input ref={fileRef} hidden accept=".txt,.md,text/plain,text/markdown" type="file" onChange={(event) => { const file = event.target.files?.[0]; if (file) void file.text().then(setText); }} /></div> : null}
-      {preview ? <PreviewContent candidate={preview.candidate} onChange={(candidate) => setPreview({ ...preview, candidate })} /> : null}
-      <small className="wide">AI 调用只生成预览；确认保存前不会创建素材或关联分类/标签。</small>
+      <label className="wide"><span>来源文本</span><textarea className="tall" maxLength={50000} value={text} onChange={(event) => setText(event.target.value)} /></label>
+      <div className="wide material-source-options"><SecondaryButton onClick={() => fileRef.current?.click()}>选择文本文件</SecondaryButton><input ref={fileRef} hidden accept=".txt,.md,text/plain,text/markdown" type="file" onChange={(event) => { const file = event.target.files?.[0]; if (file) void file.text().then(setText); }} /></div>
     </div>
   </LibraryDialog>;
-}
-
-function PreviewContent({ candidate, onChange }: { candidate: MaterialExtractionCandidate; onChange: (value: MaterialExtractionCandidate) => void }) {
-  const content = candidate.content;
-  return <div className="wide material-preview-editor">
-    <label><span>概览</span><textarea value={String(content.summary ?? content.premise ?? '')} onChange={(event) => onChange({ ...candidate, content: { ...content, [candidate.material_type === 'author_style' ? 'summary' : 'premise']: event.target.value } })} /></label>
-    {candidate.material_type === 'author_style' ? <AuthorDimensionList content={content} onChange={(next) => onChange({ ...candidate, content: next })} /> : <pre>{JSON.stringify(content, null, 2)}</pre>}
-  </div>;
 }
 
 function MaterialSettingsDialog({ materialType, onClose, onError, onSaved }: { materialType: MaterialType; onClose: () => void; onError: (value: string) => void; onSaved: () => void }) {
@@ -403,7 +374,6 @@ function authorDimensions(value: unknown): AuthorDimension[] { return Array.isAr
 function stringArray(value: unknown): string[] { return Array.isArray(value) ? value.map(String).filter(Boolean) : []; }
 function lines(value: string): string[] { return value.split('\n').map((item) => item.trim()).filter(Boolean); }
 function move<T>(items: T[], from: number, to: number): T[] { const copy = [...items]; const [item] = copy.splice(from, 1); if (item !== undefined) copy.splice(to, 0, item); return copy; }
-function emptyPlotSkeleton() { return { schema_version: 1, premise: '', stages: [], conflicts: [], turning_points: [], climax: {}, resolution: {}, hooks: [] }; }
 function contentSummary(material: Material): string { return String(material.content.summary ?? material.content.premise ?? material.raw_text ?? '暂无概览'); }
 function isRecent(value: string): boolean { const timestamp = Date.parse(value); return Number.isFinite(timestamp) && Date.now() - timestamp <= 30 * 24 * 60 * 60 * 1000; }
 function compilePreview(settings: MaterialAISettings): string { return `${settings.system_prompt}\n\n任务：\n${settings.base_instruction}\n\n分析维度：\n${settings.dimensions.map((item, index) => `${index + 1}. ${item.name}\nID: ${item.id}\n提取要求：${item.requirement}`).join('\n\n')}\n\n附加要求：\n${settings.extra_requirements || '无'}\n\n输出协议：\n${settings.task_type === 'author_style_extraction' ? '返回 summary 与按稳定 ID 对齐的 dimensions（analysis / features / examples）。' : '返回抽象剧情骨架结构。'}`; }

@@ -41,6 +41,7 @@ class ChatOnlyClient:
         self.calls: list[list[dict[str, str]]] = []
 
     def chat(self, _model, _api_key, messages: list[dict[str, str]]) -> AIResponse:
+        self.model = _model
         self.calls.append(messages)
         return AIResponse(text=json.dumps(self.response), token_usage={}, elapsed_ms=1)
 
@@ -79,6 +80,37 @@ class WorkflowCompilerCompatibilityTests(unittest.TestCase):
         self.assertEqual(1, len(client.calls))
         self.assertIn("structured novel-workflow component", client.calls[0][0]["content"])
         self.assertIn("OUTPUT CONTRACT", client.calls[0][1]["content"])
+
+    def test_workflow_ai_uses_project_model_resolver_and_custom_base_url(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd(), ignore_cleanup_errors=True) as directory:
+            root = Path(directory)
+            database = initialized_database(root / "rusty.db")
+            source = root / "project-model.txt"
+            source.write_text("第一章\n正文。", encoding="utf-8")
+            projects = ProjectService(database)
+            project_id = projects.import_book(source, root / "workspace")
+            models = ModelService(database)
+            models.create_model(
+                "Default", "openai_compatible", "https://default.example/v1", "default",
+                is_default=True,
+            )
+            project_model_id = models.create_model(
+                "Project", "openai_compatible", "https://custom.example/v1", "project-model",
+                timeout_seconds=87,
+            )
+            projects.update_project_settings(project_id, model_id=project_model_id)
+            client = ChatOnlyClient({"result": "ok"})
+
+            WorkflowAI(database, ai_client=client).generate_json(
+                project_id=project_id,
+                stage="project_generation",
+                payload={"value": 1},
+                output_contract="JSON object with result",
+            )
+
+        self.assertEqual(project_model_id, client.model.id)
+        self.assertEqual("https://custom.example/v1", client.model.base_url)
+        self.assertEqual(87, client.model.timeout_seconds)
 
     def test_plot_orchestrator_start_uses_chat_only_compiler_path(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd(), ignore_cleanup_errors=True) as directory:

@@ -235,6 +235,56 @@ class CreativeWorkspaceTests(unittest.TestCase):
         self.assertEqual([2, 3], restored["selected_character_ids"])
         self.assertEqual(scene.original_text, restored_source)
 
+    def test_chapter_summary_is_structured_context_and_does_not_replace_source_text(self) -> None:
+        class CapturingAI:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, dict]] = []
+
+            def generate_json(self, stage: str, payload: dict, **_kwargs) -> dict:
+                self.calls.append((stage, payload))
+                if stage == "scene_preanalysis":
+                    return {
+                        "summary": "预分析",
+                        "characters": ["甲"],
+                        "location": "庭院",
+                        "time": "夜间",
+                        "scene_type": "冲突",
+                        "basic_events": ["甲离开"],
+                    }
+                if stage == "special_analysis":
+                    return {"source_events": [], "causal_links": []}
+                raise AssertionError(stage)
+
+        with tempfile.TemporaryDirectory(dir=Path.cwd(), ignore_cleanup_errors=True) as directory:
+            root = Path(directory)
+            source = root / "summary-context.txt"
+            source.write_text("第一章\n原始章节正文，不能被总结替换。", encoding="utf-8")
+            database = initialized_database(root / "rusty.db")
+            projects = ProjectService(database)
+            project_id = projects.create_project(projects.preview_book(source), root)
+            chapter = projects.list_chapters(project_id)[0]
+            scene = SceneService(database).split_chapter(chapter.id)[0]
+            SceneService(database).confirm_boundaries(chapter.id)
+            with sqlite3.connect(database) as connection:
+                connection.execute(
+                    "INSERT INTO chapter_summaries(chapter_id, plot_summary, characters_json, key_events_json) VALUES (?, ?, ?, ?)",
+                    (chapter.id, "章节概要", '[{"name":"甲","role_in_chapter":"主角"}]', '["关键事件"]'),
+                )
+            ai = CapturingAI()
+            service = CreativeWorkflowService(database, ai_client=ai)
+            service.run_preanalysis(scene.id)
+            service.confirm_preanalysis(scene.id)
+            service.save_intent(scene.id, {"strategy": "plot_adjust", "user_instruction": "调整"})
+
+            service.run_strategy_analysis(scene.id)
+
+        payload = next(payload for stage, payload in ai.calls if stage == "special_analysis")
+        self.assertEqual(scene.original_text, payload["source_text"])
+        self.assertEqual("chapter_summary", payload["chapter_summary_context"]["kind"])
+        self.assertEqual(chapter.id, payload["chapter_summary_context"]["provenance"]["chapter_id"])
+        self.assertEqual("章节概要", payload["chapter_summary_context"]["plot_summary"])
+        self.assertEqual(["关键事件"], payload["chapter_summary_context"]["key_events"])
+
     def test_rewrite_and_branch_projects_share_persisted_chapter_workflow(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd(), ignore_cleanup_errors=True) as directory:
             root = Path(directory)

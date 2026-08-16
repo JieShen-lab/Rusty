@@ -14,6 +14,8 @@ import {
   ArrowUpToLine,
   BookOpenText,
   ChevronRight,
+  ChevronDown,
+  ChevronUp,
   Clock3,
   Combine,
   Download,
@@ -41,6 +43,7 @@ import {
   createLibraryDocumentChapter,
   deleteDocumentCategory,
   deleteLibraryDocument,
+  deleteLibraryDocumentChapter,
   exportLibraryDocument,
   getDocumentTags,
   getDocumentCategories,
@@ -74,6 +77,7 @@ import type {
   LibraryDocumentVolume,
   ResourceTag,
   AISplitProposal,
+  LibraryDocumentAICleanupResult,
 } from '../api/types';
 import { PrimaryButton } from '../components/PrimaryButton';
 import { SecondaryButton } from '../components/SecondaryButton';
@@ -84,6 +88,9 @@ import { useAutoDismiss } from '../hooks/useAutoDismiss';
 
 type DocumentAction = 'merge' | 'create-chapter' | 'split';
 type SaveStatus = 'clean' | 'dirty' | 'saving' | 'saved' | 'error';
+type CleanupStatus = Omit<LibraryDocumentAICleanupResult['chapters'][number], 'status'> & {
+  status: 'pending' | 'processing' | 'success' | 'failed';
+};
 
 const systemFilters = [
   { key: 'all', label: '全部文档', icon: LibraryBig },
@@ -127,6 +134,7 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
   const [metadataAuthor, setMetadataAuthor] = useState('');
   const [actionDialog, setActionDialog] = useState<DocumentAction | null>(null);
   const [cleanupOpen, setCleanupOpen] = useState(false);
+  const [cleanupStatuses, setCleanupStatuses] = useState<CleanupStatus[]>([]);
   const [revisionsOpen, setRevisionsOpen] = useState(false);
   const [editorDirty, setEditorDirty] = useState(false);
   const editorControllerRef = useRef<DocumentEditorController | null>(null);
@@ -544,14 +552,30 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
     }
   }
 
-  async function applyPromptCleanup(prompt: string) {
+  async function applyPromptCleanup(chapterIds: number[], prompt: string) {
     if (!selectedDocument) return;
     if (!(await flushEditorDraft('文字整理'))) return;
+    setCleanupStatuses(chapterIds.map((chapterId) => ({
+      chapter_id: chapterId,
+      title: chapters.find((chapter) => chapter.id === chapterId)?.title ?? '',
+      status: 'processing',
+      error: null,
+    })));
     await runProcessing(async () => {
       if (editorDirty || documentDraft) {
         await commitLibraryDocumentDraft(selectedDocument.id, selectedChapterId);
       }
-      const result = await cleanupLibraryDocumentWithAI(selectedDocument.id, selectedChapterId, prompt);
+      const currentDirectory = await getLibraryDocumentDirectory(selectedDocument.id);
+      const currentChapters = [
+        ...currentDirectory.unassigned_chapters,
+        ...currentDirectory.volumes.flatMap((volume) => volume.chapters),
+      ];
+      const selectedIndexes = new Set(
+        chapterIds.map((id) => chapters.find((chapter) => chapter.id === id)?.index).filter((index): index is number => index != null),
+      );
+      const resolvedIds = currentChapters.filter((chapter) => selectedIndexes.has(chapter.index)).map((chapter) => chapter.id);
+      const result = await cleanupLibraryDocumentWithAI(selectedDocument.id, resolvedIds, prompt);
+      setCleanupStatuses(result.chapters);
       await loadLibrary(selectedDocument.id);
       const [revisionItems, directory] = await Promise.all([
         getLibraryDocumentRevisions(selectedDocument.id),
@@ -563,8 +587,38 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
       setSelectedChapterId(resolvedChapterId);
       setDocumentContent(await getLibraryDocumentContent(selectedDocument.id, resolvedChapterId));
       setDocumentDraft(null);
-      setCleanupOpen(false);
-      setMessage(`已生成文字整理版本 ${result.revision.revision_number}。`);
+      const failed = result.chapters.filter((item) => item.status === 'failed').length;
+      setMessage(result.revision
+        ? `已生成文字整理版本 ${result.revision.revision_number}${failed ? `，${failed} 章失败` : ''}。`
+        : '所选章节均整理失败，原文未改变。');
+    });
+  }
+
+  async function deleteChapter(chapter: LibraryDocumentChapter) {
+    if (!selectedDocument) return;
+    if (!window.confirm(`确认删除章节“${chapterDisplayTitle(chapter)}”？\n\n此操作会生成一个不含该章节的新版本。`)) return;
+    if (!(await flushEditorDraft('删除章节'))) return;
+    await runProcessing(async () => {
+      if (editorDirty || documentDraft) {
+        const committed = await commitCurrentDraft();
+        if (!committed) return;
+      }
+      const currentDirectory = await getLibraryDocumentDirectory(selectedDocument.id);
+      const currentChapters = [
+        ...currentDirectory.unassigned_chapters,
+        ...currentDirectory.volumes.flatMap((volume) => volume.chapters),
+      ];
+      const currentTarget = currentChapters.find((item) => item.index === chapter.index);
+      if (!currentTarget) throw new Error('章节版本已变化，请重新选择后再删除。');
+      const result = await deleteLibraryDocumentChapter(selectedDocument.id, currentTarget.id);
+      const directory = await getLibraryDocumentDirectory(selectedDocument.id);
+      const remaining = applyDirectory(directory);
+      const next = remaining.find((item) => item.index === chapter.index)
+        ?? remaining.find((item) => item.index === chapter.index - 1)
+        ?? remaining[0]
+        ?? null;
+      await refreshWorkspaceDocument(result.document, next?.id ?? null);
+      setMessage(`已删除章节“${chapterDisplayTitle(chapter)}”并生成新版本。`);
     });
   }
 
@@ -688,6 +742,7 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
           draft={documentDraft}
           document={selectedDocument}
           onContentChange={(chapterId) => void showDocumentContent(chapterId)}
+          onDeleteChapter={(chapter) => void deleteChapter(chapter)}
           onExport={() => { void flushEditorDraft('导出文档').then((saved) => { if (saved) setExportOpen(true); }); }}
           onDocumentAction={(action) => void handleDocumentAction(action)}
           onOpenCleanup={() => { void flushEditorDraft('文字整理').then((saved) => { if (saved) setCleanupOpen(true); }); }}
@@ -713,8 +768,11 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
         {cleanupOpen ? (
           <CleanupDialog
             busy={processingBusy}
-            onApply={(prompt) => void applyPromptCleanup(prompt)}
-            onClose={() => setCleanupOpen(false)}
+            chapters={chapters}
+            currentChapterId={selectedChapterId}
+            onApply={(chapterIds, prompt) => void applyPromptCleanup(chapterIds, prompt)}
+            onClose={() => { setCleanupOpen(false); setCleanupStatuses([]); }}
+            statuses={cleanupStatuses}
           />
         ) : null}
         {revisionsOpen ? (
@@ -1013,6 +1071,7 @@ type DocumentWorkspaceProps = {
   draft: LibraryDocumentDraft | null;
   document: LibraryDocument;
   onContentChange: (chapterId: number | null) => void;
+  onDeleteChapter: (chapter: LibraryDocumentChapter) => void;
   onExport: () => void;
   onReorder: (draggedId: number, targetId: number | null, targetVolumeId: number | null) => void;
   onRenameVolume: (volumeId: number, title: string) => void;
@@ -1075,6 +1134,7 @@ const DocumentWorkspace = forwardRef<DocumentEditorController, DocumentWorkspace
         liveChapterId={props.selectedChapterId}
         liveWordCount={liveCount}
         onContentChange={props.onContentChange}
+        onDeleteChapter={props.onDeleteChapter}
         onRenameVolume={props.onRenameVolume}
         onReorder={props.onReorder}
         selectedChapterId={props.selectedChapterId}
@@ -1125,7 +1185,7 @@ const DocumentWorkspace = forwardRef<DocumentEditorController, DocumentWorkspace
               <button className="button secondary full" onClick={props.onOpenRevisions} type="button"><Clock3 size={16} />版本记录</button>
             </div> : <div className="inspector-action-area"><div className="document-readonly-note">工程文档由工程保存结果同步，此处为只读工作区。</div><button className="button secondary full" onClick={props.onOpenRevisions} type="button"><Clock3 size={16} />版本记录</button></div>}
           </div>
-          <SecondaryButton onClick={props.onExport}><Download size={15} />导出文档</SecondaryButton>
+          <div className="document-workspace-export"><PrimaryButton onClick={props.onExport}><Download size={15} />导出文档</PrimaryButton></div>
         </div>
       </aside>
     </div>
@@ -1137,6 +1197,7 @@ function WorkspaceChapterNav({
   liveChapterId,
   liveWordCount,
   onContentChange,
+  onDeleteChapter,
   onRenameVolume,
   onReorder,
   selectedChapterId,
@@ -1147,6 +1208,7 @@ function WorkspaceChapterNav({
   liveChapterId: number | null;
   liveWordCount: number;
   onContentChange: (chapterId: number | null) => void;
+  onDeleteChapter: (chapter: LibraryDocumentChapter) => void;
   onRenameVolume: (volumeId: number, title: string) => void;
   onReorder: (draggedId: number, targetId: number | null, targetVolumeId: number | null) => void;
   selectedChapterId: number | null;
@@ -1155,6 +1217,7 @@ function WorkspaceChapterNav({
 }) {
   const listRef = useRef<HTMLElement>(null);
   const [collapsed, setCollapsed] = useState<Set<number>>(() => new Set());
+  const [chapterMenu, setChapterMenu] = useState<{ chapter: LibraryDocumentChapter; x: number; y: number } | null>(null);
 
   function startDrag(event: DragEvent<HTMLButtonElement>, chapterId: number) {
     event.dataTransfer.effectAllowed = 'move';
@@ -1193,6 +1256,11 @@ function WorkspaceChapterNav({
       draggable={!readOnly}
       key={chapter.id}
       onClick={() => onContentChange(chapter.id)}
+      onContextMenu={(event) => {
+        if (readOnly) return;
+        event.preventDefault();
+        setChapterMenu({ chapter, x: event.clientX, y: event.clientY });
+      }}
       onDragOver={(event) => { if (!readOnly) event.preventDefault(); }}
       onDragStart={(event) => { if (!readOnly) startDrag(event, chapter.id); }}
       onDrop={(event) => { if (!readOnly) dropChapter(event, chapter.id, chapter.volume_id); }}
@@ -1255,6 +1323,18 @@ function WorkspaceChapterNav({
         <button onClick={() => listRef.current?.scrollTo({ behavior: 'smooth', top: 0 })} type="button"><ArrowUpToLine size={14} />回到顶部</button>
         <button onClick={() => listRef.current?.scrollTo({ behavior: 'smooth', top: listRef.current.scrollHeight })} type="button"><ArrowDownToLine size={14} />回到底部</button>
       </div>
+      {chapterMenu ? <LibraryContextMenu
+        actions={[{
+          danger: true,
+          icon: <Trash2 size={14} />,
+          label: '删除章节',
+          onSelect: () => onDeleteChapter(chapterMenu.chapter),
+        }]}
+        label={`${chapterDisplayTitle(chapterMenu.chapter)} 章节操作`}
+        onClose={() => setChapterMenu(null)}
+        x={chapterMenu.x}
+        y={chapterMenu.y}
+      /> : null}
     </aside>
   );
 }
@@ -1294,6 +1374,9 @@ const EditableTextPreview = forwardRef<DocumentEditorController, {
   const [title, setTitle] = useState(initialTitle);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>(draft ? 'saved' : 'clean');
   const [savedAt, setSavedAt] = useState(draft?.updated_at ?? '');
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchIndex, setSearchIndex] = useState(0);
   const [menu, setMenu] = useState<{ x: number; y: number; text: string; startOffset: number; endOffset: number } | null>(null);
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -1310,6 +1393,18 @@ const EditableTextPreview = forwardRef<DocumentEditorController, {
   titleRef.current = title;
   saveStatusRef.current = saveStatus;
   callbacksRef.current = { onCommit, onDirtyChange, onDraftSaved, onLiveCountChange, onSaveDraft, onTitlePreview };
+  const searchMatches = useMemo(() => {
+    if (!searchQuery) return [];
+    const matches: number[] = [];
+    let offset = 0;
+    while (offset <= text.length - searchQuery.length) {
+      const match = text.indexOf(searchQuery, offset);
+      if (match < 0) break;
+      matches.push(match);
+      offset = match + Math.max(1, searchQuery.length);
+    }
+    return matches;
+  }, [searchQuery, text]);
 
   useEffect(() => {
     const nextText = draft?.text ?? content?.body_text ?? '';
@@ -1322,7 +1417,21 @@ const EditableTextPreview = forwardRef<DocumentEditorController, {
     onDirtyChange(false);
     onLiveCountChange(countTextUnits(nextText));
     setMenu(null);
+    setSearchQuery('');
+    setSearchIndex(0);
   }, [content?.revision_id, content?.chapter_id, draft?.id]);
+
+  useEffect(() => {
+    setSearchIndex((current) => searchMatches.length ? Math.min(current, searchMatches.length - 1) : 0);
+  }, [searchMatches.length, searchQuery]);
+
+  useEffect(() => {
+    if (!searchOpen || !searchMatches.length) return;
+    const start = searchMatches[searchIndex] ?? searchMatches[0];
+    const editor = editorRef.current;
+    editor?.focus();
+    editor?.setSelectionRange(start, start + searchQuery.length);
+  }, [searchIndex, searchMatches, searchOpen, searchQuery]);
 
   useEffect(() => {
     onSaveStatusChange(saveStatus, savedAt);
@@ -1440,10 +1549,14 @@ const EditableTextPreview = forwardRef<DocumentEditorController, {
     });
   }
 
+  function moveSearch(direction: 1 | -1) {
+    if (!searchMatches.length) return;
+    setSearchIndex((current) => (current + direction + searchMatches.length) % searchMatches.length);
+  }
+
   return (
     <section aria-busy={loading} className="manuscript-pane document-workspace-text editable-manuscript">
       <header className="document-editor-heading">
-        <span aria-hidden="true" className="document-editor-heading-spacer" />
         <label className="document-editor-title">
           {chapterIndex != null ? <strong>{chapterOrdinal(chapterIndex)}</strong> : null}
           <input
@@ -1458,12 +1571,13 @@ const EditableTextPreview = forwardRef<DocumentEditorController, {
               markDirty();
             }}
             placeholder={content?.chapter_id == null ? '文档标题' : '未命名'}
-            style={{ width: `${Math.min(40, Math.max(6, Array.from(title || '未命名').length + 1))}em` }}
             value={title}
           />
         </label>
+        <div className="document-editor-actions">
+        <button aria-label="本章搜索" className="button secondary document-chapter-search-button" onClick={() => setSearchOpen(true)} type="button"><Search size={15} />本章搜索</button>
         {!readOnly ? <button
-          className="button secondary"
+          className="button primary document-save-button"
           disabled={saveStatus === 'clean' || saveStatus === 'saving' || loading || !content || (content.chapter_id == null && !title.trim())}
           onClick={() => {
             void flushDraft().then(async (saved) => {
@@ -1473,7 +1587,24 @@ const EditableTextPreview = forwardRef<DocumentEditorController, {
           }}
           type="button"
         ><Save size={15} />保存</button> : <span className="document-readonly-badge">只读</span>}
+        </div>
       </header>
+      {searchOpen ? <div className="chapter-search-bar" role="search">
+        <label><Search size={14} /><span className="sr-only">搜索当前章节</span><input
+          autoFocus
+          onChange={(event) => { setSearchQuery(event.target.value); setSearchIndex(0); }}
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') { event.preventDefault(); setSearchOpen(false); }
+            else if (event.key === 'Enter') { event.preventDefault(); moveSearch(event.shiftKey ? -1 : 1); }
+          }}
+          placeholder="搜索当前章节"
+          value={searchQuery}
+        /></label>
+        <span className={searchQuery && !searchMatches.length ? 'empty' : ''}>{searchQuery ? (searchMatches.length ? `${searchIndex + 1} / ${searchMatches.length}` : '无结果') : '输入搜索文字'}</span>
+        <button aria-label="上一个匹配" disabled={!searchMatches.length} onClick={() => moveSearch(-1)} type="button"><ChevronUp size={15} /></button>
+        <button aria-label="下一个匹配" disabled={!searchMatches.length} onClick={() => moveSearch(1)} type="button"><ChevronDown size={15} /></button>
+        <button aria-label="关闭本章搜索" onClick={() => setSearchOpen(false)} type="button"><X size={15} /></button>
+      </div> : null}
       <textarea
         className="manuscript-editor"
         disabled={loading || !content}
@@ -1506,22 +1637,51 @@ const DEFAULT_SPLIT_PROMPT = '请根据当前章节内容划分自然、连续�
 
 function CleanupDialog(props: {
   busy: boolean;
-  onApply: (prompt: string) => void;
+  chapters: LibraryDocumentChapter[];
+  currentChapterId: number | null;
+  onApply: (chapterIds: number[], prompt: string) => void;
   onClose: () => void;
+  statuses: CleanupStatus[];
 }) {
   const [preset, setPreset] = useState('default');
   const [prompt, setPrompt] = useState(DEFAULT_CLEANUP_PROMPT);
+  const [selected, setSelected] = useState<number[]>(() => props.currentChapterId == null ? [] : [props.currentChapterId]);
+  const statusItems: CleanupStatus[] = props.statuses.length
+    ? props.statuses
+    : selected.map((chapterId) => ({
+        chapter_id: chapterId,
+        title: props.chapters.find((chapter) => chapter.id === chapterId)?.title ?? '',
+        status: 'pending',
+        error: null,
+      }));
   return (
-    <div className="document-processing-backdrop" role="presentation">
-      <section aria-modal="true" className="document-modal document-cleanup-dialog" role="dialog">
-        <header><h2>文字整理</h2><button aria-label="关闭文字整理" className="icon-button" onClick={props.onClose} type="button"><X size={17} /></button></header>
-        <div className="document-modal-body document-cleanup-body">
+    <LibraryDialog
+      className="document-cleanup-dialog"
+      footer={<><SecondaryButton onClick={props.onClose}>关闭</SecondaryButton><PrimaryButton disabled={props.busy || !prompt.trim() || !selected.length} onClick={() => props.onApply(selected, prompt.trim())}><WandSparkles size={16} />应用并生成新版本</PrimaryButton></>}
+      onClose={props.onClose}
+      title="文字整理"
+    >
+        <div className="document-cleanup-body">
           <label className="document-modal-row"><span>整理提示词</span><select className="form-input" value={preset} onChange={(event) => { setPreset(event.target.value); setPrompt(DEFAULT_CLEANUP_PROMPT); }}><option value="default">默认文字整理</option></select></label>
+          <fieldset className="cleanup-chapter-picker">
+            <legend>整理范围</legend>
+            <div>
+              {props.chapters.map((chapter) => <label key={chapter.id}>
+                <input
+                  checked={selected.includes(chapter.id)}
+                  disabled={props.busy}
+                  onChange={(event) => setSelected((current) => event.target.checked ? [...current, chapter.id] : current.filter((id) => id !== chapter.id))}
+                  type="checkbox"
+                />
+                <span>{chapterDisplayTitle(chapter)}</span>
+                <small>{formatNumber(chapter.word_count)} 字</small>
+              </label>)}
+            </div>
+          </fieldset>
           <label className="document-modal-stack"><span>具体要求</span><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} /></label>
+          {statusItems.length ? <section className="cleanup-status-list" aria-live="polite"><h3>处理状态</h3>{statusItems.map((item) => <div key={item.chapter_id}><span>{item.title || `章节 ${item.chapter_id}`}</span><strong className={item.status}>{cleanupStatusLabel(item.status)}</strong>{item.error ? <small>{item.error}</small> : null}</div>)}</section> : null}
         </div>
-        <footer><SecondaryButton onClick={props.onClose}>取消</SecondaryButton><PrimaryButton disabled={props.busy || !prompt.trim()} onClick={() => props.onApply(prompt.trim())}><WandSparkles size={16} />应用并生成新版本</PrimaryButton></footer>
-      </section>
-    </div>
+    </LibraryDialog>
   );
 }
 
@@ -1817,6 +1977,13 @@ function statusLabel(status: string) {
   if (status === 'imported') return '已导入';
   if (status === 'processed') return '已处理';
   return status;
+}
+
+function cleanupStatusLabel(status: CleanupStatus['status']) {
+  if (status === 'pending') return '待处理';
+  if (status === 'processing') return '处理中';
+  if (status === 'success') return '成功';
+  return '失败';
 }
 
 function countTextUnits(text: string): number {
