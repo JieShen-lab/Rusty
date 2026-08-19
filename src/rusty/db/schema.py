@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .connection import session
 
-CURRENT_SCHEMA_VERSION = 55
+CURRENT_SCHEMA_VERSION = 56
 
 logger = logging.getLogger(__name__)
 
@@ -1201,20 +1201,21 @@ def _migrate_to_v12(connection: sqlite3.Connection) -> None:
 
 
 def _migrate_to_v13(connection: sqlite3.Connection) -> None:
-    _add_column_if_missing(
-        connection,
-        "character_cards",
-        "scope",
-        "scope TEXT NOT NULL DEFAULT 'public' CHECK (scope IN ('public', 'project'))",
-    )
-    _add_column_if_missing(connection, "character_cards", "project_id", "project_id INTEGER")
-    _add_column_if_missing(
-        connection,
-        "character_cards",
-        "source_character_card_id",
-        "source_character_card_id INTEGER",
-    )
-    _add_column_if_missing(connection, "character_cards", "source_version", "source_version INTEGER")
+    if _table_exists(connection, "character_cards"):
+        _add_column_if_missing(
+            connection,
+            "character_cards",
+            "scope",
+            "scope TEXT NOT NULL DEFAULT 'public' CHECK (scope IN ('public', 'project'))",
+        )
+        _add_column_if_missing(connection, "character_cards", "project_id", "project_id INTEGER")
+        _add_column_if_missing(
+            connection,
+            "character_cards",
+            "source_character_card_id",
+            "source_character_card_id INTEGER",
+        )
+        _add_column_if_missing(connection, "character_cards", "source_version", "source_version INTEGER")
     connection.executescript(
         """
         CREATE TABLE IF NOT EXISTS material_categories (
@@ -4180,6 +4181,11 @@ def _migrate_to_v52(connection: sqlite3.Connection) -> None:
 
 def _migrate_to_v53(connection: sqlite3.Connection) -> None:
     """Unify character stable fields and persist ordered extraction dimensions."""
+    if not (
+        _table_exists(connection, "character_cards")
+        and _table_exists(connection, "character_extraction_settings")
+    ):
+        return
     _add_column_if_missing(
         connection,
         "character_cards",
@@ -4860,6 +4866,201 @@ def _migrate_to_v55(connection: sqlite3.Connection) -> None:
         )
 
 
+def _migrate_to_v56(connection: sqlite3.Connection) -> None:
+    """Replace the scene creative workflow with a chapter-only workflow."""
+    connection.execute("PRAGMA defer_foreign_keys = ON")
+    for table in (
+        "review_marks",
+        "scene_current_drafts",
+        "writing_plan_blocks",
+        "writing_plans",
+        "scene_targets",
+        "strategy_scene_analyses",
+        "creative_intents",
+        "scene_preanalyses",
+        "scene_workflow_state",
+    ):
+        connection.execute(f"DROP TABLE IF EXISTS {table}")
+
+    connection.execute("DROP TABLE IF EXISTS chapter_workflow_state")
+    connection.executescript(
+        """
+        CREATE TABLE chapter_workflow_state (
+            chapter_id INTEGER PRIMARY KEY,
+            current_stage TEXT NOT NULL DEFAULT 'not_started' CHECK (current_stage IN (
+                'not_started', 'summary', 'direction', 'special_analysis',
+                'style', 'writing', 'review', 'confirmed'
+            )),
+            source_base_kind TEXT CHECK (source_base_kind IN ('original', 'rewrite_version')),
+            source_base_version_id INTEGER,
+            source_hash TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE,
+            FOREIGN KEY (source_base_version_id) REFERENCES chapter_rewrite_versions(id) ON DELETE SET NULL
+        );
+        CREATE INDEX idx_chapter_workflow_stage
+            ON chapter_workflow_state(current_stage, updated_at);
+        INSERT INTO chapter_workflow_state(chapter_id)
+            SELECT id FROM chapters;
+
+        CREATE TABLE chapter_workflow_summaries (
+            chapter_id INTEGER PRIMARY KEY,
+            plot_summary TEXT NOT NULL DEFAULT '',
+            main_characters_json TEXT NOT NULL DEFAULT '[]',
+            key_events_json TEXT NOT NULL DEFAULT '[]',
+            relationships_json TEXT NOT NULL DEFAULT '[]',
+            start_state_json TEXT NOT NULL DEFAULT '{}',
+            end_state_json TEXT NOT NULL DEFAULT '{}',
+            important_facts_json TEXT NOT NULL DEFAULT '[]',
+            open_threads_json TEXT NOT NULL DEFAULT '[]',
+            source_hash TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE chapter_creative_intents (
+            chapter_id INTEGER PRIMARY KEY,
+            strategy TEXT NOT NULL CHECK (strategy IN ('plot_adjust', 'expansion', 'reimagine')),
+            user_instruction TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE chapter_special_analyses (
+            chapter_id INTEGER PRIMARY KEY,
+            strategy TEXT NOT NULL CHECK (strategy IN ('plot_adjust', 'expansion', 'reimagine')),
+            outline_detail_level TEXT CHECK (outline_detail_level IN ('brief', 'detailed')),
+            source_outline_json TEXT NOT NULL DEFAULT '[]',
+            target_outline_json TEXT NOT NULL DEFAULT '[]',
+            constraints_json TEXT NOT NULL DEFAULT '{}',
+            analysis_notes_json TEXT NOT NULL DEFAULT '[]',
+            source_hash TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE chapter_style_contexts (
+            chapter_id INTEGER PRIMARY KEY,
+            strategy TEXT NOT NULL CHECK (strategy IN ('plot_adjust', 'expansion', 'reimagine')),
+            style_mode TEXT NOT NULL CHECK (style_mode IN ('source_auto', 'selected_author_style')),
+            source_scope TEXT NOT NULL CHECK (source_scope IN ('document', 'chapter')),
+            author_style_material_id INTEGER,
+            author_style_material_version INTEGER,
+            style_snapshot_json TEXT NOT NULL DEFAULT '{}',
+            extraction_settings_snapshot_json TEXT NOT NULL DEFAULT '{}',
+            generated_guidance TEXT NOT NULL DEFAULT '',
+            source_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE,
+            FOREIGN KEY (author_style_material_id) REFERENCES materials(id) ON DELETE SET NULL
+        );
+
+        CREATE TABLE chapter_writings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chapter_id INTEGER NOT NULL UNIQUE,
+            strategy TEXT NOT NULL CHECK (strategy IN ('plot_adjust', 'expansion', 'reimagine')),
+            writing_plan_json TEXT NOT NULL DEFAULT '[]',
+            result_text TEXT NOT NULL DEFAULT '',
+            created_chapter_id INTEGER,
+            source_hash TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'reviewed', 'confirmed')),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE,
+            FOREIGN KEY (created_chapter_id) REFERENCES chapters(id) ON DELETE SET NULL
+        );
+
+        CREATE TABLE chapter_reviews (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chapter_id INTEGER NOT NULL UNIQUE,
+            strategy TEXT NOT NULL CHECK (strategy IN ('plot_adjust', 'expansion', 'reimagine')),
+            summary TEXT NOT NULL DEFAULT '',
+            metrics_json TEXT NOT NULL DEFAULT '{}',
+            source_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE chapter_review_issues (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            review_id INTEGER NOT NULL,
+            severity TEXT NOT NULL CHECK (severity IN ('info', 'warning', 'error')),
+            category TEXT NOT NULL,
+            start_offset INTEGER,
+            end_offset INTEGER,
+            description TEXT NOT NULL,
+            suggested_fix TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'repaired', 'dismissed')),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (review_id) REFERENCES chapter_reviews(id) ON DELETE CASCADE
+        );
+        CREATE INDEX idx_chapter_review_issues
+            ON chapter_review_issues(review_id, status, id);
+        """
+    )
+
+    if _table_exists(connection, "prompt_definitions"):
+        connection.execute(
+            """
+            UPDATE prompt_definitions
+            SET is_default = 0, deleted_at = COALESCE(deleted_at, CURRENT_TIMESTAMP)
+            WHERE kind = 'workflow_task'
+               OR (kind = 'common_task' AND task_key IN (
+                    'scene_preanalysis', 'insert_block', 'selected_text_edit', 'review_rework'
+               ))
+            """
+        )
+        connection.execute(
+            "UPDATE prompt_definitions SET is_default = 0 WHERE kind = 'master' AND deleted_at IS NULL"
+        )
+        prompts = [
+            ("章节创作总提示词", "章节 Workflow 的共同边界", "master", None, None,
+             "只使用提供的事实与当前有效章节正文；用户明确要求优先。严格遵守输出契约和当前阶段边界，不把总结当原文，不使用角色卡或剧情骨架素材。",
+             "所有章节创作阶段的共同规则。"),
+            ("章节内容总结", "总结当前有效章节正文", "common_task", None, "chapter_summary",
+             "只回答这一章发生了什么：剧情、人物、事件、关系、起止状态、事实和未决线索。不得提出改写方案或创作正文。",
+             "当前有效章节正文。"),
+            ("调整剧情 / 专项分析", "生成原始与目标大纲", "workflow_task", "plot_adjust", "special_analysis",
+             "生成带稳定 ID 和来源 span 的 source_outline，以及 preserve/modify/delete/insert 的 target_outline 与 source-target mapping。未要求改变的内容默认 preserve。", "总结、原文和用户要求。"),
+            ("调整剧情 / 写作规划", "形成文本级 patch 计划", "workflow_task", "plot_adjust", "writing_plan",
+             "把目标大纲映射为覆盖原文的 preserve/modify/delete/insert 文本区块。preserve 必须带准确原文 span。", "原文与专项分析。"),
+            ("调整剧情 / 写作", "只生成变化区块", "workflow_task", "plot_adjust", "writing",
+             "只生成指定 modify 或 insert 区块正文，不复述 preserve 区块。", "单个变化区块、相邻文本、风格快照。"),
+            ("调整剧情 / 审查", "审查 patch 结果", "workflow_task", "plot_adjust", "review",
+             "检查 preserve 是否误改、替换是否完整、事件保留、接缝、新增无依据剧情与实际保留率。", "原文、计划和结果。"),
+            ("调整剧情 / 定向修复", "只修复一个审查问题", "workflow_task", "plot_adjust", "review_repair",
+             "只返回指定问题范围的替换文本，不得重写整章。", "问题、目标范围和短上下文。"),
+            ("增加剧情 / 专项分析", "设计下一章大纲", "workflow_task", "expansion", "special_analysis",
+             "从当前章事件与结束状态生成 source_outline，并设计新下一章 target_outline；不得修改当前章。", "总结、当前章和用户要求。"),
+            ("增加剧情 / 写作", "生成新的下一章", "workflow_task", "expansion", "writing",
+             "根据承接状态、目标大纲和原作风格生成完整的新下一章正文，不改写当前章。", "总结、目标大纲、事实和风格快照。"),
+            ("增加剧情 / 审查", "审查新下一章", "workflow_task", "expansion", "review",
+             "检查承接、人物关系与状态、事实、上一章不变、目标大纲和原作风格。", "当前章、新章节和目标。"),
+            ("增加剧情 / 定向修复", "只修复一个审查问题", "workflow_task", "expansion", "review_repair",
+             "只返回指定问题范围的替换文本，不得重写整章。", "问题、目标范围和短上下文。"),
+            ("重新构思 / 专项分析", "锁定边界并重设计大纲", "workflow_task", "reimagine", "special_analysis",
+             "提取并锁定 start_conditions、core_purpose、required_end_state、hard_constraints，再按 brief 或 detailed 粒度生成全新 target_outline。", "总结、原文、粒度和用户要求。"),
+            ("重新构思 / 写作", "重建当前整章", "workflow_task", "reimagine", "writing",
+             "按锁定边界、目标大纲、用户要求与选定作者风格生成完整章节正文。", "边界、目标大纲和作者风格快照。"),
+            ("重新构思 / 审查", "审查整章重建", "workflow_task", "reimagine", "review",
+             "检查起始条件、核心目的、结束状态、硬约束、目标大纲和选定作者风格。", "原文边界、新正文和目标。"),
+            ("重新构思 / 定向修复", "只修复一个审查问题", "workflow_task", "reimagine", "review_repair",
+             "只返回指定问题范围的替换文本，不得重写整章。", "问题、目标范围和短上下文。"),
+        ]
+        connection.executemany(
+            """
+            INSERT INTO prompt_definitions(
+                name, description, kind, workflow_key, task_key,
+                content, input_description, is_default
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+            """,
+            prompts,
+        )
+
+
 def _safe_json_list(value: object) -> list[dict[str, object]]:
     try:
         parsed = json.loads(str(value or "[]"))
@@ -5103,6 +5304,8 @@ def _migrate_material_categories_to_tags(
 
 
 def _migrate_character_cards_to_v14(connection: sqlite3.Connection) -> None:
+    if not _table_exists(connection, "character_cards"):
+        return
     for column, definition in [
         ("identity", "identity TEXT NOT NULL DEFAULT ''"),
         ("age", "age TEXT NOT NULL DEFAULT ''"),
@@ -5265,6 +5468,7 @@ MIGRATIONS = {
     53: _migrate_to_v53,
     54: _migrate_to_v54,
     55: _migrate_to_v55,
+    56: _migrate_to_v56,
 }
 
 

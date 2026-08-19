@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { ArrowLeft } from 'lucide-react';
-import { getChapter, getChapters } from '../api/client';
-import type { Chapter, ChapterDetail } from '../api/types';
+import { getChapter, getChapters, getChapterWorkflow } from '../api/client';
+import type { Chapter, ChapterDetail, ChapterWorkflowState } from '../api/types';
 
 type Props = {
   projectId: number;
@@ -13,6 +13,7 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
   const [chapters, setChapters] = useState<Chapter[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [detail, setDetail] = useState<ChapterDetail | null>(null);
+  const [workflow, setWorkflow] = useState<ChapterWorkflowState | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -28,10 +29,10 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
   }, [projectId]);
 
   useEffect(() => {
-    if (!selectedId) { setDetail(null); return; }
+    if (!selectedId) { setDetail(null); setWorkflow(null); return; }
     let cancelled = false;
-    void getChapter(selectedId)
-      .then((value) => { if (!cancelled) setDetail(value); })
+    void Promise.all([getChapter(selectedId), getChapterWorkflow(selectedId)])
+      .then(([value, state]) => { if (!cancelled) { setDetail(value); setWorkflow(state); } })
       .catch((reason) => { if (!cancelled) setError(messageOf(reason)); });
     return () => { cancelled = true; };
   }, [selectedId]);
@@ -55,12 +56,18 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
         </aside>
         <main className="creative-stage-content">
           <h1>{detail?.chapter.title ?? '请选择章节'}</h1>
-          <p>本阶段已移除角色卡与剧情骨架素材依赖。新的章节级 Workflow 将在下一阶段接入。</p>
+          <p>章节 Workflow：{stageLabel(workflow?.current_stage ?? 'not_started')}</p>
+          {workflow?.source_changed ? <div className="inline-alert error">当前章节已变化，需要重新分析。</div> : null}
           <textarea readOnly value={detail?.chapter.original_text ?? ''} />
         </main>
       </div>
     </div>
   );
+}
+
+function stageLabel(stage: ChapterWorkflowState['current_stage']): string {
+  return ({ not_started: '未开始', summary: '内容总结', direction: '方向选择', special_analysis: '专项分析',
+    style: '风格', writing: '写作', review: '审查', confirmed: '已确认' })[stage];
 }
 
 function messageOf(reason: unknown): string {

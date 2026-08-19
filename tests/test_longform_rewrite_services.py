@@ -12,7 +12,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from rusty.db import session
 from rusty.models import ParsedBook, ParsedChapter
-from rusty.services.anchor_service import AnchorService
 from rusty.services.context_service import ContextService, PromptBlock, PromptBudgeter, SceneTooLongError
 from rusty.services.material_service import MaterialService
 from rusty.services.project_service import ProjectService
@@ -76,11 +75,9 @@ class LongformRewriteServiceTests(unittest.TestCase):
         self.assertEqual([scene.id for scene in confirmed], [scene.id for scene in after_reanalysis])
         self.assertEqual(self.chapter.original_text, "".join(scene.original_text for scene in confirmed))
 
-    def test_fact_ledger_and_dynamic_character_state_are_separate_from_character_card(self) -> None:
+    def test_fact_ledger_and_dynamic_character_state_remain_without_character_cards(self) -> None:
         scene_service = SceneService(self.database_path)
         scene = scene_service.split_chapter(self.chapter.id)[0]
-        card_service = AnchorService(self.database_path)
-        card_id = card_service.create_character_card(name="Alice", personality="Patient")
         facts = scene_service.save_fact_ledger(
             scene.id,
             {
@@ -93,11 +90,10 @@ class LongformRewriteServiceTests(unittest.TestCase):
             scene.id,
             "Alice",
             {"injuries": ["left arm"], "location": "hall", "possessions": ["map"]},
-            character_card_id=card_id,
         )
         self.assertEqual(["Alice enters"], facts["events"])
         self.assertEqual(["left arm"], state["injuries"])
-        self.assertEqual("Patient", card_service.get_character_card(card_id).personality)
+        self.assertEqual("Alice", state["character_name"])
 
     def test_prompt_budget_keeps_required_blocks_and_drops_complete_optional_blocks(self) -> None:
         compiled = PromptBudgeter().compile(
@@ -174,7 +170,7 @@ class LongformRewriteServiceTests(unittest.TestCase):
         self.assertEqual(str(material_id), results[0]["source_id"])
         self.assertEqual(1.0, results[0]["confidence"])
 
-    def test_two_rewrite_modes_require_confirmed_skeleton_and_plan(self) -> None:
+    def test_legacy_skeleton_rewrite_requires_confirmation_and_rejects_style_as_plot_input(self) -> None:
         scene = SceneService(self.database_path).split_chapter(self.chapter.id)[0]
         workflow = RewriteWorkflowService(self.database_path)
         skeleton = workflow.create_skeleton(
@@ -201,29 +197,29 @@ class LongformRewriteServiceTests(unittest.TestCase):
         )
         self.assertEqual("skeleton_rewrite", workflow.get_plan(skeleton_plan)["mode"])
         material_id = MaterialService(self.database_path).create_material(
-            material_type="plot_skeleton",
+            material_type="author_style",
             scope="project",
             project_id=self.project_id,
             name="Inserted event",
             content={"events": [{"event": "Bob hides the key"}]},
         )
-        expansion_plan = workflow.create_expansion_plan(
-            project_id=self.project_id,
-            chapter_id=self.chapter.id,
-            scene_id=scene.id,
-            skeleton_version_id=confirmed.version_id,
-            plan=_plan(),
-            material_mappings=[
-                {
-                    "material_id": material_id,
-                    "insertion_after_node": "n1",
-                    "usage_mode": "required",
-                    "event_nodes": [{"id": "m1", "event": "Bob hides the key"}],
-                    "impact": {"characters": ["Bob"], "events": ["hide"], "states": {"key": "hidden"}},
-                }
-            ],
-        )
-        self.assertEqual("expansion", workflow.get_plan(expansion_plan)["mode"])
+        with self.assertRaisesRegex(ValueError, "plot_skeleton"):
+            workflow.create_expansion_plan(
+                project_id=self.project_id,
+                chapter_id=self.chapter.id,
+                scene_id=scene.id,
+                skeleton_version_id=confirmed.version_id,
+                plan=_plan(),
+                material_mappings=[
+                    {
+                        "material_id": material_id,
+                        "insertion_after_node": "n1",
+                        "usage_mode": "required",
+                        "event_nodes": [{"id": "m1", "event": "Bob hides the key"}],
+                        "impact": {"characters": ["Bob"], "events": ["hide"], "states": {"key": "hidden"}},
+                    }
+                ],
+            )
 
     def test_consistency_schema_and_targeted_repair_preserve_version_diff(self) -> None:
         scene = SceneService(self.database_path).split_chapter(self.chapter.id)[0]

@@ -558,7 +558,6 @@ class SceneFactLedgerWriteRequest(BaseModel):
 
 class CharacterStoryStateWriteRequest(BaseModel):
     character_name: str = Field(min_length=1)
-    character_card_id: int | None = None
     state: dict[str, Any] = Field(default_factory=dict)
 
 

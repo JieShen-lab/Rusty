@@ -488,12 +488,6 @@ class SceneRewriteOrchestrator:
         material_ids: list[int],
     ) -> StructuredModelResult:
         scene = self._require_scene(scene_id)
-        for character_id in character_ids:
-            card = self.anchor_service.get_character_card(character_id)
-            if card is None:
-                raise FileNotFoundError(f"Character card not found: {character_id}")
-            if card.scope == "project" and card.project_id != scene.project_id:
-                raise ValueError(f"Character card is not available to this project: {character_id}")
         for material_id in material_ids:
             material = self.material_service.get_material(material_id)
             if material is None:
@@ -501,7 +495,6 @@ class SceneRewriteOrchestrator:
         retrieval = self.context_service.retrieve(
             scene_id,
             manual_material_ids=material_ids,
-            manual_character_ids=character_ids,
         )
         style = self.context_service.build_style_context(scene_id)
         model = self.model_service.resolve_model(model_id=model_id, project_id=scene.project_id)

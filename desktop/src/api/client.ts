@@ -1,15 +1,11 @@
 import type {
   AnalysisPromptTemplate,
   AuthorStyleDimensionPreview,
-  BaseSceneAnalysis,
   AnalysisPromptTemplateWrite,
   Chapter,
   ChapterSplitOptions,
   ChapterDetail,
   ChapterWorkflowState,
-  SceneWorkflowState,
-  CreativeWorkflowStage,
-  CreativeIntent,
   CreativeStrategy,
   CompiledPromptPreview,
   ExportPlanItem,
@@ -501,33 +497,50 @@ export function getCreativeWorkflowStates(projectId: number) {
   return request<ChapterWorkflowState[]>(`/api/projects/${projectId}/creative-workflow`);
 }
 
-export function getCreativeWorkflowState(chapterId: number) {
-  return request<ChapterWorkflowState>(`/api/chapters/${chapterId}/creative-workflow`);
+export function getChapterWorkflow(chapterId: number) {
+  return request<ChapterWorkflowState>(`/api/chapters/${chapterId}/workflow`);
 }
 
-export function getCreativeSceneStates(chapterId: number) {
-  return request<SceneWorkflowState[]>(`/api/chapters/${chapterId}/creative-scene-states`);
+export function runChapterSummary(chapterId: number) {
+  return request<import('./types').ChapterSummary>(`/api/chapters/${chapterId}/workflow/summary/run`, { method: 'POST' });
 }
 
-export function getCreativeSceneState(sceneId: number) {
-  return request<SceneWorkflowState>(`/api/scenes/${sceneId}/creative-workflow`);
-}
-
-export function activateCreativeScene(sceneId: number) {
-  return request<ChapterWorkflowState>(`/api/scenes/${sceneId}/creative-workflow/activate`, {
-    method: 'POST',
+export function saveChapterDirection(chapterId: number, strategy: CreativeStrategy, userInstruction: string) {
+  return request<import('./types').ChapterCreativeIntent>(`/api/chapters/${chapterId}/workflow/direction`, {
+    method: 'PUT', body: JSON.stringify({ strategy, user_instruction: userInstruction }),
   });
 }
 
-export function updateCreativeWorkflowState(
-  chapterId: number,
-  currentStage: CreativeWorkflowStage,
-  activeSceneId: number | null,
-) {
-  return request<ChapterWorkflowState>(`/api/chapters/${chapterId}/creative-workflow`, {
-    method: 'PUT',
-    body: JSON.stringify({ current_stage: currentStage, active_scene_id: activeSceneId }),
+export function runChapterSpecialAnalysis(chapterId: number, outlineDetailLevel?: 'brief' | 'detailed') {
+  return request<import('./types').ChapterSpecialAnalysis>(`/api/chapters/${chapterId}/workflow/special-analysis/run`, {
+    method: 'POST', body: JSON.stringify({ outline_detail_level: outlineDetailLevel ?? null }),
   });
+}
+
+export function resolveChapterStyle(chapterId: number, value: { source_scope?: 'document' | 'chapter'; author_style_material_id?: number | null }) {
+  return request<import('./types').ChapterStyleContext>(`/api/chapters/${chapterId}/workflow/style/resolve`, {
+    method: 'POST', body: JSON.stringify(value),
+  });
+}
+
+export function generateChapterWriting(chapterId: number, replaceExisting = false) {
+  return request<import('./types').ChapterWriting>(`/api/chapters/${chapterId}/workflow/writing/generate`, {
+    method: 'POST', body: JSON.stringify({ replace_existing: replaceExisting }),
+  });
+}
+
+export function runChapterReview(chapterId: number) {
+  return request<import('./types').ChapterReview>(`/api/chapters/${chapterId}/workflow/review/run`, { method: 'POST' });
+}
+
+export function repairChapterReviewIssue(chapterId: number, issueId: number) {
+  return request<{ issue_id: number; replacement_text: string; writing: import('./types').ChapterWriting }>(
+    `/api/chapters/${chapterId}/workflow/review/issues/${issueId}/repair`, { method: 'POST' },
+  );
+}
+
+export function confirmChapterWorkflow(chapterId: number) {
+  return request<ChapterWorkflowState>(`/api/chapters/${chapterId}/workflow/confirm`, { method: 'POST' });
 }
 
 export function getChapter(chapterId: number) {
@@ -994,86 +1007,6 @@ export function exportProjectMasterPrompt(projectId: number, name: string, descr
   return request<PromptDefinition>(`/api/projects/${projectId}/master-prompt/export`, { method: 'POST', body: JSON.stringify({ name, description }) });
 }
 
-export function getScenePreanalysis(sceneId: number) {
-  return request<BaseSceneAnalysis | null>(`/api/scenes/${sceneId}/preanalysis`);
-}
-
-export function runScenePreanalysis(sceneId: number, replaceExisting = false) {
-  return request<BaseSceneAnalysis>(`/api/scenes/${sceneId}/preanalysis/run`, {
-    method: 'POST',
-    body: JSON.stringify({ replace_existing: replaceExisting }),
-  });
-}
-
-export function saveScenePreanalysis(sceneId: number, value: Omit<BaseSceneAnalysis, 'scene_id' | 'status' | 'user_edited' | 'confirmed_at' | 'updated_at'>) {
-  return request<BaseSceneAnalysis>(`/api/scenes/${sceneId}/preanalysis`, {
-    method: 'PUT',
-    body: JSON.stringify(value),
-  });
-}
-
-export function confirmScenePreanalysis(sceneId: number) {
-  return request<BaseSceneAnalysis>(`/api/scenes/${sceneId}/preanalysis/confirm`, { method: 'POST' });
-}
-
-export function getSceneCreativeIntent(sceneId: number) {
-  return request<CreativeIntent | null>(`/api/scenes/${sceneId}/creative-intent`);
-}
-
-export function saveSceneCreativeIntent(sceneId: number, value: {
-  strategy: CreativeStrategy;
-  user_instruction: string;
-  selected_scene_material_ids?: number[];
-}) {
-  return request<CreativeIntent>(`/api/scenes/${sceneId}/creative-intent`, {
-    method: 'PUT',
-    body: JSON.stringify(value),
-  });
-}
-
-export function getStrategyAnalysis(sceneId: number) { return request<import('./types').StrategySceneAnalysis | null>(`/api/scenes/${sceneId}/strategy-analysis`); }
-export function runStrategyAnalysis(sceneId: number, replaceExisting = false) { return request<import('./types').StrategySceneAnalysis>(`/api/scenes/${sceneId}/strategy-analysis/run`, { method: 'POST', body: JSON.stringify({ replace_existing: replaceExisting }) }); }
-export function saveStrategyAnalysis(sceneId: number, value: import('./types').StrategySceneAnalysis) { return request<import('./types').StrategySceneAnalysis>(`/api/scenes/${sceneId}/strategy-analysis`, { method: 'PUT', body: JSON.stringify(value) }); }
-export function confirmStrategyAnalysis(sceneId: number) { return request<import('./types').StrategySceneAnalysis>(`/api/scenes/${sceneId}/strategy-analysis/confirm`, { method: 'POST' }); }
-
-export function getSceneTarget(sceneId: number) {
-  return request<import('./types').SceneTarget | null>(`/api/scenes/${sceneId}/target`);
-}
-
-export function runSceneTarget(sceneId: number, replaceExisting = false) {
-  return request<import('./types').SceneTarget>(`/api/scenes/${sceneId}/target/run`, {
-    method: 'POST', body: JSON.stringify({ replace_existing: replaceExisting }),
-  });
-}
-
-export function saveSceneTarget(sceneId: number, value: import('./types').SceneTarget) {
-  return request<import('./types').SceneTarget>(`/api/scenes/${sceneId}/target`, {
-    method: 'PUT', body: JSON.stringify(value),
-  });
-}
-
-export function confirmSceneTarget(sceneId: number) {
-  return request<import('./types').SceneTarget>(`/api/scenes/${sceneId}/target/confirm`, { method: 'POST' });
-}
-
-export function getWritingPlan(sceneId: number) { return request<import('./types').WritingPlan | null>(`/api/scenes/${sceneId}/writing-plan`); }
-export function runWritingPlan(sceneId: number, replaceExisting = false) { return request<import('./types').WritingPlan>(`/api/scenes/${sceneId}/writing-plan/run`, { method: 'POST', body: JSON.stringify({ replace_existing: replaceExisting }) }); }
-export function saveWritingPlan(sceneId: number, value: import('./types').WritingPlan) { return request<import('./types').WritingPlan>(`/api/scenes/${sceneId}/writing-plan`, { method: 'PUT', body: JSON.stringify(value) }); }
-export function getCurrentDraft(sceneId: number) { return request<import('./types').SceneDraft | null>(`/api/scenes/${sceneId}/current-draft`); }
-export function generateCurrentDraft(sceneId: number, replaceExisting = false) { return request<import('./types').SceneDraft>(`/api/scenes/${sceneId}/current-draft/generate`, { method: 'POST', body: JSON.stringify({ replace_existing: replaceExisting }) }); }
-export function saveCurrentDraft(sceneId: number, value: import('./types').SceneDraft) { return request<import('./types').SceneDraft>(`/api/scenes/${sceneId}/current-draft`, { method: 'PUT', body: JSON.stringify(value) }); }
-export function editSelectedDraft(sceneId: number, value: { start_offset: number; end_offset: number; user_instruction: string }) { return request<import('./types').SceneDraft>(`/api/scenes/${sceneId}/current-draft/selected-edit`, { method: 'POST', body: JSON.stringify(value) }); }
-export function startSceneReview(sceneId: number) { return request<import('./types').SceneReviewDiff>(`/api/scenes/${sceneId}/review/start`, { method: 'POST' }); }
-export function getReviewDiff(sceneId: number) { return request<import('./types').SceneReviewDiff>(`/api/scenes/${sceneId}/review-diff`); }
-export function getReviewMarks(sceneId: number) { return request<import('./types').ReviewMark[]>(`/api/scenes/${sceneId}/review-marks`); }
-export function createReviewMark(sceneId: number, value: Partial<import('./types').ReviewMark>) { return request<import('./types').ReviewMark>(`/api/scenes/${sceneId}/review-marks`, { method: 'POST', body: JSON.stringify(value) }); }
-export function removeReviewMark(sceneId: number, markId: number) { return request<{ok:boolean}>(`/api/scenes/${sceneId}/review-marks/${markId}`, { method: 'DELETE' }); }
-export function restoreReviewSource(sceneId: number, markId: number) { return request<import('./types').SceneDraft>(`/api/scenes/${sceneId}/review-marks/${markId}/restore`, { method: 'POST' }); }
-export function reworkReviewRange(sceneId: number, value: Record<string, unknown>) { return request<{draft: import('./types').SceneDraft; before_text: string; after_text: string; start_offset: number; end_offset: number; mark_ids: number[]}>(`/api/scenes/${sceneId}/review/rework`, { method: 'POST', body: JSON.stringify(value) }); }
-export function reworkAllReviewMarks(sceneId: number) { return request<{draft: import('./types').SceneDraft; before_text: string; processed: number; mark_ids: number[]}>(`/api/scenes/${sceneId}/review/rework-all`, { method: 'POST' }); }
-export function adoptReviewRework(sceneId: number, markIds: number[]) { return request<import('./types').ReviewMark[]>(`/api/scenes/${sceneId}/review/adopt`, { method: 'POST', body: JSON.stringify({ mark_ids: markIds }) }); }
-export function confirmCreativeScene(sceneId: number) { return request<{draft: import('./types').SceneDraft; unresolved_marks: number}>(`/api/scenes/${sceneId}/confirm`, { method: 'POST' }); }
-
 export function analyzeChapterScenes(
   chapterId: number,
   payload: {
@@ -1253,39 +1186,6 @@ export function applyAIDocumentSplit(
     `/api/documents/${documentId}/split/ai/apply`,
     { method: 'POST', body: JSON.stringify({ proposal_id: proposalId, chapters }) },
   );
-}
-
-export function startSceneWorkflow(
-  sceneId: number,
-  payload: {
-    mode: import('./types').RewriteMode;
-    user_instruction?: string;
-    model_id?: number | null;
-    character_ids?: number[];
-    material_ids?: number[];
-  },
-) {
-  return request<import('./types').SceneWorkflowRun>(`/api/scenes/${sceneId}/workflow/start`, {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
-}
-
-export function generateSceneWorkflowPlan(runId: number, payload: Record<string, unknown>) {
-  return request<import('./types').SceneWorkflowRun>(`/api/scene-workflows/${runId}/plan`, {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
-}
-
-export function executeSceneWorkflow(runId: number, payload: import('./types').SceneWorkflowExecutePayload) {
-  return request<import('./types').SceneWorkflowRun & {
-    rewrite_version_id: number;
-    consistency: Record<string, unknown>;
-  }>(`/api/scene-workflows/${runId}/execute`, {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
 }
 
 export function getSceneRewriteHistory(sceneId: number) {

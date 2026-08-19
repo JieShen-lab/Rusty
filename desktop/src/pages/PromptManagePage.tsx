@@ -13,7 +13,7 @@ import type { CreativeStrategy, PromptDefinition, PromptDefinitionKind, PromptDe
 import { TopBar } from '../components/TopBar';
 
 const workflowLabels: Record<CreativeStrategy, string> = {
-  faithful: '贴合原文', plot_adjust: '调整剧情', expansion: '增加剧情', reimagine: '重新构思',
+  plot_adjust: '调整剧情', expansion: '增加剧情', reimagine: '重新构思',
 };
 
 const emptyPrompt: PromptDefinitionWrite = {
@@ -58,7 +58,7 @@ export function PromptManagePage() {
   function startNew(kind: PromptDefinitionKind = 'master', workflowKey: CreativeStrategy | null = null) {
     setSelectedId(null);
     setForm({ ...emptyPrompt, kind, workflow_key: workflowKey, task_key: kind === 'master' ? null : '' });
-    setCategory(kind === 'master' ? 'master' : kind === 'common_task' ? 'common_task' : workflowKey ?? 'faithful');
+    setCategory(kind === 'master' ? 'master' : kind === 'common_task' ? 'common_task' : workflowKey ?? 'plot_adjust');
     setFeedback({});
   }
 
@@ -138,7 +138,7 @@ export function PromptManagePage() {
       </aside>
       <main className="prompt-definition-editor">
         <div className="prompt-editor-title"><div><input aria-label="名称" placeholder="提示词名称" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /><input aria-label="说明" placeholder="简短说明" value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} /></div><label><input checked={form.is_default} onChange={(event) => setForm({ ...form, is_default: event.target.checked })} type="checkbox" />默认</label></div>
-        <div className="prompt-definition-fields"><label><span>类型</span><select value={form.kind} onChange={(event) => changeKind(event.target.value as PromptDefinitionKind, form, setForm)}><option value="master">总提示词</option><option value="workflow_task">工作流提示词</option><option value="common_task">公共任务提示词</option></select></label>{form.kind === 'workflow_task' ? <label><span>工作流</span><select value={form.workflow_key ?? 'faithful'} onChange={(event) => setForm({ ...form, workflow_key: event.target.value as CreativeStrategy })}>{Object.entries(workflowLabels).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label> : null}{form.kind !== 'master' ? <label><span>Task key</span><input value={form.task_key ?? ''} onChange={(event) => setForm({ ...form, task_key: event.target.value })} /></label> : null}</div>
+        <div className="prompt-definition-fields"><label><span>类型</span><select value={form.kind} onChange={(event) => changeKind(event.target.value as PromptDefinitionKind, form, setForm)}><option value="master">总提示词</option><option value="workflow_task">工作流提示词</option><option value="common_task">公共任务提示词</option></select></label>{form.kind === 'workflow_task' ? <label><span>工作流</span><select value={form.workflow_key ?? 'plot_adjust'} onChange={(event) => setForm({ ...form, workflow_key: event.target.value as CreativeStrategy })}>{Object.entries(workflowLabels).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label> : null}{form.kind !== 'master' ? <label><span>Task key</span><input value={form.task_key ?? ''} onChange={(event) => setForm({ ...form, task_key: event.target.value })} /></label> : null}</div>
         <label className="prompt-content-field"><span>Prompt 正文</span><textarea value={form.content} onChange={(event) => setForm({ ...form, content: event.target.value })} /></label>
         <label className="prompt-input-field"><span>运行时大致会获得哪些输入</span><textarea value={form.input_description} onChange={(event) => setForm({ ...form, input_description: event.target.value })} /></label>
         <footer><div><button className="button secondary compact" disabled={!selected} onClick={() => void duplicate()} type="button"><Copy size={15} />复制</button><button className="button secondary compact" disabled={!selected} onClick={() => void exportJson()} type="button"><Download size={15} />导出</button><button className="button danger compact" disabled={!selected} onClick={() => void remove()} type="button"><Trash2 size={15} />删除</button></div><button className="button primary" disabled={busy || !form.name.trim() || (form.kind !== 'master' && !form.task_key?.trim())} onClick={() => void save()} type="button"><Save size={15} />保存</button></footer>
@@ -154,11 +154,11 @@ export function PromptManagePage() {
 }
 
 function changeKind(kind: PromptDefinitionKind, form: PromptDefinitionWrite, setForm: (value: PromptDefinitionWrite) => void) {
-  setForm({ ...form, kind, workflow_key: kind === 'workflow_task' ? form.workflow_key ?? 'faithful' : null, task_key: kind === 'master' ? null : form.task_key ?? '' });
+  setForm({ ...form, kind, workflow_key: kind === 'workflow_task' ? form.workflow_key ?? 'plot_adjust' : null, task_key: kind === 'master' ? null : form.task_key ?? '' });
 }
 function toWrite(item: PromptDefinition): PromptDefinitionWrite { const { id: _id, created_at: _created, updated_at: _updated, ...write } = item; return write; }
 function describeKind(item: PromptDefinition) { if (item.kind === 'master') return '总提示词'; if (item.kind === 'common_task') return `公共任务 · ${item.task_key}`; return `${workflowLabels[item.workflow_key as CreativeStrategy]} · ${item.task_key}`; }
-function categoryOf(item: PromptDefinition): PromptCategory { return item.kind === 'master' ? 'master' : item.kind === 'common_task' ? 'common_task' : item.workflow_key ?? 'faithful'; }
+function categoryOf(item: PromptDefinition): PromptCategory { return item.kind === 'master' ? 'master' : item.kind === 'common_task' ? 'common_task' : item.workflow_key ?? 'plot_adjust'; }
 function categoryLabel(value: PromptCategory) { return value === 'master' ? '总提示词' : value === 'common_task' ? '公共任务提示词' : workflowLabels[value]; }
 function messageOf(reason: unknown) { return reason instanceof Error ? reason.message : String(reason); }
 function safeName(value: string) { return value.replace(/[\\/:*?"<>|]/g, '_').trim() || 'prompt'; }

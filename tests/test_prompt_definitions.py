@@ -48,8 +48,8 @@ class PromptDefinitionTests(unittest.TestCase):
                 input_description="全部任务", is_default=False,
             )
             workflow = service.create_definition(
-                name="人物专项", description="", kind="workflow_task", workflow_key="faithful",
-                task_key="character_test", content="任务规则", input_description="Source", is_default=False,
+                name="剧情调整", description="", kind="workflow_task", workflow_key="plot_adjust",
+                task_key="custom_analysis", content="任务规则", input_description="Source", is_default=False,
             )
             common = service.create_definition(
                 name="摘要", description="", kind="common_task", task_key="summary_test",
@@ -66,12 +66,12 @@ class PromptDefinitionTests(unittest.TestCase):
         self.assertEqual("初始规则", copied["content"])
         self.assertEqual("工程独立修改", project_edited["content"])
         self.assertEqual("工程独立修改", exported.content)
-        self.assertEqual("character_test", round_trip.task_key)
+        self.assertEqual("custom_analysis", round_trip.task_key)
         self.assertIsNone(deleted)
 
     def test_compiler_order_and_program_owned_output_contract(self) -> None:
         request = PromptCompiler().compile_creative_json(
-            stage="scene_preanalysis",
+            stage="chapter_summary",
             master_prompt="工程规则",
             task_prompt="用户可编辑任务规则：不要返回 JSON。",
             payload={"source_text": "原文"},

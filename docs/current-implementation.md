@@ -96,30 +96,14 @@ Rusty 以本地优先方式管理小说项目。当前主界面采用 Electron +
 - `src/rusty/services/analysis_service.py`
 - `desktop/src/pages/PromptManagePage.tsx`
 
-### 2.5 素材、角色卡与大纲
+### 2.5 作者风格素材与大纲
 
-- 素材是统一的全局资产，不再区分公共素材和工程素材，也不再为工程创建素材副本；`scope` / `project_id` 仅为 legacy 兼容字段。
-- 素材类型固定为剧情骨架 `plot_skeleton` 和作者风格 `author_style`。`scene_reference` 已废弃，只在 v54 数据迁移、明确的历史兼容数据和对应测试中保留。
-- 两类素材分别拥有独立的多对多分类；标签分为 `general` 与 `applicable_scene` 两组，分类和标签是独立命名空间。标签只在右侧详情和管理弹窗显示，但可在当前类型/分类范围内筛选。
-- 作者风格是一份完整档案，采用 `schema_version: 1`、`summary` 与有序 `dimensions`。每个 dimension 包含稳定 ID、名称、提取要求、分析结果、具体特征和原文实例；不记录实例的文档、卷、章节或 offset。`materials.raw_text` 保存最初分析文本，用于以后新增或单独重新提取维度。旧版内容只保存在 `legacy_scene_reference` 中，不会冒充正确提取结果或触发自动 AI 改写。
-- 素材 AI 当前只有 `plot_skeleton_extraction` 与 `author_style_extraction` 两套当前设置。每套保存模型、细化程度、系统提示词、基础任务说明、有稳定 ID 的可编辑有序维度、附加要求及更新时间。保存即成为唯一默认配置；不支持多方案或恢复默认。作者风格设置支持 JSON 导入/导出，导出不含密钥、本机路径、数据库主键或 model ID，导入会覆盖当前设置并保留本机模型。剧情骨架只保存抽象可复用结构，不保存原文事实证据或 offset。
-- AI 整理使用 preview/apply：preview 返回过期时间、Prompt 快照、可编辑候选、结构化证据、置信度、警告及两组标签建议，不写素材/标签/分类；apply 在单一事务中批量创建全部选中候选、标签和分类，任一失败则整批回滚且 Token 保持可重试，全部成功后 Token 单次消费。
-- 角色与素材 Preview 保存最多 50,000 字符的完整规范化来源，模型采样最多 16,000 字符；最终 `raw_text` 始终保存完整来源，来源元数据明确记录完整长度、模型样本长度及是否为模型截断。
-- 来源可只保存为 `analysis_status='unanalyzed'` 的待整理素材并显示在“最近导入”；修改原始来源会重新标记为未分析。
-- 工程通过每种素材独立的标签筛选（任一/全部）和手动固定素材 ID 使用统一资产。上下文检索优先级为：手动指定 → 工程标签筛选 → 时间线/适用场景 → 关键词 → 相似度；未分析素材不参与自动检索。
-- 支持大纲模板 CRUD、AI 抽取和项目绑定。
-- 角色卡是统一全局资产，不再区分公共角色和工程角色。旧记录的 `scope`、`project_id`、`source_character_card_id` 继续保留用于兼容与追踪，但统一列表不会因旧 scope 隐藏记录，新建角色写兼容值 `scope='public'`。
-- `project_character_bindings` 只表示工程引用了哪些角色卡；绑定不创建副本，解绑不删除角色卡，一张角色卡可被多个工程引用。旧 copy-to-project / publish-to-public API 仅作为 deprecated legacy 接口保留，新前端零调用。
-- 分类负责整理角色卡，一张角色卡可属于多个分类；标签负责筛选，分类与标签相互独立。删除分类只解除链接，不删除角色。
-- 角色页的左栏、divider、分类行、书本卡片、标签胶囊、详情 section、管理弹窗和搜索布局直接复用文档库 `LibraryPrimitives` 与同一 CSS token。
-- 角色稳定设定统一存为 `stable_fields_json`：每项包含稳定 `id`、显示 `label`、多行 `value` 与 `sort_order`。旧固定字段和未知 `custom_fields_json` 在 v53 迁移时转入同一数组且不丢失。
-- AI 新建和手动新建是两个独立入口。AI 请求必须提供 `target_character_name`，一次只提取一个人物；其他人物只能作为目标人物的关系证据。
-- `POST /api/characters/extract/preview` 返回一个严格 JSON `character` draft，不返回 `candidates[]`，也不写 `character_cards` 或标签。用户在统一角色编辑器确认、删改建议标签并保存后，才通过标准角色 API 创建一张卡。
-- AI 维度定义与角色设定使用同一稳定 ID。默认和自定义维度的名称、说明、顺序、启用状态持久化在 `character_extraction_settings.dimensions_json`；Prompt 预览显示目标名/来源占位符、启用维度、说明、附加要求和 JSON schema。
-- “新建角色”统一提供“手动创建”和“从文本提取”两个模式。手动创建不调用 AI、默认 `analysis_status='unanalyzed'`；AI 提取使用 preview/apply 两阶段流程，确认创建后默认标记为已分析。
-- AI preview 只返回可编辑候选和 0～8 个短标签建议，不写角色、标签或分类；apply 在单一事务中创建全部确认候选、标签、分类和工程绑定，任一失败整批回滚并允许修正后重试，全部成功后 Preview Token 单次消费。
-- 角色提取设置持久化在数据库中，可配置模型、细化程度、候选上限、生成维度、附加要求和高级系统提示词，并支持恢复安全默认值与查看不含 API key 的 Prompt 预览。
-- 支持统一角色卡 CRUD、JSON 导入、单人物 AI draft 和项目引用绑定；改写时只注入工程有效绑定且与当前章节相关的人物。
+- v55 已彻底删除角色卡资产及其分类、标签、封面、提取设置、工程绑定、页面和当前 API。
+- 素材库只保留 `author_style`；`plot_skeleton` rows、分类、筛选分支和 `plot_skeleton_extraction` 设置已删除。
+- 作者风格继续保存稳定维度 ID、维度名称、提取要求、分析结果、具体特征、原文实例、完整 `raw_text`、来源元数据和素材版本；单维度 preview/apply 与设置 JSON 导入/导出继续可用。
+- 大纲模板仍保留 CRUD、AI 抽取和项目绑定，它不是剧情骨架素材。
+- Chapter Workflow 的 `source_outline` 与 `target_outline` 是单次运行的中间结果，不进入素材库。
+- 人物仍可出现在章节总结、关系、状态和事实账本中；删除的是 Character Card 资产，而不是小说中的人物概念。
 
 主要实现：
 
@@ -127,14 +111,12 @@ Rusty 以本地优先方式管理小说项目。当前主界面采用 Electron +
 - `src/rusty/services/anchor_service.py`
 - `src/rusty/services/anchor_extraction_service.py`
 - `desktop/src/pages/MaterialLibraryPage.tsx`
-- `desktop/src/pages/CharacterLibraryPage.tsx`
 
 ### 2.6 正文选区快捷保存
 
-- 文档库正文编辑区、工程原文和工程改写稿支持选中文字后打开右键菜单。
-- 菜单并列提供“添加为剧情骨架来源”“添加为作者风格来源”“提取角色卡”。
-- 两个素材入口通过一次性 history state 将选区正文和文档/工程、revision、卷、章节、offset 及标题来源带到素材页；用户可仅保存来源，或生成候选并确认后写库。
-- “提取角色卡”通过 history state 将选区正文与文档、revision、卷、章节、偏移及标题来源传到角色页，读取一次后立即清除；用户仍必须填写目标人物名称，Preview 前后均不会创建角色。
+- 文档库正文编辑区支持将选中文字作为作者风格来源送入素材页。
+- 角色卡与剧情骨架素材入口已删除。
+- 入口通过一次性 history state 携带选区正文和文档/工程、revision、卷、章节、offset 及标题来源；用户可仅保存来源，或生成作者风格候选并确认后写库。
 - 只保存规范化后的纯文本，前后端均限制单次选区不超过 50,000 字符。
 - 来源信息单独保存为元数据，包括文档/工程、章节和字符 offset，不混入正文。
 - 素材选区不会直接创建记录；“仅保存来源”才创建未分析素材，AI 候选在 apply 前也不会写库。
@@ -146,7 +128,7 @@ Rusty 以本地优先方式管理小说项目。当前主界面采用 Electron +
 1. 章节摘要；
 2. 场景识别；
 3. 可选情节扩写；
-4. 基于目标骨架、提示词包、风格、大纲和相关人物卡的改写；
+4. 基于目标骨架、提示词包、风格和大纲的改写；
 5. 人工确认；
 6. 按导出计划合并结果。
 
@@ -170,18 +152,18 @@ Rusty 以本地优先方式管理小说项目。当前主界面采用 Electron +
 
 ### 2.8 章节中心创作工作流
 
-- `rewrite` 与历史 `branch` 普通工程进入同一三栏工作台；`legacy_extract` 保持独立只读兼容路径。新建普通小说工程不再要求用户先选择“改写/扩写”。
-- 左栏只显示章节及持久化阶段状态。`scene_workflow_state` 独立保存每个场景的阶段；章节状态只记录上次活动场景并同步显示该场景阶段。场景列表位于中央章节工作区，状态不再按列表索引推断。
-- 顶部步骤固定为“预分析 → 方向 → 专项分析 → 目标设计 → 写作 → 审查”；写作规划与 Current Draft 是“写作”的内部子视图，不增加新的顶级阶段。
-- 预分析保存摘要、人物、地点、时间、场景类型和基础事件，继续复用现有场景及原文 offset。场景切分可在工作台内轻量调整和确认，确认后才运行 scene-specific 预分析。人工编辑自动保存；切换场景/章节会先 flush 绑定到 loaded scene 的 dirty 草稿，避免丢失或串写；已有人工修改时，重新分析必须先确认覆盖。
-- 创作方向保存稳定 key：`faithful`、`plot_adjust`、`expansion`、`reimagine`，以及本次具体要求和选中的角色/素材 ID；选择方向不会生成正文。
-- Source 是永久源层。任何 Target、Plan 或 Draft 生成都不会覆盖场景原文；下游对象继续保存可回到 Source 的 range/snapshot。
-- 专项分析按 strategy 使用不同结构：faithful 人物修改分析、plot_adjust 事件/因果依赖、expansion 状态桥接、reimagine 边界条件。专项分析只回答 Source 是什么，不替用户决定改法。
-- `SceneTarget` 是统一持久化外壳，但 design 按 strategy 分别保存 ChangeSet、TargetSkeleton、InsertionBlock、BoundaryConditions + TargetSkeleton。所有 AI 目标结果都是可编辑草案，必须由用户整体确认。
-- `WritingPlan` 把已确认 Target 映射为语义正文区块操作：Preserve、Transform、Rewrite、Insert、Delete。coverage 是规划结果统计，不是用户可调的保留度 slider。Faithful 按 block 生成；Preserve 直接复制 Source 且不调用 AI。
-- `scene_current_drafts` 是当前正文权威，正文编辑器自动保存。选区 AI 编辑和 block 重生成只替换指定 range，并使用用户当前编辑后的前文。Expansion 只生成插入内容；Reimagine 在 Preserve 低于 10% 时允许 full scene generation。
-- 审查直接本地计算 Source ↔ Current Draft 传统红绿 Diff，不调用 AI。ReviewMark 仅保存 Source range/text、Draft range、用户备注和 resolved；恢复原文是本地替换，AI 局部/全部备注重改按 range 执行，仍有备注时用户可确认继续。
-- stale 沿依赖链传播：预分析/方向修改使专项分析 stale，专项分析修改使 Target stale，Target 修改使 Plan stale。任何上游修改都不会删除或静默覆盖 Current Draft，UI 会提示正文基于旧目标/旧规划。
+- v56 的 Creative Workflow 只以 `chapter_id` 为创作单元，不读取 scenes、不要求分场或 active scene。历史 scenes、branch、版本和事实表仍由其他模块使用。
+- 阶段为“内容总结 → 方向选择与具体要求 → 专项分析 → 风格 → 写作 → 审查”，`confirmed` 只是完成状态。
+- 当前策略只有 `plot_adjust`（调整剧情）、`expansion`（增加剧情）、`reimagine`（重新构思）；`faithful` 已从当前 schema、提示词、API 类型和 UI 删除。
+- 内容总结读取当前 rewrite head；没有 rewrite 时读取 `original_text`，并保存 source hash。章节正文变化后，下游操作返回 conflict，不静默使用旧分析。
+- 三种专项分析统一保存 `source_outline`、`target_outline`、`constraints`、`analysis_notes`。重新构思额外支持 `brief` / `detailed` 粒度并锁定起始条件、核心目的、结束状态和硬约束。
+- 调整剧情先形成 preserve/modify/delete/insert 文本计划。preserve span 由程序原样复制，只有 modify/insert 调用模型。
+- 增加剧情不修改当前章，而是在其后创建新 chapter；已有后续章节安全后移，不覆盖原下一章。
+- 重新构思按锁定边界、目标大纲、用户要求和选定的作者风格快照整章生成。
+- 调整剧情与增加剧情默认 `source_auto`：优先从完整 TXT source document 安全采样，无法读取则回退当前章。提取直接复用素材系统 `author_style_extraction` 设置，并把设置、风格档案和 guidance 保存为 workflow 快照，不自动创建素材。
+- 重新构思必须选择已分析的 `author_style` material；保存素材 ID、版本和完整快照，之后素材编辑不会改变当前运行。
+- 审查按策略保存结构化 issues；修复只替换 issue range，不整章重新生成。
+- Phase C 最终 UI 尚未实施。当前 Electron 页面只进行类型/API 适配和基础阶段状态展示，不包含最终六阶段工作台、专项分析双栏和作者风格库视觉重构。
 
 主要实现：
 
@@ -190,8 +172,8 @@ Rusty 以本地优先方式管理小说项目。当前主界面采用 Electron +
 - `src/rusty/services/prompt_compiler.py`
 - `desktop/src/pages/CreativeWorkspacePage.tsx`
 - `desktop/src/pages/PromptManagePage.tsx`
-- `tests/test_creative_workspace.py`
-- `tests/test_creative_phase_two.py`
+- `tests/test_chapter_creative_workflow.py`
+- `tests/test_chapter_workflow_schema.py`
 - `tests/test_prompt_definitions.py`
 
 ### 2.9 导出

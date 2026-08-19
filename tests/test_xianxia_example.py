@@ -81,7 +81,7 @@ class XianxiaAIClient(AIClient):
 
 
 class XianxiaExampleTests(unittest.TestCase):
-    def test_xianxia_world_character_technique_and_decision_rules_compile_and_rewrite(self) -> None:
+    def test_xianxia_outline_style_and_decision_rules_compile_and_rewrite(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             database_path = root / "rusty.db"
@@ -118,7 +118,6 @@ class XianxiaExampleTests(unittest.TestCase):
             user_text = rewrite_attempt["request"]["messages"][1]["content"]
             prompt_template = PromptService(database_path).get_template(seeded["prompt_template_id"])
             outline_template = AnchorService(database_path).get_project_outline_template(project_id)
-            character_cards = AnchorService(database_path).list_project_character_cards(project_id)
             style_template = StyleTemplateService(database_path).get_project_style_template(project_id)
 
         extraction_user_text = "\n".join(
@@ -139,7 +138,6 @@ class XianxiaExampleTests(unittest.TestCase):
         self.assertEqual({}, prompt_template.story_anchor)
         self.assertEqual([], prompt_template.characters)
         self.assertIsNotNone(outline_template)
-        self.assertEqual(3, len(character_cards))
         self.assertIsNotNone(style_template)
         self.assertIn("触发—出手—应对—结果", style_template.style_profile_json)
 
@@ -149,14 +147,7 @@ class XianxiaExampleTests(unittest.TestCase):
         self.assertIn("每次攻击都要写出对手的即时应对", user_text)
         self.assertIn("青冥洲", user_text)
         self.assertIn("玄墟天门", user_text)
-        self.assertIn("青崖叠浪掌", user_text)
-        self.assertIn("不得写成火焰、雷电或金色巨掌", user_text)
-        self.assertIn("踏虚七步", user_text)
-        self.assertIn("不得写成空间穿梭", user_text)
-        self.assertIn("玄霜剑式·封江", user_text)
-        self.assertIn("近身突袭，距离三尺以内", user_text)
-        self.assertIn("先以左脚踢膝或勾踝", user_text)
-        self.assertIn("常用两到八字的短句", user_text)
+        self.assertNotIn("Character anchors", user_text)
         self.assertIn("人物对话", user_text)
         self.assertIn("韩烬拔出短刀冲了上来", user_text)
 

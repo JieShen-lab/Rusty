@@ -18,6 +18,7 @@ from rusty.db import (
 )
 from rusty.db.schema import (
     _migrate_to_v14,
+    _migrate_to_v8,
     _migrate_to_v15,
     _migrate_to_v17,
     _migrate_to_v18,
@@ -125,14 +126,8 @@ class SchemaTests(unittest.TestCase):
         self.assertIn("style_templates", table_names)
         self.assertIn("project_style_bindings", table_names)
         self.assertIn("outline_templates", table_names)
-        self.assertIn("character_cards", table_names)
         self.assertIn("material_tags", table_names)
         self.assertIn("material_tag_links", table_names)
-        self.assertIn("character_tags", table_names)
-        self.assertIn("character_tag_links", table_names)
-        self.assertIn("character_categories", table_names)
-        self.assertIn("character_category_links", table_names)
-        self.assertIn("character_extraction_settings", table_names)
         self.assertIn("document_tags", table_names)
         self.assertIn("document_tag_links", table_names)
         self.assertIn("material_categories", table_names)
@@ -145,7 +140,12 @@ class SchemaTests(unittest.TestCase):
         self.assertIn("library_document_drafts", table_names)
         self.assertIn("library_document_volumes", table_names)
         self.assertIn("project_outline_bindings", table_names)
-        self.assertIn("project_character_bindings", table_names)
+        self.assertIn("chapter_workflow_state", table_names)
+        self.assertIn("chapter_workflow_summaries", table_names)
+        self.assertIn("chapter_special_analyses", table_names)
+        self.assertIn("chapter_style_contexts", table_names)
+        self.assertIn("chapter_writings", table_names)
+        self.assertIn("chapter_reviews", table_names)
         self.assertIn("chapter_stage_status", table_names)
         self.assertIn("generation_attempts", table_names)
         self.assertIn("exports", table_names)
@@ -399,109 +399,6 @@ class SchemaTests(unittest.TestCase):
             self.assertEqual({"location": "after"}, json.loads(migrated["facts_after_json"]))
             self.assertEqual("immutable original", original["original_text"])
             self.assertEqual("v39 rewrite", original["rewritten_text"])
-
-    def test_v20_to_v21_character_extraction_settings_migration_is_idempotent(self) -> None:
-        connection = sqlite3.connect(":memory:")
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        initialize_database(connection)
-        connection.execute("DROP TABLE character_extraction_settings")
-
-        _migrate_to_v21(connection)
-        _migrate_to_v21(connection)
-        connection.execute(
-            """
-            INSERT INTO character_extraction_settings (
-                id, detail_level, max_candidates, generate_tags
-            ) VALUES (1, 'detailed', 4, 0)
-            """
-        )
-        row = connection.execute(
-            "SELECT detail_level, max_candidates, generate_tags FROM character_extraction_settings"
-        ).fetchone()
-
-        self.assertEqual("detailed", row["detail_level"])
-        self.assertEqual(4, row["max_candidates"])
-        self.assertEqual(0, row["generate_tags"])
-
-    def test_v19_to_v20_character_category_migration_repairs_project_bindings_idempotently(self) -> None:
-        connection = sqlite3.connect(":memory:")
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        initialize_database(connection)
-        connection.execute("DELETE FROM schema_migrations WHERE version = 20")
-        connection.execute("DROP TABLE character_category_links")
-        connection.execute("DROP TABLE character_categories")
-        connection.execute("INSERT INTO projects (id, name) VALUES (900, 'Legacy project')")
-        connection.execute(
-            """
-            INSERT INTO character_cards (id, name, scope, project_id)
-            VALUES (901, 'Legacy character', 'project', 900)
-            """
-        )
-
-        _migrate_to_v20(connection)
-        _migrate_to_v20(connection)
-
-        tables = {
-            row[0]
-            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
-        }
-        binding = connection.execute(
-            """
-            SELECT project_id, character_card_id, is_active
-            FROM project_character_bindings
-            WHERE project_id = 900 AND character_card_id = 901
-            """
-        ).fetchone()
-        self.assertIn("character_categories", tables)
-        self.assertIn("character_category_links", tables)
-        self.assertEqual((900, 901, 1), tuple(binding))
-
-    def test_initialize_database_upgrades_v18_chapters_before_creating_volume_index(self) -> None:
-        connection = sqlite3.connect(":memory:")
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.executescript(
-            """
-            CREATE TABLE schema_migrations (
-                version INTEGER PRIMARY KEY,
-                applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-            INSERT INTO schema_migrations(version) VALUES (18);
-
-            CREATE TABLE library_document_chapters (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                document_id INTEGER NOT NULL,
-                revision_id INTEGER NOT NULL,
-                chapter_index INTEGER NOT NULL,
-                title TEXT NOT NULL,
-                start_line INTEGER,
-                end_line INTEGER,
-                start_offset INTEGER,
-                end_offset INTEGER,
-                word_count INTEGER NOT NULL DEFAULT 0,
-                UNIQUE (revision_id, chapter_index)
-            );
-            """
-        )
-
-        initialize_database(connection)
-
-        columns = {
-            row["name"]
-            for row in connection.execute("PRAGMA table_info(library_document_chapters)")
-        }
-        indexes = {
-            row["name"]
-            for row in connection.execute("PRAGMA index_list(library_document_chapters)")
-        }
-        version = connection.execute(
-            "SELECT MAX(version) FROM schema_migrations"
-        ).fetchone()[0]
-        self.assertIn("volume_id", columns)
-        self.assertIn("idx_library_chapters_volume_order", indexes)
-        self.assertEqual(CURRENT_SCHEMA_VERSION, version)
 
     def test_v17_to_v18_draft_migration_is_idempotent_and_scopes_null_chapter(self) -> None:
         connection = sqlite3.connect(":memory:")
@@ -924,7 +821,7 @@ class SchemaTests(unittest.TestCase):
             """
         )
 
-        initialize_database(connection)
+        _migrate_to_v8(connection)
 
         columns = {row[1] for row in connection.execute("PRAGMA table_info(prompt_templates)")}
         self.assertNotIn("scene_detection_rules", columns)

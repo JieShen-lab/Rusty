@@ -60,21 +60,20 @@ class MaterialLibraryV22Tests(unittest.TestCase):
     def test_category_type_rules_and_delete_preserves_material(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             service = MaterialService(initialized_database(Path(directory) / "rusty.db"))
-            plot_category = service.create_category("plot_skeleton", "主线")
             style_category = service.create_category("author_style", "动作风格")
             material_id = service.create_material(
-                material_type="plot_skeleton",
+                material_type="author_style",
                 scope="public",
-                name="主线骨架",
-                content={"premise": "选择带来后果。"},
-                category_ids=[plot_category.id],
+                name="动作风格",
+                content={"summary": "短促动作。", "dimensions": []},
+                category_ids=[style_category.id],
             )
             material = service.get_material(material_id)
             assert material is not None
-            self.assertEqual((plot_category.id,), material.category_ids)
-            with self.assertRaisesRegex(ValueError, "type"):
-                service.set_material_category(material_id, style_category.id, True)
-            service.delete_category(plot_category.id)
+            self.assertEqual((style_category.id,), material.category_ids)
+            with self.assertRaisesRegex(ValueError, "Unsupported material type"):
+                service.create_category("plot_skeleton", "removed")
+            service.delete_category(style_category.id)
             material = service.get_material(material_id)
             self.assertIsNotNone(material)
             assert material is not None
@@ -141,12 +140,12 @@ class MaterialLibraryV22Tests(unittest.TestCase):
                 is_default=True,
             )
             service = MaterialService(database_path)
-            category = service.create_category("plot_skeleton", "主线")
+            category = service.create_category("author_style", "叙事风格")
             fake = FakeMaterialPreviewClient()
             extraction = AnchorExtractionService(database_path, ai_client=fake)
             preview = extraction.preview_materials_from_text(
                 "主角进入遗迹，遭遇守卫；同行者对路线发生争执。",
-                task_type="plot_skeleton_extraction",
+                task_type="author_style_extraction",
             )
             self.assertEqual([], service.list_materials())
             self.assertEqual([], service.list_tags())
@@ -178,13 +177,13 @@ class MaterialLibraryV22Tests(unittest.TestCase):
                     selected_candidate_ids=[],
                 )
             prompt = "\n".join(item["content"] for item in fake.calls[0])
-            self.assertIn("plot_skeleton_extraction", prompt)
+            self.assertIn("author_style_extraction", prompt)
 
-    def test_ai_settings_persist_for_exact_two_tasks_without_reset_flow(self) -> None:
+    def test_ai_settings_persist_for_author_style_without_reset_flow(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             database_path = initialized_database(Path(directory) / "rusty.db")
             service = MaterialService(database_path)
-            self.assertEqual(2, len(service.list_ai_settings()))
+            self.assertEqual(1, len(service.list_ai_settings()))
             updated = service.update_ai_settings(
                 "author_style_extraction",
                 model_id=None,
@@ -254,20 +253,12 @@ class MaterialLibraryV22Tests(unittest.TestCase):
                 CURRENT_SCHEMA_VERSION,
                 int(connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]),
             )
-            row = connection.execute(
-                "SELECT scope, project_id, source_metadata_json FROM materials WHERE id = 3"
-            ).fetchone()
-            self.assertEqual("public", row["scope"])
-            self.assertIsNone(row["project_id"])
-            self.assertEqual(7, json.loads(row["source_metadata_json"])["legacy_project_id"])
-            linked = connection.execute(
-                """
-                SELECT f.project_id, f.material_type, ft.tag_id
-                FROM project_material_filters f
-                JOIN project_material_filter_tags ft ON ft.filter_id = f.id
-                """
-            ).fetchone()
-            self.assertEqual((7, "plot_skeleton", 4), tuple(linked))
+            self.assertIsNone(connection.execute("SELECT id FROM materials WHERE id=3").fetchone())
+            self.assertIsNone(
+                connection.execute(
+                    "SELECT id FROM project_material_filters WHERE material_type='plot_skeleton'"
+                ).fetchone()
+            )
             connection.close()
 
 

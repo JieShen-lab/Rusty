@@ -350,8 +350,6 @@ class SceneService:
         scene_id: int,
         character_name: str,
         state: dict[str, Any],
-        *,
-        character_card_id: int | None = None,
     ) -> dict[str, Any]:
         scene = self._require_scene(scene_id)
         name = character_name.strip()
@@ -362,18 +360,16 @@ class SceneService:
             connection.execute(
                 """
                 INSERT INTO character_story_states (
-                    project_id, scene_id, character_card_id, character_name, state_json
-                ) VALUES (?, ?, ?, ?, ?)
+                    project_id, scene_id, character_name, state_json
+                ) VALUES (?, ?, ?, ?)
                 ON CONFLICT(scene_id, character_name)
                 DO UPDATE SET
-                    character_card_id = excluded.character_card_id,
                     state_json = excluded.state_json,
                     updated_at = CURRENT_TIMESTAMP
                 """,
                 (
                     scene.project_id,
                     scene_id,
-                    character_card_id,
                     name,
                     json.dumps(normalized, ensure_ascii=False),
                 ),
@@ -384,7 +380,7 @@ class SceneService:
         with session(self.database_path) as connection:
             rows = connection.execute(
                 """
-                SELECT character_card_id, character_name, state_json, updated_at
+                SELECT character_name, state_json, updated_at
                 FROM character_story_states
                 WHERE scene_id = ?
                 ORDER BY character_name
@@ -393,7 +389,6 @@ class SceneService:
             ).fetchall()
         return [
             {
-                "character_card_id": row["character_card_id"],
                 "character_name": row["character_name"],
                 **{**DEFAULT_CHARACTER_STATE, **json_object(row["state_json"])},
                 "updated_at": row["updated_at"],
