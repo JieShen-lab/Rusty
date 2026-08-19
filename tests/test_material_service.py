@@ -22,14 +22,16 @@ class FakeMaterialAIClient(AIClient):
                 {
                     "materials": [
                         {
-                            "name": "遗迹探索",
-                            "description": "进入遗迹并突破机关。",
+                            "name": "作者甲",
+                            "description": "短句与动作驱动。",
                             "timeline_start_chapter": 11,
                             "timeline_end_chapter": 18,
                             "content": {
-                                "prerequisites": ["获得线索"],
-                                "stages": ["进入", "受阻", "突破"],
-                                "climax": "守护兽现身",
+                                "summary": "短句与动作驱动。",
+                                "dimensions": [{
+                                    "id": "sentence", "name": "句子", "requirement": "分析句式",
+                                    "analysis": "短句为主", "features": ["短"], "examples": ["走。"],
+                                }],
                             },
                         }
                     ]
@@ -42,7 +44,7 @@ class FakeMaterialAIClient(AIClient):
 
 
 class MaterialServiceTests(unittest.TestCase):
-    def test_legacy_project_copy_is_normalized_into_unified_library(self) -> None:
+    def test_author_style_project_copy_is_normalized_into_unified_library(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             database_path = initialized_database(Path(directory) / "rusty.db")
             service = MaterialService(database_path)
@@ -54,11 +56,11 @@ class MaterialServiceTests(unittest.TestCase):
                 )
             tag = service.create_tag("冒险")
             public_id = service.create_material(
-                material_type="plot_skeleton",
+                material_type="author_style",
                 scope="public",
                 name="遗迹探索",
-                description="公共骨架",
-                content={"stages": ["进入", "探索"]},
+                description="公共作者风格",
+                content={"summary": "短句"},
                 tag_ids=[tag.id],
             )
             project_copy_id = service.copy_material(
@@ -69,9 +71,9 @@ class MaterialServiceTests(unittest.TestCase):
             service.update_material(
                 public_id,
                 name="遗迹探索 v2",
-                description="公共骨架更新",
+                description="公共作者风格更新",
                 detail_level="detailed",
-                content={"stages": ["进入", "探索", "高潮"]},
+                content={"summary": "短句与动作"},
                 tag_ids=[tag.id],
             )
 
@@ -92,7 +94,7 @@ class MaterialServiceTests(unittest.TestCase):
             self.assertEqual("遗迹探索", project_copy.name)
             self.assertEqual("遗迹探索 v2", public.name)
 
-    def test_type_specific_ai_extraction_creates_timeline_material(self) -> None:
+    def test_author_style_ai_extraction_creates_author_style_material(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             database_path = initialized_database(Path(directory) / "rusty.db")
             ModelService(database_path).create_model(
@@ -105,15 +107,15 @@ class MaterialServiceTests(unittest.TestCase):
             extraction = AnchorExtractionService(database_path, ai_client=FakeMaterialAIClient())
             material_ids = extraction.extract_materials_from_text(
                 "第十一章，主角循着线索进入遗迹。",
-                material_type="plot_skeleton",
+                material_type="author_style",
             )
             material = MaterialService(database_path).get_material(material_ids[0])
             self.assertIsNotNone(material)
             assert material is not None
-            self.assertEqual("遗迹探索", material.name)
+            self.assertEqual("作者甲", material.name)
             self.assertEqual(11, material.timeline_start_chapter)
             self.assertEqual(18, material.timeline_end_chapter)
-            self.assertIn("plot_skeleton", material.import_metadata_json)
+            self.assertIn("author_style", material.import_metadata_json)
 
 
 if __name__ == "__main__":

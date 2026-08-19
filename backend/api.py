@@ -28,7 +28,7 @@ from rusty.services.ai_client import (
     AIReadTimeoutError,
     AIResponseParseError,
 )
-from rusty.services.anchor_service import AnchorService, CharacterCard, OutlineTemplate
+from rusty.services.anchor_service import AnchorService, OutlineTemplate
 from rusty.services.material_service import Material, MaterialService, compile_material_ai_prompt
 from rusty.services.analysis_service import AnalysisService
 from rusty.services.chapter_split_service import ChapterSplitService
@@ -54,7 +54,6 @@ from rusty.services.prompt_definition_service import PromptDefinitionService
 from rusty.services.context_service import ContextService
 from rusty.services.creative_workflow_service import CreativeWorkflowService
 from rusty.services.rewrite_workflow_service import RewriteWorkflowService
-from rusty.services.resource_analysis_service import ResourceAnalysisService
 from rusty.services.scene_service import SceneService
 from rusty.services.scene_rewrite_orchestrator import SceneRewriteOrchestrator
 from rusty.services.scene_boundary_ai_service import SceneBoundaryAIService
@@ -282,7 +281,6 @@ def create_app(
     context_service = ContextService(db_path)
     creative_workflow_service = CreativeWorkflowService(db_path, ai_client=workflow_ai_client)
     rewrite_workflow_service = RewriteWorkflowService(db_path)
-    resource_analysis_service = ResourceAnalysisService(db_path)
     scene_rewrite_orchestrator = SceneRewriteOrchestrator(db_path)
     branch_service = BranchService(db_path)
     plot_generation_orchestrator = PlotGenerationOrchestrator(
@@ -3083,6 +3081,24 @@ def create_app(
         _require_project(project_service, project_id)
         anchor_service.unbind_project_character(project_id, card_id)
         return list_project_characters(project_id)
+
+    removed_character_prefixes = (
+        "/api/characters",
+        "/api/character-categories",
+        "/api/character-tags",
+        "/api/character-projects",
+        "/api/character-extraction",
+        "/api/selection/characters",
+    )
+    app.router.routes = [
+        route for route in app.router.routes
+        if not str(getattr(route, "path", "")).startswith(removed_character_prefixes)
+        and "/character-modification-analysis" not in str(getattr(route, "path", ""))
+        and not (
+            str(getattr(route, "path", "")).startswith("/api/projects/")
+            and "/characters" in str(getattr(route, "path", ""))
+        )
+    ]
 
     return app
 

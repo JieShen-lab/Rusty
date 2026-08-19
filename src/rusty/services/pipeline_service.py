@@ -9,7 +9,7 @@ from typing import Any, Callable
 from rusty.db import session
 from rusty.models import ChapterAIOutputs, ChapterError, ChapterRecord, StageStatus, count_text_units
 from rusty.services.ai_client import AIClient, AIResponse, create_ai_client
-from rusty.services.anchor_service import AnchorService, CharacterCard, OutlineTemplate
+from rusty.services.anchor_service import AnchorService, OutlineTemplate
 from rusty.services.chapter_version_service import ChapterVersionService
 from rusty.services.model_service import ModelConfig, ModelService
 from rusty.db import default_database_path
@@ -703,10 +703,6 @@ class PipelineService:
         settings = self.project_service.get_project_settings(chapter.project_id)
         style_template = self.style_service.get_project_style_template(chapter.project_id)
         outline_template = self.anchor_service.get_project_outline_template(chapter.project_id)
-        character_cards = self.anchor_service.list_relevant_project_character_cards(
-            chapter.project_id,
-            chapter.original_text,
-        )
         target_text = ""
         if settings and settings.target_word_count:
             target_text = f"\nTarget length: at least {settings.target_word_count} non-whitespace characters."
@@ -715,7 +711,6 @@ class PipelineService:
         style_text = self._style_rewrite_prompt(style_template)
         style_section = f"\n\nStyle template ({style_template.name}):\n{style_text}" if style_template and style_text else ""
         outline_section = self._outline_section(outline_template)
-        character_section = self._character_cards_section(character_cards)
         package_sections = self._prompt_package_rewrite_sections(chapter, template)
         marker_section = self._scene_marker_section(chapter.id)
         return self.prompt_compiler.compile_rewrite(
@@ -727,7 +722,7 @@ class PipelineService:
             style_system_rules=style_template.global_prompt if style_template else "",
             style_section=style_section,
             outline_section=outline_section,
-            character_section=character_section,
+            character_section="",
             marker_section=marker_section,
         )
 
@@ -1194,35 +1189,9 @@ class PipelineService:
         text = "\n\n".join(part for part in parts if part)
         return f"\n\nPlot outline anchor ({outline_template.name}):\n{text}" if text else ""
 
-    @staticmethod
-    def _character_cards_section(character_cards: list[CharacterCard]) -> str:
-        if not character_cards:
-            return ""
-        sections = []
-        for card in character_cards:
-            details = [
-                f"Name: {card.name}",
-                f"Aliases: {', '.join(card.aliases)}" if card.aliases else "",
-                f"Priority: {card.priority}",
-                f"Main character: {'yes' if card.is_main else 'no'}",
-                f"Description: {card.description}" if card.description else "",
-                f"Relationships: {card.relationship_notes}" if card.relationship_notes else "",
-                f"Personality: {card.personality}" if card.personality else "",
-                f"Speech style: {card.speech_style}" if card.speech_style else "",
-                f"Action constraints: {card.action_constraints}" if card.action_constraints else "",
-                f"Anti-OOC rules: {card.anti_ooc_rules}" if card.anti_ooc_rules else "",
-                f"Structured profile JSON:\n{card.profile_json}" if card.profile_json and card.profile_json != "{}" else "",
-            ]
-            sections.append("\n".join(item for item in details if item))
-        return "\n\nCharacter anchors:\n" + "\n\n".join(sections)
-
     def _anchor_snapshot_for_chapter(self, chapter: ChapterRecord) -> dict:
         snapshot = self._style_snapshot_for_project(chapter.project_id)
         outline_template = self.anchor_service.get_project_outline_template(chapter.project_id)
-        character_cards = self.anchor_service.list_relevant_project_character_cards(
-            chapter.project_id,
-            chapter.original_text,
-        )
         snapshot["outline_template"] = (
             {
                 "id": outline_template.id,
@@ -1235,23 +1204,6 @@ class PipelineService:
             if outline_template is not None
             else None
         )
-        snapshot["character_cards"] = [
-            {
-                "id": card.id,
-                "name": card.name,
-                "aliases_json": card.aliases_json,
-                "version": card.version,
-                "priority": card.priority,
-                "is_main": card.is_main,
-                "relationship_notes": card.relationship_notes,
-                "personality": card.personality,
-                "speech_style": card.speech_style,
-                "action_constraints": card.action_constraints,
-                "anti_ooc_rules": card.anti_ooc_rules,
-                "profile_json": card.profile_json,
-            }
-            for card in character_cards
-        ]
         return snapshot
 
 

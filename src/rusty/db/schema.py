@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .connection import session
 
-CURRENT_SCHEMA_VERSION = 54
+CURRENT_SCHEMA_VERSION = 55
 
 logger = logging.getLogger(__name__)
 
@@ -241,44 +241,9 @@ CREATE TABLE IF NOT EXISTS outline_templates (
     deleted_at TEXT
 );
 
-CREATE TABLE IF NOT EXISTS character_cards (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    aliases_json TEXT NOT NULL DEFAULT '[]',
-    description TEXT NOT NULL DEFAULT '',
-    priority INTEGER NOT NULL DEFAULT 50,
-    is_main INTEGER NOT NULL DEFAULT 0,
-    relationship_notes TEXT NOT NULL DEFAULT '',
-    personality TEXT NOT NULL DEFAULT '',
-    speech_style TEXT NOT NULL DEFAULT '',
-    action_constraints TEXT NOT NULL DEFAULT '',
-    anti_ooc_rules TEXT NOT NULL DEFAULT '',
-    profile_json TEXT NOT NULL DEFAULT '{}',
-    identity TEXT NOT NULL DEFAULT '',
-    age TEXT NOT NULL DEFAULT '',
-    setting_text TEXT NOT NULL DEFAULT '',
-    custom_fields_json TEXT NOT NULL DEFAULT '[]',
-    stable_fields_json TEXT NOT NULL DEFAULT '[]',
-    raw_text TEXT NOT NULL DEFAULT '',
-    analysis_status TEXT NOT NULL DEFAULT 'analyzed'
-        CHECK (analysis_status IN ('unanalyzed', 'analyzed')),
-    cover_path TEXT,
-    cover_updated_at TEXT,
-    source_metadata_json TEXT NOT NULL DEFAULT '{}',
-    import_metadata_json TEXT NOT NULL DEFAULT '{}',
-    scope TEXT NOT NULL DEFAULT 'public' CHECK (scope IN ('public', 'project')),
-    project_id INTEGER,
-    source_character_card_id INTEGER,
-    source_version INTEGER,
-    version INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    deleted_at TEXT
-);
-
 CREATE TABLE IF NOT EXISTS materials (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    material_type TEXT NOT NULL CHECK (material_type IN ('plot_skeleton', 'author_style')),
+    material_type TEXT NOT NULL CHECK (material_type = 'author_style'),
     scope TEXT NOT NULL DEFAULT 'public' CHECK (scope IN ('public', 'project')),
     project_id INTEGER,
     name TEXT NOT NULL,
@@ -329,81 +294,6 @@ CREATE TABLE IF NOT EXISTS material_tag_links (
     FOREIGN KEY (tag_id) REFERENCES material_tags(id) ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS character_tags (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    normalized_name TEXT NOT NULL,
-    sort_order INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    deleted_at TEXT
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_character_tags_normalized_active
-    ON character_tags(normalized_name)
-    WHERE deleted_at IS NULL;
-
-CREATE TABLE IF NOT EXISTS character_tag_links (
-    character_card_id INTEGER NOT NULL,
-    tag_id INTEGER NOT NULL,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (character_card_id, tag_id),
-    FOREIGN KEY (character_card_id) REFERENCES character_cards(id) ON DELETE CASCADE,
-    FOREIGN KEY (tag_id) REFERENCES character_tags(id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS character_categories (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    normalized_name TEXT NOT NULL,
-    sort_order INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    deleted_at TEXT
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_character_categories_normalized_active
-    ON character_categories(normalized_name)
-    WHERE deleted_at IS NULL;
-CREATE INDEX IF NOT EXISTS idx_character_categories_sort_order
-    ON character_categories(sort_order);
-
-CREATE TABLE IF NOT EXISTS character_category_links (
-    character_card_id INTEGER NOT NULL,
-    category_id INTEGER NOT NULL,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (character_card_id, category_id),
-    FOREIGN KEY (character_card_id) REFERENCES character_cards(id) ON DELETE CASCADE,
-    FOREIGN KEY (category_id) REFERENCES character_categories(id) ON DELETE CASCADE
-);
-
-CREATE INDEX IF NOT EXISTS idx_character_category_links_category
-    ON character_category_links(category_id);
-CREATE INDEX IF NOT EXISTS idx_character_category_links_character
-    ON character_category_links(character_card_id);
-
-CREATE TABLE IF NOT EXISTS character_extraction_settings (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    model_id INTEGER,
-    detail_level TEXT NOT NULL DEFAULT 'standard'
-        CHECK (detail_level IN ('brief', 'standard', 'detailed')),
-    max_candidates INTEGER NOT NULL DEFAULT 8,
-    extract_all_characters INTEGER NOT NULL DEFAULT 1,
-    generate_tags INTEGER NOT NULL DEFAULT 1,
-    generate_appearance INTEGER NOT NULL DEFAULT 1,
-    generate_relationships INTEGER NOT NULL DEFAULT 1,
-    generate_personality INTEGER NOT NULL DEFAULT 1,
-    generate_speech_style INTEGER NOT NULL DEFAULT 1,
-    generate_action_constraints INTEGER NOT NULL DEFAULT 1,
-    generate_anti_ooc_rules INTEGER NOT NULL DEFAULT 1,
-    generate_abilities_background INTEGER NOT NULL DEFAULT 1,
-    custom_requirements TEXT NOT NULL DEFAULT '',
-    system_prompt TEXT NOT NULL DEFAULT '',
-    dimensions_json TEXT NOT NULL DEFAULT '[]',
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (model_id) REFERENCES ai_models(id) ON DELETE SET NULL
-);
-
 CREATE TABLE IF NOT EXISTS project_documents (
     project_id INTEGER PRIMARY KEY,
     document_id INTEGER NOT NULL,
@@ -424,18 +314,6 @@ CREATE TABLE IF NOT EXISTS project_outline_bindings (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
     FOREIGN KEY (outline_template_id) REFERENCES outline_templates(id) ON DELETE RESTRICT
-);
-
-CREATE TABLE IF NOT EXISTS project_character_bindings (
-    project_id INTEGER NOT NULL,
-    character_card_id INTEGER NOT NULL,
-    sort_order INTEGER NOT NULL DEFAULT 0,
-    is_active INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (project_id, character_card_id),
-    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-    FOREIGN KEY (character_card_id) REFERENCES character_cards(id) ON DELETE RESTRICT
 );
 
 CREATE TABLE IF NOT EXISTS chapter_stage_status (
@@ -4687,6 +4565,301 @@ def _material_ai_v54_defaults() -> dict[str, dict[str, object]]:
     }
 
 
+def _migrate_to_v55(connection: sqlite3.Connection) -> None:
+    """Remove character-card assets and make reusable materials author-style only."""
+    connection.execute("PRAGMA defer_foreign_keys = ON")
+
+    # Keep chapter character-state facts, but sever the deleted asset identity.
+    if _table_exists(connection, "character_story_states"):
+        connection.executescript(
+            """
+            DROP TABLE IF EXISTS character_story_states_v55;
+            CREATE TABLE character_story_states_v55 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id INTEGER NOT NULL,
+                scene_id INTEGER NOT NULL,
+                character_name TEXT NOT NULL,
+                state_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (scene_id, character_name),
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+                FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE
+            );
+            INSERT INTO character_story_states_v55 (
+                id, project_id, scene_id, character_name, state_json, created_at, updated_at
+            )
+            SELECT id, project_id, scene_id, character_name, state_json, created_at, updated_at
+            FROM character_story_states;
+            DROP TABLE character_story_states;
+            ALTER TABLE character_story_states_v55 RENAME TO character_story_states;
+            CREATE INDEX IF NOT EXISTS idx_character_states_project_name
+                ON character_story_states(project_id, character_name, scene_id);
+            """
+        )
+
+    # This table was the Character Card-specific branch of the old scene workflow.
+    connection.execute("DROP TABLE IF EXISTS character_modification_analyses")
+    for table in (
+        "project_character_bindings",
+        "character_category_links",
+        "character_tag_links",
+        "character_categories",
+        "character_tags",
+        "character_extraction_settings",
+        "character_cards",
+    ):
+        connection.execute(f"DROP TABLE IF EXISTS {table}")
+
+    plot_ids = [
+        int(row[0])
+        for row in connection.execute(
+            "SELECT id FROM materials WHERE material_type = 'plot_skeleton'"
+        ).fetchall()
+    ]
+    if plot_ids:
+        placeholders = ",".join("?" for _ in plot_ids)
+        for table in ("material_tag_links", "material_category_links", "rewrite_plan_materials"):
+            if _table_exists(connection, table):
+                connection.execute(
+                    f"DELETE FROM {table} WHERE material_id IN ({placeholders})",
+                    plot_ids,
+                )
+        connection.execute(
+            f"UPDATE materials SET source_material_id = NULL WHERE source_material_id IN ({placeholders})",
+            plot_ids,
+        )
+        connection.execute(
+            f"DELETE FROM materials WHERE id IN ({placeholders})",
+            plot_ids,
+        )
+
+    material_links = (
+        connection.execute("SELECT material_id, tag_id, created_at FROM material_tag_links").fetchall()
+        if _table_exists(connection, "material_tag_links") else []
+    )
+    category_links = (
+        connection.execute("SELECT material_id, category_id, created_at FROM material_category_links").fetchall()
+        if _table_exists(connection, "material_category_links") else []
+    )
+    connection.execute("DROP TABLE IF EXISTS material_tag_links")
+    connection.execute("DROP TABLE IF EXISTS material_category_links")
+    connection.execute("DROP TABLE IF EXISTS materials_v55")
+    connection.execute(
+        """
+        CREATE TABLE materials_v55 (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            material_type TEXT NOT NULL CHECK (material_type = 'author_style'),
+            scope TEXT NOT NULL DEFAULT 'public' CHECK (scope IN ('public', 'project')),
+            project_id INTEGER,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            detail_level TEXT NOT NULL DEFAULT 'standard' CHECK (detail_level IN ('brief', 'standard', 'detailed')),
+            raw_text TEXT NOT NULL DEFAULT '',
+            content_json TEXT NOT NULL DEFAULT '{}',
+            analysis_status TEXT NOT NULL DEFAULT 'analyzed' CHECK (analysis_status IN ('unanalyzed', 'analyzed')),
+            source_metadata_json TEXT NOT NULL DEFAULT '{}',
+            import_metadata_json TEXT NOT NULL DEFAULT '{}',
+            source_material_id INTEGER,
+            source_version INTEGER,
+            legacy_outline_id INTEGER UNIQUE,
+            timeline_start_chapter INTEGER,
+            timeline_end_chapter INTEGER,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            version INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            deleted_at TEXT,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (source_material_id) REFERENCES materials_v55(id) ON DELETE SET NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO materials_v55
+        SELECT * FROM materials WHERE material_type = 'author_style'
+        """
+    )
+    connection.execute("DROP TABLE materials")
+    connection.execute("ALTER TABLE materials_v55 RENAME TO materials")
+    connection.executescript(
+        """
+        CREATE INDEX idx_materials_scope_project_timeline
+            ON materials(scope, project_id, timeline_start_chapter, sort_order);
+        CREATE INDEX idx_materials_public_type
+            ON materials(scope, material_type, updated_at);
+        CREATE TABLE material_tag_links (
+            material_id INTEGER NOT NULL,
+            tag_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (material_id, tag_id),
+            FOREIGN KEY (material_id) REFERENCES materials(id) ON DELETE CASCADE,
+            FOREIGN KEY (tag_id) REFERENCES material_tags(id) ON DELETE CASCADE
+        );
+        """
+    )
+    connection.executemany(
+        "INSERT INTO material_tag_links(material_id, tag_id, created_at) VALUES (?, ?, ?)",
+        [(row["material_id"], row["tag_id"], row["created_at"]) for row in material_links],
+    )
+
+    category_rows = (
+        connection.execute(
+            "SELECT * FROM material_categories WHERE material_type = 'author_style' ORDER BY id"
+        ).fetchall()
+        if _table_exists(connection, "material_categories") else []
+    )
+    connection.execute("DROP TABLE IF EXISTS material_categories")
+    connection.executescript(
+        """
+        CREATE TABLE material_categories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            material_type TEXT NOT NULL CHECK (material_type = 'author_style'),
+            name TEXT NOT NULL,
+            normalized_name TEXT NOT NULL,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            deleted_at TEXT
+        );
+        CREATE UNIQUE INDEX idx_material_categories_type_name_active
+            ON material_categories(material_type, normalized_name) WHERE deleted_at IS NULL;
+        CREATE INDEX idx_material_categories_type_sort
+            ON material_categories(material_type, sort_order);
+        CREATE TABLE material_category_links (
+            material_id INTEGER NOT NULL,
+            category_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (material_id, category_id),
+            FOREIGN KEY (material_id) REFERENCES materials(id) ON DELETE CASCADE,
+            FOREIGN KEY (category_id) REFERENCES material_categories(id) ON DELETE CASCADE
+        );
+        CREATE INDEX idx_material_category_links_category ON material_category_links(category_id);
+        CREATE INDEX idx_material_category_links_material ON material_category_links(material_id);
+        """
+    )
+    connection.executemany(
+        """
+        INSERT INTO material_categories(
+            id, material_type, name, normalized_name, sort_order, created_at, updated_at, deleted_at
+        ) VALUES (?, 'author_style', ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (row["id"], row["name"], row["normalized_name"], row["sort_order"],
+             row["created_at"], row["updated_at"], row["deleted_at"])
+            for row in category_rows
+        ],
+    )
+    valid_category_ids = {int(row["id"]) for row in category_rows}
+    connection.executemany(
+        "INSERT INTO material_category_links(material_id, category_id, created_at) VALUES (?, ?, ?)",
+        [
+            (row["material_id"], row["category_id"], row["created_at"])
+            for row in category_links if int(row["category_id"]) in valid_category_ids
+        ],
+    )
+
+    filter_rows = (
+        connection.execute(
+            "SELECT * FROM project_material_filters WHERE material_type = 'author_style' ORDER BY id"
+        ).fetchall()
+        if _table_exists(connection, "project_material_filters") else []
+    )
+    filter_tags = (
+        connection.execute("SELECT * FROM project_material_filter_tags").fetchall()
+        if _table_exists(connection, "project_material_filter_tags") else []
+    )
+    connection.execute("DROP TABLE IF EXISTS project_material_filter_tags")
+    connection.execute("DROP TABLE IF EXISTS project_material_filters")
+    connection.executescript(
+        """
+        CREATE TABLE project_material_filters (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            material_type TEXT NOT NULL CHECK (material_type = 'author_style'),
+            match_mode TEXT NOT NULL DEFAULT 'any' CHECK (match_mode IN ('any', 'all')),
+            manual_material_ids_json TEXT NOT NULL DEFAULT '[]',
+            include_scene_keywords INTEGER NOT NULL DEFAULT 1,
+            include_applicable_scene_tags INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (project_id, material_type),
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+        );
+        CREATE TABLE project_material_filter_tags (
+            filter_id INTEGER NOT NULL,
+            tag_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (filter_id, tag_id),
+            FOREIGN KEY (filter_id) REFERENCES project_material_filters(id) ON DELETE CASCADE,
+            FOREIGN KEY (tag_id) REFERENCES material_tags(id) ON DELETE CASCADE
+        );
+        CREATE INDEX idx_project_material_filter_tags_tag ON project_material_filter_tags(tag_id);
+        """
+    )
+    connection.executemany(
+        """
+        INSERT INTO project_material_filters(
+            id, project_id, material_type, match_mode, manual_material_ids_json,
+            include_scene_keywords, include_applicable_scene_tags, created_at, updated_at
+        ) VALUES (?, ?, 'author_style', ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (row["id"], row["project_id"], row["match_mode"], row["manual_material_ids_json"],
+             row["include_scene_keywords"], row["include_applicable_scene_tags"],
+             row["created_at"], row["updated_at"])
+            for row in filter_rows
+        ],
+    )
+    valid_filter_ids = {int(row["id"]) for row in filter_rows}
+    connection.executemany(
+        "INSERT INTO project_material_filter_tags(filter_id, tag_id, created_at) VALUES (?, ?, ?)",
+        [
+            (row["filter_id"], row["tag_id"], row["created_at"])
+            for row in filter_tags if int(row["filter_id"]) in valid_filter_ids
+        ],
+    )
+
+    author_settings = connection.execute(
+        "SELECT * FROM material_ai_settings WHERE task_type = 'author_style_extraction'"
+    ).fetchone()
+    connection.execute("DROP TABLE IF EXISTS material_ai_settings")
+    connection.execute(
+        """
+        CREATE TABLE material_ai_settings (
+            task_type TEXT PRIMARY KEY CHECK (task_type = 'author_style_extraction'),
+            model_id INTEGER,
+            detail_level TEXT NOT NULL DEFAULT 'standard' CHECK (detail_level IN ('brief', 'standard', 'detailed')),
+            system_prompt TEXT NOT NULL DEFAULT '',
+            base_instruction TEXT NOT NULL DEFAULT '',
+            dimensions_json TEXT NOT NULL DEFAULT '[]',
+            extra_requirements TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (model_id) REFERENCES ai_models(id) ON DELETE SET NULL
+        )
+        """
+    )
+    if author_settings is not None:
+        connection.execute(
+            """
+            INSERT INTO material_ai_settings VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            tuple(author_settings),
+        )
+    else:
+        default = _material_ai_v54_defaults()["author_style_extraction"]
+        connection.execute(
+            """
+            INSERT INTO material_ai_settings(
+                task_type, detail_level, system_prompt, base_instruction, dimensions_json
+            ) VALUES ('author_style_extraction', 'standard', ?, ?, ?)
+            """,
+            (default["system_prompt"], default["base_instruction"],
+             json.dumps(default["dimensions"], ensure_ascii=False)),
+        )
+
+
 def _safe_json_list(value: object) -> list[dict[str, object]]:
     try:
         parsed = json.loads(str(value or "[]"))
@@ -5091,6 +5264,7 @@ MIGRATIONS = {
     52: _migrate_to_v52,
     53: _migrate_to_v53,
     54: _migrate_to_v54,
+    55: _migrate_to_v55,
 }
 
 

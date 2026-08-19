@@ -12,13 +12,6 @@ import type {
   CreativeIntent,
   CreativeStrategy,
   CompiledPromptPreview,
-  CharacterCard,
-  CharacterModificationAnalysis,
-  CharacterCardWrite,
-  CharacterCategory,
-  CharacterExtractionPreview,
-  CharacterExtractionSettings,
-  CharacterProjectSummary,
   ExportPlanItem,
   ExportPlanUpdate,
   GenerationAttempt,
@@ -37,7 +30,6 @@ import type {
   MaterialUpdate,
   MaterialWrite,
   ResourceTag,
-  SelectionResourceCreate,
   SplitPreview,
   ModelWrite,
   LibraryDocument,
@@ -57,7 +49,6 @@ import type {
   DocumentLibrarySettings,
   PreviewResponse,
   Project,
-  ProjectCharacterBindings,
   ProjectDetail,
   ProjectMaterialFilter,
   ProjectKind,
@@ -739,42 +730,6 @@ export function deleteMaterial(materialId: number) {
   return request<{ ok: boolean }>(`/api/materials/${materialId}/delete`, { method: 'POST' });
 }
 
-export function getCharacterCards(
-  scope?: 'public' | 'project',
-  projectId?: number | null,
-  categoryId?: number | null,
-) {
-  const params = new URLSearchParams();
-  if (scope) params.set('scope', scope);
-  if (projectId !== undefined && projectId !== null) params.set('project_id', String(projectId));
-  if (categoryId !== undefined && categoryId !== null) params.set('category_id', String(categoryId));
-  const query = params.size ? `?${params.toString()}` : '';
-  return request<CharacterCard[]>(`/api/characters${query}`);
-}
-
-export function getCharacterTags() {
-  return request<ResourceTag[]>('/api/character-tags');
-}
-
-export function createCharacterTag(name: string) {
-  return request<ResourceTag>('/api/character-tags', { method: 'POST', body: JSON.stringify({ name }) });
-}
-
-export function renameCharacterTag(tagId: number, name: string) {
-  return request<ResourceTag>(`/api/character-tags/${tagId}`, { method: 'POST', body: JSON.stringify({ name }) });
-}
-
-export function deleteCharacterTag(tagId: number) {
-  return request<{ ok: boolean }>(`/api/character-tags/${tagId}/delete`, { method: 'POST' });
-}
-
-export function assignCharacterTag(cardId: number, tagId: number, selected: boolean) {
-  return request<CharacterCard>(`/api/characters/${cardId}/tags/${tagId}`, {
-    method: 'POST',
-    body: JSON.stringify({ selected }),
-  });
-}
-
 export function getMaterialCategories(materialType?: MaterialType) {
   const query = materialType ? `?material_type=${materialType}` : '';
   return request<MaterialCategory[]>(`/api/material-categories${query}`);
@@ -895,114 +850,6 @@ export function applyMaterialExtraction(payload: {
   return request<MaterialExtractionApplyResult>('/api/material-extractions/apply', {
     method: 'POST',
     body: JSON.stringify(payload),
-  });
-}
-
-export function getCharacterCategories() {
-  return request<CharacterCategory[]>('/api/character-categories');
-}
-
-export function createCharacterCategory(name: string) {
-  return request<CharacterCategory>('/api/character-categories', {
-    method: 'POST',
-    body: JSON.stringify({ name }),
-  });
-}
-
-export function renameCharacterCategory(categoryId: number, name: string) {
-  return request<CharacterCategory>(`/api/character-categories/${categoryId}`, {
-    method: 'POST',
-    body: JSON.stringify({ name }),
-  });
-}
-
-export function deleteCharacterCategory(categoryId: number) {
-  return request<{ ok: boolean }>(`/api/character-categories/${categoryId}/delete`, {
-    method: 'POST',
-  });
-}
-
-export function assignCharacterCategory(cardId: number, categoryId: number, selected: boolean) {
-  return request<CharacterCard>(`/api/characters/${cardId}/categories/${categoryId}`, {
-    method: 'POST',
-    body: JSON.stringify({ selected }),
-  });
-}
-
-export function getCharacterProjectSummaries() {
-  return request<CharacterProjectSummary[]>('/api/character-projects/summary');
-}
-
-export function saveCharacterCover(cardId: number, dataBase64: string) {
-  return request<CharacterCard>(`/api/characters/${cardId}/cover`, {
-    method: 'POST',
-    body: JSON.stringify({ data_base64: dataBase64 }),
-  });
-}
-
-export function removeCharacterCover(cardId: number) {
-  return request<CharacterCard>(`/api/characters/${cardId}/cover/delete`, { method: 'POST' });
-}
-
-export function characterCoverUrl(cardId: number) {
-  return `${apiBase()}/api/characters/${cardId}/cover`;
-}
-
-export function createCharacterFromSelection(payload: SelectionResourceCreate) {
-  return request<CharacterCard>('/api/selection/characters', { method: 'POST', body: JSON.stringify(payload) });
-}
-
-export function createCharacterCard(payload: CharacterCardWrite) {
-  return request<CharacterCard>('/api/characters', { method: 'POST', body: JSON.stringify(payload) });
-}
-
-export function importCharacterCard(payload: CharacterCardWrite) {
-  return request<CharacterCard>('/api/characters/import', { method: 'POST', body: JSON.stringify(payload) });
-}
-
-export function getCharacterExtractionSettings() {
-  return request<CharacterExtractionSettings>('/api/character-extraction/settings');
-}
-
-export function updateCharacterExtractionSettings(payload: Omit<CharacterExtractionSettings, 'prompt_preview'>) {
-  return request<CharacterExtractionSettings>('/api/character-extraction/settings', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
-}
-
-export function resetCharacterExtractionSettings() {
-  return request<CharacterExtractionSettings>('/api/character-extraction/settings/reset', { method: 'POST' });
-}
-
-export function previewCharacterExtraction(payload: {
-  target_character_name: string;
-  source_text: string;
-  detail_level?: 'brief' | 'standard' | 'detailed' | null;
-  model_id?: number | null;
-  source_metadata?: Record<string, unknown>;
-}) {
-  return request<CharacterExtractionPreview>('/api/characters/extract/preview', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
-}
-
-export function updateCharacterCard(cardId: number, payload: CharacterCardWrite) {
-  return request<CharacterCard>(`/api/characters/${cardId}`, { method: 'POST', body: JSON.stringify(payload) });
-}
-
-export function deleteCharacterCard(cardId: number) {
-  return request<{ ok: boolean }>(`/api/characters/${cardId}/delete`, { method: 'POST' });
-}
-
-export function getProjectCharacters(projectId: number) {
-  return request<ProjectCharacterBindings>(`/api/projects/${projectId}/characters`);
-}
-
-export function unbindProjectCharacter(projectId: number, characterCardId: number) {
-  return request<ProjectCharacterBindings>(`/api/projects/${projectId}/characters/${characterCardId}/unbind`, {
-    method: 'POST',
   });
 }
 
@@ -1176,8 +1023,6 @@ export function getSceneCreativeIntent(sceneId: number) {
 export function saveSceneCreativeIntent(sceneId: number, value: {
   strategy: CreativeStrategy;
   user_instruction: string;
-  selected_character_ids?: number[];
-  selected_plot_material_ids?: number[];
   selected_scene_material_ids?: number[];
 }) {
   return request<CreativeIntent>(`/api/scenes/${sceneId}/creative-intent`, {
@@ -1186,29 +1031,6 @@ export function saveSceneCreativeIntent(sceneId: number, value: {
   });
 }
 
-export function getCharacterModificationAnalysis(sceneId: number) {
-  return request<CharacterModificationAnalysis | null>(`/api/scenes/${sceneId}/character-modification-analysis`);
-}
-
-export function runCharacterModificationAnalysis(sceneId: number, value: {
-  source_character: string;
-  target_character_card_id: number;
-  replace_existing?: boolean;
-}) {
-  return request<CharacterModificationAnalysis>(`/api/scenes/${sceneId}/character-modification-analysis/run`, {
-    method: 'POST', body: JSON.stringify(value),
-  });
-}
-
-export function saveCharacterModificationAnalysis(sceneId: number, value: CharacterModificationAnalysis) {
-  return request<CharacterModificationAnalysis>(`/api/scenes/${sceneId}/character-modification-analysis`, {
-    method: 'PUT', body: JSON.stringify(value),
-  });
-}
-
-export function confirmCharacterModificationAnalysis(sceneId: number) {
-  return request<CharacterModificationAnalysis>(`/api/scenes/${sceneId}/character-modification-analysis/confirm`, { method: 'POST' });
-}
 export function getStrategyAnalysis(sceneId: number) { return request<import('./types').StrategySceneAnalysis | null>(`/api/scenes/${sceneId}/strategy-analysis`); }
 export function runStrategyAnalysis(sceneId: number, replaceExisting = false) { return request<import('./types').StrategySceneAnalysis>(`/api/scenes/${sceneId}/strategy-analysis/run`, { method: 'POST', body: JSON.stringify({ replace_existing: replaceExisting }) }); }
 export function saveStrategyAnalysis(sceneId: number, value: import('./types').StrategySceneAnalysis) { return request<import('./types').StrategySceneAnalysis>(`/api/scenes/${sceneId}/strategy-analysis`, { method: 'PUT', body: JSON.stringify(value) }); }
@@ -1295,7 +1117,7 @@ export function getSceneCharacterStates(sceneId: number) {
 
 export function saveSceneCharacterState(
   sceneId: number,
-  payload: { character_name: string; character_card_id?: number | null; state: Record<string, unknown> },
+  payload: { character_name: string; state: Record<string, unknown> },
 ) {
   return request<import('./types').CharacterStoryState>(`/api/scenes/${sceneId}/character-states`, {
     method: 'POST',

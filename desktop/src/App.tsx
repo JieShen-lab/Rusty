@@ -1,7 +1,6 @@
 import { useEffect, useLayoutEffect, useState } from 'react';
 import { AppShell } from './components/AppShell';
 import type { RouteKey } from './components/Sidebar';
-import { CharacterLibraryPage } from './pages/CharacterLibraryPage';
 import { DocumentLibraryPage } from './pages/DocumentLibraryPage';
 import { ModelManagePage } from './pages/ModelManagePage';
 import { MaterialLibraryPage } from './pages/MaterialLibraryPage';
@@ -40,7 +39,6 @@ function parseRoute(pathname: string): Route {
   if (parts[0] === 'models') return { key: 'models' };
   if (parts[0] === 'prompts') return { key: 'prompts' };
   if (parts[0] === 'materials' || parts[0] === 'outlines' || parts[0] === 'anchors') return { key: 'outlines' };
-  if (parts[0] === 'characters') return { key: 'characters' };
   if (parts[0] === 'documents') return { key: 'documents' };
   if (parts[0] === 'styles') return { key: 'prompts' };
   return { key: 'library' };
@@ -87,7 +85,6 @@ export default function App() {
   if (route.key === 'models') page = <ModelManagePage />;
   if (route.key === 'prompts') page = <PromptManagePage />;
   if (route.key === 'outlines') page = <MaterialLibraryPage />;
-  if (route.key === 'characters') page = <CharacterLibraryPage />;
   if (route.key === 'documents') page = <DocumentLibraryPage onNavigate={navigate} />;
 
   return (

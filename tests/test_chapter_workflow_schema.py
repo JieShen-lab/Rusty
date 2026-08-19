@@ -117,10 +117,19 @@ class ChapterWorkflowSchemaRepairTests(unittest.TestCase):
             with connect(database) as connection:
                 initialize_database(connection)
                 version = connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
-                counts = {
+                preserved_counts = {
                     table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-                    for table in ("projects", "chapters", "scenes", "character_cards", "materials")
+                    for table in ("projects", "chapters", "scenes")
                 }
+                removed_tables = {
+                    table: connection.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
+                    ).fetchone()
+                    for table in ("character_cards",)
+                }
+                plot_count = connection.execute(
+                    "SELECT COUNT(*) FROM materials WHERE material_type = 'plot_skeleton'"
+                ).fetchone()[0]
 
             workflow = CreativeWorkflowService(database)
             initial = workflow.get_chapter_state(10)
@@ -128,7 +137,9 @@ class ChapterWorkflowSchemaRepairTests(unittest.TestCase):
             restored = CreativeWorkflowService(database).get_chapter_state(10)
 
         self.assertEqual(CURRENT_SCHEMA_VERSION, version)
-        self.assertEqual({table: 1 for table in counts}, counts)
+        self.assertEqual({table: 1 for table in preserved_counts}, preserved_counts)
+        self.assertEqual({"character_cards": None}, removed_tables)
+        self.assertEqual(0, plot_count)
         self.assertEqual("not_started", initial["current_stage"])
         self.assertEqual("direction", restored["current_stage"])
         self.assertEqual(100, restored["active_scene_id"])
@@ -148,13 +159,13 @@ class ChapterWorkflowSchemaRepairTests(unittest.TestCase):
                     "SELECT chapter_id, active_scene_id, current_stage FROM chapter_workflow_state"
                 ).fetchone()
                 preserved = connection.execute(
-                    "SELECT p.name, c.title, cc.name, m.name FROM projects p, chapters c, character_cards cc, materials m"
+                    "SELECT p.name, c.title FROM projects p, chapters c"
                 ).fetchone()
 
         self.assertEqual(CURRENT_SCHEMA_VERSION, version)
         self.assertEqual((10, None, "not_started"), tuple(state))
         self.assertEqual(
-            ("existing project", "existing chapter", "existing character", "existing material"),
+            ("existing project", "existing chapter"),
             tuple(preserved),
         )
 

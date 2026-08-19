@@ -79,10 +79,10 @@ def test_current_types_settings_and_author_style_json_round_trip() -> None:
     with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
         service = MaterialService(Path(directory) / "rusty.db")
         initialize_database_file(service.database_path)
-        assert CURRENT_SCHEMA_VERSION == 54
-        assert {item.task_type for item in service.list_ai_settings()} == {
-            "plot_skeleton_extraction", "author_style_extraction",
-        }
+        assert CURRENT_SCHEMA_VERSION == 55
+        assert {item.task_type for item in service.list_ai_settings()} == {"author_style_extraction"}
+        with pytest.raises(ValueError):
+            service.create_material(material_type="plot_skeleton", scope="public", name="removed")
         with pytest.raises(ValueError):
             service.create_material(material_type="scene_reference", scope="public", name="legacy")
         exported = service.export_author_style_settings()

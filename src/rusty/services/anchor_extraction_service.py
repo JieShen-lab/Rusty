@@ -54,18 +54,7 @@ DEFAULT_CHARACTER_SYSTEM_PROMPT = (
     "Never invent facts unsupported by the source. Missing dimensions must be empty. "
     "Other people may only appear as relationship evidence for the target character."
 )
-MATERIAL_DIMENSIONS = {
-    "plot_skeleton": [
-        "premise",
-        "stages",
-        "conflicts",
-        "turning_points",
-        "climax",
-        "resolution",
-        "hooks",
-    ],
-    "author_style": ["summary", "dimensions"],
-}
+MATERIAL_DIMENSIONS = {"author_style": ["summary", "dimensions"]}
 
 
 @dataclass(frozen=True)
@@ -213,7 +202,7 @@ class AnchorExtractionService:
             raise ValueError(
                 f"Material extraction text must be {MAX_MATERIAL_EXTRACTION_TEXT_CHARS:,} characters or fewer."
             )
-        material_type = "author_style" if task_type == "author_style_extraction" else "plot_skeleton"
+        material_type = "author_style"
         settings = self.material_service.get_ai_settings(task_type)
         full_source_text = normalized_text
         model_sample = _sample_text(full_source_text)
@@ -1074,22 +1063,13 @@ class AnchorExtractionService:
             f"{index}. {item['name']}\nID: {item['id']}\n提取要求：{item['requirement']}"
             for index, item in enumerate(dimensions, 1)
         )
-        if material_type == "author_style":
-            output_protocol = (
-                '{"materials":[{"name":"","description":"","content":{"schema_version":1,'
-                '"summary":"","dimensions":[{"id":"输入维度 id","name":"","requirement":"",'
-                '"analysis":"","features":[],"examples":[]}]},"suggested_general_tags":[],'
-                '"suggested_applicable_scene_tags":[],"evidence_summary":"","confidence":0.0,"warnings":[]}]}'
-            )
-            separation_rule = "只创建一份完整作者风格档案。维度必须按稳定 ID 返回，examples 只能逐字引用输入文本，不得包含来源位置字段。"
-        else:
-            output_protocol = (
-                '{"materials":[{"name":"","description":"","content":{"schema_version":1,'
-                '"premise":"","stages":[],"conflicts":[],"turning_points":[],"climax":{},'
-                '"resolution":{},"hooks":[]},"suggested_general_tags":[],"suggested_applicable_scene_tags":[],'
-                '"evidence_summary":"","confidence":0.0,"warnings":[]}]}'
-            )
-            separation_rule = "只创建一份剧情骨架。抽象人物、地点和物品，但保留事件顺序与因果；不得补写剧情，不保存原文证据或 offset。"
+        output_protocol = (
+            '{"materials":[{"name":"","description":"","content":{"schema_version":1,'
+            '"summary":"","dimensions":[{"id":"输入维度 id","name":"","requirement":"",'
+            '"analysis":"","features":[],"examples":[]}]},"suggested_general_tags":[],'
+            '"suggested_applicable_scene_tags":[],"evidence_summary":"","confidence":0.0,"warnings":[]}]}'
+        )
+        separation_rule = "只创建一份完整作者风格档案。维度必须按稳定 ID 返回，examples 只能逐字引用输入文本，不得包含来源位置字段。"
         return [
             {
                 "role": "system",
@@ -1118,11 +1098,7 @@ class AnchorExtractionService:
     ) -> list[dict[str, str]]:
         dimensions = "\n".join(f"- {item}" for item in MATERIAL_DIMENSIONS[material_type])
         requested_name = name.strip() if name and name.strip() else "derive from source"
-        shape = (
-            "author_style content keys: summary, dimensions[{id,name,requirement,analysis,features[],examples[]}]."
-            if material_type == "author_style"
-            else "plot_skeleton content keys: premise, stages, conflicts, turning_points, climax, resolution, hooks."
-        )
+        shape = "author_style content keys: summary, dimensions[{id,name,requirement,analysis,features[],examples[]}]."
         return [
             {
                 "role": "system",
