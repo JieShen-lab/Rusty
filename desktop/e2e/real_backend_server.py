@@ -18,7 +18,6 @@ from rusty.services.rewrite_workflow_service import RewriteWorkflowService
 from rusty.services.model_service import ModelService
 from rusty.services.prompt_service import PromptService
 from rusty.services.analysis_service import AnalysisService
-from rusty.services.anchor_service import AnchorService
 from rusty.services.scene_service import SceneService
 
 
@@ -62,6 +61,17 @@ class RealE2EFakeLLM:
         self.required_end = {}
 
     def generate_json(self, stage, payload):
+        if stage == "chapter_summary":
+            return {
+                "plot_summary": "人物进入院子，检查院门后返回客栈。",
+                "main_characters": ["人物"],
+                "key_events": ["进入院子", "检查院门", "返回客栈"],
+                "relationships": [],
+                "start_state": {"location": "院外"},
+                "end_state": {"location": "客栈"},
+                "important_facts": ["旧设定仍有效"],
+                "open_threads": ["院门为何需要检查"],
+            }
         if stage == "scene_preanalysis":
             return {
                 "summary": "人物进入院子并检查院门。",
@@ -80,6 +90,29 @@ class RealE2EFakeLLM:
                 "target_character_conflicts": [{"id": "conflict-1", "summary": "行动方式存在差异", "source_text": "检查了院门", "start_offset": 10, "end_offset": 15, "inferred": False, "source_state": "直接检查", "target_state": "谨慎观察", "difference": "存在差异"}],
             }
         if stage == "special_analysis":
+            if "strategy" in payload:
+                strategy = payload["strategy"]
+                source_outline = [
+                    {"id": "source-1", "summary": "人物进入院子", "source_span": "第 1 段", "operation": "preserve"},
+                    {"id": "source-2", "summary": "人物检查院门", "source_span": "第 2 段", "operation": "preserve"},
+                    {"id": "source-3", "summary": "人物返回客栈", "source_span": "第 4 段", "operation": "preserve"},
+                ]
+                if strategy == "plot_adjust":
+                    target_outline = [
+                        {"id": "target-1", "summary": "人物进入院子", "operation": "preserve", "source_ids": ["source-1"]},
+                        {"id": "target-2", "summary": "李四发现院门暗记", "operation": "modify", "source_ids": ["source-2"]},
+                        {"id": "target-3", "summary": "人物返回客栈", "operation": "preserve", "source_ids": ["source-3"]},
+                    ]
+                elif strategy == "expansion":
+                    target_outline = [{"id": "target-1", "summary": "补充院门外的脚步声与人物反应"}]
+                else:
+                    target_outline = [{"id": "target-1", "summary": "李四识破院中伏击"}]
+                return {
+                    "source_outline": source_outline,
+                    "target_outline": target_outline,
+                    "constraints": {"hard_constraints": ["旧设定仍有效"]},
+                    "analysis_notes": ["强化院门事件的线索作用"],
+                }
             strategy = payload["creative_intent"]["strategy"]
             if strategy == "plot_adjust":
                 return {"source_events": ["进入院子", "检查院门"], "causal_links": ["进入→检查"],
@@ -116,6 +149,14 @@ class RealE2EFakeLLM:
                 {"id": "action", "label": "检查院门", "operation": "adapt", "source_value": "检查了院门", "target_value": "谨慎观察"},
             ], "summary": ["人物 → 李四", "进入院子保持", "检查动作适配"]}
         if stage == "writing_plan":
+            if "special_analysis" in payload:
+                source = payload["source_text"]
+                return {"blocks": [{
+                    "operation": "modify",
+                    "start_offset": 0,
+                    "end_offset": len(source),
+                    "instruction": "保留事件主干，将检查院门改为发现暗记",
+                }]}
             source = payload["source_text"]
             strategy = payload["target"]["strategy"]
             if strategy == "plot_adjust":
@@ -135,6 +176,18 @@ class RealE2EFakeLLM:
                 {"title": "进入院子", "source_start_offset": 0, "source_end_offset": split, "source_text_snapshot": source[:split], "operation": "preserve"},
                 {"title": "检查院门", "source_start_offset": split, "source_end_offset": len(source), "source_text_snapshot": source[split:], "operation": "transform", "instruction": "人物改为李四，动作适配"},
             ]}
+        if stage == "author_style_extraction":
+            return {
+                "style_snapshot": {"voice": "简洁克制", "rhythm": "短句推进"},
+                "generated_guidance": "使用简洁克制的叙述，以动作推动情节。",
+            }
+        if stage == "writing" and "operation" in payload:
+            return {"text": "人物进入院子后，李四在院门上发现了一枚暗记。旧设定仍有效。人物返回客栈。"}
+        if stage == "writing":
+            strategy = payload["special_analysis"]["strategy"]
+            if strategy == "expansion":
+                return {"text": "门外忽然传来一阵脚步声，人物停下动作侧耳倾听。", "title": "院门外的脚步"}
+            return {"text": "李四进入院子，识破伏击并检查院门，随后返回客栈。"}
         if stage == "transform_block":
             return {"text": "李四谨慎地检查了院门。\n\n"}
         if stage == "rewrite_block":
@@ -204,15 +257,6 @@ def seed(database: Path) -> None:
             sources,
             project_name=f"真实 E2E {index}",
             project_kind=kind,
-        )
-        AnchorService(database).create_character_card(
-            "李四",
-            description="谨慎的剑客",
-            personality="谨慎",
-            action_constraints="先观察再行动",
-            setting_text="李四使用剑。",
-            scope="project",
-            project_id=project_id,
         )
         chapter = projects.list_chapters(project_id)[0]
         scene_service = SceneService(database)
