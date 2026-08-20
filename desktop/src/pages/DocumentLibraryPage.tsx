@@ -486,7 +486,7 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
     }
     const chapter = chapters.find((item) => item.id === documentContent.chapter_id);
     const volume = volumes.find((item) => item.id === chapter?.volume_id);
-    onNavigate('/materials', {
+    onNavigate('/authors', {
       materialExtraction: {
         materialType: 'author_style',
         taskType: 'author_style_extraction',

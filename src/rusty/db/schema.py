@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .connection import session
 
-CURRENT_SCHEMA_VERSION = 56
+CURRENT_SCHEMA_VERSION = 57
 
 logger = logging.getLogger(__name__)
 
@@ -5061,6 +5061,44 @@ def _migrate_to_v56(connection: sqlite3.Connection) -> None:
         )
 
 
+def _migrate_to_v57(connection: sqlite3.Connection) -> None:
+    """Replace model review with human comparison and reduce prompts to six fixed slots."""
+    connection.execute("DROP TABLE IF EXISTS chapter_review_issues")
+    connection.execute("DROP TABLE IF EXISTS chapter_reviews")
+    if not _table_exists(connection, "prompt_definitions"):
+        return
+    connection.execute(
+        """UPDATE prompt_definitions SET is_default=0, deleted_at=COALESCE(deleted_at,CURRENT_TIMESTAMP)
+           WHERE deleted_at IS NULL"""
+    )
+    prompts = [
+        ("系统提示词", "所有章节创作 AI 请求最高优先级携带", "master", None, None,
+         "只使用提供的事实与当前有效章节正文；用户明确要求优先。严格遵守当前任务和输出契约，不虚构未提供事实，不跨阶段擅自创作。",
+         "所有章节创作 AI 请求。"),
+        ("内容总结", "进入工程后的第一步", "common_task", None, "chapter_summary",
+         "只总结这一章发生了什么：剧情、人物、事件、关系、起止状态、重要事实和未决线索。不得提出改写方案或创作正文。",
+         "当前有效章节正文。"),
+        ("调整剧情", "生成可逐条编辑的原始大纲与目标大纲", "workflow_task", "plot_adjust", "special_analysis",
+         "提取带稳定 ID 和来源位置的原始大纲；根据用户要求生成目标大纲。未要求改变的节点默认保留，目标节点明确标记保留、修改、删除或新增。",
+         "章节总结、当前原文和用户具体要求。"),
+        ("增加剧情", "分析当前章并设计新的下一章大纲", "workflow_task", "expansion", "special_analysis",
+         "提取当前章重要事件、结束状态和未决线索作为原始大纲，并设计承接它的新下一章目标大纲；不得修改当前章节。",
+         "章节总结、当前原文和用户具体要求。"),
+        ("重新构思", "锁定边界并重新设计当前章大纲", "workflow_task", "reimagine", "special_analysis",
+         "提取起始条件、核心目的、必要结束状态和硬约束；按用户选择的粒度生成原始大纲，再设计新的目标事件链。",
+         "章节总结、当前原文、大纲粒度和用户具体要求。"),
+        ("写作", "三个方向共用的正文生成规则", "common_task", None, "writing",
+         "严格执行已确认的目标大纲和用户要求。调整剧情只生成修改或新增区块；增加剧情生成新的下一章；重新构思生成完整当前章。保持事实边界并遵循提供的作者风格快照。",
+         "原文、目标大纲、用户要求、写作计划和作者风格快照。"),
+    ]
+    connection.executemany(
+        """INSERT INTO prompt_definitions(
+               name,description,kind,workflow_key,task_key,content,input_description,is_default
+           ) VALUES(?,?,?,?,?,?,?,1)""",
+        prompts,
+    )
+
+
 def _safe_json_list(value: object) -> list[dict[str, object]]:
     try:
         parsed = json.loads(str(value or "[]"))
@@ -5469,6 +5507,7 @@ MIGRATIONS = {
     54: _migrate_to_v54,
     55: _migrate_to_v55,
     56: _migrate_to_v56,
+    57: _migrate_to_v57,
 }
 
 

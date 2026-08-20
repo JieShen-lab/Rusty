@@ -90,7 +90,7 @@ class PromptCompiler:
         self,
         *,
         stage: str,
-        master_prompt: str,
+        system_prompt: str,
         task_prompt: str,
         payload: dict[str, Any],
         user_instruction: str,
@@ -104,8 +104,8 @@ class PromptCompiler:
             "outside the supplied context. Return valid JSON only."
         )
         system = (
-            f"[RUSTY INTERNAL SYSTEM RULES]\n{internal_rules}\n\n"
-            f"[PROJECT MASTER PROMPT]\n{master_prompt.strip() or 'None'}\n\n"
+            f"[GLOBAL SYSTEM PROMPT - HIGHEST PRIORITY]\n{system_prompt.strip() or 'None'}\n\n"
+            f"[RUSTY OUTPUT AND SAFETY RULES]\n{internal_rules}\n\n"
             f"[CURRENT TASK PROMPT]\n{task_prompt.strip() or 'None'}"
         )
         user = (

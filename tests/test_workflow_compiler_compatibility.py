@@ -61,7 +61,7 @@ class WorkflowCompilerCompatibilityTests(unittest.TestCase):
         self.assertEqual(["system", "user"], [item["role"] for item in request.message_list()])
         self.assertIn("WORKFLOW STAGE: legacy_stage", request.message_list()[1]["content"])
 
-    def test_workflow_ai_chat_only_client_uses_legacy_compiler(self) -> None:
+    def test_workflow_ai_chat_only_client_always_uses_global_system_prompt(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd(), ignore_cleanup_errors=True) as directory:
             database = initialized_database(Path(directory) / "rusty.db")
             ModelService(database).create_model(
@@ -78,7 +78,8 @@ class WorkflowCompilerCompatibilityTests(unittest.TestCase):
 
         self.assertEqual({"result": "ok"}, result)
         self.assertEqual(1, len(client.calls))
-        self.assertIn("structured novel-workflow component", client.calls[0][0]["content"])
+        self.assertIn("GLOBAL SYSTEM PROMPT - HIGHEST PRIORITY", client.calls[0][0]["content"])
+        self.assertIn("structured creative-workflow component", client.calls[0][0]["content"])
         self.assertIn("OUTPUT CONTRACT", client.calls[0][1]["content"])
 
     def test_workflow_ai_uses_project_model_resolver_and_custom_base_url(self) -> None:
@@ -143,7 +144,8 @@ class WorkflowCompilerCompatibilityTests(unittest.TestCase):
         self.assertEqual("awaiting_skeleton", run["status"])
         self.assertEqual("保持真实 chat 路径", run["target_skeleton"]["event_nodes"][0]["summary"])
         self.assertEqual(1, len(client.calls))
-        self.assertIn("WORKFLOW STAGE: propose_target_skeleton", client.calls[0][1]["content"])
+        self.assertIn("GLOBAL SYSTEM PROMPT - HIGHEST PRIORITY", client.calls[0][0]["content"])
+        self.assertIn("DYNAMIC CONTEXT", client.calls[0][1]["content"])
 
 
 if __name__ == "__main__":

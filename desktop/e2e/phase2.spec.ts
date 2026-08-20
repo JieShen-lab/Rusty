@@ -8,7 +8,7 @@ const projects = [
 ];
 const tags = [{ id: 1, name: '动作', normalized_name: '动作', sort_order: 0, resource_count: 1 }];
 const materials = [
-  { id: 1, material_type: 'author_style', scope: 'public', project_id: null, project_name: null, name: '雨夜文风', description: '雨夜动作写法', detail_level: 'standard', raw_text: '雨落在屋檐。', content: { schema_version: 1, summary: '短句推进', dimensions: [{ id: 'sentence-features', name: '句子特征', requirement: '分析句式', analysis: '短句推进动作', features: ['短句'], examples: ['雨落在屋檐。'] }] }, analysis_status: 'analyzed', source_metadata: {}, import_metadata: {}, source_material_id: null, source_version: null, timeline_start_chapter: null, timeline_end_chapter: null, sort_order: 0, version: 1, created_at: '', updated_at: '', tags: [], general_tags: [], applicable_scene_tags: [], category_ids: [], categories: [], source_summary: { kind: 'manual', label: '本地创建' } },
+  { id: 1, material_type: 'author_style', scope: 'public', project_id: null, project_name: null, name: '沈砚', description: '擅长都市悬疑叙事。', detail_level: 'standard', raw_text: '雨落在屋檐。', content: { schema_version: 2, author_name: '沈砚', introduction: '擅长都市悬疑叙事。', source_works: ['雨夜旧城'], overall_style: '冷静短句推进，重视环境细节。', summary: '冷静短句推进，重视环境细节。', dimensions: [{ id: 'sentence-features', name: '句子特征', requirement: '分析句式', analysis: '短句推进动作', features: ['短句'], examples: ['雨落在屋檐。'] }] }, analysis_status: 'analyzed', source_metadata: {}, import_metadata: {}, source_material_id: null, source_version: null, timeline_start_chapter: null, timeline_end_chapter: null, sort_order: 0, version: 1, created_at: '', updated_at: '', tags: [], general_tags: [], applicable_scene_tags: [], category_ids: [], categories: [], source_summary: { kind: 'manual', label: '本地创建' } },
 ];
 const baseDocumentItems = [
   { id: 1, title: '示例长篇', author: '作者', description: null, source_filename: 'novel.txt', source_format: 'txt', storage_path: 'D:/Rusty/novel-v2.txt', source_size_bytes: 100, stored_size_bytes: 100, chapter_count: 1, word_count: 16, status: 'ready', favorite: false, tags: ['长篇', '历史'], is_project_document: false, category_ids: [11, 12], categories: ['研究', '待整理'], project_ids: [], created_at: '2026-07-29 10:00:00', updated_at: '' },
@@ -268,9 +268,12 @@ async function mockApi(page: Page) {
     else if (path.includes('/prompt-preview')) body = { ruleset_id: 'test', provenance: {}, expected_output: 'text', messages: [] };
     else if (path.includes('/generation-attempts')) body = [];
     else if (path === '/api/prompt-definitions') body = [
-      { id: 101, name: '小说总规则', description: '工程通用创作要求', kind: 'master', workflow_key: null, task_key: null, content: '保持上下文一致。', input_description: '工程级规则', is_default: true, created_at: '', updated_at: '' },
-      { id: 102, name: '调整剧情分析', description: '分析章节调整要求', kind: 'workflow_task', workflow_key: 'plot_adjust', task_key: 'special_analysis', content: '识别需调整的章节片段。', input_description: '章节原文、具体要求', is_default: true, created_at: '', updated_at: '' },
-      { id: 103, name: '章节总结', description: '总结章节内容', kind: 'common_task', workflow_key: null, task_key: 'chapter_summary', content: '提取章节事实。', input_description: '章节原文', is_default: true, created_at: '', updated_at: '' },
+      { id: 101, name: '系统提示词', description: '所有任务最高优先级携带', kind: 'master', workflow_key: null, task_key: null, content: '保持上下文一致。', input_description: '所有章节任务', is_default: true, created_at: '', updated_at: '' },
+      { id: 102, name: '内容总结', description: '进入工程后的第一步', kind: 'common_task', workflow_key: null, task_key: 'chapter_summary', content: '提取章节事实。', input_description: '章节原文', is_default: true, created_at: '', updated_at: '' },
+      { id: 103, name: '调整剧情', description: '生成原始与目标大纲', kind: 'workflow_task', workflow_key: 'plot_adjust', task_key: 'special_analysis', content: '识别需调整的章节片段。', input_description: '章节原文、具体要求', is_default: true, created_at: '', updated_at: '' },
+      { id: 104, name: '增加剧情', description: '设计新的下一章', kind: 'workflow_task', workflow_key: 'expansion', task_key: 'special_analysis', content: '设计承接章节。', input_description: '章节原文、具体要求', is_default: true, created_at: '', updated_at: '' },
+      { id: 105, name: '重新构思', description: '锁定边界并重建大纲', kind: 'workflow_task', workflow_key: 'reimagine', task_key: 'special_analysis', content: '重建章节事件链。', input_description: '章节原文、具体要求', is_default: true, created_at: '', updated_at: '' },
+      { id: 106, name: '写作', description: '三个方向共用的正文规则', kind: 'common_task', workflow_key: null, task_key: 'writing', content: '按目标大纲写作。', input_description: '目标大纲、风格', is_default: true, created_at: '', updated_at: '' },
     ];
     else if (path === '/api/prompts' || path === '/api/analysis-prompts' || path === '/api/projects/1/export-plan') body = [];
     else if (path === '/api/projects/1/style-synthesis') body = { prompt_template_id: null };
@@ -287,58 +290,25 @@ test.beforeEach(async ({ page }) => {
   await mockApi(page);
 });
 
-test('提示词使用统一 Header、分隔列表并保留编辑保存、导入和新建', async ({ page }) => {
-  let savedName = '';
-  let imported = false;
+test('提示词菜单严格对应六个工程流程槽位并可保存', async ({ page }) => {
+  let savedContent = '';
   await page.route('http://127.0.0.1:8765/api/prompt-definitions/101', async (route) => {
     const payload = route.request().postDataJSON() as Record<string, unknown>;
-    savedName = String(payload.name ?? '');
+    savedContent = String(payload.content ?? '');
     await route.fulfill({ contentType: 'application/json', status: 200, body: JSON.stringify({ id: 101, ...payload, created_at: '', updated_at: '' }) });
-  });
-  await page.route('http://127.0.0.1:8765/api/prompt-definitions/import', async (route) => {
-    imported = true;
-    await route.fulfill({ contentType: 'application/json', status: 200, body: JSON.stringify({ id: 104, name: '导入提示词', description: '', kind: 'master', workflow_key: null, task_key: null, content: '导入内容', input_description: '', is_default: false, created_at: '', updated_at: '' }) });
   });
 
   await page.goto('/prompts');
   await expect(page.locator('.prompt-definition-page > .page-topbar').getByRole('heading', { name: '提示词' })).toBeVisible();
-  const primaryCategories = await page.locator('.prompt-kind-tree .primary-category, .prompt-kind-tree .prompt-primary-category').evaluateAll((items) => items.map((element) => ({
-    fontSize: getComputedStyle(element).fontSize,
-    fontWeight: getComputedStyle(element).fontWeight,
-    height: getComputedStyle(element).minHeight,
-    textAlign: getComputedStyle(element).textAlign,
-  })));
-  expect(primaryCategories).toHaveLength(3);
-  expect(new Set(primaryCategories.map((item) => JSON.stringify(item))).size).toBe(1);
-  const workflowChild = await page.locator('.prompt-kind-tree .category-button.nested').first().evaluate((element) => ({
-    fontSize: getComputedStyle(element).fontSize,
-    fontWeight: getComputedStyle(element).fontWeight,
-    paddingLeft: getComputedStyle(element).paddingLeft,
-    textAlign: getComputedStyle(element).textAlign,
-  }));
-  expect(workflowChild).toEqual({ fontSize: '13px', fontWeight: '400', paddingLeft: '28px', textAlign: 'left' });
-  const activeItem = page.locator('.prompt-item-list > button.active');
-  const activeStyle = await activeItem.evaluate((element) => ({
-    shadow: getComputedStyle(element).boxShadow,
-    divider: getComputedStyle(element).borderBottomWidth,
-  }));
-  expect(activeStyle.shadow).toBe('none');
-  expect(activeStyle.divider).toBe('1px');
-  await expect(page.getByRole('button', { name: '复制', exact: true })).toHaveClass(/secondary/);
-  await expect(page.getByRole('button', { name: '导出', exact: true })).toHaveClass(/secondary/);
-  await expect(page.getByRole('button', { name: '删除', exact: true })).toHaveClass(/danger/);
-  await expect(page.getByRole('button', { name: '保存', exact: true })).toHaveClass(/primary/);
-
-  await page.getByLabel('名称').fill('小说总规则（修订）');
+  const menu = page.locator('.fixed-prompt-menu > button');
+  await expect(menu).toHaveCount(6);
+  await expect(menu).toHaveText([/系统提示词/, /内容总结/, /调整剧情/, /增加剧情/, /重新构思/, /写作/]);
+  await expect(page.getByText('最高优先级', { exact: true })).toBeVisible();
+  await expect(page.getByText('作者风格提取继续使用作者页面中的提取设置')).toBeVisible();
+  await page.getByLabel('提示词正文').fill('始终先遵守系统规则。');
   await page.getByRole('button', { name: '保存', exact: true }).click();
   await expect(page.getByText('提示词已保存。')).toBeVisible();
-  expect(savedName).toBe('小说总规则（修订）');
-
-  await page.locator('input[type="file"]').setInputFiles({ name: 'prompt.json', mimeType: 'application/json', buffer: Buffer.from('{"name":"导入提示词"}') });
-  await expect(page.getByText('提示词已导入。')).toBeVisible();
-  expect(imported).toBe(true);
-  await page.getByRole('button', { name: '新建', exact: true }).click();
-  await expect(page.getByLabel('名称')).toHaveValue('');
+  expect(savedContent).toBe('始终先遵守系统规则。');
 });
 
 test('模型页保持原有双栏组件和主题交互', async ({ page }) => {
@@ -353,6 +323,18 @@ test('模型页保持原有双栏组件和主题交互', async ({ page }) => {
   const darkColumns = await page.locator('.models-layout').evaluate((element) => getComputedStyle(element).gridTemplateColumns);
   expect(darkColumns).toBe(lightColumns);
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+});
+
+test('作者页以一位作者一份档案展示完整信息', async ({ page }) => {
+  await mockApi(page);
+  await page.goto('/authors');
+  await expect(page.getByRole('heading', { name: '作者档案' })).toBeVisible();
+  await page.getByText('沈砚', { exact: true }).first().click();
+  await expect(page.locator('.material-detail-panel').getByText('擅长都市悬疑叙事。')).toBeVisible();
+  await expect(page.locator('.author-work-list').getByText('雨夜旧城', { exact: true })).toBeVisible();
+  await expect(page.locator('.material-detail-panel').getByText('冷静短句推进，重视环境细节。')).toBeVisible();
+  await expect(page.getByText('句子特征')).toBeVisible();
+  await expect(page.getByText('素材库', { exact: true })).toHaveCount(0);
 });
 
 test('文档库在常用桌面窗口无横向溢出', async ({ page }) => {
@@ -639,8 +621,8 @@ test('工作台右栏直接编辑书名和作者并同步统一元数据', async
   await page.getByRole('button', { name: '示例长篇，作者' }).dblclick();
   await page.getByLabel('书名').fill('统一书名');
   await page.getByLabel('书名').blur();
-  await page.getByLabel('作者').fill('新作者');
-  await page.getByLabel('作者').blur();
+  await page.getByRole('textbox', { name: '作者' }).fill('新作者');
+  await page.getByRole('textbox', { name: '作者' }).blur();
   await expect(page.getByText('书名和作者已同步保存。')).toBeVisible();
   await page.getByRole('button', { name: /返回文档库/ }).click();
   await expect(page.getByRole('button', { name: '统一书名，新作者' })).toBeVisible();

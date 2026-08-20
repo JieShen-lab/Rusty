@@ -8,7 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from rusty.db import initialize_database_file, session
-from rusty.services.creative_workflow_service import CreativeWorkflowService, REVIEW_FOCUS, WorkflowSourceConflict
+from rusty.services.creative_workflow_service import CreativeWorkflowService, WorkflowSourceConflict
 from rusty.services.material_service import MaterialService
 from rusty.services.project_service import ProjectService
 
@@ -59,14 +59,6 @@ class WorkflowAI:
             if strategy == "expansion":
                 return {"text": getattr(self, "expansion_text", "NEW CHAPTER"), "title": "Inserted"}
             return {"text": "REIMAGINED"}
-        if stage == "review":
-            return {
-                "summary": "one issue", "metrics": {"ok": False},
-                "issues": [{"severity": "warning", "category": "continuity", "start_offset": 0,
-                            "end_offset": 3, "description": "fix it", "suggested_fix": "better"}],
-            }
-        if stage == "review_repair":
-            return {"replacement_text": "FIX"}
         raise AssertionError(stage)
 
 
@@ -214,7 +206,7 @@ def test_source_hash_conflict_is_explicit(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("strategy", ["plot_adjust", "expansion", "reimagine"])
-def test_review_uses_strategy_specific_focus_and_repair_is_targeted(tmp_path: Path, strategy: str) -> None:
+def test_review_is_human_edit_and_confirmation_without_model_call(tmp_path: Path, strategy: str) -> None:
     database, (chapter_id,) = make_project(tmp_path)
     ai = WorkflowAI()
     material_id = None
@@ -225,13 +217,17 @@ def test_review_uses_strategy_specific_focus_and_repair_is_targeted(tmp_path: Pa
         )
     service = CreativeWorkflowService(database, ai_client=ai)
     prepare(service, chapter_id, strategy, material_id=material_id)
-    writing = service.generate_chapter(chapter_id)
-    review = service.review_chapter(chapter_id)
-    focus = next(payload["review_focus"] for stage, payload in ai.calls if stage == "review")
-    assert focus == REVIEW_FOCUS[strategy]
-    repaired = service.repair_review_issue(chapter_id, review["issues"][0]["issue_id"])
-    assert repaired["writing"]["result_text"] == "FIX" + writing["result_text"][3:]
-    assert service.get_review(chapter_id)["issues"][0]["status"] == "repaired"
+    service.generate_chapter(chapter_id)
+    saved = service.save_writing(chapter_id, "HUMAN EDIT")
+    assert saved["result_text"] == "HUMAN EDIT"
+    assert saved["status"] == "reviewed"
+    assert service.get_chapter_workflow(chapter_id)["current_stage"] == "review"
+    assert not any(stage in {"review", "review_repair"} for stage, _ in ai.calls)
+
+    confirmed = service.confirm_chapter(chapter_id)
+    assert confirmed["current_stage"] == "confirmed"
+    assert confirmed["writing"]["status"] == "confirmed"
+    assert "review" not in confirmed
 
 
 def test_legacy_scene_rows_do_not_affect_chapter_workflow(tmp_path: Path) -> None:

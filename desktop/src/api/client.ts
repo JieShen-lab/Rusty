@@ -505,6 +505,12 @@ export function runChapterSummary(chapterId: number) {
   return request<import('./types').ChapterSummary>(`/api/chapters/${chapterId}/workflow/summary/run`, { method: 'POST' });
 }
 
+export function saveChapterSummary(chapterId: number, value: import('./types').ChapterSummary) {
+  return request<import('./types').ChapterSummary>(`/api/chapters/${chapterId}/workflow/summary`, {
+    method: 'PUT', body: JSON.stringify(value),
+  });
+}
+
 export function saveChapterDirection(chapterId: number, strategy: CreativeStrategy, userInstruction: string) {
   return request<import('./types').ChapterCreativeIntent>(`/api/chapters/${chapterId}/workflow/direction`, {
     method: 'PUT', body: JSON.stringify({ strategy, user_instruction: userInstruction }),
@@ -514,6 +520,12 @@ export function saveChapterDirection(chapterId: number, strategy: CreativeStrate
 export function runChapterSpecialAnalysis(chapterId: number, outlineDetailLevel?: 'brief' | 'detailed') {
   return request<import('./types').ChapterSpecialAnalysis>(`/api/chapters/${chapterId}/workflow/special-analysis/run`, {
     method: 'POST', body: JSON.stringify({ outline_detail_level: outlineDetailLevel ?? null }),
+  });
+}
+
+export function saveChapterSpecialAnalysis(chapterId: number, value: import('./types').ChapterSpecialAnalysis) {
+  return request<import('./types').ChapterSpecialAnalysis>(`/api/chapters/${chapterId}/workflow/special-analysis`, {
+    method: 'PUT', body: JSON.stringify(value),
   });
 }
 
@@ -529,14 +541,10 @@ export function generateChapterWriting(chapterId: number, replaceExisting = fals
   });
 }
 
-export function runChapterReview(chapterId: number) {
-  return request<import('./types').ChapterReview>(`/api/chapters/${chapterId}/workflow/review/run`, { method: 'POST' });
-}
-
-export function repairChapterReviewIssue(chapterId: number, issueId: number) {
-  return request<{ issue_id: number; replacement_text: string; writing: import('./types').ChapterWriting }>(
-    `/api/chapters/${chapterId}/workflow/review/issues/${issueId}/repair`, { method: 'POST' },
-  );
+export function saveChapterWriting(chapterId: number, resultText: string) {
+  return request<import('./types').ChapterWriting>(`/api/chapters/${chapterId}/workflow/writing`, {
+    method: 'PUT', body: JSON.stringify({ result_text: resultText }),
+  });
 }
 
 export function confirmChapterWorkflow(chapterId: number) {

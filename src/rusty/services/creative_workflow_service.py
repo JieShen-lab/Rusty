@@ -14,13 +14,6 @@ from rusty.services.workflow_ai import WorkflowAI
 
 STRATEGIES = {"plot_adjust", "expansion", "reimagine"}
 STAGES = {"not_started", "summary", "direction", "special_analysis", "style", "writing", "review", "confirmed"}
-REVIEW_FOCUS = {
-    "plot_adjust": ["preserve_content", "requested_changes", "event_preservation", "seams", "unsupported_additions", "preservation_ratio"],
-    "expansion": ["continuity", "character_state", "facts", "source_unchanged", "target_outline", "source_author_style"],
-    "reimagine": ["start_conditions", "core_purpose", "required_end_state", "hard_constraints", "target_outline", "selected_author_style"],
-}
-
-
 class WorkflowSourceConflict(ValueError):
     """The current chapter text no longer matches the workflow source."""
 
@@ -51,7 +44,6 @@ class CreativeWorkflowService:
             analysis = connection.execute("SELECT * FROM chapter_special_analyses WHERE chapter_id=?", (chapter_id,)).fetchone()
             style = connection.execute("SELECT * FROM chapter_style_contexts WHERE chapter_id=?", (chapter_id,)).fetchone()
             writing = connection.execute("SELECT * FROM chapter_writings WHERE chapter_id=?", (chapter_id,)).fetchone()
-            review = self._review_row(connection, chapter_id)
         return {
             "chapter_id": chapter_id,
             "current_stage": str(state["current_stage"]),
@@ -64,7 +56,6 @@ class CreativeWorkflowService:
             "special_analysis": self._analysis_out(analysis),
             "style": self._style_out(style),
             "writing": self._writing_out(writing),
-            "review": review,
             "updated_at": str(state["updated_at"]),
         }
 
@@ -111,7 +102,6 @@ class CreativeWorkflowService:
                    user_instruction=excluded.user_instruction,updated_at=CURRENT_TIMESTAMP""",
                 (chapter_id, strategy, user_instruction.strip()),
             )
-            self._delete_review(connection, chapter_id)
             for table in ("chapter_writings", "chapter_style_contexts", "chapter_special_analyses"):
                 connection.execute(f"DELETE FROM {table} WHERE chapter_id=?", (chapter_id,))
             self._set_stage(connection, chapter_id, "direction")
@@ -181,7 +171,6 @@ class CreativeWorkflowService:
             )
             connection.execute("DELETE FROM chapter_style_contexts WHERE chapter_id=?", (chapter_id,))
             connection.execute("DELETE FROM chapter_writings WHERE chapter_id=?", (chapter_id,))
-            self._delete_review(connection, chapter_id)
             self._set_stage(connection, chapter_id, "special_analysis")
         return self.get_special_analysis(chapter_id) or {}
 
@@ -246,7 +235,6 @@ class CreativeWorkflowService:
                  self._dump(snapshot), self._dump(settings_snapshot), guidance, source.content_hash),
             )
             connection.execute("DELETE FROM chapter_writings WHERE chapter_id=?", (chapter_id,))
-            self._delete_review(connection, chapter_id)
             self._set_stage(connection, chapter_id, "style")
         return self.get_style(chapter_id) or {}
 
@@ -295,7 +283,6 @@ class CreativeWorkflowService:
                    status='draft',updated_at=CURRENT_TIMESTAMP""",
                 (chapter_id, strategy, self._dump(plan), result_text, created_chapter_id, source.content_hash),
             )
-            self._delete_review(connection, chapter_id)
             self._set_stage(connection, chapter_id, "writing")
         return self.get_writing(chapter_id) or {}
 
@@ -304,80 +291,21 @@ class CreativeWorkflowService:
             row = connection.execute("SELECT * FROM chapter_writings WHERE chapter_id=?", (chapter_id,)).fetchone()
         return self._writing_out(row)
 
-    def review_chapter(self, chapter_id: int) -> dict[str, Any]:
+    def save_writing(self, chapter_id: int, result_text: str) -> dict[str, Any]:
+        """Save the human-edited draft shown beside the source during manual review."""
         source = self._require_current_source(chapter_id)
-        intent, analysis, style, writing = (self.get_chapter_direction(chapter_id), self.get_special_analysis(chapter_id),
-                                             self.get_style(chapter_id), self.get_writing(chapter_id))
-        if intent is None or analysis is None or style is None or writing is None:
-            raise ValueError("A writing result is required before review.")
-        strategy = intent["strategy"]
-        value = self.ai.generate_json(
-            project_id=source.project_id, stage="review", workflow_key=strategy, task_key="review",
-            payload={"source_text": source.text, "result_text": writing["result_text"],
-                     "writing_plan": writing["writing_plan"], "special_analysis": analysis,
-                     "style_snapshot": style["style_snapshot"], "review_focus": REVIEW_FOCUS[strategy]},
-            user_instruction=intent["user_instruction"],
-            output_contract=("JSON object with summary string, metrics object, issues array. Each issue has "
-                             "severity info|warning|error, category, optional offsets, description, suggested_fix."),
-        )
-        issues = value.get("issues") if isinstance(value.get("issues"), list) else []
+        writing = self.get_writing(chapter_id)
+        text = result_text.strip()
+        if writing is None:
+            raise ValueError("Generate a writing result before manual review.")
+        if not text:
+            raise ValueError("The reviewed draft cannot be empty.")
+        source_kind = "manual" if text != writing["result_text"] else "ai"
         with session(self.database_path) as connection:
-            self._delete_review(connection, chapter_id)
-            cursor = connection.execute(
-                "INSERT INTO chapter_reviews(chapter_id,strategy,summary,metrics_json,source_hash) VALUES(?,?,?,?,?)",
-                (chapter_id, strategy, str(value.get("summary") or ""),
-                 self._dump(value.get("metrics") if isinstance(value.get("metrics"), dict) else {}), source.content_hash),
+            connection.execute(
+                "UPDATE chapter_writings SET result_text=?,status='reviewed',updated_at=CURRENT_TIMESTAMP WHERE chapter_id=?",
+                (text, chapter_id),
             )
-            for issue in issues:
-                if not isinstance(issue, dict) or not str(issue.get("description") or "").strip():
-                    continue
-                severity = str(issue.get("severity") or "warning")
-                if severity not in {"info", "warning", "error"}:
-                    severity = "warning"
-                connection.execute(
-                    """INSERT INTO chapter_review_issues(review_id,severity,category,start_offset,end_offset,
-                       description,suggested_fix) VALUES(?,?,?,?,?,?,?)""",
-                    (int(cursor.lastrowid), severity, str(issue.get("category") or "general"),
-                     self._optional_int(issue.get("start_offset")), self._optional_int(issue.get("end_offset")),
-                     str(issue.get("description")), str(issue.get("suggested_fix") or "")),
-                )
-            connection.execute("UPDATE chapter_writings SET status='reviewed',updated_at=CURRENT_TIMESTAMP WHERE chapter_id=?", (chapter_id,))
-            self._set_stage(connection, chapter_id, "review")
-        return self.get_review(chapter_id) or {}
-
-    def get_review(self, chapter_id: int) -> dict[str, Any] | None:
-        with session(self.database_path) as connection:
-            return self._review_row(connection, chapter_id)
-
-    def repair_review_issue(self, chapter_id: int, issue_id: int) -> dict[str, Any]:
-        source = self._require_current_source(chapter_id)
-        intent, writing = self.get_chapter_direction(chapter_id), self.get_writing(chapter_id)
-        if intent is None or writing is None:
-            raise ValueError("Writing is required before repair.")
-        with session(self.database_path) as connection:
-            issue = connection.execute(
-                """SELECT i.* FROM chapter_review_issues i JOIN chapter_reviews r ON r.id=i.review_id
-                   WHERE i.id=? AND r.chapter_id=? AND i.status='open'""", (issue_id, chapter_id)
-            ).fetchone()
-        if issue is None:
-            raise FileNotFoundError(f"Open review issue not found: {issue_id}")
-        text = writing["result_text"]
-        start = int(issue["start_offset"]) if issue["start_offset"] is not None else 0
-        end = int(issue["end_offset"]) if issue["end_offset"] is not None else len(text)
-        if start < 0 or end < start or end > len(text):
-            raise ValueError("Review issue range is outside the writing result.")
-        value = self.ai.generate_json(
-            project_id=source.project_id, stage="review_repair", workflow_key=intent["strategy"], task_key="review_repair",
-            payload={"issue": dict(issue), "selected_text": text[start:end],
-                     "context_before": text[max(0, start - 500):start], "context_after": text[end:end + 500]},
-            user_instruction=str(issue["suggested_fix"] or issue["description"]),
-            output_contract="JSON object with replacement_text string for only the selected range.",
-        )
-        replacement = str(value.get("replacement_text") or "")
-        repaired = text[:start] + replacement + text[end:]
-        with session(self.database_path) as connection:
-            connection.execute("UPDATE chapter_writings SET result_text=?,status='draft',updated_at=CURRENT_TIMESTAMP WHERE chapter_id=?", (repaired, chapter_id))
-            connection.execute("UPDATE chapter_review_issues SET status='repaired',updated_at=CURRENT_TIMESTAMP WHERE id=?", (issue_id,))
             if writing["strategy"] == "expansion" and writing["created_chapter_id"] is not None:
                 created_source = self.versions.resolve_chapter_source(
                     int(writing["created_chapter_id"]), connection=connection
@@ -385,7 +313,7 @@ class CreativeWorkflowService:
                 self.versions.append_chapter_rewrite_version(
                     connection,
                     chapter_id=created_source.chapter_id,
-                    rewritten_text=repaired,
+                    rewritten_text=text,
                     source_operation="manual",
                     source_run_id=writing["id"],
                     source_base_kind=created_source.source_kind,
@@ -394,17 +322,18 @@ class CreativeWorkflowService:
                     facts_before=created_source.facts_before,
                     facts_after=created_source.facts_after,
                     expected_head_version_id=created_source.expected_head_version_id,
-                    source_kind="ai",
+                    source_kind=source_kind,
                     fact_chain_status="needs_recompute",
                     mapping_strategy="structural",
                 )
-        return {"issue_id": issue_id, "replacement_text": replacement, "writing": self.get_writing(chapter_id)}
+            self._set_stage(connection, chapter_id, "review")
+        return self.get_writing(chapter_id) or {}
 
     def confirm_chapter(self, chapter_id: int) -> dict[str, Any]:
         source = self._require_current_source(chapter_id)
-        writing, review = self.get_writing(chapter_id), self.get_review(chapter_id)
-        if writing is None or review is None:
-            raise ValueError("Writing and review are required before confirmation.")
+        writing = self.get_writing(chapter_id)
+        if writing is None:
+            raise ValueError("Writing is required before confirmation.")
         if writing["strategy"] in {"plot_adjust", "reimagine"}:
             with session(self.database_path) as connection:
                 self.versions.append_chapter_rewrite_version(
@@ -422,7 +351,7 @@ class CreativeWorkflowService:
 
     def _create_patch_plan(self, source: Any, intent: dict[str, Any], analysis: dict[str, Any]) -> list[dict[str, Any]]:
         value = self.ai.generate_json(
-            project_id=source.project_id, stage="writing_plan", workflow_key="plot_adjust", task_key="writing_plan",
+            project_id=source.project_id, stage="writing_plan", workflow_key="plot_adjust", task_key="writing",
             payload={"source_text": source.text, "special_analysis": analysis}, user_instruction=intent["user_instruction"],
             output_contract=("JSON object with blocks array. Each has operation preserve|modify|delete|insert, "
                              "start_offset, end_offset, instruction and order."),
@@ -522,7 +451,6 @@ class CreativeWorkflowService:
 
     def _reset_for_source(self, connection: Any, source: Any) -> None:
         self._ensure_state(connection, source)
-        self._delete_review(connection, source.chapter_id)
         for table in ("chapter_writings", "chapter_style_contexts", "chapter_special_analyses",
                       "chapter_creative_intents", "chapter_workflow_summaries"):
             connection.execute(f"DELETE FROM {table} WHERE chapter_id=?", (source.chapter_id,))
@@ -537,11 +465,6 @@ class CreativeWorkflowService:
         if stage not in STAGES:
             raise ValueError(f"Unsupported chapter workflow stage: {stage}")
         connection.execute("UPDATE chapter_workflow_state SET current_stage=?,updated_at=CURRENT_TIMESTAMP WHERE chapter_id=?", (stage, chapter_id))
-
-    @staticmethod
-    def _delete_review(connection: Any, chapter_id: int) -> None:
-        connection.execute("DELETE FROM chapter_review_issues WHERE review_id IN (SELECT id FROM chapter_reviews WHERE chapter_id=?)", (chapter_id,))
-        connection.execute("DELETE FROM chapter_reviews WHERE chapter_id=?", (chapter_id,))
 
     def _style_source(self, source: Any, requested_scope: str) -> tuple[str, str]:
         if requested_scope == "document":
@@ -637,25 +560,12 @@ class CreativeWorkflowService:
                 "created_chapter_id": row["created_chapter_id"], "source_hash": str(row["source_hash"]),
                 "status": str(row["status"]), "updated_at": str(row["updated_at"])}
 
-    def _review_row(self, connection: Any, chapter_id: int) -> dict[str, Any] | None:
-        row = connection.execute("SELECT * FROM chapter_reviews WHERE chapter_id=?", (chapter_id,)).fetchone()
-        if row is None: return None
-        issues = connection.execute("SELECT * FROM chapter_review_issues WHERE review_id=? ORDER BY id", (row["id"],)).fetchall()
-        return {"id": int(row["id"]), "chapter_id": chapter_id, "strategy": str(row["strategy"]),
-                "summary": str(row["summary"]), "metrics": self._load(row["metrics_json"], {}), "source_hash": str(row["source_hash"]),
-                "issues": [{"issue_id": int(item["id"]), "severity": str(item["severity"]), "category": str(item["category"]),
-                            "start_offset": item["start_offset"], "end_offset": item["end_offset"],
-                            "description": str(item["description"]), "suggested_fix": str(item["suggested_fix"]),
-                            "status": str(item["status"])} for item in issues]}
-
     @staticmethod
     def _object_list(value: Any, label: str) -> list[dict[str, Any]]:
         if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
             raise ValueError(f"{label} must be an array of objects.")
         return [dict(item) for item in value]
 
-    @staticmethod
-    def _optional_int(value: Any) -> int | None: return int(value) if value is not None else None
     @staticmethod
     def _dump(value: Any) -> str: return json.dumps(value, ensure_ascii=False)
     @staticmethod

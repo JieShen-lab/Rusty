@@ -1363,20 +1363,10 @@ def create_app(
             chapter_id, replace_existing=bool(payload.get("replace_existing", False))
         )
 
-    @app.get("/api/chapters/{chapter_id}/workflow/review", response_model=dict[str, Any] | None)
-    def get_chapter_workflow_review(chapter_id: int) -> dict[str, Any] | None:
+    @app.put("/api/chapters/{chapter_id}/workflow/writing", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def save_chapter_workflow_writing(chapter_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         _require_existing_chapter(project_service, chapter_id)
-        return creative_workflow_service.get_review(chapter_id)
-
-    @app.post("/api/chapters/{chapter_id}/workflow/review/run", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
-    def run_chapter_workflow_review(chapter_id: int) -> dict[str, Any]:
-        _require_existing_chapter(project_service, chapter_id)
-        return creative_workflow_service.review_chapter(chapter_id)
-
-    @app.post("/api/chapters/{chapter_id}/workflow/review/issues/{issue_id}/repair", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
-    def repair_chapter_workflow_issue(chapter_id: int, issue_id: int) -> dict[str, Any]:
-        _require_existing_chapter(project_service, chapter_id)
-        return creative_workflow_service.repair_review_issue(chapter_id, issue_id)
+        return creative_workflow_service.save_writing(chapter_id, str(payload.get("result_text") or ""))
 
     @app.post("/api/chapters/{chapter_id}/workflow/confirm", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
     def confirm_chapter_workflow(chapter_id: int) -> dict[str, Any]:

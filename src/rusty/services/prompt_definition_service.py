@@ -66,6 +66,16 @@ class PromptDefinitionService:
             ).fetchone()
         return self._from_row(row) if row is not None else None
 
+    def get_system_prompt(self) -> PromptDefinition | None:
+        """Return the single active system prompt used by every chapter-workflow AI call."""
+        with session(self.database_path) as connection:
+            row = connection.execute(
+                """SELECT * FROM prompt_definitions
+                   WHERE kind='master' AND is_default=1 AND deleted_at IS NULL
+                   ORDER BY updated_at DESC,id DESC LIMIT 1"""
+            ).fetchone()
+        return self._from_row(row) if row is not None else None
+
     def create_definition(self, **value: Any) -> PromptDefinition:
         normalized = self._normalize(value)
         with session(self.database_path) as connection:

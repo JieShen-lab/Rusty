@@ -3,7 +3,7 @@ import { AppShell } from './components/AppShell';
 import type { RouteKey } from './components/Sidebar';
 import { DocumentLibraryPage } from './pages/DocumentLibraryPage';
 import { ModelManagePage } from './pages/ModelManagePage';
-import { MaterialLibraryPage } from './pages/MaterialLibraryPage';
+import { AuthorLibraryPage } from './pages/MaterialLibraryPage';
 import { NewProjectPage } from './pages/NewProjectPage';
 import { ProjectWorkspacePage } from './pages/ProjectWorkspacePage';
 import { PromptManagePage } from './pages/PromptManagePage';
@@ -38,7 +38,7 @@ function parseRoute(pathname: string): Route {
   if (parts[0] === 'new-project') return { key: 'new-project' };
   if (parts[0] === 'models') return { key: 'models' };
   if (parts[0] === 'prompts') return { key: 'prompts' };
-  if (parts[0] === 'materials' || parts[0] === 'outlines' || parts[0] === 'anchors') return { key: 'outlines' };
+  if (parts[0] === 'authors' || parts[0] === 'materials' || parts[0] === 'outlines' || parts[0] === 'anchors') return { key: 'authors' };
   if (parts[0] === 'documents') return { key: 'documents' };
   if (parts[0] === 'styles') return { key: 'prompts' };
   return { key: 'library' };
@@ -84,7 +84,7 @@ export default function App() {
   if (route.key === 'new-project') page = <NewProjectPage onNavigate={navigate} />;
   if (route.key === 'models') page = <ModelManagePage />;
   if (route.key === 'prompts') page = <PromptManagePage />;
-  if (route.key === 'outlines') page = <MaterialLibraryPage />;
+  if (route.key === 'authors') page = <AuthorLibraryPage />;
   if (route.key === 'documents') page = <DocumentLibraryPage onNavigate={navigate} />;
 
   return (

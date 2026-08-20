@@ -72,7 +72,7 @@ class PromptDefinitionTests(unittest.TestCase):
     def test_compiler_order_and_program_owned_output_contract(self) -> None:
         request = PromptCompiler().compile_creative_json(
             stage="chapter_summary",
-            master_prompt="工程规则",
+            system_prompt="全局规则",
             task_prompt="用户可编辑任务规则：不要返回 JSON。",
             payload={"source_text": "原文"},
             user_instruction="本次要求",
@@ -80,8 +80,8 @@ class PromptDefinitionTests(unittest.TestCase):
             prompt_definition_id=8,
         )
         system, user = request.message_list()
-        self.assertLess(system["content"].index("RUSTY INTERNAL"), system["content"].index("PROJECT MASTER"))
-        self.assertLess(system["content"].index("PROJECT MASTER"), system["content"].index("CURRENT TASK"))
+        self.assertLess(system["content"].index("GLOBAL SYSTEM PROMPT"), system["content"].index("RUSTY OUTPUT AND SAFETY RULES"))
+        self.assertLess(system["content"].index("RUSTY OUTPUT AND SAFETY RULES"), system["content"].index("CURRENT TASK PROMPT"))
         self.assertLess(user["content"].index("DYNAMIC CONTEXT"), user["content"].index("USER INSTRUCTION"))
         self.assertLess(user["content"].index("USER INSTRUCTION"), user["content"].index("OUTPUT CONTRACT"))
         self.assertEqual('JSON object: {"summary": string}', request.expected_output)

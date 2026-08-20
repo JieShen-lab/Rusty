@@ -48,24 +48,18 @@ class WorkflowAI:
             return value
 
         model = self.models.resolve_model_config(project_id=project_id)
-        if task_key:
-            master = self.prompts.get_project_master(project_id)
-            definition = self.prompts.find_task(workflow_key=workflow_key, task_key=task_key)
-            request = self.compiler.compile_creative_json(
-                stage=stage,
-                master_prompt=str(master["content"]),
-                task_prompt=definition.content if definition else "",
-                payload=payload,
-                user_instruction=user_instruction,
-                output_contract=output_contract,
-                prompt_definition_id=definition.id if definition else None,
-            )
-        else:
-            request = self.compiler.compile_workflow_json(
-                stage=stage,
-                payload=payload,
-                output_contract=output_contract,
-            )
+        system_definition = self.prompts.get_system_prompt()
+        task_workflow = workflow_key if task_key not in {"chapter_summary", "writing"} else None
+        definition = self.prompts.find_task(workflow_key=task_workflow, task_key=task_key) if task_key else None
+        request = self.compiler.compile_creative_json(
+            stage=stage,
+            system_prompt=system_definition.content if system_definition else "",
+            task_prompt=definition.content if definition else "",
+            payload=payload,
+            user_instruction=user_instruction,
+            output_contract=output_contract,
+            prompt_definition_id=definition.id if definition else None,
+        )
         response = self.client.chat(
             model,
             self.models.get_api_key(model.id),

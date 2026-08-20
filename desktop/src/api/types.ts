@@ -208,7 +208,6 @@ export type ChapterWorkflowState = {
   special_analysis: ChapterSpecialAnalysis | null;
   style: ChapterStyleContext | null;
   writing: ChapterWriting | null;
-  review: ChapterReview | null;
   updated_at: string;
 };
 
@@ -1021,9 +1020,6 @@ export type ChapterCreativeIntent = { chapter_id: number; strategy: CreativeStra
 export type ChapterSpecialAnalysis = { chapter_id: number; strategy: CreativeStrategy; outline_detail_level: 'brief' | 'detailed' | null; source_outline: OutlineNode[]; target_outline: OutlineNode[]; constraints: Record<string, unknown>; analysis_notes: unknown[]; source_hash: string; updated_at: string };
 export type ChapterStyleContext = { chapter_id: number; strategy: CreativeStrategy; style_mode: 'source_auto' | 'selected_author_style'; source_scope: 'document' | 'chapter'; author_style_material_id: number | null; author_style_material_version: number | null; style_snapshot: Record<string, unknown>; extraction_settings_snapshot: Record<string, unknown>; generated_guidance: string; source_hash: string; created_at: string };
 export type ChapterWriting = { id: number; chapter_id: number; strategy: CreativeStrategy; writing_plan: Array<Record<string, unknown>>; result_text: string; created_chapter_id: number | null; source_hash: string; status: 'draft' | 'reviewed' | 'confirmed'; updated_at: string };
-export type ChapterReviewIssue = { issue_id: number; severity: 'info' | 'warning' | 'error'; category: string; start_offset: number | null; end_offset: number | null; description: string; suggested_fix: string; status: 'open' | 'repaired' | 'dismissed' };
-export type ChapterReview = { id: number; chapter_id: number; strategy: CreativeStrategy; summary: string; metrics: Record<string, unknown>; source_hash: string; issues: ChapterReviewIssue[] };
-
 export type SceneBoundaryItem = {
   start_offset: number;
   end_offset: number;
