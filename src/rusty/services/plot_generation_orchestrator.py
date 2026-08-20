@@ -108,7 +108,6 @@ class PlotGenerationOrchestrator:
             return_anchor=return_anchor,
             branch_id=branch_id,
             user_direction=user_direction,
-            selected_character_ids=selected_character_ids or [],
             selected_material_ids=selected_material_ids or [],
             style_profile_id=style_profile_id,
             rewrite_source_snapshot=rewrite_source,

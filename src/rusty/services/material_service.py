@@ -11,12 +11,12 @@ from rusty.db import default_database_path
 from rusty.services.style_service import DETAIL_LEVELS
 
 
-MATERIAL_TYPES = {"plot_skeleton", "author_style"}
+MATERIAL_TYPES = {"author_style"}
 MATERIAL_SCOPES = {"public", "project"}
 ANALYSIS_STATUSES = {"unanalyzed", "analyzed"}
 MATERIAL_TAG_GROUPS = {"general", "applicable_scene"}
 PROJECT_FILTER_MATCH_MODES = {"any", "all"}
-MATERIAL_AI_TASK_TYPES = {"plot_skeleton_extraction", "author_style_extraction"}
+MATERIAL_AI_TASK_TYPES = {"author_style_extraction"}
 
 
 @dataclass(frozen=True)
@@ -625,15 +625,13 @@ class MaterialService:
             item = dict(raw_item)
             try:
                 original_type = str(item.get("material_type") or item.get("type") or "").strip()
-                material_type = "plot_skeleton" if original_type == "outline" else _validate_type(original_type)
+                material_type = _validate_type(original_type)
                 scope = str(item.get("scope") or default_scope)
                 project_id = item.get("project_id", default_project_id)
                 if project_id is not None:
                     project_id = int(project_id)
                 tag_ids = self._tag_ids_from_names(item.get("tags", []))
                 import_metadata = _json_object_value(item.get("import_metadata"))
-                if original_type == "outline":
-                    import_metadata["legacy_material_type"] = "outline"
                 import_metadata["created_by"] = "json_batch_import"
                 material_id = self.create_material(
                     material_type=material_type,
@@ -963,7 +961,7 @@ class MaterialService:
         return [
             by_type.get(material_type)
             or ProjectMaterialFilter(project_id, material_type, "any", (), (), True, True)
-            for material_type in ("plot_skeleton", "author_style")
+            for material_type in ("author_style",)
         ]
 
     def set_project_material_filter(
@@ -1438,32 +1436,9 @@ def _limited_setting_text(value: object, field: str) -> str:
 
 
 def normalize_material_content(material_type: str, value: object) -> dict[str, Any]:
-    if material_type == "plot_skeleton":
-        return normalize_plot_skeleton_content(value)
     if material_type == "author_style":
         return normalize_author_style_content(value)
     raise ValueError(f"Unsupported material type: {material_type}")
-
-
-def normalize_plot_skeleton_content(value: object) -> dict[str, Any]:
-    source = dict(value) if isinstance(value, dict) else {}
-    known = {
-        "schema_version", "premise", "stages", "conflicts", "turning_points",
-        "climax", "resolution", "hooks", "legacy_extra",
-    }
-    legacy_extra = _json_object_value(source.get("legacy_extra")) if isinstance(source.get("legacy_extra"), dict) else {}
-    legacy_extra.update({key: item for key, item in source.items() if key not in known})
-    return {
-        "schema_version": 1,
-        "premise": str(source.get("premise") or source.get("summary") or "").strip(),
-        "stages": _normalize_structured_items(source.get("stages"), "stage"),
-        "conflicts": _normalize_structured_items(source.get("conflicts"), "conflict"),
-        "turning_points": _normalize_structured_items(source.get("turning_points"), "turning-point"),
-        "climax": _normalize_structured_object(source.get("climax"), "climax"),
-        "resolution": _normalize_structured_object(source.get("resolution"), "resolution"),
-        "hooks": _normalize_structured_items(source.get("hooks"), "hook"),
-        "legacy_extra": legacy_extra,
-    }
 
 
 def normalize_author_style_content(value: object) -> dict[str, Any]:

@@ -2,26 +2,23 @@
 
 Rusty 是本地优先的小说资料管理、文档整理与 AI 辅助改写桌面应用。
 
-当前主应用由 Electron + React、FastAPI、Python 服务层和 SQLite 组成，支持项目工作台、素材库、角色卡、文档库、可追踪 AI 改写与 TXT/EPUB 导出。完整功能、架构和数据说明见 [当前功能与代码实现说明](docs/current-implementation.md)。
+当前主应用由 Electron + React、FastAPI、Python 服务层和 SQLite 组成，支持项目工作台、作者风格素材库、文档库、章节级 AI 创作与 TXT/EPUB 导出。完整功能、架构和数据说明见 [当前功能与代码实现说明](docs/current-implementation.md)。
 
 ## 主要能力
 
 - 导入 TXT、EPUB、DOCX，预览并调整分章结果。
-- 管理统一的全局素材资产、统一角色卡和独立文档库；角色卡与素材均不再按公共/工程拆成两套资产。
-- 使用独立标签和类型专属分类组织素材；角色分类负责整理角色卡，角色标签负责筛选角色卡。
+- 管理作者风格素材与独立文档库。角色卡资产和剧情骨架素材已删除。
+- 作者风格保留维度、提取要求、分析结果、具体特征、原文实例、原始来源、单维度提取及 JSON 设置导入/导出。
 - 编辑文档正文，保存 revision，合并文档、新增章节、正则分章和文字整理。
-- 从文档正文选区进入角色 AI 提取候选流程；Preview 不写数据，Apply 在同一事务中创建角色、标签、分类和工程绑定，成功后 Token 单次消费，失败时整批回滚并允许重试。
-- 文档或工程选区可进入素材“来源 → preview → 人工确认 → apply”流程，也可只保存为待整理来源；Preview 不写素材、标签或分类，Apply 整批原子提交。完整来源最多 50,000 字符，模型采样最多 16,000 字符且不会覆盖最终 `raw_text`。
-- 素材库当前只有剧情骨架 `plot_skeleton` 与作者风格 `author_style`；`scene_reference` 已废弃。工程通过两类素材各自的标签筛选和手动固定 ID 使用统一全局素材，自动检索不会纳入未分析素材。
+- 文档或工程选区可进入作者风格“来源 → preview → 人工确认 → apply”流程，也可只保存为待整理来源。
+- Workflow 的 `source_outline` / `target_outline` 是单次运行的中间分析结果，不是可复用素材。
 - 作者风格是一份由多个可编辑维度组成的完整档案。每个维度保存名称、提取要求、分析结果、具体特征和原文实例，不保存实例的文档/章节位置；素材保留原始分析文本，便于以后只新增或重新提取一个维度。
-- 剧情骨架只保存抽象且可复用的事件结构、顺序与因果，不保存原文事实证据。
-- 两类素材分别只有一套当前默认提取配置；修改后立即成为新默认，不支持多模板或恢复默认。作者风格配置可导入/导出 JSON，导入会覆盖当前配置且不迁移本机模型 ID。
-- “新建角色”提供互不依赖的手动创建和 AI 文本提取模式；AI 提取采用 preview/apply 两阶段接口。
-- 工程通过 `project_character_bindings` 引用统一角色卡；绑定不创建副本，解绑不删除角色卡。一张角色卡可以被多个工程引用。
-- AI 新建必须填写目标人物名称，一次只返回一个严格 JSON draft；Preview 不写角色表，用户在统一编辑器确认并保存后才创建角色卡和标签。
-- AI 生成维度与角色卡“设定”共用带稳定 ID 的 `stable_fields`，维度定义、顺序、启用状态和提取说明持久化在数据库中并可自定义。
+- 素材 AI 只保留一套 `author_style_extraction` 当前配置；修改后立即成为新默认。
 - 配置 OpenAI 兼容模型，执行可追踪的章节分析、情节扩展和改写流程。
-- 普通小说工程使用统一的章节中心三栏工作台，完成预分析、四种 strategy 的专项分析与目标设计、block 写作规划、Current Draft 生成/编辑，以及 Source ↔ Current Draft 传统 Diff 审查。
+- Creative Workflow 只以章节为创作单元，阶段为内容总结、方向、专项分析、风格、写作、审查。
+- 当前策略只有调整剧情、增加剧情、重新构思。调整剧情按文本 patch 执行并由程序原样复制 preserve span；增加剧情在当前章后创建新章节并安全后移原有章节；重新构思按边界和选定作者风格整章生成。
+- 调整剧情和增加剧情默认自动分析原作风格；重新构思必须选择作者风格素材。自动分析复用素材库的 `author_style_extraction` 配置并保存运行时快照。
+- 最终六阶段工作台和作者风格素材库视觉重构尚未实施，本轮桌面端仅提供基础状态显示。
 
 ## Development
 
@@ -78,15 +75,15 @@ python -m rusty.db.schema rusty.db
 - `src/rusty/exporters/`: TXT / EPUB export
 - `src/rusty/services/project_service.py`: project persistence and import/export workflow
 - `src/rusty/services/material_service.py`: unified material library, type-specific categories, tag groups, project filters, structured content, and AI settings
-- `src/rusty/services/anchor_service.py`: unified character cards, categories, tags, stable fields, and project reference bindings
+- `src/rusty/services/anchor_service.py`: outline template CRUD and project binding
 - `src/rusty/services/document_library_service.py`: document categories, tags, project relations, revisions, editing, merge, chapter operations, and export
 - `src/rusty/services/model_service.py`: model CRUD and keyring-backed API key references
 - `src/rusty/services/prompt_service.py`: legacy prompt package CRUD and project-level overrides
 - `src/rusty/services/prompt_definition_service.py`: master/workflow/common prompt CRUD and project master copies
-- `src/rusty/services/creative_workflow_service.py`: scene-authoritative creative target, planning, draft generation and review workflow
+- `src/rusty/services/creative_workflow_service.py`: chapter summary, strategy analysis, style snapshot, writing and review workflow
 - `src/rusty/services/pipeline_service.py`: AI summary, scene detection, rewrite, retry, pause, and merge workflow
 - `src/rusty/db/connection.py`: SQLite connection defaults
-- `src/rusty/db/schema.py`: v51 schema, migrations, indexes, and seed data
+- `src/rusty/db/schema.py`: v56 schema, migrations, indexes, and seed data
 - `tests/`: database, service, API, pipeline, importer/exporter, and UI tests
 
 旧版 PySide6 入口仍可通过 `.\.venv\Scripts\rusty` 启动，但新增功能以 Electron 桌面端为准。

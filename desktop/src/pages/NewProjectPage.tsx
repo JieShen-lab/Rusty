@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
   ArrowLeft,
@@ -11,15 +11,12 @@ import {
   FilePenLine,
   FileText,
   FolderOpen,
-  MessageSquareText,
   Scissors,
-  Search,
   Upload,
   Wifi,
 } from 'lucide-react';
 import {
   createProject,
-  getPromptDefinitions,
   getModels,
   previewProject,
   testModel,
@@ -29,11 +26,10 @@ import type {
   ModelConfig,
   PreviewResponse,
   ProjectKind,
-  PromptDefinition,
 } from '../api/types';
 
 type Props = { onNavigate: (path: string) => void };
-type WizardStep = 'purpose' | 'import' | 'split' | 'preview' | 'model' | 'prompt' | 'confirm';
+type WizardStep = 'purpose' | 'import' | 'split' | 'preview' | 'model' | 'confirm';
 type SplitMode = ChapterSplitOptions['mode'];
 
 const FLOW_STEPS: Array<{ key: Exclude<WizardStep, 'purpose'>; label: string; hint: string; icon: ReactNode }> = [
@@ -41,7 +37,6 @@ const FLOW_STEPS: Array<{ key: Exclude<WizardStep, 'purpose'>; label: string; hi
   { key: 'split', label: '章节拆分', hint: '配置章节识别规则', icon: <Scissors size={17} /> },
   { key: 'preview', label: '预览信息', hint: '确认章节与元数据', icon: <Eye size={17} /> },
   { key: 'model', label: '模型配置', hint: '选择 AI 推理引擎', icon: <Cpu size={17} /> },
-  { key: 'prompt', label: '总提示词', hint: '填入当前工程实际使用的规则', icon: <MessageSquareText size={17} /> },
   { key: 'confirm', label: '确认创建', hint: '检查并启动工程', icon: <ClipboardCheck size={17} /> },
 ];
 
@@ -63,20 +58,14 @@ export function NewProjectPage({ onNavigate }: Props) {
   const [models, setModels] = useState<ModelConfig[]>([]);
   const [modelId, setModelId] = useState<number | null>(null);
   const [modelTestMessage, setModelTestMessage] = useState<string | null>(null);
-  const [masterPrompts, setMasterPrompts] = useState<PromptDefinition[]>([]);
-  const [masterPromptId, setMasterPromptId] = useState<number | null>(null);
-  const [query, setQuery] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    Promise.all([getModels(), getPromptDefinitions()])
-      .then(([modelItems, promptItems]) => {
+    getModels()
+      .then((modelItems) => {
         setModels(modelItems);
         setModelId(modelItems.find((item) => item.is_default)?.id ?? modelItems[0]?.id ?? null);
-        const masters = promptItems.filter((item) => item.kind === 'master');
-        setMasterPrompts(masters);
-        setMasterPromptId(masters.find((item) => item.is_default)?.id ?? masters[0]?.id ?? null);
       })
       .catch((reason) => setError(messageOf(reason)));
   }, []);
@@ -84,14 +73,6 @@ export function NewProjectPage({ onNavigate }: Props) {
   const sourceFormat = sourcePath.split('.').pop()?.toLowerCase() ?? '';
   const directoryPickerAvailable = typeof window.rustyDesktop?.selectWorkspaceDirectory === 'function';
   const selectedModel = models.find((item) => item.id === modelId) ?? null;
-  const visiblePrompts = useMemo(() => {
-    const normalized = query.trim().toLowerCase();
-    const source = masterPrompts;
-    return normalized
-      ? source.filter((item) => `${item.name} ${item.description}`.toLowerCase().includes(normalized))
-      : source;
-  }, [masterPrompts, query]);
-  const selectedPrompt = masterPrompts.find((item) => item.id === masterPromptId);
 
   function resetPreview() {
     setPreview(null);
@@ -171,7 +152,7 @@ export function NewProjectPage({ onNavigate }: Props) {
   }
 
   async function create() {
-    if (!preview || !selectedPrompt || !purpose || !modelId) return;
+    if (!preview || !purpose || !modelId) return;
     setBusy(true);
     setError(null);
     try {
@@ -183,7 +164,7 @@ export function NewProjectPage({ onNavigate }: Props) {
         null,
         null,
         modelId,
-        masterPromptId,
+        null,
       );
       onNavigate(`/workspace/${project.id}`);
     } catch (reason) {
@@ -236,8 +217,7 @@ export function NewProjectPage({ onNavigate }: Props) {
     }
     if (step === 'preview') return Boolean(preview && preview.total_chapters > 0 && projectName.trim());
     if (step === 'model') return modelId !== null;
-    if (step === 'prompt') return selectedPrompt !== undefined;
-    return Boolean(preview && selectedPrompt && modelId && projectName.trim());
+    return Boolean(preview && modelId && projectName.trim());
   })();
 
   const primaryLabel = step === 'confirm'
@@ -401,23 +381,6 @@ export function NewProjectPage({ onNavigate }: Props) {
             </WizardSection>
           ) : null}
 
-          {step === 'prompt' ? (
-            <WizardSection title="选择总提示词" description="所选内容会复制到工程中，之后可独立编辑，不与提示词库同步。">
-              <div className="search-field"><Search size={16} /><input aria-label="搜索提示词" placeholder="搜索名称或说明" value={query} onChange={(event) => setQuery(event.target.value)} /></div>
-              <div className="prompt-choice-list wizard-prompt-list">
-                {visiblePrompts.map((item) => {
-                  const selected = item.id === masterPromptId;
-                  return (
-                    <button className={`prompt-choice ${selected ? 'selected' : ''}`} key={item.id} onClick={() => setMasterPromptId(item.id)} type="button">
-                      <span className="radio-mark" /><span><strong>{item.name}</strong><small>{item.description || '暂无说明'}</small></span>{item.is_default ? <em>默认</em> : null}
-                    </button>
-                  );
-                })}
-                {!visiblePrompts.length ? <div className="compact-empty">还没有适用于该工程类型的提示词。</div> : null}
-              </div>
-            </WizardSection>
-          ) : null}
-
           {step === 'confirm' && preview ? (
             <WizardSection title="确认配置" description="检查无误后创建工程。">
               <div className="confirm-grid">
@@ -427,7 +390,7 @@ export function NewProjectPage({ onNavigate }: Props) {
                 <ConfirmItem label="规模" value={`${preview.total_chapters} 章 · ${preview.total_words.toLocaleString()} 字`} />
                 <ConfirmItem label="章节拆分" value={splitModeLabel(preview.split_mode)} />
                 <ConfirmItem label="AI 模型" value={selectedModel?.display_name || '未选择'} />
-                <ConfirmItem label="总提示词" value={selectedPrompt?.name || '未选择'} />
+                <ConfirmItem label="系统提示词" value="使用全局系统提示词" />
                 <ConfirmItem label="源文件" value={sourcePath} wide />
                 <ConfirmItem label="工作目录" value={workspacePath} wide />
               </div>
@@ -471,7 +434,6 @@ function footerHint(step: WizardStep, preview: PreviewResponse | null) {
   if (step === 'split') return '拆分后进入章节预览';
   if (step === 'preview' && preview) return `已识别 ${preview.total_chapters} 章`;
   if (step === 'model') return '模型配置将用于后续工程处理';
-  if (step === 'prompt') return '所选总提示词会复制到工程，不建立同步关系';
   return '创建后进入工程工作台';
 }
 

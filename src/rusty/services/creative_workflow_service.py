@@ -1,1653 +1,574 @@
 from __future__ import annotations
 
 import json
-import difflib
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 from rusty.db import default_database_path, session
-from rusty.services.scene_service import SceneService
+from rusty.models import count_text_units
+from rusty.services.chapter_version_service import ChapterVersionService
+from rusty.services.material_service import MaterialService, compile_material_ai_prompt
 from rusty.services.workflow_ai import WorkflowAI
-from rusty.services.anchor_service import AnchorService
-from rusty.services.material_service import MaterialService
 
 
-WORKFLOW_STAGES = (
-    "not_started",
-    "preanalysis",
-    "direction",
-    "special_analysis",
-    "target_design",
-    "writing",
-    "review",
-    "confirmed",
-)
-
-CHARACTER_ANALYSIS_CATEGORIES = (
-    "explicit_mentions", "implicit_references", "actions", "dialogue", "states",
-    "objects", "spatial_relations", "related_events", "target_character_conflicts",
-)
+STRATEGIES = {"plot_adjust", "expansion", "reimagine"}
+STAGES = {"not_started", "summary", "direction", "special_analysis", "style", "writing", "review", "confirmed"}
+class WorkflowSourceConflict(ValueError):
+    """The current chapter text no longer matches the workflow source."""
 
 
 class CreativeWorkflowService:
-    """Persistence boundary for the chapter-centric creative workflow."""
+    """Chapter-only creative workflow. Legacy scene data is deliberately ignored."""
 
     def __init__(self, database_path: str | Path | None = None, *, ai_client: Any | None = None) -> None:
         self.database_path = Path(database_path) if database_path is not None else default_database_path()
-        self.scenes = SceneService(self.database_path)
-        self.characters = AnchorService(self.database_path)
-        self.materials = MaterialService(self.database_path)
         self.ai = WorkflowAI(self.database_path, ai_client=ai_client)
+        self.versions = ChapterVersionService(self.database_path)
+        self.materials = MaterialService(self.database_path)
 
     def list_chapter_states(self, project_id: int) -> list[dict[str, Any]]:
         with session(self.database_path) as connection:
-            chapter_ids = [
-                int(row["id"])
-                for row in connection.execute(
-                    "SELECT id FROM chapters WHERE project_id = ? ORDER BY chapter_index",
-                    (project_id,),
-                ).fetchall()
-            ]
-        for chapter_id in chapter_ids:
-            self.reconcile_chapter_scenes(chapter_id)
-        with session(self.database_path) as connection:
-            connection.execute(
-                """
-                INSERT OR IGNORE INTO chapter_workflow_state (chapter_id)
-                SELECT id FROM chapters WHERE project_id = ?
-                """,
-                (project_id,),
-            )
             rows = connection.execute(
-                """
-                SELECT c.id AS chapter_id, c.chapter_index, c.title,
-                       state.active_scene_id,
-                       COALESCE(scene_state.current_stage, state.current_stage) AS current_stage,
-                       state.updated_at
-                FROM chapters c
-                JOIN chapter_workflow_state state ON state.chapter_id = c.id
-                LEFT JOIN scene_workflow_state scene_state
-                    ON scene_state.scene_id = state.active_scene_id
-                WHERE c.project_id = ?
-                ORDER BY c.chapter_index
-                """,
-                (project_id,),
+                "SELECT id FROM chapters WHERE project_id=? ORDER BY chapter_index,id", (project_id,)
             ).fetchall()
-        return [dict(row) for row in rows]
+        return [self.get_chapter_workflow(int(row["id"])) for row in rows]
+
+    def get_chapter_workflow(self, chapter_id: int) -> dict[str, Any]:
+        source = self.versions.resolve_chapter_source(chapter_id)
+        with session(self.database_path) as connection:
+            self._ensure_state(connection, source)
+            state = connection.execute("SELECT * FROM chapter_workflow_state WHERE chapter_id=?", (chapter_id,)).fetchone()
+            summary = connection.execute("SELECT * FROM chapter_workflow_summaries WHERE chapter_id=?", (chapter_id,)).fetchone()
+            intent = connection.execute("SELECT * FROM chapter_creative_intents WHERE chapter_id=?", (chapter_id,)).fetchone()
+            analysis = connection.execute("SELECT * FROM chapter_special_analyses WHERE chapter_id=?", (chapter_id,)).fetchone()
+            style = connection.execute("SELECT * FROM chapter_style_contexts WHERE chapter_id=?", (chapter_id,)).fetchone()
+            writing = connection.execute("SELECT * FROM chapter_writings WHERE chapter_id=?", (chapter_id,)).fetchone()
+        return {
+            "chapter_id": chapter_id,
+            "current_stage": str(state["current_stage"]),
+            "source_base_kind": state["source_base_kind"],
+            "source_base_version_id": state["source_base_version_id"],
+            "source_hash": str(state["source_hash"] or ""),
+            "source_changed": bool(state["source_hash"] and state["source_hash"] != source.content_hash),
+            "summary": self._summary_out(summary),
+            "direction": self._intent_out(intent),
+            "special_analysis": self._analysis_out(analysis),
+            "style": self._style_out(style),
+            "writing": self._writing_out(writing),
+            "updated_at": str(state["updated_at"]),
+        }
 
     def get_chapter_state(self, chapter_id: int) -> dict[str, Any]:
-        self.reconcile_chapter_scenes(chapter_id)
-        with session(self.database_path) as connection:
-            connection.execute(
-                "INSERT OR IGNORE INTO chapter_workflow_state (chapter_id) VALUES (?)",
-                (chapter_id,),
-            )
-            row = connection.execute(
-                """
-                SELECT c.id AS chapter_id, c.chapter_index, c.title,
-                       state.active_scene_id,
-                       COALESCE(scene_state.current_stage, state.current_stage) AS current_stage,
-                       state.updated_at
-                FROM chapters c
-                JOIN chapter_workflow_state state ON state.chapter_id = c.id
-                LEFT JOIN scene_workflow_state scene_state
-                    ON scene_state.scene_id = state.active_scene_id
-                WHERE c.id = ?
-                """,
-                (chapter_id,),
-            ).fetchone()
-        if row is None:
-            raise FileNotFoundError(f"Chapter not found: {chapter_id}")
-        return dict(row)
+        return self.get_chapter_workflow(chapter_id)
 
-    def update_chapter_state(
-        self,
-        chapter_id: int,
-        *,
-        active_scene_id: int | None,
-        current_stage: str,
-    ) -> dict[str, Any]:
-        if current_stage not in WORKFLOW_STAGES:
-            raise ValueError(f"Unsupported creative workflow stage: {current_stage}")
-        if active_scene_id is not None:
-            scene = self.scenes.get_scene(active_scene_id)
-            if scene is None or scene.chapter_id != chapter_id:
-                raise ValueError("Active scene must belong to the selected chapter.")
-            return self.set_scene_stage(active_scene_id, current_stage, activate=True)
-        with session(self.database_path) as connection:
-            chapter = connection.execute(
-                "SELECT project_id FROM chapters WHERE id = ?", (chapter_id,)
-            ).fetchone()
-            if chapter is None:
-                raise FileNotFoundError(f"Chapter not found: {chapter_id}")
-            connection.execute(
-                """
-                INSERT INTO chapter_workflow_state (
-                    chapter_id, active_scene_id, current_stage, updated_at
-                ) VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(chapter_id) DO UPDATE SET
-                    active_scene_id = excluded.active_scene_id,
-                    current_stage = excluded.current_stage,
-                    updated_at = CURRENT_TIMESTAMP
-                """,
-                (chapter_id, active_scene_id, current_stage),
-            )
-        return self.get_chapter_state(chapter_id)
-
-    def list_scene_states(self, chapter_id: int) -> list[dict[str, Any]]:
-        self.reconcile_chapter_scenes(chapter_id)
-        with session(self.database_path) as connection:
-            rows = connection.execute(
-                """
-                SELECT scene.id AS scene_id, scene.scene_index, scene.title,
-                       state.current_stage, state.updated_at
-                FROM scenes scene
-                JOIN scene_workflow_state state ON state.scene_id = scene.id
-                WHERE scene.chapter_id = ? AND scene.deleted_at IS NULL
-                ORDER BY scene.scene_index
-                """,
-                (chapter_id,),
-            ).fetchall()
-        return [dict(row) for row in rows]
-
-    def get_scene_state(self, scene_id: int) -> dict[str, Any]:
-        scene = self.scenes.get_scene(scene_id)
-        if scene is None:
-            raise FileNotFoundError(f"Scene not found: {scene_id}")
-        self.reconcile_chapter_scenes(scene.chapter_id)
-        with session(self.database_path) as connection:
-            row = connection.execute(
-                "SELECT scene_id, current_stage, updated_at FROM scene_workflow_state WHERE scene_id = ?",
-                (scene_id,),
-            ).fetchone()
-        if row is None:
-            raise FileNotFoundError(f"Scene workflow state not found: {scene_id}")
-        return dict(row)
-
-    def activate_scene(self, scene_id: int) -> dict[str, Any]:
-        scene = self.scenes.get_scene(scene_id)
-        if scene is None:
-            raise FileNotFoundError(f"Scene not found: {scene_id}")
-        state = self.get_scene_state(scene_id)
-        self._sync_chapter_to_scene(scene.chapter_id, scene_id, str(state["current_stage"]))
-        return self.get_chapter_state(scene.chapter_id)
-
-    def set_scene_stage(self, scene_id: int, current_stage: str, *, activate: bool = True) -> dict[str, Any]:
-        if current_stage not in WORKFLOW_STAGES:
-            raise ValueError(f"Unsupported creative workflow stage: {current_stage}")
-        scene = self.scenes.get_scene(scene_id)
-        if scene is None:
-            raise FileNotFoundError(f"Scene not found: {scene_id}")
-        with session(self.database_path) as connection:
-            connection.execute(
-                """
-                INSERT INTO scene_workflow_state (scene_id, current_stage, updated_at)
-                VALUES (?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(scene_id) DO UPDATE SET
-                    current_stage = excluded.current_stage,
-                    updated_at = CURRENT_TIMESTAMP
-                """,
-                (scene_id, current_stage),
-            )
-        if activate:
-            self._sync_chapter_to_scene(scene.chapter_id, scene_id, current_stage)
-        return self.get_scene_state(scene_id)
-
-    def reconcile_chapter_scenes(self, chapter_id: int) -> dict[str, Any]:
-        with session(self.database_path) as connection:
-            chapter = connection.execute(
-                "SELECT id FROM chapters WHERE id = ?", (chapter_id,)
-            ).fetchone()
-            if chapter is None:
-                raise FileNotFoundError(f"Chapter not found: {chapter_id}")
-            connection.execute(
-                """
-                INSERT OR IGNORE INTO scene_workflow_state (scene_id)
-                SELECT id FROM scenes WHERE chapter_id = ? AND deleted_at IS NULL
-                """,
-                (chapter_id,),
-            )
-            live = connection.execute(
-                "SELECT id FROM scenes WHERE chapter_id = ? AND deleted_at IS NULL ORDER BY scene_index",
-                (chapter_id,),
-            ).fetchall()
-            live_ids = [int(row["id"]) for row in live]
-            current = connection.execute(
-                "SELECT active_scene_id FROM chapter_workflow_state WHERE chapter_id = ?",
-                (chapter_id,),
-            ).fetchone()
-            active_scene_id = (
-                int(current["active_scene_id"])
-                if current is not None and current["active_scene_id"] is not None
-                else None
-            )
-            if active_scene_id not in live_ids:
-                active_scene_id = live_ids[0] if live_ids else None
-            stage = "not_started"
-            if active_scene_id is not None:
-                stage_row = connection.execute(
-                    "SELECT current_stage FROM scene_workflow_state WHERE scene_id = ?",
-                    (active_scene_id,),
-                ).fetchone()
-                stage = str(stage_row["current_stage"]) if stage_row is not None else "not_started"
-            connection.execute(
-                """
-                INSERT INTO chapter_workflow_state (chapter_id, active_scene_id, current_stage, updated_at)
-                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(chapter_id) DO UPDATE SET
-                    active_scene_id = excluded.active_scene_id,
-                    current_stage = excluded.current_stage,
-                    updated_at = CASE
-                        WHEN chapter_workflow_state.active_scene_id IS excluded.active_scene_id
-                         AND chapter_workflow_state.current_stage = excluded.current_stage
-                        THEN chapter_workflow_state.updated_at
-                        ELSE CURRENT_TIMESTAMP
-                    END
-                """,
-                (chapter_id, active_scene_id, stage),
-            )
-        return {"chapter_id": chapter_id, "active_scene_id": active_scene_id, "current_stage": stage}
-
-    def _sync_chapter_to_scene(self, chapter_id: int, scene_id: int, current_stage: str) -> None:
-        with session(self.database_path) as connection:
-            connection.execute(
-                """
-                INSERT INTO chapter_workflow_state (chapter_id, active_scene_id, current_stage, updated_at)
-                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(chapter_id) DO UPDATE SET
-                    active_scene_id = excluded.active_scene_id,
-                    current_stage = excluded.current_stage,
-                    updated_at = CURRENT_TIMESTAMP
-                """,
-                (chapter_id, scene_id, current_stage),
-            )
-
-    def get_preanalysis(self, scene_id: int) -> dict[str, Any] | None:
-        with session(self.database_path) as connection:
-            row = connection.execute(
-                "SELECT * FROM scene_preanalyses WHERE scene_id = ?", (scene_id,)
-            ).fetchone()
-        return self._preanalysis_from_row(row) if row is not None else None
-
-    def run_preanalysis(self, scene_id: int, *, replace_existing: bool = False) -> dict[str, Any]:
-        scene = self.scenes.get_scene(scene_id)
-        if scene is None:
-            raise FileNotFoundError(f"Scene not found: {scene_id}")
-        if not scene.user_confirmed:
-            raise ValueError("Confirm scene boundaries before running scene preanalysis.")
-        current = self.get_preanalysis(scene_id)
-        if current and current["user_edited"] and not replace_existing:
-            raise ValueError("Reanalysis would replace the user-edited preanalysis result.")
+    def run_chapter_summary(self, chapter_id: int) -> dict[str, Any]:
+        source = self.versions.resolve_chapter_source(chapter_id)
         value = self.ai.generate_json(
-            project_id=scene.project_id,
-            stage="scene_preanalysis",
-            payload={
-                "scene_id": scene.id,
-                "source_text": scene.original_text,
-                "source_start_offset": scene.original_start_offset,
-                "source_end_offset": scene.original_end_offset,
-            },
-            output_contract=(
-                "Return summary:string, characters:string[], location:string, time:string, "
-                "scene_type:string, basic_events:string[]. Do not perform detailed character "
-                "state, causality, or rewrite planning analysis."
-            ),
-            task_key="scene_preanalysis",
+            project_id=source.project_id, stage="chapter_summary", workflow_key=None,
+            task_key="chapter_summary", payload={"chapter_id": chapter_id, "source_text": source.text},
+            output_contract=("JSON object: plot_summary string; main_characters, key_events, relationships, "
+                             "important_facts, open_threads arrays; start_state and end_state objects."),
         )
-        normalized = self._normalize_preanalysis(value)
-        return self.save_preanalysis(scene_id, normalized, user_edited=False)
+        summary = self._normalize_summary(value)
+        with session(self.database_path) as connection:
+            self._reset_for_source(connection, source)
+            self._write_summary(connection, chapter_id, source.content_hash, summary)
+            self._set_stage(connection, chapter_id, "summary")
+        return self.get_chapter_summary(chapter_id) or {}
 
-    def save_preanalysis(
-        self,
-        scene_id: int,
-        value: dict[str, Any],
-        *,
-        user_edited: bool = True,
-    ) -> dict[str, Any]:
-        scene = self.scenes.get_scene(scene_id)
-        if scene is None:
-            raise FileNotFoundError(f"Scene not found: {scene_id}")
-        normalized = self._normalize_preanalysis(value)
-        current = self.get_preanalysis(scene_id)
-        changed = current is None or any(current.get(key) != normalized[key] for key in normalized)
-        if not changed and current is not None:
-            return current
+    def get_chapter_summary(self, chapter_id: int) -> dict[str, Any] | None:
+        with session(self.database_path) as connection:
+            row = connection.execute("SELECT * FROM chapter_workflow_summaries WHERE chapter_id=?", (chapter_id,)).fetchone()
+        return self._summary_out(row)
+
+    def save_chapter_summary(self, chapter_id: int, value: dict[str, Any]) -> dict[str, Any]:
+        source = self.versions.resolve_chapter_source(chapter_id)
+        with session(self.database_path) as connection:
+            self._reset_for_source(connection, source)
+            self._write_summary(connection, chapter_id, source.content_hash, self._normalize_summary(value))
+            self._set_stage(connection, chapter_id, "summary")
+        return self.get_chapter_summary(chapter_id) or {}
+
+    def save_chapter_direction(self, chapter_id: int, *, strategy: str, user_instruction: str) -> dict[str, Any]:
+        strategy = self._strategy(strategy)
+        self._require_current_source(chapter_id)
+        if self.get_chapter_summary(chapter_id) is None:
+            raise ValueError("Run chapter summary before choosing a direction.")
         with session(self.database_path) as connection:
             connection.execute(
-                """
-                INSERT INTO scene_preanalyses (
-                    scene_id, summary, characters_json, location, time_text,
-                    scene_type, basic_events_json, status, user_edited, confirmed_at,
-                    updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'draft', ?, NULL, CURRENT_TIMESTAMP)
-                ON CONFLICT(scene_id) DO UPDATE SET
-                    summary = excluded.summary,
-                    characters_json = excluded.characters_json,
-                    location = excluded.location,
-                    time_text = excluded.time_text,
-                    scene_type = excluded.scene_type,
-                    basic_events_json = excluded.basic_events_json,
-                    status = 'draft',
-                    user_edited = excluded.user_edited,
-                    confirmed_at = NULL,
-                    updated_at = CURRENT_TIMESTAMP
-                """,
-                (
-                    scene_id,
-                    normalized["summary"],
-                    json.dumps(normalized["characters"], ensure_ascii=False),
-                    normalized["location"],
-                    normalized["time"],
-                    normalized["scene_type"],
-                    json.dumps(normalized["basic_events"], ensure_ascii=False),
-                    1 if user_edited else 0,
-                ),
+                """INSERT INTO chapter_creative_intents(chapter_id,strategy,user_instruction) VALUES(?,?,?)
+                   ON CONFLICT(chapter_id) DO UPDATE SET strategy=excluded.strategy,
+                   user_instruction=excluded.user_instruction,updated_at=CURRENT_TIMESTAMP""",
+                (chapter_id, strategy, user_instruction.strip()),
             )
-            if changed:
-                self._invalidate_downstream(connection, scene_id, "preanalysis")
-        self.set_scene_stage(scene_id, "preanalysis")
-        return self.get_preanalysis(scene_id) or {}
+            for table in ("chapter_writings", "chapter_style_contexts", "chapter_special_analyses"):
+                connection.execute(f"DELETE FROM {table} WHERE chapter_id=?", (chapter_id,))
+            self._set_stage(connection, chapter_id, "direction")
+        return self.get_chapter_direction(chapter_id) or {}
 
-    def confirm_preanalysis(self, scene_id: int) -> dict[str, Any]:
-        scene = self.scenes.get_scene(scene_id)
-        if scene is None:
-            raise FileNotFoundError(f"Scene not found: {scene_id}")
-        if self.get_preanalysis(scene_id) is None:
-            raise ValueError("Run scene preanalysis before confirming it.")
+    def get_chapter_direction(self, chapter_id: int) -> dict[str, Any] | None:
         with session(self.database_path) as connection:
-            connection.execute(
-                """
-                UPDATE scene_preanalyses
-                SET status = 'confirmed', confirmed_at = CURRENT_TIMESTAMP,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE scene_id = ?
-                """,
-                (scene_id,),
-            )
-        self.set_scene_stage(scene_id, "direction")
-        return self.get_preanalysis(scene_id) or {}
+            row = connection.execute("SELECT * FROM chapter_creative_intents WHERE chapter_id=?", (chapter_id,)).fetchone()
+        return self._intent_out(row)
 
-    def get_intent(self, scene_id: int) -> dict[str, Any] | None:
-        with session(self.database_path) as connection:
-            row = connection.execute(
-                "SELECT * FROM creative_intents WHERE scene_id = ?", (scene_id,)
-            ).fetchone()
-        if row is None:
-            return None
-        return {
-            "scene_id": int(row["scene_id"]),
-            "strategy": str(row["strategy"]),
-            "user_instruction": str(row["user_instruction"]),
-            "selected_character_ids": self._json_int_list(row["selected_character_ids_json"]),
-            "selected_plot_material_ids": self._json_int_list(row["selected_plot_material_ids_json"]),
-            "selected_author_style_ids": self._json_int_list(row["selected_scene_material_ids_json"]),
-            "status": str(row["status"]),
-            "updated_at": str(row["updated_at"]),
-        }
-
-    def save_intent(self, scene_id: int, value: dict[str, Any]) -> dict[str, Any]:
-        scene = self.scenes.get_scene(scene_id)
-        if scene is None:
-            raise FileNotFoundError(f"Scene not found: {scene_id}")
-        strategy = str(value.get("strategy") or "")
-        if strategy not in {"faithful", "plot_adjust", "expansion", "reimagine"}:
-            raise ValueError(f"Unsupported creative strategy: {strategy}")
-        selected_character_ids = self._normalize_ids(value.get("selected_character_ids"))
-        selected_plot_material_ids = self._normalize_ids(value.get("selected_plot_material_ids"))
-        selected_author_style_ids = self._normalize_ids(value.get("selected_author_style_ids"))
-        normalized = {
-            "strategy": strategy,
-            "user_instruction": str(value.get("user_instruction") or ""),
-            "selected_character_ids": selected_character_ids,
-            "selected_plot_material_ids": selected_plot_material_ids,
-            "selected_author_style_ids": selected_author_style_ids,
-        }
-        existing = self.get_intent(scene_id)
-        if existing is not None and all(existing[key] == normalized[key] for key in normalized):
-            return existing
-        with session(self.database_path) as connection:
-            connection.execute(
-                """
-                INSERT INTO creative_intents (
-                    scene_id, strategy, user_instruction,
-                    selected_character_ids_json, selected_plot_material_ids_json,
-                    selected_scene_material_ids_json, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(scene_id) DO UPDATE SET
-                    strategy = excluded.strategy,
-                    user_instruction = excluded.user_instruction,
-                    selected_character_ids_json = excluded.selected_character_ids_json,
-                    selected_plot_material_ids_json = excluded.selected_plot_material_ids_json,
-                    selected_scene_material_ids_json = excluded.selected_scene_material_ids_json,
-                    status = 'draft', updated_at = CURRENT_TIMESTAMP
-                """,
-                (
-                    scene_id,
-                    strategy,
-                    normalized["user_instruction"],
-                    json.dumps(selected_character_ids),
-                    json.dumps(selected_plot_material_ids),
-                    json.dumps(selected_author_style_ids),
-                ),
-            )
-            self._invalidate_downstream(connection, scene_id, "intent")
-        self.set_scene_stage(scene_id, "direction")
-        return self.get_intent(scene_id) or {}
-
-    def get_character_modification_analysis(self, scene_id: int) -> dict[str, Any] | None:
-        with session(self.database_path) as connection:
-            row = connection.execute(
-                "SELECT * FROM character_modification_analyses WHERE scene_id = ?", (scene_id,)
-            ).fetchone()
-        if row is None:
-            return None
-        result: dict[str, Any] = {
-            "scene_id": int(row["scene_id"]),
-            "source_character": str(row["source_character"]),
-            "target_character_card_id": int(row["target_character_card_id"]),
-            "target_character_name": str(row["target_character_name"]),
-            "status": str(row["status"]),
-            "user_edited": bool(row["user_edited"]),
-            "confirmed_at": row["confirmed_at"],
-            "updated_at": str(row["updated_at"]),
-        }
-        for category in CHARACTER_ANALYSIS_CATEGORIES:
-            result[category] = self._json_items(row[f"{category}_json"])
-        return result
-
-    def get_strategy_analysis(self, scene_id: int) -> dict[str, Any] | None:
-        with session(self.database_path) as connection:
-            row = connection.execute("SELECT * FROM strategy_scene_analyses WHERE scene_id=?", (scene_id,)).fetchone()
-        if row is None:
-            return None
-        return {"id": int(row["id"]), "scene_id": int(row["scene_id"]), "strategy": str(row["strategy"]),
-                "analysis": self._json_object(row["analysis_json"]), "status": str(row["status"]),
-                "user_edited": bool(row["user_edited"]), "confirmed_at": row["confirmed_at"],
-                "created_at": str(row["created_at"]), "updated_at": str(row["updated_at"])}
-
-    def run_strategy_analysis(self, scene_id: int, *, replace_existing: bool = False) -> dict[str, Any]:
-        scene, intent, preanalysis = self.scenes.get_scene(scene_id), self.get_intent(scene_id), self.get_preanalysis(scene_id)
-        if scene is None:
-            raise FileNotFoundError(f"Scene not found: {scene_id}")
-        if not preanalysis or preanalysis["status"] != "confirmed":
-            raise ValueError("Confirm scene preanalysis before specialized analysis.")
-        if not intent or intent["strategy"] not in {"plot_adjust", "expansion", "reimagine"}:
-            raise ValueError("Current strategy does not use generic specialized analysis.")
-        current = self.get_strategy_analysis(scene_id)
-        if current and current["user_edited"] and not replace_existing:
-            raise ValueError("Reanalysis would replace the user-edited specialized analysis.")
-        contracts = {
-            "plot_adjust": "Return source_events, causal_links, participants, preconditions, downstream_dependencies, affected_events as arrays. Analyze Source only; do not propose changes.",
-            "expansion": "Return entry_state, exit_constraints, character_relations, active_events, unresolved_goals, available_hooks. Analyze the bridge only.",
-            "reimagine": "Return initial_state, required_characters, location, time, inherited_facts, required_end_state, downstream_constraints. Analyze boundary conditions only.",
-        }
-        value = self.ai.generate_json(project_id=scene.project_id, stage="special_analysis", workflow_key=intent["strategy"], task_key="special_analysis",
-                                      user_instruction=intent["user_instruction"], payload={"source_text": scene.original_text, "chapter_summary_context": self._chapter_summary_context(scene), "preanalysis": preanalysis,
-                                      "creative_intent": intent}, output_contract=contracts[intent["strategy"]])
-        return self.save_strategy_analysis(scene_id, {"strategy": intent["strategy"], "analysis": value}, user_edited=False)
-
-    def save_strategy_analysis(self, scene_id: int, value: dict[str, Any], *, user_edited: bool = True) -> dict[str, Any]:
-        intent = self.get_intent(scene_id)
-        strategy = str(value.get("strategy") or (intent or {}).get("strategy") or "")
-        if strategy not in {"plot_adjust", "expansion", "reimagine"}:
-            raise ValueError("Unsupported strategy analysis.")
-        analysis = value.get("analysis") if isinstance(value.get("analysis"), dict) else {}
-        current = self.get_strategy_analysis(scene_id)
-        changed = current is None or current["strategy"] != strategy or current["analysis"] != analysis
-        if not changed and current is not None:
-            return current
-        status = "stale" if user_edited and current and current["status"] == "stale" else "draft"
-        with session(self.database_path) as connection:
-            connection.execute("""INSERT INTO strategy_scene_analyses(scene_id,strategy,analysis_json,status,user_edited,confirmed_at,updated_at)
-                VALUES(?,?,?,?,?,NULL,CURRENT_TIMESTAMP) ON CONFLICT(scene_id) DO UPDATE SET strategy=excluded.strategy,
-                analysis_json=excluded.analysis_json,status=excluded.status,user_edited=excluded.user_edited,confirmed_at=NULL,updated_at=CURRENT_TIMESTAMP""",
-                (scene_id, strategy, json.dumps(analysis, ensure_ascii=False), status, 1 if user_edited else 0))
-            if changed:
-                self._invalidate_downstream(connection, scene_id, "analysis")
-        self.set_scene_stage(scene_id, "special_analysis")
-        return self.get_strategy_analysis(scene_id) or {}
-
-    def confirm_strategy_analysis(self, scene_id: int) -> dict[str, Any]:
-        analysis, intent = self.get_strategy_analysis(scene_id), self.get_intent(scene_id)
-        if analysis is None:
-            raise ValueError("Run specialized analysis before confirming it.")
-        if analysis["status"] == "stale":
-            raise ValueError("Re-run stale specialized analysis before confirming it.")
-        if not intent or intent["strategy"] != analysis["strategy"]:
-            raise ValueError("Analysis no longer matches current strategy.")
-        with session(self.database_path) as connection:
-            connection.execute("UPDATE strategy_scene_analyses SET status='confirmed',confirmed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE scene_id=?", (scene_id,))
-        self.set_scene_stage(scene_id, "target_design")
-        return self.get_strategy_analysis(scene_id) or {}
-
-    def run_character_modification_analysis(
-        self,
-        scene_id: int,
-        *,
-        source_character: str,
-        target_character_card_id: int,
-        replace_existing: bool = False,
-    ) -> dict[str, Any]:
-        scene = self.scenes.get_scene(scene_id)
-        if scene is None:
-            raise FileNotFoundError(f"Scene not found: {scene_id}")
-        preanalysis = self.get_preanalysis(scene_id)
-        if not preanalysis or preanalysis["status"] != "confirmed":
-            raise ValueError("Confirm scene preanalysis before specialized analysis.")
-        intent = self.get_intent(scene_id)
-        if not intent or intent["strategy"] != "faithful":
-            raise ValueError("Character modification analysis requires the faithful strategy.")
-        target = self.characters.get_character_card(target_character_card_id)
-        if target is None:
-            raise FileNotFoundError(f"Character card not found: {target_character_card_id}")
-        current = self.get_character_modification_analysis(scene_id)
-        if current and current["user_edited"] and not replace_existing:
-            raise ValueError("Reanalysis would replace the user-edited character analysis.")
+    def run_special_analysis(self, chapter_id: int, *, outline_detail_level: str | None = None) -> dict[str, Any]:
+        source = self._require_current_source(chapter_id)
+        summary = self.get_chapter_summary(chapter_id)
+        intent = self.get_chapter_direction(chapter_id)
+        if summary is None or intent is None:
+            raise ValueError("Summary and direction are required before special analysis.")
+        detail = None
+        if intent["strategy"] == "reimagine":
+            detail = outline_detail_level or "detailed"
+            if detail not in {"brief", "detailed"}:
+                raise ValueError("outline_detail_level must be brief or detailed.")
         value = self.ai.generate_json(
-            project_id=scene.project_id,
-            stage="character_modification_analysis",
-            workflow_key="faithful",
-            task_key="character_modification_analysis",
-            user_instruction=intent["user_instruction"],
-            payload={
-                "source_text": scene.original_text,
-                "scene_source_range": {
-                    "start_offset": scene.original_start_offset,
-                    "end_offset": scene.original_end_offset,
-                },
-                "preanalysis": preanalysis,
-                "creative_intent": intent,
-                "source_character": source_character.strip(),
-                "target_character": {
-                    "id": target.id,
-                    "name": target.name,
-                    "description": target.description,
-                    "setting_text": target.setting_text,
-                    "personality": target.personality,
-                    "action_constraints": target.action_constraints,
-                    "profile": target.profile,
-                    "custom_fields": target.custom_fields,
-                },
-            },
-            output_contract=(
-                "Return arrays explicit_mentions, implicit_references, actions, dialogue, states, "
-                "objects, spatial_relations, related_events, target_character_conflicts. Each item "
-                "must contain id, summary, source_text, start_offset, end_offset, inferred. Offsets "
-                "are relative to the supplied scene. Conflict items may also contain source_state, "
-                "target_state, and difference. Do not propose the replacement action."
-            ),
+            project_id=source.project_id, stage="special_analysis", workflow_key=intent["strategy"],
+            task_key="special_analysis", user_instruction=intent["user_instruction"],
+            payload={"source_text": source.text, "summary": summary, "strategy": intent["strategy"],
+                     "outline_detail_level": detail},
+            output_contract=("JSON object: source_outline array, target_outline array, constraints object, "
+                             "analysis_notes array. Nodes have stable ids; plot_adjust targets have "
+                             "operation preserve|modify|delete|insert and source_ids."),
         )
-        normalized = self._normalize_character_analysis(scene, value)
-        normalized.update({
-            "source_character": source_character.strip(),
-            "target_character_card_id": target.id,
-            "target_character_name": target.name,
-        })
-        return self.save_character_modification_analysis(scene_id, normalized, user_edited=False)
+        return self.save_special_analysis(chapter_id, {**value, "strategy": intent["strategy"], "outline_detail_level": detail})
 
-    def save_character_modification_analysis(
-        self,
-        scene_id: int,
-        value: dict[str, Any],
-        *,
-        user_edited: bool = True,
-    ) -> dict[str, Any]:
-        scene = self.scenes.get_scene(scene_id)
-        if scene is None:
-            raise FileNotFoundError(f"Scene not found: {scene_id}")
-        target_id = int(value.get("target_character_card_id") or 0)
-        target = self.characters.get_character_card(target_id)
-        if target is None:
-            raise FileNotFoundError(f"Character card not found: {target_id}")
-        normalized = self._normalize_character_analysis(scene, value)
-        current = self.get_character_modification_analysis(scene_id)
-        changed = current is None or any(
-            current.get(key) != expected
-            for key, expected in {
-                "source_character": str(value.get("source_character") or "").strip(),
-                "target_character_card_id": target.id,
-                **{category: normalized[category] for category in CHARACTER_ANALYSIS_CATEGORIES},
-            }.items()
-        )
-        if not changed and current is not None:
-            return current
-        saved_status = "stale" if user_edited and current and current["status"] == "stale" else "draft"
-        columns = ", ".join(f"{category}_json" for category in CHARACTER_ANALYSIS_CATEGORIES)
-        placeholders = ", ".join("?" for _ in CHARACTER_ANALYSIS_CATEGORIES)
-        updates = ", ".join(f"{category}_json = excluded.{category}_json" for category in CHARACTER_ANALYSIS_CATEGORIES)
-        category_values = [json.dumps(normalized[category], ensure_ascii=False) for category in CHARACTER_ANALYSIS_CATEGORIES]
-        with session(self.database_path) as connection:
-            connection.execute(
-                f"""
-                INSERT INTO character_modification_analyses (
-                    scene_id, source_character, target_character_card_id, target_character_name,
-                    {columns}, status, user_edited, confirmed_at, updated_at
-                ) VALUES (?, ?, ?, ?, {placeholders}, ?, ?, NULL, CURRENT_TIMESTAMP)
-                ON CONFLICT(scene_id) DO UPDATE SET
-                    source_character = excluded.source_character,
-                    target_character_card_id = excluded.target_character_card_id,
-                    target_character_name = excluded.target_character_name,
-                    {updates}, status = excluded.status, user_edited = excluded.user_edited,
-                    confirmed_at = NULL, updated_at = CURRENT_TIMESTAMP
-                """,
-                (
-                    scene_id, str(value.get("source_character") or "").strip(), target.id,
-                    target.name, *category_values, saved_status, 1 if user_edited else 0,
-                ),
-            )
-            if changed:
-                self._invalidate_downstream(connection, scene_id, "analysis")
-        self.set_scene_stage(scene_id, "special_analysis")
-        return self.get_character_modification_analysis(scene_id) or {}
-
-    def get_target(self, scene_id: int) -> dict[str, Any] | None:
-        with session(self.database_path) as connection:
-            row = connection.execute("SELECT * FROM scene_targets WHERE scene_id = ?", (scene_id,)).fetchone()
-        if row is None:
-            return None
-        return {
-            "id": int(row["id"]), "scene_id": int(row["scene_id"]),
-            "strategy": str(row["strategy"]), "user_instruction": str(row["user_instruction"]),
-            "design": self._json_object(row["design_json"]), "status": str(row["status"]),
-            "created_at": str(row["created_at"]), "updated_at": str(row["updated_at"]),
-            "confirmed_at": row["confirmed_at"],
-        }
-
-    def run_target_design(self, scene_id: int, *, replace_existing: bool = False) -> dict[str, Any]:
-        scene = self.scenes.get_scene(scene_id)
-        if scene is None:
-            raise FileNotFoundError(f"Scene not found: {scene_id}")
-        intent = self.get_intent(scene_id)
+    def save_special_analysis(self, chapter_id: int, value: dict[str, Any]) -> dict[str, Any]:
+        source = self._require_current_source(chapter_id)
+        intent = self.get_chapter_direction(chapter_id)
         if intent is None:
-            raise ValueError("Choose a creative direction before target design.")
-        existing = self.get_target(scene_id)
-        if existing and existing["status"] == "draft" and not replace_existing:
-            raise ValueError("Regenerating would replace the current target draft.")
-        analysis = self.get_character_modification_analysis(scene_id) if intent["strategy"] == "faithful" else self.get_strategy_analysis(scene_id)
-        if not analysis or analysis["status"] != "confirmed":
-            raise ValueError("Confirm the current specialized analysis before target design.")
-        target_character = None
-        if intent["strategy"] == "faithful":
-            card = self.characters.get_character_card(int(analysis["target_character_card_id"]))
-            if card:
-                target_character = {
-                    "id": card.id, "name": card.name, "description": card.description,
-                    "setting_text": card.setting_text, "personality": card.personality,
-                    "action_constraints": card.action_constraints, "profile": card.profile,
-                    "custom_fields": card.custom_fields,
-                }
-        resources = self._material_context(intent["selected_plot_material_ids"], expected_type="plot_skeleton")
-        value = self.ai.generate_json(
-            project_id=scene.project_id, stage="target_design", workflow_key=intent["strategy"],
-            task_key="target_design", user_instruction=intent["user_instruction"],
-            payload={"source_text": scene.original_text, "chapter_summary_context": self._chapter_summary_context(scene), "confirmed_special_analysis": analysis,
-                     "creative_intent": intent, "target_character": target_character,
-                     "character_cards": self._character_context(intent),
-                     "selected_plot_materials": resources,
-                     "source_event_catalog": self._source_event_catalog(scene_id) if intent["strategy"] == "plot_adjust" else []},
-            output_contract=self._target_output_contract(intent["strategy"]),
-        )
-        return self.save_target(scene_id, {"strategy": intent["strategy"], "user_instruction": intent["user_instruction"], "design": value})
-
-    def save_target(self, scene_id: int, value: dict[str, Any]) -> dict[str, Any]:
-        scene = self.scenes.get_scene(scene_id)
-        if scene is None:
-            raise FileNotFoundError(f"Scene not found: {scene_id}")
-        intent = self.get_intent(scene_id)
-        strategy = str(value.get("strategy") or (intent or {}).get("strategy") or "")
-        if strategy not in {"faithful", "plot_adjust", "expansion", "reimagine"}:
-            raise ValueError(f"Unsupported target strategy: {strategy}")
-        design = self._normalize_target_design(strategy, value.get("design"), scene_id=scene_id)
-        instruction = str(value.get("user_instruction") or (intent or {}).get("user_instruction") or "")
-        current = self.get_target(scene_id)
-        changed = current is None or any(
-            (current["strategy"] != strategy, current["user_instruction"] != instruction, current["design"] != design)
-        )
-        if not changed and current is not None:
-            return current
-        with session(self.database_path) as connection:
-            connection.execute(
-                """
-                INSERT INTO scene_targets (scene_id, strategy, user_instruction, design_json, status, confirmed_at, updated_at)
-                VALUES (?, ?, ?, ?, 'draft', NULL, CURRENT_TIMESTAMP)
-                ON CONFLICT(scene_id) DO UPDATE SET strategy=excluded.strategy,
-                    user_instruction=excluded.user_instruction, design_json=excluded.design_json,
-                    status='draft', confirmed_at=NULL, updated_at=CURRENT_TIMESTAMP
-                """,
-                (scene_id, strategy, instruction, json.dumps(design, ensure_ascii=False)),
-            )
-            if changed:
-                self._invalidate_downstream(connection, scene_id, "target")
-        self.set_scene_stage(scene_id, "target_design")
-        return self.get_target(scene_id) or {}
-
-    def confirm_target(self, scene_id: int) -> dict[str, Any]:
-        target = self.get_target(scene_id)
-        if target is None:
-            raise ValueError("Generate or create a target before confirming it.")
-        if target["status"] == "stale":
-            raise ValueError("Regenerate the stale target before confirming it.")
-        intent = self.get_intent(scene_id)
-        if not intent or intent["strategy"] != target["strategy"]:
-            raise ValueError("Target no longer matches the current creative strategy.")
-        analysis = self.get_character_modification_analysis(scene_id) if target["strategy"] == "faithful" else self.get_strategy_analysis(scene_id)
-        if not analysis or analysis["status"] != "confirmed":
-            raise ValueError("Confirm the current specialized analysis before confirming Target.")
-        if target["strategy"] != "faithful" and analysis["strategy"] != target["strategy"]:
-            raise ValueError("Target no longer matches the confirmed specialized analysis.")
-        with session(self.database_path) as connection:
-            connection.execute("UPDATE scene_targets SET status='confirmed', confirmed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE scene_id=?", (scene_id,))
-        self.set_scene_stage(scene_id, "writing")
-        return self.get_target(scene_id) or {}
-
-    def get_writing_plan(self, scene_id: int) -> dict[str, Any] | None:
-        with session(self.database_path) as connection:
-            row = connection.execute(
-                "SELECT plan.*, scene.original_start_offset AS scene_source_start FROM writing_plans plan JOIN scenes scene ON scene.id=plan.scene_id WHERE plan.scene_id=?",
-                (scene_id,),
-            ).fetchone()
-            if row is None:
-                return None
-            blocks = connection.execute("SELECT * FROM writing_plan_blocks WHERE plan_id=? ORDER BY block_order", (row["id"],)).fetchall()
-        return {
-            "id": int(row["id"]), "scene_id": int(row["scene_id"]), "target_id": int(row["target_id"]),
-            "strategy": str(row["strategy"]), "status": str(row["status"]),
-            "coverage": self._json_object(row["coverage_json"]),
-            "blocks": [self._block_from_row(block, source_start=int(row["scene_source_start"])) for block in blocks],
-            "created_at": str(row["created_at"]), "updated_at": str(row["updated_at"]),
-        }
-
-    def run_writing_plan(self, scene_id: int, *, replace_existing: bool = False) -> dict[str, Any]:
-        scene = self.scenes.get_scene(scene_id)
-        if scene is None:
-            raise FileNotFoundError(f"Scene not found: {scene_id}")
-        target = self.get_target(scene_id)
-        if not target or target["status"] != "confirmed":
-            raise ValueError("Confirm the current target before writing planning.")
-        current = self.get_writing_plan(scene_id)
-        if current and current["status"] != "stale" and not replace_existing:
-            raise ValueError("Replanning would replace the current writing plan.")
-        intent = self.get_intent(scene_id) or {}
-        value = self.ai.generate_json(
-            project_id=scene.project_id, stage="writing_plan", workflow_key=target["strategy"], task_key="writing_plan",
-            user_instruction=target["user_instruction"],
-            payload={"source_text": scene.original_text, "chapter_summary_context": self._chapter_summary_context(scene), "scene_source_range": {"start_offset": 0, "end_offset": len(scene.original_text)},
-                     "target": target, "special_analysis": self.get_character_modification_analysis(scene_id) if target["strategy"] == "faithful" else self.get_strategy_analysis(scene_id),
-                     "author_styles": self._author_style_context(intent),
-                     "character_cards": self._character_context(intent)},
-            output_contract=("Return {blocks:[{title,source_start_offset,source_end_offset,source_text_snapshot,operation,instruction,preserve_constraints,target_requirements,resource_refs}]}. "
-                             "Use semantic blocks and cover Source in order. Operations: preserve, transform, rewrite, insert, delete."),
-        )
-        return self._save_writing_plan(
-            scene_id,
-            {"target_id": target["id"], "strategy": target["strategy"], "blocks": value.get("blocks", [])},
-            refresh_status=True,
-        )
-
-    def save_writing_plan(self, scene_id: int, value: dict[str, Any]) -> dict[str, Any]:
-        return self._save_writing_plan(scene_id, value, refresh_status=False)
-
-    def _save_writing_plan(self, scene_id: int, value: dict[str, Any], *, refresh_status: bool) -> dict[str, Any]:
-        scene = self.scenes.get_scene(scene_id)
-        if scene is None:
-            raise FileNotFoundError(f"Scene not found: {scene_id}")
-        target = self.get_target(scene_id)
-        if target is None or target["status"] != "confirmed":
-            raise ValueError("Writing plan requires the confirmed current scene target.")
-        target_id = int(value.get("target_id") or target["id"])
-        if target_id != target["id"]:
-            raise ValueError("Writing plan target_id must match the current scene target.")
-        strategy = str(value.get("strategy") or target["strategy"])
-        if strategy != target["strategy"]:
-            raise ValueError("Writing plan strategy must match the current scene target.")
-        blocks = self._normalize_writing_blocks(scene, value.get("blocks"))
-        intent = self.get_intent(scene_id) or {}
-        allowed_scene_material_ids = set(intent.get("selected_author_style_ids", []))
-        for block in blocks:
-            invalid_refs = set(block["resource_refs"]) - allowed_scene_material_ids
-            if invalid_refs:
-                raise ValueError("Writing block resource_refs must be selected author_style materials.")
-            for material_id in block["resource_refs"]:
-                material = self.materials.get_material(material_id)
-                if material is None or material.material_type != "author_style":
-                    raise ValueError("Writing block resource_refs must resolve to author_style materials.")
-        self._validate_writing_plan(scene, blocks)
-        current = self.get_writing_plan(scene_id)
-        if not refresh_status and current is not None and self._writing_plan_semantically_equal(
-            scene,
-            current,
-            target_id=target_id,
-            strategy=strategy,
-            blocks=blocks,
-        ):
-            return current
-        coverage = self._coverage(blocks)
-        with session(self.database_path) as connection:
-            connection.execute(
-                """INSERT INTO writing_plans(scene_id,target_id,strategy,status,coverage_json,updated_at)
-                   VALUES(?,?,?,'ready',?,CURRENT_TIMESTAMP)
-                   ON CONFLICT(scene_id) DO UPDATE SET target_id=excluded.target_id,strategy=excluded.strategy,
-                     status='ready',coverage_json=excluded.coverage_json,updated_at=CURRENT_TIMESTAMP""",
-                (scene_id, target_id, strategy, json.dumps(coverage)),
-            )
-            plan_id = int(connection.execute("SELECT id FROM writing_plans WHERE scene_id=?", (scene_id,)).fetchone()["id"])
-            connection.execute("DELETE FROM writing_plan_blocks WHERE plan_id=?", (plan_id,))
-            for order, block in enumerate(blocks, 1):
-                connection.execute(
-                    """INSERT INTO writing_plan_blocks(plan_id,scene_id,block_order,title,source_start_offset,source_end_offset,
-                       source_text_snapshot,operation,instruction,preserve_constraints_json,target_requirements_json,resource_refs_json)
-                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (plan_id, scene_id, order, block["title"], block["source_start_offset"], block["source_end_offset"],
-                     block["source_text_snapshot"], block["operation"], block["instruction"],
-                     json.dumps(block["preserve_constraints"], ensure_ascii=False), json.dumps(block["target_requirements"], ensure_ascii=False),
-                     json.dumps(block["resource_refs"], ensure_ascii=False)),
-                )
-            self._invalidate_downstream(connection, scene_id, "plan")
-        self.set_scene_stage(scene_id, "writing")
-        return self.get_writing_plan(scene_id) or {}
-
-    def get_current_draft(self, scene_id: int) -> dict[str, Any] | None:
-        with session(self.database_path) as connection:
-            row = connection.execute("SELECT * FROM scene_current_drafts WHERE scene_id=?", (scene_id,)).fetchone()
-        if row is None:
-            return None
-        return {"scene_id": int(row["scene_id"]), "text": str(row["text"]),
-                "based_on_target_id": int(row["based_on_target_id"]), "based_on_plan_id": int(row["based_on_plan_id"]),
-                "block_spans": self._json_items(row["block_spans_json"]), "status": str(row["status"]),
-                "created_at": str(row["created_at"]), "updated_at": str(row["updated_at"])}
-
-    def generate_current_draft(self, scene_id: int, *, replace_existing: bool = False) -> dict[str, Any]:
-        scene = self.scenes.get_scene(scene_id)
-        plan = self.get_writing_plan(scene_id)
-        target = self.get_target(scene_id)
-        if scene is None or plan is None or target is None:
-            raise ValueError("Current draft generation requires Source, Target, and Writing Plan.")
-        if plan["status"] != "ready" or plan["target_id"] != target["id"] or target["status"] != "confirmed":
-            raise ValueError("Replan against the confirmed current target before generating.")
-        if self.get_current_draft(scene_id) is not None and not replace_existing:
-            raise ValueError("Generating again would replace the current draft.")
-        if target["strategy"] == "reimagine" and float(plan["coverage"].get("preserve", 0)) < 10:
-            intent = self.get_intent(scene_id) or {}
-            value = self.ai.generate_json(
-                project_id=scene.project_id, stage="full_scene_generation", workflow_key="reimagine", task_key="full_scene_generation",
-                user_instruction=target["user_instruction"],
-                payload={"source_reference": scene.original_text, "chapter_summary_context": self._chapter_summary_context(scene), "boundary_conditions": target["design"].get("boundary_conditions", {}),
-                         "target_skeleton": target["design"].get("nodes", []), "writing_plan": plan,
-                         "character_cards": self._character_context(intent), "preanalysis": self.get_preanalysis(scene_id),
-                         "author_styles": self._author_style_context(intent)},
-                output_contract="Return {text:string}. text is the complete new scene only.",
-            )
-            text = str(value.get("text") or "")
-            return self._save_current_draft(scene_id, {"text": text, "based_on_target_id": target["id"],
-                                                      "based_on_plan_id": plan["id"],
-                                                      "block_spans": [{"block_id": plan["blocks"][0]["id"] if plan["blocks"] else 0,
-                                                                       "start_offset": 0, "end_offset": len(text)}]}, refresh_basis=True)
-        assembled = ""
-        spans: list[dict[str, Any]] = []
-        blocks = plan["blocks"]
-        for index, block in enumerate(blocks):
-            operation = block["operation"]
-            source_block = block["source_text_snapshot"]
-            if operation == "preserve":
-                generated = source_block
-            elif operation == "delete":
-                generated = ""
-            else:
-                next_source = blocks[index + 1]["source_text_snapshot"][:500] if index + 1 < len(blocks) else ""
-                generated = self._generate_block_text(scene, target, plan, block, assembled[-800:], next_source)
-            start = len(assembled)
-            assembled += generated
-            spans.append({"block_id": block["id"], "start_offset": start, "end_offset": len(assembled)})
-        return self._save_current_draft(
-            scene_id,
-            {"text": assembled, "based_on_target_id": target["id"], "based_on_plan_id": plan["id"], "block_spans": spans},
-            refresh_basis=True,
-        )
-
-    def save_current_draft(self, scene_id: int, value: dict[str, Any]) -> dict[str, Any]:
-        current = self.get_current_draft(scene_id)
-        next_text = str(value.get("text") or "")
-        if current is not None and current["text"] == next_text:
-            return current
-        if current is not None and current["text"] != next_text:
-            opcodes = difflib.SequenceMatcher(None, current["text"], next_text, autojunk=False).get_opcodes()
-            result = current
-            for tag, start, end, replacement_start, replacement_end in reversed(opcodes):
-                if tag == "equal":
-                    continue
-                result = self.replace_draft_range(
-                    scene_id,
-                    start,
-                    end,
-                    next_text[replacement_start:replacement_end],
-                )
-            return result
-        return self._save_current_draft(scene_id, value, refresh_basis=False)
-
-    def replace_draft_range(
-        self,
-        scene_id: int,
-        start_offset: int,
-        end_offset: int,
-        replacement: str,
-        *,
-        current_mark_id: int | None = None,
-    ) -> dict[str, Any]:
-        draft = self.get_current_draft(scene_id)
-        if draft is None:
-            raise ValueError("Draft range replacement requires a Current Draft.")
-        if not (0 <= start_offset <= end_offset <= len(draft["text"])):
-            raise ValueError("Current Draft replacement range is invalid.")
-        replacement_text = str(replacement)
-        updated = draft["text"][:start_offset] + replacement_text + draft["text"][end_offset:]
-        if updated == draft["text"]:
-            return draft
-        saved = self._save_current_draft(scene_id, {**draft, "text": updated}, refresh_basis=False)
-        delta = len(replacement_text) - (end_offset - start_offset)
-        replacement_end = start_offset + len(replacement_text)
-        with session(self.database_path) as connection:
-            rows = connection.execute(
-                "SELECT id,target_start_offset,target_end_offset FROM review_marks WHERE scene_id=?",
-                (scene_id,),
-            ).fetchall()
-            for row in rows:
-                mark_id = int(row["id"])
-                mark_start = int(row["target_start_offset"])
-                mark_end = int(row["target_end_offset"])
-                if mark_id == current_mark_id or (mark_start < end_offset and mark_end > start_offset):
-                    next_start, next_end = start_offset, replacement_end
-                elif mark_start >= end_offset:
-                    next_start, next_end = mark_start + delta, mark_end + delta
-                else:
-                    continue
-                connection.execute(
-                    "UPDATE review_marks SET target_start_offset=?,target_end_offset=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                    (next_start, next_end, mark_id),
-                )
-        return saved
-
-    def _save_current_draft(self, scene_id: int, value: dict[str, Any], *, refresh_basis: bool) -> dict[str, Any]:
-        current = self.get_current_draft(scene_id)
-        target = self.get_target(scene_id)
-        plan = self.get_writing_plan(scene_id)
-        if target is None or plan is None:
-            raise ValueError("Current draft requires Target and Writing Plan.")
-        status = "draft" if refresh_basis or current is None or current["status"] != "stale" else "stale"
-        based_on_target_id = target["id"] if refresh_basis else int((current or {}).get("based_on_target_id") or target["id"])
-        based_on_plan_id = plan["id"] if refresh_basis else int((current or {}).get("based_on_plan_id") or plan["id"])
-        with session(self.database_path) as connection:
-            connection.execute(
-                """INSERT INTO scene_current_drafts(scene_id,text,based_on_target_id,based_on_plan_id,block_spans_json,status,updated_at)
-                   VALUES(?,?,?,?,?,?,CURRENT_TIMESTAMP)
-                   ON CONFLICT(scene_id) DO UPDATE SET text=excluded.text,based_on_target_id=excluded.based_on_target_id,
-                     based_on_plan_id=excluded.based_on_plan_id,block_spans_json=excluded.block_spans_json,
-                     status=excluded.status,updated_at=CURRENT_TIMESTAMP""",
-                (
-                    scene_id,
-                    str(value.get("text") or ""),
-                    based_on_target_id,
-                    based_on_plan_id,
-                    json.dumps(
-                        value.get("block_spans")
-                        if isinstance(value.get("block_spans"), list)
-                        else (current or {}).get("block_spans", []),
-                        ensure_ascii=False,
-                    ),
-                    status,
-                ),
-            )
-        self.set_scene_stage(scene_id, "writing")
-        return self.get_current_draft(scene_id) or {}
-
-    def edit_selected_draft_text(self, scene_id: int, *, start_offset: int, end_offset: int, user_instruction: str) -> dict[str, Any]:
-        draft = self.get_current_draft(scene_id)
-        target = self.get_target(scene_id)
-        scene = self.scenes.get_scene(scene_id)
-        if draft is None or target is None or scene is None:
-            raise ValueError("Selected text editing requires a current draft and target.")
-        if not (0 <= start_offset <= end_offset <= len(draft["text"])):
-            raise ValueError("Selected draft range is invalid.")
-        intent = self.get_intent(scene_id) or {}
-        value = self.ai.generate_json(
-            project_id=scene.project_id, stage="selected_text_edit", task_key="selected_text_edit",
-            user_instruction=user_instruction,
-            payload={"selected_text": draft["text"][start_offset:end_offset], "chapter_summary_context": self._chapter_summary_context(scene), "previous_context": draft["text"][max(0,start_offset-800):start_offset],
-                     "next_context": draft["text"][end_offset:end_offset+800], "target": target,
-                     "author_styles": self._author_style_context(intent),
-                     "character_cards": self._character_context(intent)},
-            output_contract="Return {text:string}. text must contain only the replacement for the selected range.",
-        )
-        replacement = str(value.get("text") or "")
-        return self.replace_draft_range(scene_id, start_offset, end_offset, replacement)
-
-    def regenerate_writing_block(self, scene_id: int, block_id: int, *, current_start_offset: int, current_end_offset: int) -> dict[str, Any]:
-        draft = self.get_current_draft(scene_id)
-        plan = self.get_writing_plan(scene_id)
-        target = self.get_target(scene_id)
-        scene = self.scenes.get_scene(scene_id)
-        if draft is None or plan is None or target is None or scene is None:
-            raise ValueError("Block regeneration requires a current draft, plan, and target.")
-        block = next((item for item in plan["blocks"] if item["id"] == block_id), None)
-        if block is None or block["operation"] in {"preserve", "delete"}:
-            raise ValueError("Only AI-backed writing blocks can be regenerated.")
-        if not (0 <= current_start_offset <= current_end_offset <= len(draft["text"])):
-            raise ValueError("Current block range is invalid.")
-        index = plan["blocks"].index(block)
-        next_source = plan["blocks"][index + 1]["source_text_snapshot"][:500] if index + 1 < len(plan["blocks"]) else ""
-        replacement = self._generate_block_text(scene, target, plan, block, draft["text"][max(0,current_start_offset-800):current_start_offset], next_source)
-        return self.replace_draft_range(scene_id, current_start_offset, current_end_offset, replacement)
-
-    def get_review_diff(self, scene_id: int) -> dict[str, Any]:
-        scene = self.scenes.get_scene(scene_id)
-        draft = self.get_current_draft(scene_id)
-        if scene is None or draft is None:
-            raise ValueError("Review requires Source and Current Draft.")
-        source_lines = scene.original_text.splitlines(keepends=True)
-        target_lines = draft["text"].splitlines(keepends=True)
-        source_offsets = self._line_offsets(source_lines)
-        target_offsets = self._line_offsets(target_lines)
-        chunks = []
-        for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, source_lines, target_lines, autojunk=False).get_opcodes():
-            chunks.append({"tag": tag, "source_start_offset": source_offsets[i1], "source_end_offset": source_offsets[i2],
-                           "target_start_offset": target_offsets[j1], "target_end_offset": target_offsets[j2],
-                           "source_text": "".join(source_lines[i1:i2]), "target_text": "".join(target_lines[j1:j2])})
-        return {"scene_id": scene_id, "source_text": scene.original_text, "target_text": draft["text"], "chunks": chunks}
-
-    def start_review(self, scene_id: int) -> dict[str, Any]:
-        result = self.get_review_diff(scene_id)
-        self.set_scene_stage(scene_id, "review")
-        return result
-
-    def list_review_marks(self, scene_id: int) -> list[dict[str, Any]]:
-        with session(self.database_path) as connection:
-            rows = connection.execute(
-                "SELECT mark.*,scene.original_start_offset AS scene_source_start FROM review_marks mark JOIN scenes scene ON scene.id=mark.scene_id WHERE mark.scene_id=? ORDER BY mark.resolved,mark.created_at,mark.id",
-                (scene_id,),
-            ).fetchall()
-        return [self._review_mark_from_row(row, source_start=int(row["scene_source_start"])) for row in rows]
-
-    def save_review_mark(self, scene_id: int, value: dict[str, Any]) -> dict[str, Any]:
-        scene = self.scenes.get_scene(scene_id)
-        draft = self.get_current_draft(scene_id)
-        if scene is None or draft is None:
-            raise ValueError("Review mark requires Source and Current Draft.")
-        local_start = int(value.get("source_start_offset") or 0)
-        local_end = int(value.get("source_end_offset") or 0)
-        if not (0 <= local_start <= local_end <= len(scene.original_text)):
-            raise ValueError("Review Source range is invalid.")
-        source_start = scene.original_start_offset + local_start
-        source_end = scene.original_start_offset + local_end
-        target_start, target_end = int(value.get("target_start_offset") or 0), int(value.get("target_end_offset") or 0)
-        if not (0 <= target_start <= target_end <= len(draft["text"])):
-            raise ValueError("Review target range is invalid.")
-        mark_id = int(value.get("id") or 0)
-        with session(self.database_path) as connection:
-            if mark_id:
-                connection.execute("""UPDATE review_marks SET source_start_offset=?,source_end_offset=?,source_text=?,target_start_offset=?,target_end_offset=?,user_note=?,resolved=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND scene_id=?""",
-                                   (source_start, source_end, scene.original_text[local_start:local_end], target_start, target_end, str(value.get("user_note") or ""), 1 if value.get("resolved") else 0, mark_id, scene_id))
-            else:
-                cursor = connection.execute("""INSERT INTO review_marks(scene_id,source_start_offset,source_end_offset,source_text,target_start_offset,target_end_offset,user_note,resolved) VALUES(?,?,?,?,?,?,?,?)""",
-                                            (scene_id, source_start, source_end, scene.original_text[local_start:local_end], target_start, target_end, str(value.get("user_note") or ""), 1 if value.get("resolved") else 0))
-                mark_id = int(cursor.lastrowid)
-            row = connection.execute("SELECT * FROM review_marks WHERE id=?", (mark_id,)).fetchone()
-        return self._review_mark_from_row(row, source_start=scene.original_start_offset)
-
-    def delete_review_mark(self, scene_id: int, mark_id: int) -> None:
-        with session(self.database_path) as connection:
-            connection.execute("DELETE FROM review_marks WHERE id=? AND scene_id=?", (mark_id, scene_id))
-
-    def restore_review_source(self, scene_id: int, mark_id: int) -> dict[str, Any]:
-        draft = self.get_current_draft(scene_id)
-        mark = next((item for item in self.list_review_marks(scene_id) if item["id"] == mark_id), None)
-        if draft is None or mark is None:
-            raise ValueError("Review mark or Current Draft not found.")
-        start, end = mark["target_start_offset"], mark["target_end_offset"]
-        saved = self.replace_draft_range(scene_id, start, end, mark["source_text"], current_mark_id=mark_id)
-        self._resolve_mark(mark_id)
-        return saved
-
-    def rework_review_range(self, scene_id: int, *, target_start_offset: int, target_end_offset: int,
-                            source_start_offset: int | None = None, source_end_offset: int | None = None,
-                            user_instruction: str = "", mark_id: int | None = None) -> dict[str, Any]:
-        scene, draft, target, plan = self.scenes.get_scene(scene_id), self.get_current_draft(scene_id), self.get_target(scene_id), self.get_writing_plan(scene_id)
-        if scene is None or draft is None or target is None or plan is None:
-            raise ValueError("Review rework requires Source, Current Draft, Target, and Writing Plan.")
-        if not (0 <= target_start_offset <= target_end_offset <= len(draft["text"])):
-            raise ValueError("Review target range is invalid.")
-        mark = next((item for item in self.list_review_marks(scene_id) if item["id"] == mark_id), None) if mark_id else None
-        if mark:
-            source_text, note = mark["source_text"], mark["user_note"]
+            raise ValueError("Direction is required before special analysis.")
+        strategy = self._strategy(str(value.get("strategy") or intent["strategy"]))
+        if strategy != intent["strategy"]:
+            raise ValueError("Special analysis strategy must match the direction.")
+        detail = value.get("outline_detail_level")
+        if strategy == "reimagine":
+            detail = str(detail or "detailed")
+            if detail not in {"brief", "detailed"}:
+                raise ValueError("outline_detail_level must be brief or detailed.")
         else:
-            local_start, local_end = int(source_start_offset or 0), int(source_end_offset or 0)
-            if not (0 <= local_start <= local_end <= len(scene.original_text)):
-                raise ValueError("Review Source range must use scene-local offsets.")
-            source_text, note = scene.original_text[local_start:local_end], ""
-        intent = self.get_intent(scene_id) or {}
+            detail = None
+        source_outline = self._object_list(value.get("source_outline"), "source_outline")
+        target_outline = self._object_list(value.get("target_outline"), "target_outline")
+        constraints = value.get("constraints") if isinstance(value.get("constraints"), dict) else {}
+        notes = value.get("analysis_notes") if isinstance(value.get("analysis_notes"), list) else []
+        if not source_outline or not target_outline:
+            raise ValueError("Special analysis requires source_outline and target_outline.")
+        if strategy == "plot_adjust" and any(str(node.get("operation")) not in {"preserve", "modify", "delete", "insert"} for node in target_outline):
+            raise ValueError("plot_adjust target nodes require a valid operation.")
+        with session(self.database_path) as connection:
+            connection.execute(
+                """INSERT INTO chapter_special_analyses(chapter_id,strategy,outline_detail_level,
+                   source_outline_json,target_outline_json,constraints_json,analysis_notes_json,source_hash)
+                   VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(chapter_id) DO UPDATE SET
+                   strategy=excluded.strategy,outline_detail_level=excluded.outline_detail_level,
+                   source_outline_json=excluded.source_outline_json,target_outline_json=excluded.target_outline_json,
+                   constraints_json=excluded.constraints_json,analysis_notes_json=excluded.analysis_notes_json,
+                   source_hash=excluded.source_hash,updated_at=CURRENT_TIMESTAMP""",
+                (chapter_id, strategy, detail, self._dump(source_outline), self._dump(target_outline),
+                 self._dump(constraints), self._dump(notes), source.content_hash),
+            )
+            connection.execute("DELETE FROM chapter_style_contexts WHERE chapter_id=?", (chapter_id,))
+            connection.execute("DELETE FROM chapter_writings WHERE chapter_id=?", (chapter_id,))
+            self._set_stage(connection, chapter_id, "special_analysis")
+        return self.get_special_analysis(chapter_id) or {}
+
+    def get_special_analysis(self, chapter_id: int) -> dict[str, Any] | None:
+        with session(self.database_path) as connection:
+            row = connection.execute("SELECT * FROM chapter_special_analyses WHERE chapter_id=?", (chapter_id,)).fetchone()
+        return self._analysis_out(row)
+
+    def resolve_style(self, chapter_id: int, *, source_scope: str = "document", author_style_material_id: int | None = None) -> dict[str, Any]:
+        source = self._require_current_source(chapter_id)
+        intent = self.get_chapter_direction(chapter_id)
+        analysis = self.get_special_analysis(chapter_id)
+        if intent is None or analysis is None:
+            raise ValueError("Special analysis is required before resolving style.")
+        strategy = intent["strategy"]
+        if strategy == "reimagine":
+            if author_style_material_id is None:
+                raise ValueError("reimagine requires a selected author_style material.")
+            material = self.materials.get_material(author_style_material_id)
+            if material is None or material.material_type != "author_style":
+                raise ValueError("Selected author style material does not exist.")
+            if material.analysis_status != "analyzed":
+                raise ValueError("Selected author style material is not analyzed.")
+            mode, scope = "selected_author_style", "chapter"
+            snapshot = {"name": material.name, "description": material.description, "raw_text": material.raw_text,
+                        "profile": self._load(material.content_json, {})}
+            settings_snapshot: dict[str, Any] = {}
+            guidance = self._style_guidance(snapshot)
+            material_version = material.version
+        else:
+            if author_style_material_id is not None:
+                raise ValueError("plot_adjust and expansion use source_auto style.")
+            if source_scope not in {"document", "chapter"}:
+                raise ValueError("source_scope must be document or chapter.")
+            style_text, scope = self._style_source(source, source_scope)
+            settings = self.materials.get_ai_settings("author_style_extraction")
+            settings_snapshot = asdict(settings)
+            extracted = self.ai.generate_json(
+                project_id=source.project_id, stage="author_style_extraction",
+                payload={"sample_text": self._sample_style_source(style_text),
+                         "extraction_prompt": compile_material_ai_prompt(settings),
+                         "dimensions": [dict(item) for item in settings.dimensions],
+                         "local_chapter_reference": source.text},
+                output_contract="JSON object containing style_snapshot object and generated_guidance string.",
+            )
+            snapshot = extracted.get("style_snapshot") if isinstance(extracted.get("style_snapshot"), dict) else extracted
+            guidance = str(extracted.get("generated_guidance") or self._style_guidance(snapshot))
+            mode, author_style_material_id, material_version = "source_auto", None, None
+        with session(self.database_path) as connection:
+            connection.execute(
+                """INSERT INTO chapter_style_contexts(chapter_id,strategy,style_mode,source_scope,
+                   author_style_material_id,author_style_material_version,style_snapshot_json,
+                   extraction_settings_snapshot_json,generated_guidance,source_hash) VALUES(?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(chapter_id) DO UPDATE SET strategy=excluded.strategy,style_mode=excluded.style_mode,
+                   source_scope=excluded.source_scope,author_style_material_id=excluded.author_style_material_id,
+                   author_style_material_version=excluded.author_style_material_version,
+                   style_snapshot_json=excluded.style_snapshot_json,
+                   extraction_settings_snapshot_json=excluded.extraction_settings_snapshot_json,
+                   generated_guidance=excluded.generated_guidance,source_hash=excluded.source_hash,
+                   created_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP""",
+                (chapter_id, strategy, mode, scope, author_style_material_id, material_version,
+                 self._dump(snapshot), self._dump(settings_snapshot), guidance, source.content_hash),
+            )
+            connection.execute("DELETE FROM chapter_writings WHERE chapter_id=?", (chapter_id,))
+            self._set_stage(connection, chapter_id, "style")
+        return self.get_style(chapter_id) or {}
+
+    def get_style(self, chapter_id: int) -> dict[str, Any] | None:
+        with session(self.database_path) as connection:
+            row = connection.execute("SELECT * FROM chapter_style_contexts WHERE chapter_id=?", (chapter_id,)).fetchone()
+        return self._style_out(row)
+
+    def generate_chapter(self, chapter_id: int, *, replace_existing: bool = False) -> dict[str, Any]:
+        source = self._require_current_source(chapter_id)
+        intent, analysis, style = self.get_chapter_direction(chapter_id), self.get_special_analysis(chapter_id), self.get_style(chapter_id)
+        existing = self.get_writing(chapter_id)
+        if intent is None or analysis is None or style is None:
+            raise ValueError("Direction, special analysis, and style are required before writing.")
+        if existing is not None and not replace_existing:
+            raise ValueError("A writing result already exists.")
+        strategy = intent["strategy"]
+        if strategy == "reimagine" and style["style_mode"] != "selected_author_style":
+            raise ValueError("reimagine requires a selected author_style snapshot.")
+        if strategy == "plot_adjust":
+            plan = self._create_patch_plan(source, intent, analysis)
+            result_text, plan = self._execute_patch(source, intent, analysis, style, plan)
+            created_chapter_id = None
+        else:
+            value = self.ai.generate_json(
+                project_id=source.project_id, stage="writing", workflow_key=strategy, task_key="writing",
+                payload={"source_text": source.text, "summary": self.get_chapter_summary(chapter_id),
+                         "special_analysis": analysis, "style_snapshot": style["style_snapshot"],
+                         "style_guidance": style["generated_guidance"]},
+                user_instruction=intent["user_instruction"],
+                output_contract="JSON object with non-empty text string and optional title string.",
+            )
+            result_text = str(value.get("text") or "").strip()
+            if not result_text:
+                raise ValueError("Writing did not return text.")
+            plan, created_chapter_id = [], None
+            if strategy == "expansion":
+                created_chapter_id = self._save_expansion_chapter(source, result_text, str(value.get("title") or ""), existing)
+        with session(self.database_path) as connection:
+            connection.execute(
+                """INSERT INTO chapter_writings(chapter_id,strategy,writing_plan_json,result_text,
+                   created_chapter_id,source_hash,status) VALUES(?,?,?,?,?,?,'draft')
+                   ON CONFLICT(chapter_id) DO UPDATE SET strategy=excluded.strategy,
+                   writing_plan_json=excluded.writing_plan_json,result_text=excluded.result_text,
+                   created_chapter_id=excluded.created_chapter_id,source_hash=excluded.source_hash,
+                   status='draft',updated_at=CURRENT_TIMESTAMP""",
+                (chapter_id, strategy, self._dump(plan), result_text, created_chapter_id, source.content_hash),
+            )
+            self._set_stage(connection, chapter_id, "writing")
+        return self.get_writing(chapter_id) or {}
+
+    def get_writing(self, chapter_id: int) -> dict[str, Any] | None:
+        with session(self.database_path) as connection:
+            row = connection.execute("SELECT * FROM chapter_writings WHERE chapter_id=?", (chapter_id,)).fetchone()
+        return self._writing_out(row)
+
+    def save_writing(self, chapter_id: int, result_text: str) -> dict[str, Any]:
+        """Save the human-edited draft shown beside the source during manual review."""
+        source = self._require_current_source(chapter_id)
+        writing = self.get_writing(chapter_id)
+        text = result_text.strip()
+        if writing is None:
+            raise ValueError("Generate a writing result before manual review.")
+        if not text:
+            raise ValueError("The reviewed draft cannot be empty.")
+        source_kind = "manual" if text != writing["result_text"] else "ai"
+        with session(self.database_path) as connection:
+            connection.execute(
+                "UPDATE chapter_writings SET result_text=?,status='reviewed',updated_at=CURRENT_TIMESTAMP WHERE chapter_id=?",
+                (text, chapter_id),
+            )
+            if writing["strategy"] == "expansion" and writing["created_chapter_id"] is not None:
+                created_source = self.versions.resolve_chapter_source(
+                    int(writing["created_chapter_id"]), connection=connection
+                )
+                self.versions.append_chapter_rewrite_version(
+                    connection,
+                    chapter_id=created_source.chapter_id,
+                    rewritten_text=text,
+                    source_operation="manual",
+                    source_run_id=writing["id"],
+                    source_base_kind=created_source.source_kind,
+                    source_base_version_id=created_source.source_version_id,
+                    source_hash=created_source.content_hash,
+                    facts_before=created_source.facts_before,
+                    facts_after=created_source.facts_after,
+                    expected_head_version_id=created_source.expected_head_version_id,
+                    source_kind=source_kind,
+                    fact_chain_status="needs_recompute",
+                    mapping_strategy="structural",
+                )
+            self._set_stage(connection, chapter_id, "review")
+        return self.get_writing(chapter_id) or {}
+
+    def confirm_chapter(self, chapter_id: int) -> dict[str, Any]:
+        source = self._require_current_source(chapter_id)
+        writing = self.get_writing(chapter_id)
+        if writing is None:
+            raise ValueError("Writing is required before confirmation.")
+        if writing["strategy"] in {"plot_adjust", "reimagine"}:
+            with session(self.database_path) as connection:
+                self.versions.append_chapter_rewrite_version(
+                    connection, chapter_id=chapter_id, rewritten_text=writing["result_text"],
+                    source_operation="manual", source_run_id=writing["id"], source_base_kind=source.source_kind,
+                    source_base_version_id=source.source_version_id, source_hash=source.content_hash,
+                    facts_before=source.facts_before, facts_after=source.facts_after,
+                    expected_head_version_id=source.expected_head_version_id, source_kind="ai",
+                    fact_chain_status="needs_recompute", mapping_strategy="structural",
+                )
+        with session(self.database_path) as connection:
+            connection.execute("UPDATE chapter_writings SET status='confirmed',updated_at=CURRENT_TIMESTAMP WHERE chapter_id=?", (chapter_id,))
+            self._set_stage(connection, chapter_id, "confirmed")
+        return self.get_chapter_workflow(chapter_id)
+
+    def _create_patch_plan(self, source: Any, intent: dict[str, Any], analysis: dict[str, Any]) -> list[dict[str, Any]]:
         value = self.ai.generate_json(
-            project_id=scene.project_id, stage="review_rework", task_key="review_rework", user_instruction=user_instruction or note,
-            payload={"source_range_text": source_text, "chapter_summary_context": self._chapter_summary_context(scene), "current_draft_range": draft["text"][target_start_offset:target_end_offset],
-                     "previous_context": draft["text"][max(0,target_start_offset-800):target_start_offset],
-                     "next_context": draft["text"][target_end_offset:target_end_offset+800], "target": target, "writing_plan": plan,
-                     "review_note": note, "author_styles": self._author_style_context(intent),
-                     "character_cards": self._character_context(intent)}, output_contract="Return {text:string}. text contains only the selected range replacement.")
-        replacement = str(value.get("text") or "")
-        before = draft["text"]
-        saved = self.replace_draft_range(
-            scene_id,
-            target_start_offset,
-            target_end_offset,
-            replacement,
-            current_mark_id=mark_id,
+            project_id=source.project_id, stage="writing_plan", workflow_key="plot_adjust", task_key="writing",
+            payload={"source_text": source.text, "special_analysis": analysis}, user_instruction=intent["user_instruction"],
+            output_contract=("JSON object with blocks array. Each has operation preserve|modify|delete|insert, "
+                             "start_offset, end_offset, instruction and order."),
         )
-        return {"draft": saved, "before_text": before, "after_text": saved["text"],
-                "start_offset": target_start_offset, "end_offset": target_start_offset + len(replacement),
-                "mark_ids": [mark_id] if mark_id else []}
+        return self._object_list(value.get("blocks"), "blocks")
 
-    def rework_all_review_marks(self, scene_id: int) -> dict[str, Any]:
-        marks = sorted((item for item in self.list_review_marks(scene_id) if not item["resolved"]), key=lambda item: item["target_start_offset"], reverse=True)
-        before = self.get_current_draft(scene_id)
-        processed_ids = []
-        for mark in marks:
-            self.rework_review_range(scene_id, target_start_offset=mark["target_start_offset"], target_end_offset=mark["target_end_offset"], mark_id=mark["id"])
-            processed_ids.append(mark["id"])
-        return {"draft": self.get_current_draft(scene_id), "before_text": before["text"] if before else "",
-                "processed": len(marks), "mark_ids": processed_ids}
+    def _execute_patch(self, source: Any, intent: dict[str, Any], analysis: dict[str, Any],
+                       style: dict[str, Any], plan: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
+        text, cursor, output, executed = source.text, 0, [], []
+        for order, block in enumerate(plan):
+            operation = str(block.get("operation") or "")
+            if operation not in {"preserve", "modify", "delete", "insert"}:
+                raise ValueError("Writing plan contains an unsupported operation.")
+            start = int(block.get("start_offset", cursor))
+            end = int(block.get("end_offset", start if operation == "insert" else cursor))
+            if start < cursor or end < start or end > len(text):
+                raise ValueError("Writing plan contains overlapping or invalid source spans.")
+            if start > cursor:
+                output.append(text[cursor:start])
+            generated = ""
+            if operation == "preserve":
+                generated = text[start:end]
+            elif operation in {"modify", "insert"}:
+                value = self.ai.generate_json(
+                    project_id=source.project_id, stage="writing", workflow_key="plot_adjust", task_key="writing",
+                    payload={"operation": operation, "source_text": text[start:end],
+                             "instruction": str(block.get("instruction") or ""),
+                             "context_before": text[max(0, start - 500):start], "context_after": text[end:end + 500],
+                             "special_analysis": analysis, "style_snapshot": style["style_snapshot"]},
+                    user_instruction=intent["user_instruction"],
+                    output_contract="JSON object with text string for only this block.",
+                )
+                generated = str(value.get("text") or "")
+                if not generated:
+                    raise ValueError("A modify/insert block returned empty text.")
+            output.append(generated)
+            executed.append({**block, "order": order, "start_offset": start, "end_offset": end,
+                             "source_text": text[start:end], "result_text": generated})
+            if operation != "insert":
+                cursor = end
+        output.append(text[cursor:])
+        return "".join(output), executed
 
-    def resolve_review_marks(self, scene_id: int, mark_ids: list[int]) -> list[dict[str, Any]]:
-        normalized = self._normalize_ids(mark_ids)
-        if normalized:
-            placeholders = ",".join("?" for _ in normalized)
+    def _save_expansion_chapter(self, source: Any, text: str, title: str, existing: dict[str, Any] | None) -> int:
+        if existing and existing.get("created_chapter_id"):
+            created_id = int(existing["created_chapter_id"])
             with session(self.database_path) as connection:
                 connection.execute(
-                    f"UPDATE review_marks SET resolved=1,updated_at=CURRENT_TIMESTAMP WHERE scene_id=? AND id IN ({placeholders})",
-                    (scene_id, *normalized),
+                    "UPDATE chapters SET title=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                    (title.strip() or "新增章节", created_id),
                 )
-        return self.list_review_marks(scene_id)
-
-    def confirm_scene(self, scene_id: int) -> dict[str, Any]:
-        draft = self.get_current_draft(scene_id)
-        if draft is None:
-            raise ValueError("Confirming a scene requires a Current Draft.")
-        if draft["status"] == "stale":
-            raise ValueError("Regenerate the stale Current Draft before confirming the scene.")
-        with session(self.database_path) as connection:
-            connection.execute("UPDATE scene_current_drafts SET status='confirmed',updated_at=CURRENT_TIMESTAMP WHERE scene_id=?", (scene_id,))
-        self.set_scene_stage(scene_id, "confirmed")
-        return {"draft": self.get_current_draft(scene_id), "unresolved_marks": sum(not item["resolved"] for item in self.list_review_marks(scene_id))}
-
-    @staticmethod
-    def _line_offsets(lines: list[str]) -> list[int]:
-        result, total = [0], 0
-        for line in lines: total += len(line); result.append(total)
-        return result
-
-    @staticmethod
-    def _review_mark_from_row(row: Any, *, source_start: int = 0) -> dict[str, Any]:
-        return {"id": int(row["id"]), "scene_id": int(row["scene_id"]), "source_start_offset": int(row["source_start_offset"]) - source_start,
-                "source_end_offset": int(row["source_end_offset"]) - source_start, "source_text": str(row["source_text"]),
-                "target_start_offset": int(row["target_start_offset"]), "target_end_offset": int(row["target_end_offset"]),
-                "user_note": str(row["user_note"]), "resolved": bool(row["resolved"]),
-                "created_at": str(row["created_at"]), "updated_at": str(row["updated_at"])}
-
-    def _resolve_mark(self, mark_id: int) -> None:
-        with session(self.database_path) as connection:
-            connection.execute("UPDATE review_marks SET resolved=1,updated_at=CURRENT_TIMESTAMP WHERE id=?", (mark_id,))
-
-    def _generate_block_text(self, scene: Any, target: dict[str, Any], plan: dict[str, Any], block: dict[str, Any], previous_tail: str, next_source: str) -> str:
-        operation = str(block["operation"])
-        task_key = "insert_block" if operation == "insert" else f"{operation}_block"
-        intent = self.get_intent(scene.id) or {}
-        selected_scene_ids = block["resource_refs"] or intent.get("selected_author_style_ids", [])
-        value = self.ai.generate_json(
-            project_id=scene.project_id, stage=task_key,
-            workflow_key=None if operation == "insert" and target["strategy"] == "faithful" else target["strategy"], task_key=task_key,
-            user_instruction=target["user_instruction"],
-            payload={"previous_current_draft_tail": previous_tail, "chapter_summary_context": self._chapter_summary_context(scene), "current_source_block": block["source_text_snapshot"],
-                     "next_source_block_beginning": next_source, "target": target, "writing_block": block,
-                     "preserve_constraints": block["preserve_constraints"], "target_requirements": block["target_requirements"],
-                     "author_styles": self._material_context(selected_scene_ids, expected_type="author_style"),
-                     "character_cards": self._character_context(intent)},
-            output_contract="Return {text:string}. text must contain only the current block, never adjacent blocks.",
-        )
-        return str(value.get("text") or "")
-
-    @staticmethod
-    def _block_from_row(row: Any, *, source_start: int = 0) -> dict[str, Any]:
-        return {"id": int(row["id"]), "plan_id": int(row["plan_id"]), "scene_id": int(row["scene_id"]),
-                "order": int(row["block_order"]), "title": str(row["title"]),
-                "source_start_offset": int(row["source_start_offset"]) - source_start,
-                "source_end_offset": int(row["source_end_offset"]) - source_start,
-                "source_text_snapshot": str(row["source_text_snapshot"]), "operation": str(row["operation"]),
-                "instruction": str(row["instruction"]),
-                "preserve_constraints": CreativeWorkflowService._json_string_list(row["preserve_constraints_json"]),
-                "target_requirements": CreativeWorkflowService._json_string_list(row["target_requirements_json"]),
-                "resource_refs": CreativeWorkflowService._json_int_list(row["resource_refs_json"])}
-
-    @staticmethod
-    def _normalize_writing_blocks(scene: Any, value: Any) -> list[dict[str, Any]]:
-        raw_blocks = value if isinstance(value, list) else []
-        result = []
-        for index, raw in enumerate(raw_blocks):
-            if not isinstance(raw, dict):
-                continue
-            operation = str(raw.get("operation") or "preserve").lower()
-            if operation not in {"preserve","transform","rewrite","insert","delete"}:
-                raise ValueError(f"Unsupported writing operation: {operation}")
-            start, end = int(raw.get("source_start_offset") or 0), int(raw.get("source_end_offset") or 0)
-            snapshot = str(raw.get("source_text_snapshot") or "")
-            if not (0 <= start <= end <= len(scene.original_text)):
-                raise ValueError("Writing block Source range must use scene-local offsets.")
-            if operation == "insert":
-                if start != end or snapshot:
-                    raise ValueError("Insert blocks require a zero-width Source anchor and an empty snapshot.")
-            elif scene.original_text[start:end] != snapshot:
-                raise ValueError("Writing block snapshot must exactly match its Source span.")
-            start, end = scene.original_start_offset + start, scene.original_start_offset + end
-            result.append({"title": str(raw.get("title") or f"区块 {index+1}"), "source_start_offset": start,
-                           "source_end_offset": end, "source_text_snapshot": snapshot, "operation": operation,
-                           "instruction": str(raw.get("instruction") or ""),
-                           "preserve_constraints": [str(x) for x in raw.get("preserve_constraints", [])] if isinstance(raw.get("preserve_constraints"), list) else [],
-                           "target_requirements": [str(x) for x in raw.get("target_requirements", [])] if isinstance(raw.get("target_requirements"), list) else [],
-                           "resource_refs": CreativeWorkflowService._normalize_ids(raw.get("resource_refs"))})
-        return result
-
-    @staticmethod
-    def _validate_writing_plan(scene: Any, blocks: list[dict[str, Any]]) -> None:
-        if not blocks:
-            raise ValueError("Writing plan must contain blocks that cover the complete Source.")
-        source_start = scene.original_start_offset
-        source_end = scene.original_end_offset
-        cursor = source_start
-        previous_anchor = source_start
-        for block in blocks:
-            start = int(block["source_start_offset"])
-            end = int(block["source_end_offset"])
-            if start < previous_anchor:
-                raise ValueError("Writing blocks must be ordered by Source range.")
-            previous_anchor = start
-            if block["operation"] == "insert":
-                if start != end or not (source_start <= start <= source_end) or block["source_text_snapshot"]:
-                    raise ValueError("Insert blocks require a valid zero-width Source anchor and an empty snapshot.")
-                if start != cursor:
-                    raise ValueError("Insert blocks must be anchored at the current Source partition boundary.")
-                continue
-            if start < cursor:
-                raise ValueError("Writing plan Source ranges overlap.")
-            if start > cursor:
-                raise ValueError("Writing plan leaves a gap in Source coverage.")
-            local_start = start - source_start
-            local_end = end - source_start
-            if not (0 <= local_start < local_end <= len(scene.original_text)):
-                raise ValueError("Source-backed writing blocks require a non-empty valid Source span.")
-            if scene.original_text[local_start:local_end] != block["source_text_snapshot"]:
-                raise ValueError("Writing block snapshot must exactly match its Source span.")
-            cursor = end
-        if cursor != source_end:
-            raise ValueError("Writing plan does not cover Source through its final character.")
-
-    @staticmethod
-    def _writing_plan_semantically_equal(
-        scene: Any,
-        current: dict[str, Any],
-        *,
-        target_id: int,
-        strategy: str,
-        blocks: list[dict[str, Any]],
-    ) -> bool:
-        if current["target_id"] != target_id or current["strategy"] != strategy:
-            return False
-        current_blocks = current["blocks"]
-        if len(current_blocks) != len(blocks):
-            return False
-        compared_keys = (
-            "title",
-            "source_start_offset",
-            "source_end_offset",
-            "source_text_snapshot",
-            "operation",
-            "instruction",
-            "preserve_constraints",
-            "target_requirements",
-            "resource_refs",
-        )
-        for index, (existing, normalized) in enumerate(zip(current_blocks, blocks), 1):
-            candidate = {
-                **normalized,
-                "source_start_offset": normalized["source_start_offset"] - scene.original_start_offset,
-                "source_end_offset": normalized["source_end_offset"] - scene.original_start_offset,
-            }
-            if existing["order"] != index or any(existing[key] != candidate[key] for key in compared_keys):
-                return False
-        return True
-
-    @staticmethod
-    def _coverage(blocks: list[dict[str, Any]]) -> dict[str, float]:
-        sizes = {key: 0 for key in ("preserve","transform","rewrite","insert","delete")}
-        for block in blocks: sizes[block["operation"]] += max(0, block["source_end_offset"] - block["source_start_offset"])
-        total = sum(sizes.values()) or 1
-        return {key: round(value * 100 / total, 1) for key, value in sizes.items()}
-
-    @staticmethod
-    def _json_string_list(value: Any) -> list[str]:
-        try: parsed = json.loads(str(value or "[]"))
-        except (TypeError, ValueError): return []
-        return [str(item) for item in parsed] if isinstance(parsed, list) else []
-
-    def _normalize_target_design(self, strategy: str, value: Any, *, scene_id: int | None = None) -> dict[str, Any]:
-        design = value if isinstance(value, dict) else {}
-        if strategy == "plot_adjust":
-            raw_nodes = design.get("nodes") if isinstance(design.get("nodes"), list) else []
-            nodes = []
-            for index, raw in enumerate(raw_nodes):
-                if not isinstance(raw, dict):
-                    continue
-                relation = str(raw.get("source_relation") or "inserted")
-                if relation not in {"inherited", "modified", "inserted"}:
-                    raise ValueError("Plot target node source_relation is invalid.")
-                nodes.append({
-                    "id": str(raw.get("id") or f"node-{index + 1}"),
-                    "order": index + 1,
-                    "summary": str(raw.get("summary") or ""),
-                    "participants": [str(item) for item in raw.get("participants", [])] if isinstance(raw.get("participants"), list) else [],
-                    "outcome": str(raw.get("outcome") or ""),
-                    "source_relation": relation,
-                })
-            node_ids = {node["id"] for node in nodes}
-            mapping = []
-            for raw in design.get("source_mapping") if isinstance(design.get("source_mapping"), list) else []:
-                if not isinstance(raw, dict):
-                    continue
-                target_node_id = raw.get("target_node_id")
-                if target_node_id is not None and str(target_node_id) not in node_ids:
-                    raise ValueError("Plot target source_mapping references a missing Target node.")
-                mapping.append({"source_event_id": str(raw.get("source_event_id") or ""),
-                                "target_node_id": str(target_node_id) if target_node_id is not None else None})
-            if scene_id is not None:
-                expected = {item["id"] for item in self._source_event_catalog(scene_id)}
-                actual = {item["source_event_id"] for item in mapping}
-                if expected != actual:
-                    raise ValueError("Plot target source_mapping must map every Source event, including deleted events.")
-            summary = [str(item) for item in design.get("summary", [])] if isinstance(design.get("summary"), list) else []
-            return {"nodes": nodes, "source_mapping": mapping, "summary": summary}
-        if strategy != "faithful":
-            return design
-        items = []
-        for index, raw in enumerate(design.get("items") if isinstance(design.get("items"), list) else []):
-            if not isinstance(raw, dict):
-                continue
-            operation = str(raw.get("operation") or "preserve").lower()
-            if operation not in {"preserve", "adapt", "modify"}:
-                raise ValueError(f"Unsupported faithful target operation: {operation}")
-            items.append({
-                "id": str(raw.get("id") or f"change-{index + 1}"), "label": str(raw.get("label") or ""),
-                "operation": operation, "source_value": str(raw.get("source_value") or ""),
-                "target_value": str(raw.get("target_value") or ""),
-                "source_start_offset": int(raw.get("source_start_offset") or 0),
-                "source_end_offset": int(raw.get("source_end_offset") or 0),
-            })
-        summary = [str(item) for item in design.get("summary", [])] if isinstance(design.get("summary"), list) else []
-        return {"items": items, "summary": summary}
-
-    def _source_event_catalog(self, scene_id: int) -> list[dict[str, str]]:
-        analysis = self.get_strategy_analysis(scene_id)
-        raw_events = (analysis or {}).get("analysis", {}).get("source_events", [])
-        if not isinstance(raw_events, list):
-            return []
-        result = []
-        for index, raw in enumerate(raw_events):
-            if isinstance(raw, dict):
-                result.append({"id": str(raw.get("id") or f"source-{index + 1}"),
-                               "summary": str(raw.get("summary") or raw.get("event") or "")})
-            else:
-                result.append({"id": f"source-{index + 1}", "summary": str(raw)})
-        return result
-
-    @staticmethod
-    def _target_output_contract(strategy: str) -> str:
-        if strategy == "faithful":
-            return ("Return {items:[{id,label,operation,source_value,target_value,source_start_offset,source_end_offset}], summary:string[]}. "
-                    "operation must be preserve, adapt, or modify. Do not write prose.")
-        if strategy == "plot_adjust":
-            return ("Return {nodes:[{id,order,summary,participants,outcome,source_relation}],source_mapping:[{source_event_id,target_node_id|null}],summary:string[]}. "
-                    "source_relation must be inherited, modified, or inserted. Map every supplied source_event_catalog id exactly once; null means deleted. Do not write prose.")
-        if strategy == "expansion":
-            return "Return {insert_after,insert_before,entry_state,new_events:[{id,order,summary}],exit_constraints:string[],summary:string[]}. Do not copy the full Source skeleton."
-        return "Return {boundary_conditions:{initial_state,required_characters,location,time,inherited_facts,required_end_state,downstream_constraints},nodes:[{id,order,summary,participants,outcome,source_relation}],summary:string[]}."
-
-    @staticmethod
-    def _json_object(value: Any) -> dict[str, Any]:
-        try:
-            parsed = json.loads(str(value or "{}"))
-        except (TypeError, ValueError):
-            return {}
-        return parsed if isinstance(parsed, dict) else {}
-
-    def _material_context(self, material_ids: Any, *, expected_type: str) -> list[dict[str, Any]]:
-        resources: list[dict[str, Any]] = []
-        for material_id in self._normalize_ids(material_ids):
-            material = self.materials.get_material(material_id)
-            if material is None or material.material_type != expected_type:
-                continue
-            resources.append({
-                "id": material.id,
-                "type": material.material_type,
-                "name": material.name,
-                "description": material.description,
-                "raw_text": material.raw_text,
-                "content": self._json_object(material.content_json),
-            })
-        return resources
-
-    def _author_style_context(self, intent: dict[str, Any]) -> list[dict[str, Any]]:
-        return self._material_context(intent.get("selected_author_style_ids", []), expected_type="author_style")
-
-    def _character_context(self, intent: dict[str, Any]) -> list[dict[str, Any]]:
-        cards: list[dict[str, Any]] = []
-        for card_id in self._normalize_ids(intent.get("selected_character_ids")):
-            card = self.characters.get_character_card(card_id)
-            if card is None:
-                continue
-            cards.append({
-                "id": card.id,
-                "name": card.name,
-                "setting_text": card.setting_text,
-                "personality": card.personality,
-                "action_constraints": card.action_constraints,
-                "description": card.description,
-            })
-        return cards
-
-    @staticmethod
-    def _mark_target_stale(connection: Any, scene_id: int) -> None:
-        if CreativeWorkflowService._table_exists(connection, "scene_targets"):
-            connection.execute("UPDATE scene_targets SET status='stale', confirmed_at=NULL, updated_at=CURRENT_TIMESTAMP WHERE scene_id=?", (scene_id,))
-
-    @staticmethod
-    def _mark_strategy_analysis_stale(connection: Any, scene_id: int) -> None:
-        if CreativeWorkflowService._table_exists(connection, "strategy_scene_analyses"):
-            connection.execute("UPDATE strategy_scene_analyses SET status='stale',confirmed_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE scene_id=?", (scene_id,))
-
-    @staticmethod
-    def _invalidate_downstream(connection: Any, scene_id: int, changed_level: str) -> None:
-        """Invalidate every persisted layer below one authoritative workflow level."""
-        if changed_level in {"preanalysis", "intent"}:
-            if CreativeWorkflowService._table_exists(connection, "character_modification_analyses"):
-                connection.execute(
-                    "UPDATE character_modification_analyses SET status='stale',confirmed_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE scene_id=?",
-                    (scene_id,),
+                created_source = self.versions.resolve_chapter_source(created_id, connection=connection)
+                self.versions.append_chapter_rewrite_version(
+                    connection,
+                    chapter_id=created_id,
+                    rewritten_text=text,
+                    source_operation="manual",
+                    source_run_id=int(existing["id"]),
+                    source_base_kind=created_source.source_kind,
+                    source_base_version_id=created_source.source_version_id,
+                    source_hash=created_source.content_hash,
+                    facts_before=created_source.facts_before,
+                    facts_after=created_source.facts_after,
+                    expected_head_version_id=created_source.expected_head_version_id,
+                    source_kind="ai",
+                    fact_chain_status="needs_recompute",
+                    mapping_strategy="structural",
                 )
-            CreativeWorkflowService._mark_strategy_analysis_stale(connection, scene_id)
-        if changed_level in {"preanalysis", "intent", "analysis"}:
-            CreativeWorkflowService._mark_target_stale(connection, scene_id)
-        if changed_level in {"preanalysis", "intent", "analysis", "target"} and CreativeWorkflowService._table_exists(connection, "writing_plans"):
-            connection.execute("UPDATE writing_plans SET status='stale',updated_at=CURRENT_TIMESTAMP WHERE scene_id=?", (scene_id,))
-        if changed_level in {"preanalysis", "intent", "analysis", "target", "plan"} and CreativeWorkflowService._table_exists(connection, "scene_current_drafts"):
-            connection.execute("UPDATE scene_current_drafts SET status='stale',updated_at=CURRENT_TIMESTAMP WHERE scene_id=?", (scene_id,))
-
-    def confirm_character_modification_analysis(self, scene_id: int) -> dict[str, Any]:
-        scene = self.scenes.get_scene(scene_id)
-        if scene is None:
-            raise FileNotFoundError(f"Scene not found: {scene_id}")
-        analysis = self.get_character_modification_analysis(scene_id)
-        if analysis is None:
-            raise ValueError("Run character modification analysis before confirming it.")
-        if analysis["status"] == "stale":
-            raise ValueError("Re-run stale character modification analysis before confirming it.")
-        preanalysis = self.get_preanalysis(scene_id)
-        if not preanalysis or preanalysis["status"] != "confirmed":
-            raise ValueError("Character analysis cannot be confirmed after preanalysis changed.")
-        intent = self.get_intent(scene_id)
-        if not intent or intent["strategy"] != "faithful":
-            raise ValueError("Character analysis confirmation requires the current faithful intent.")
+            return created_id
         with session(self.database_path) as connection:
-            connection.execute(
-                """
-                UPDATE character_modification_analyses
-                SET status = 'confirmed', confirmed_at = CURRENT_TIMESTAMP,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE scene_id = ?
-                """,
-                (scene_id,),
+            row = connection.execute("SELECT project_id,chapter_index FROM chapters WHERE id=?", (source.chapter_id,)).fetchone()
+            if row is None:
+                raise FileNotFoundError(f"Chapter not found: {source.chapter_id}")
+            project_id, chapter_index = int(row["project_id"]), int(row["chapter_index"])
+            connection.execute("UPDATE chapters SET chapter_index=-chapter_index WHERE project_id=? AND chapter_index>?", (project_id, chapter_index))
+            connection.execute("UPDATE chapters SET chapter_index=-chapter_index+1 WHERE project_id=? AND chapter_index<0", (project_id,))
+            cursor = connection.execute(
+                "INSERT INTO chapters(project_id,chapter_index,title,original_text,word_count,status) VALUES(?,?,?,?,?,'imported')",
+                (project_id, chapter_index + 1, title.strip() or f"第{chapter_index + 1}章", text, count_text_units(text)),
             )
-        self.set_scene_stage(scene_id, "target_design")
-        return self.get_character_modification_analysis(scene_id) or {}
+            created_id = int(cursor.lastrowid)
+            connection.execute("INSERT INTO chapter_workflow_state(chapter_id) VALUES(?)", (created_id,))
+        return created_id
 
-    @staticmethod
-    def _normalize_character_analysis(scene: Any, value: dict[str, Any]) -> dict[str, Any]:
-        result: dict[str, Any] = {}
-        for category in CHARACTER_ANALYSIS_CATEGORIES:
-            raw_items = value.get(category)
-            normalized: list[dict[str, Any]] = []
-            if not isinstance(raw_items, list):
-                result[category] = normalized
-                continue
-            for index, raw in enumerate(raw_items):
-                if not isinstance(raw, dict):
-                    continue
-                source_text = str(raw.get("source_text") or "")
-                start = int(raw.get("start_offset") or 0)
-                end = int(raw.get("end_offset") or start)
-                local_start, local_end = start, end
-                if not (0 <= local_start <= local_end <= len(scene.original_text)) or (
-                    source_text and scene.original_text[local_start:local_end] != source_text
-                ):
-                    local_start = start - scene.original_start_offset
-                    local_end = end - scene.original_start_offset
-                if not (0 <= local_start <= local_end <= len(scene.original_text)) or (
-                    source_text and scene.original_text[local_start:local_end] != source_text
-                ):
-                    local_start = scene.original_text.find(source_text) if source_text else 0
-                    if local_start < 0:
-                        raise ValueError(f"Analysis evidence is not present in Source: {source_text[:40]}")
-                    local_end = local_start + len(source_text)
-                item = {
-                    "id": str(raw.get("id") or f"{category}-{index + 1}"),
-                    "summary": str(raw.get("summary") or ""),
-                    "source_text": source_text,
-                    "start_offset": scene.original_start_offset + local_start,
-                    "end_offset": scene.original_start_offset + local_end,
-                    "inferred": bool(raw.get("inferred", False)),
-                }
-                for key in ("source_state", "target_state", "difference"):
-                    if key in raw:
-                        item[key] = str(raw.get(key) or "")
-                normalized.append(item)
-            result[category] = normalized
-        return result
-
-    def _chapter_summary_context(self, scene: Any) -> dict[str, Any]:
-        """Return a traceable summary block without replacing the chapter source text."""
+    def _require_current_source(self, chapter_id: int) -> Any:
+        source = self.versions.resolve_chapter_source(chapter_id)
         with session(self.database_path) as connection:
-            row = connection.execute(
-                "SELECT plot_summary, characters_json, key_events_json FROM chapter_summaries WHERE chapter_id = ?",
-                (scene.chapter_id,),
-            ).fetchone()
-        if row is None:
-            return {
-                "kind": "chapter_summary",
-                "provenance": {"chapter_id": scene.chapter_id},
-                "plot_summary": "",
-                "characters": [],
-                "key_events": [],
-            }
-        try:
-            characters = json.loads(str(row["characters_json"] or "[]"))
-        except (TypeError, ValueError):
-            characters = []
-        try:
-            key_events = json.loads(str(row["key_events_json"] or "[]"))
-        except (TypeError, ValueError):
-            key_events = []
+            self._ensure_state(connection, source)
+            row = connection.execute("SELECT source_hash FROM chapter_workflow_state WHERE chapter_id=?", (chapter_id,)).fetchone()
+        if row and row["source_hash"] and str(row["source_hash"]) != source.content_hash:
+            raise WorkflowSourceConflict("当前章节已变化，需要重新确认或重新分析受影响阶段。")
+        return source
+
+    @staticmethod
+    def _ensure_state(connection: Any, source: Any) -> None:
+        connection.execute("INSERT OR IGNORE INTO chapter_workflow_state(chapter_id) VALUES(?)", (source.chapter_id,))
+
+    def _reset_for_source(self, connection: Any, source: Any) -> None:
+        self._ensure_state(connection, source)
+        for table in ("chapter_writings", "chapter_style_contexts", "chapter_special_analyses",
+                      "chapter_creative_intents", "chapter_workflow_summaries"):
+            connection.execute(f"DELETE FROM {table} WHERE chapter_id=?", (source.chapter_id,))
+        connection.execute(
+            """UPDATE chapter_workflow_state SET current_stage='not_started',source_base_kind=?,
+               source_base_version_id=?,source_hash=?,updated_at=CURRENT_TIMESTAMP WHERE chapter_id=?""",
+            (source.source_kind, source.source_version_id, source.content_hash, source.chapter_id),
+        )
+
+    @staticmethod
+    def _set_stage(connection: Any, chapter_id: int, stage: str) -> None:
+        if stage not in STAGES:
+            raise ValueError(f"Unsupported chapter workflow stage: {stage}")
+        connection.execute("UPDATE chapter_workflow_state SET current_stage=?,updated_at=CURRENT_TIMESTAMP WHERE chapter_id=?", (stage, chapter_id))
+
+    def _style_source(self, source: Any, requested_scope: str) -> tuple[str, str]:
+        if requested_scope == "document":
+            with session(self.database_path) as connection:
+                row = connection.execute("SELECT source_path FROM projects WHERE id=?", (source.project_id,)).fetchone()
+            path = Path(str(row["source_path"])) if row and row["source_path"] else None
+            if path and path.is_file() and path.suffix.lower() == ".txt":
+                try:
+                    value = path.read_text(encoding="utf-8").strip()
+                    if value:
+                        return value, "document"
+                except (OSError, UnicodeError):
+                    pass
+        return source.text, "chapter"
+
+    @staticmethod
+    def _sample_style_source(text: str, limit: int = 24000) -> str:
+        if len(text) <= limit:
+            return text
+        part, middle = limit // 3, max(0, len(text) // 2 - limit // 6)
+        return text[:part] + "\n\n[中段采样]\n\n" + text[middle:middle + part] + "\n\n[末段采样]\n\n" + text[-part:]
+
+    @staticmethod
+    def _style_guidance(snapshot: dict[str, Any]) -> str:
+        return json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"))
+
+    @staticmethod
+    def _strategy(value: str) -> str:
+        if value not in STRATEGIES:
+            raise ValueError("strategy must be plot_adjust, expansion, or reimagine.")
+        return value
+
+    @staticmethod
+    def _normalize_summary(value: dict[str, Any]) -> dict[str, Any]:
         return {
-            "kind": "chapter_summary",
-            "provenance": {"chapter_id": scene.chapter_id},
-            "plot_summary": str(row["plot_summary"] or ""),
-            "characters": characters if isinstance(characters, list) else [],
-            "key_events": key_events if isinstance(key_events, list) else [],
+            "plot_summary": str(value.get("plot_summary") or ""),
+            "main_characters": value.get("main_characters") if isinstance(value.get("main_characters"), list) else [],
+            "key_events": value.get("key_events") if isinstance(value.get("key_events"), list) else [],
+            "relationships": value.get("relationships") if isinstance(value.get("relationships"), list) else [],
+            "start_state": value.get("start_state") if isinstance(value.get("start_state"), dict) else {},
+            "end_state": value.get("end_state") if isinstance(value.get("end_state"), dict) else {},
+            "important_facts": value.get("important_facts") if isinstance(value.get("important_facts"), list) else [],
+            "open_threads": value.get("open_threads") if isinstance(value.get("open_threads"), list) else [],
         }
 
-    @staticmethod
-    def _json_items(value: Any) -> list[dict[str, Any]]:
-        try:
-            parsed = json.loads(str(value or "[]"))
-        except (TypeError, ValueError):
-            return []
-        return [item for item in parsed if isinstance(item, dict)] if isinstance(parsed, list) else []
+    def _write_summary(self, connection: Any, chapter_id: int, source_hash: str, value: dict[str, Any]) -> None:
+        connection.execute(
+            """INSERT INTO chapter_workflow_summaries(chapter_id,plot_summary,main_characters_json,
+               key_events_json,relationships_json,start_state_json,end_state_json,important_facts_json,
+               open_threads_json,source_hash) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            (chapter_id, value["plot_summary"], self._dump(value["main_characters"]), self._dump(value["key_events"]),
+             self._dump(value["relationships"]), self._dump(value["start_state"]), self._dump(value["end_state"]),
+             self._dump(value["important_facts"]), self._dump(value["open_threads"]), source_hash),
+        )
+
+    def _summary_out(self, row: Any) -> dict[str, Any] | None:
+        if row is None: return None
+        return {"chapter_id": int(row["chapter_id"]), "plot_summary": str(row["plot_summary"]),
+                "main_characters": self._load(row["main_characters_json"], []), "key_events": self._load(row["key_events_json"], []),
+                "relationships": self._load(row["relationships_json"], []), "start_state": self._load(row["start_state_json"], {}),
+                "end_state": self._load(row["end_state_json"], {}), "important_facts": self._load(row["important_facts_json"], []),
+                "open_threads": self._load(row["open_threads_json"], []), "source_hash": str(row["source_hash"]),
+                "updated_at": str(row["updated_at"])}
 
     @staticmethod
-    def _table_exists(connection: Any, name: str) -> bool:
-        return connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)
-        ).fetchone() is not None
+    def _intent_out(row: Any) -> dict[str, Any] | None:
+        if row is None: return None
+        return {"chapter_id": int(row["chapter_id"]), "strategy": str(row["strategy"]),
+                "user_instruction": str(row["user_instruction"]), "updated_at": str(row["updated_at"])}
+
+    def _analysis_out(self, row: Any) -> dict[str, Any] | None:
+        if row is None: return None
+        return {"chapter_id": int(row["chapter_id"]), "strategy": str(row["strategy"]),
+                "outline_detail_level": row["outline_detail_level"], "source_outline": self._load(row["source_outline_json"], []),
+                "target_outline": self._load(row["target_outline_json"], []), "constraints": self._load(row["constraints_json"], {}),
+                "analysis_notes": self._load(row["analysis_notes_json"], []), "source_hash": str(row["source_hash"]),
+                "updated_at": str(row["updated_at"])}
+
+    def _style_out(self, row: Any) -> dict[str, Any] | None:
+        if row is None: return None
+        return {"chapter_id": int(row["chapter_id"]), "strategy": str(row["strategy"]), "style_mode": str(row["style_mode"]),
+                "source_scope": str(row["source_scope"]), "author_style_material_id": row["author_style_material_id"],
+                "author_style_material_version": row["author_style_material_version"],
+                "style_snapshot": self._load(row["style_snapshot_json"], {}),
+                "extraction_settings_snapshot": self._load(row["extraction_settings_snapshot_json"], {}),
+                "generated_guidance": str(row["generated_guidance"]), "source_hash": str(row["source_hash"]),
+                "created_at": str(row["created_at"])}
+
+    def _writing_out(self, row: Any) -> dict[str, Any] | None:
+        if row is None: return None
+        return {"id": int(row["id"]), "chapter_id": int(row["chapter_id"]), "strategy": str(row["strategy"]),
+                "writing_plan": self._load(row["writing_plan_json"], []), "result_text": str(row["result_text"]),
+                "created_chapter_id": row["created_chapter_id"], "source_hash": str(row["source_hash"]),
+                "status": str(row["status"]), "updated_at": str(row["updated_at"])}
 
     @staticmethod
-    def _normalize_preanalysis(value: dict[str, Any]) -> dict[str, Any]:
-        def strings(key: str) -> list[str]:
-            raw = value.get(key)
-            if not isinstance(raw, list):
-                return []
-            return [str(item).strip() for item in raw if str(item).strip()]
-
-        return {
-            "summary": str(value.get("summary") or "").strip(),
-            "characters": strings("characters"),
-            "location": str(value.get("location") or "").strip(),
-            "time": str(value.get("time") or value.get("time_text") or "").strip(),
-            "scene_type": str(value.get("scene_type") or "").strip(),
-            "basic_events": strings("basic_events"),
-        }
+    def _object_list(value: Any, label: str) -> list[dict[str, Any]]:
+        if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+            raise ValueError(f"{label} must be an array of objects.")
+        return [dict(item) for item in value]
 
     @staticmethod
-    def _normalize_ids(value: Any) -> list[int]:
-        return sorted({int(item) for item in value}) if isinstance(value, list) else []
-
+    def _dump(value: Any) -> str: return json.dumps(value, ensure_ascii=False)
     @staticmethod
-    def _json_int_list(value: Any) -> list[int]:
-        try:
-            parsed = json.loads(str(value or "[]"))
-        except (TypeError, ValueError):
-            return []
-        return CreativeWorkflowService._normalize_ids(parsed)
-
-    @staticmethod
-    def _preanalysis_from_row(row: Any) -> dict[str, Any]:
-        def string_list(column: str) -> list[str]:
-            try:
-                value = json.loads(str(row[column] or "[]"))
-            except (TypeError, ValueError):
-                return []
-            return [str(item) for item in value] if isinstance(value, list) else []
-
-        return {
-            "scene_id": int(row["scene_id"]),
-            "summary": str(row["summary"]),
-            "characters": string_list("characters_json"),
-            "location": str(row["location"]),
-            "time": str(row["time_text"]),
-            "scene_type": str(row["scene_type"]),
-            "basic_events": string_list("basic_events_json"),
-            "status": str(row["status"]),
-            "user_edited": bool(row["user_edited"]),
-            "confirmed_at": row["confirmed_at"],
-            "updated_at": str(row["updated_at"]),
-        }
+    def _load(value: Any, default: Any) -> Any:
+        try: return json.loads(str(value))
+        except (TypeError, ValueError): return default

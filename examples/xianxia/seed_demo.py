@@ -30,7 +30,6 @@ def seed_demo(
 
     rewrite_package = (root / "rewrite_prompt.json").read_text(encoding="utf-8")
     project_anchor = json.loads((root / "project_anchor.json").read_text(encoding="utf-8"))
-    character_payload = json.loads((root / "characters.json").read_text(encoding="utf-8"))
 
     project_service = ProjectService(database)
     project_id = project_service.import_book(root / "source.txt", workspace)
@@ -47,25 +46,6 @@ def seed_demo(
     )
     anchor_service.bind_project_outline(project_id, outline_id)
 
-    character_ids: list[int] = []
-    for sort_order, character in enumerate(character_payload["characters"], start=1):
-        card_id = anchor_service.create_character_card(
-            name=character["name"],
-            aliases=character.get("aliases", []),
-            description=character.get("description", ""),
-            priority=character.get("priority", 50),
-            is_main=character.get("is_main", False),
-            relationship_notes=character.get("relationship_notes", ""),
-            personality=character.get("personality", ""),
-            speech_style=character.get("speech_style", ""),
-            action_constraints=character.get("action_constraints", ""),
-            anti_ooc_rules=character.get("anti_ooc_rules", ""),
-            profile=character.get("profile", {}),
-            source_metadata={"source_type": "example", "example": "xianxia"},
-        )
-        anchor_service.bind_project_character(project_id, card_id, sort_order=sort_order)
-        character_ids.append(card_id)
-
     project_service.update_project_settings(
         project_id,
         prompt_template_id=prompt_id,
@@ -78,7 +58,6 @@ def seed_demo(
         "project_id": project_id,
         "prompt_template_id": prompt_id,
         "outline_template_id": outline_id,
-        "character_card_ids": character_ids,
         "database_path": str(database.resolve()),
         "workspace_path": str(workspace.resolve()),
     }

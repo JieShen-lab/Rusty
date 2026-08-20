@@ -19,7 +19,6 @@ from backend.api import create_app
 from rusty.db import session
 from rusty.models import ParsedBook, ParsedChapter
 from rusty.services.ai_client import AIClient, AIResponse
-from rusty.services.anchor_service import AnchorService
 from rusty.services.context_service import ContextService
 from rusty.services.document_library_service import DocumentLibraryService
 from rusty.services.material_service import MaterialService
@@ -374,29 +373,6 @@ class PhaseTwoContractRegressionTests(unittest.TestCase):
                     new_first.end_offset,
                 )
 
-    def test_character_cover_copy_is_independent_and_delete_cleans_only_own_file(self) -> None:
-        project_id, _ = self.create_project("cover")
-        service = AnchorService(self.database)
-        source_id = service.create_character_card(name="Cover Source")
-        png = bytes.fromhex("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489")
-        service.save_character_cover(source_id, png)
-        copy_id = service.copy_character_card(
-            source_id,
-            target_scope="project",
-            target_project_id=project_id,
-        )
-        source = service.get_character_card(source_id)
-        copied = service.get_character_card(copy_id)
-        self.assertNotEqual(source.cover_path, copied.cover_path)
-        source_file = service.character_cover_file(source_id)
-        copied_file = service.character_cover_file(copy_id)
-        self.assertEqual(source_file.read_bytes(), copied_file.read_bytes())
-        service.delete_character_card(source_id)
-        self.assertFalse(source_file.exists())
-        self.assertTrue(copied_file.exists())
-        service.delete_character_card(copy_id)
-        self.assertFalse(copied_file.exists())
-
     def test_bound_style_rules_examples_and_recent_repetition_enter_context(self) -> None:
         text = "aaaabbbbcccc"
         project_id, chapter_id = self.create_project(text)
@@ -448,124 +424,6 @@ class PhaseTwoContractRegressionTests(unittest.TestCase):
         self.assertIn("SCENE-RULE-UNIQUE", context["scene_rules"])
         self.assertIn("STYLE-EXAMPLE-UNIQUE", context["examples"])
         self.assertIn("repeated-technique-unique", context["forbidden_repetitions"])
-
-    def test_plot_skeleton_and_author_style_remain_semantically_separate(self) -> None:
-        project_id, chapter_id = self.create_project("EXPANSION-ORIGINAL")
-        scene = SceneService(self.database).split_chapter(chapter_id)[0]
-        SceneService(self.database).confirm_boundaries(chapter_id)
-        materials = MaterialService(self.database)
-        plot_id = materials.create_material(
-            material_type="plot_skeleton",
-            scope="public",
-            name="Plot",
-            raw_text="PLOT-MATERIAL-UNIQUE",
-            content={
-                "event_nodes": [
-                    {"id": "PLOT-EVENT", "event": "PLOT-MATERIAL-UNIQUE", "required": True}
-                ]
-            },
-        )
-        style_id = materials.create_material(
-            material_type="author_style",
-            scope="public",
-            name="Reference",
-            raw_text="AUTHOR-STYLE-UNIQUE",
-        )
-        extra_plot_id = materials.create_material(
-            material_type="plot_skeleton",
-            scope="public",
-            name="Extra plot",
-            content={"event_nodes": [{"id": "EXTRA", "event": "Extra", "required": True}]},
-        )
-        other_project_id, _ = self.create_project("OTHER")
-        other_style_id = materials.create_material(
-            material_type="author_style",
-            scope="project",
-            project_id=other_project_id,
-            name="Other project reference",
-        )
-        self.configure_model()
-        analysis = {key: [] for key in SCENE_ANALYSIS_KEYS}
-        analysis["required_start_state"] = {}
-        analysis["required_end_state"] = {}
-        consistency = {key: [] for key in CONSISTENCY_KEYS}
-        consistency["revision_required"] = False
-        queue = RecordingQueueAI(
-            analysis,
-            {"event_nodes": [{"id": "BASE-NODE", "event": "Base event", "required": True}]},
-            {
-                "sequence": ["Base event", "PLOT-MATERIAL-UNIQUE"],
-                "preserve": ["Base event"],
-                "modify": [],
-                "add": ["PLOT-MATERIAL-UNIQUE"],
-                "material_insertions": [{"material_id": plot_id, "after": "BASE-NODE"}],
-                "character_changes": {},
-                "expected_end_state": {},
-            },
-            {"text": "EXPANDED-TEXT", "facts_after": {}},
-            consistency,
-        )
-        orchestrator = SceneRewriteOrchestrator(
-            self.database,
-            structured_model_service=StructuredModelService(self.database, ai_client=queue),
-        )
-        run = orchestrator.start(
-            scene.id,
-            mode="expansion",
-            material_ids=[plot_id, style_id],
-        )
-        confirmed = RewriteWorkflowService(self.database).confirm_skeleton(run["skeleton_id"])
-        planned = orchestrator.generate_plan(
-            run["id"],
-            skeleton_version_id=confirmed.version_id,
-            material_mappings=[
-                {
-                    "material_id": plot_id,
-                    "insertion_after_node": "BASE-NODE",
-                    "usage_mode": "required",
-                    "impact": {"events": ["PLOT-MATERIAL-UNIQUE"]},
-                }
-            ],
-            author_style_ids=[style_id],
-        )
-        RewriteWorkflowService(self.database).confirm_plan(planned["plan_id"])
-        with self.assertRaisesRegex(ValueError, "must be plot_skeleton"):
-            orchestrator.execute(
-                run["id"],
-                plot_skeleton_material_ids=[style_id],
-                author_style_ids=[],
-            )
-        with self.assertRaisesRegex(ValueError, "must be author_style"):
-            orchestrator.execute(
-                run["id"],
-                plot_skeleton_material_ids=[plot_id],
-                author_style_ids=[extra_plot_id],
-            )
-        with self.assertRaisesRegex(ValueError, "both a plot skeleton and an author style"):
-            orchestrator.execute(
-                run["id"],
-                plot_skeleton_material_ids=[plot_id],
-                author_style_ids=[plot_id],
-            )
-        migrated_reference = materials.get_material(other_style_id)
-        self.assertIsNotNone(migrated_reference)
-        assert migrated_reference is not None
-        self.assertEqual("public", migrated_reference.scope)
-        self.assertIsNone(migrated_reference.project_id)
-        orchestrator.execute(
-            run["id"],
-            plot_skeleton_material_ids=[plot_id],
-            author_style_ids=[style_id],
-        )
-        planning_prompt = queue.messages[2][-1]["content"]
-        rewrite_prompt = queue.messages[3][-1]["content"]
-        self.assertIn("PLOT-MATERIAL-UNIQUE", planning_prompt)
-        self.assertIn(f'"material_id": {plot_id}', planning_prompt)
-        self.assertIn('"insertion_after_node": "BASE-NODE"', planning_prompt)
-        plot_block = json.loads(_prompt_block(rewrite_prompt, "PLOT_SKELETON_MAPPINGS"))
-        reference_block = json.loads(_prompt_block(rewrite_prompt, "AUTHOR_STYLE_CONTEXT"))
-        self.assertEqual([plot_id], [item["material_id"] for item in plot_block])
-        self.assertEqual([style_id], reference_block["material_ids"])
 
 def _prompt_block(prompt: str, key: str) -> str:
     marker = f"## {key}\n"

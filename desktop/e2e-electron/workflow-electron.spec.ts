@@ -55,31 +55,29 @@ test('Electron 新建统一普通小说工程且没有改写扩写选择', async
   await createProject();
 });
 
-test('Electron 完成预分析到人物专项分析的第一阶段闭环', async () => {
+test('Electron 完成内容总结到目标大纲保存的章节流程', async () => {
   await openSeedProject('真实 E2E 1');
-  await expect(page.getByRole('button', { name: /场景 1.*当前/ })).toBeVisible();
-  await page.getByRole('button', { name: '运行预分析' }).click();
-  await expect(page.getByLabel('摘要')).toHaveValue('人物进入院子并检查院门。');
-  await page.getByRole('button', { name: '确认预分析' }).click();
-  await page.getByRole('button', { name: /贴合原文/ }).click();
-  await page.getByPlaceholder(/把张三替换成李四/).fill('把人物替换成李四，保留事件顺序。');
-  await page.getByRole('checkbox', { name: '李四' }).check();
-  await page.getByRole('button', { name: '进入专项分析' }).click();
-  await page.getByRole('button', { name: '运行人物专项分析' }).click();
-  await expect(page.locator('input[value="人物进入院子"]')).toBeVisible();
-  await expect(page.locator('input[value="“他”指人物"]')).toBeVisible();
-  await expect(page.locator('input[value="存在差异"]')).toBeVisible();
-  await page.getByRole('button', { name: '确认分析' }).click();
-  await expect(page.getByRole('heading', { name: '目标设计' })).toBeVisible();
+  await page.getByRole('button', { name: '生成内容总结' }).click();
+  await page.getByRole('button', { name: '调整剧情' }).click();
+  await page.getByPlaceholder(/保留人物相遇/).fill('让院门暗记成为明确线索。');
+  await page.getByRole('button', { name: '保存并开始分析' }).click();
+  await page.getByRole('button', { name: '开始分析' }).click();
+  await expect(page.getByRole('heading', { name: '原始大纲' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '目标大纲' })).toBeVisible();
+  await expect(page.getByLabel('第 2 条操作')).toHaveValue('modify');
+  await page.getByRole('button', { name: '保存目标大纲' }).click();
+  await expect(page.getByRole('heading', { name: '确定写作风格' })).toBeVisible();
   await page.reload();
-  await expect(page.getByRole('heading', { name: '目标设计' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '专项分析' })).toBeVisible();
+  await page.getByRole('button', { name: '风格', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '确定写作风格' })).toBeVisible();
 });
 
-test('Electron 历史 branch 工程进入统一章节工作台', async () => {
+test('Electron 历史扩写工程仍保持独立扩写工作台', async () => {
   await openSeedProject('真实 E2E 4');
-  await expect(page.getByLabel('章节导航')).toContainText('第一章');
-  await expect(page.getByRole('heading', { name: '场景' })).toBeVisible();
-  await expect(page.getByRole('button', { name: '继续写' })).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: '真实 E2E 4' })).toBeVisible();
+  await expect(page.getByText('每条路线独立保存；可以从原文创建新路线，也可以在当前路线中继续写。')).toBeVisible();
+  await expect(page.getByRole('button', { name: '继续写' })).toBeVisible();
 });
 
 test('Electron 旧提取工程可下载分析并创建派生工程', async () => {
@@ -91,8 +89,8 @@ test('Electron 旧提取工程可下载分析并创建派生工程', async () =>
   await page.getByRole('button', { name: '基于此项目创建新工程' }).click();
   await page.getByLabel('工程类型').selectOption('branch');
   await page.getByRole('button', { name: '创建并打开' }).click();
-  await expect(page.getByLabel('章节导航')).toBeVisible();
-  await expect(page.getByRole('heading', { name: '场景' })).toBeVisible();
+  await expect(page.getByText('扩写工程', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '继续写' })).toBeVisible();
 });
 
 async function createProject() {
@@ -110,14 +108,13 @@ async function createProject() {
   await page.getByRole('button', { name: '下一步' }).click();
   await expect(page.getByRole('button', { name: /Fake E2E Model/ })).toBeVisible();
   await page.getByRole('button', { name: '下一步' }).click();
-  await page.getByRole('button', { name: '下一步' }).click();
   await page.getByRole('button', { name: '开始创建' }).click();
-  await expect(page.getByLabel('章节导航')).toBeVisible();
-  await expect(page.getByRole('heading', { name: '场景' })).toBeVisible();
+  await expect(page.getByText('章节创作工作台')).toBeVisible();
+  await expect(page.getByRole('button', { name: /第 1 章/ })).toBeVisible();
 }
 
 async function goToProjectLibrary() {
-  await page.getByRole('button', { name: '工程', exact: true }).click();
+  await page.locator('.rail-item[aria-label="工程"]').click();
   await expect(page.getByRole('heading', { name: '工程' })).toBeVisible();
 }
 
@@ -127,5 +124,6 @@ async function openSeedProject(name: string) {
   await page.getByRole('button', { name: new RegExp(name) }).first().click();
   await page.getByRole('button', { name: '进入工程' }).click();
   if (name.endsWith('8')) await expect(page.getByText('此项目属于旧版分析工程。')).toBeVisible();
-  else await expect(page.getByLabel('章节导航')).toBeVisible();
+  else if (name === '真实 E2E 4') await expect(page.getByText('扩写工程', { exact: true })).toBeVisible();
+  else await expect(page.getByText('章节创作工作台')).toBeVisible();
 }

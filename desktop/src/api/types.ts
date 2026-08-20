@@ -188,28 +188,26 @@ export type Chapter = {
 
 export type CreativeWorkflowStage =
   | 'not_started'
-  | 'preanalysis'
+  | 'summary'
   | 'direction'
   | 'special_analysis'
-  | 'target_design'
+  | 'style'
   | 'writing'
   | 'review'
   | 'confirmed';
 
 export type ChapterWorkflowState = {
   chapter_id: number;
-  chapter_index: number;
-  title: string;
-  active_scene_id: number | null;
   current_stage: CreativeWorkflowStage;
-  updated_at: string;
-};
-
-export type SceneWorkflowState = {
-  scene_id: number;
-  scene_index?: number;
-  title?: string;
-  current_stage: CreativeWorkflowStage;
+  source_base_kind: 'original' | 'rewrite_version' | null;
+  source_base_version_id: number | null;
+  source_hash: string;
+  source_changed: boolean;
+  summary: ChapterSummary | null;
+  direction: ChapterCreativeIntent | null;
+  special_analysis: ChapterSpecialAnalysis | null;
+  style: ChapterStyleContext | null;
+  writing: ChapterWriting | null;
   updated_at: string;
 };
 
@@ -449,7 +447,6 @@ export type PlotGenerationStartRequest = {
   start_anchor: StoryAnchor;
   return_anchor?: StoryAnchor | null;
   user_direction: string;
-  selected_character_ids?: number[];
   selected_material_ids?: number[];
   style_profile_id?: number | null;
   branch_id?: number | null;
@@ -762,162 +759,11 @@ export type ProjectStyleBinding = {
   style_template: StyleTemplate | null;
 };
 
-export type CharacterCard = {
-  id: number;
-  name: string;
-  aliases: string[];
-  description: string;
-  priority: number;
-  is_main: boolean;
-  relationship_notes: string;
-  personality: string;
-  speech_style: string;
-  action_constraints: string;
-  anti_ooc_rules: string;
-  profile: Record<string, unknown>;
-  source_metadata: Record<string, unknown>;
-  import_metadata: Record<string, unknown>;
-  scope: 'public' | 'project';
-  project_id: number | null;
-  source_character_card_id: number | null;
-  source_version: number | null;
-  version: number;
-  sort_order: number;
-  identity: string;
-  age: string;
-  setting_text: string;
-  custom_fields: CharacterCustomField[];
-  stable_fields: CharacterStableField[];
-  raw_text: string;
-  analysis_status: AnalysisStatus;
-  cover_path: string | null;
-  cover_updated_at: string | null;
-  tags: string[];
-  category_ids: number[];
-  categories: string[];
-  source_summary: CharacterSourceSummary;
-  created_at: string;
-  updated_at: string;
-};
-
-export type CharacterSourceSummary = {
-  kind:
-    | 'manual'
-    | 'document_selection'
-    | 'project_selection'
-    | 'file_import'
-    | 'ai_extraction'
-    | 'public_copy'
-    | 'project_copy';
-  label: string;
-  document_id?: number | null;
-  chapter_id?: number | null;
-  project_id?: number | null;
-  source_card_id?: number | null;
-};
-
-export type CharacterCategory = {
-  id: number;
-  name: string;
-  normalized_name: string;
-  sort_order: number;
-  resource_count: number;
-};
-
-export type CharacterProjectSummary = {
-  project_id: number;
-  project_name: string;
-  character_count: number;
-  updated_at: string;
-};
-
-export type CharacterLibrarySelection =
-  | { kind: 'all' }
-  | { kind: 'category'; categoryId: number };
-
-export type CharacterQueryState = {
-  query: string;
-  activeTagId: number | null;
-};
-
-export type CharacterCustomField = {
-  id: string;
-  label: string;
-  value: string;
-  sort_order: number;
-};
-
-export type CharacterStableField = CharacterCustomField;
-
-export type CharacterCardWrite = {
-  name: string;
-  aliases: string[];
-  description: string;
-  priority: number;
-  is_main: boolean;
-  relationship_notes: string;
-  personality: string;
-  speech_style: string;
-  action_constraints: string;
-  anti_ooc_rules: string;
-  profile: Record<string, unknown>;
-  source_metadata: Record<string, unknown>;
-  import_metadata: Record<string, unknown>;
-  scope?: 'public' | 'project';
-  project_id?: number | null;
-  identity?: string;
-  age?: string;
-  setting_text?: string;
-  custom_fields?: CharacterCustomField[];
-  stable_fields?: CharacterStableField[];
-  raw_text?: string;
-  analysis_status?: AnalysisStatus;
-  tag_ids?: number[];
-};
-
-export type CharacterExtractionSettings = {
-  model_id: number | null;
-  detail_level: StyleDetailLevel;
-  generate_tags: boolean;
-  custom_requirements: string;
-  system_prompt: string;
-  dimensions: CharacterDimensionDefinition[];
-  prompt_preview: string;
-};
-
-export type CharacterDimensionDefinition = {
-  id: string;
-  label: string;
-  instruction: string;
-  sort_order: number;
-  enabled: boolean;
-  is_default: boolean;
-};
-
-export type CharacterDraft = {
-  name: string;
-  aliases: string[];
-  description: string;
-  identity: string;
-  age: string;
-  stable_fields: CharacterStableField[];
-  suggested_tags: string[];
-  source_metadata: Record<string, unknown>;
-  import_metadata: Record<string, unknown>;
-  raw_text: string;
-};
-
-export type CharacterExtractionPreview = {
-  preview_token: string;
-  expires_at: string;
-  character: CharacterDraft;
-};
-
 export type AnalysisStatus = 'unanalyzed' | 'analyzed';
-export type MaterialType = 'plot_skeleton' | 'author_style';
+export type MaterialType = 'author_style';
 export type MaterialScope = 'public' | 'project';
 export type MaterialTagGroup = 'general' | 'applicable_scene';
-export type MaterialAITask = 'plot_skeleton_extraction' | 'author_style_extraction';
+export type MaterialAITask = 'author_style_extraction';
 
 export type MaterialAIDimension = {
   id: string;
@@ -1087,31 +933,6 @@ export type AISplitProposal = {
   model_invocation_id: number;
 };
 
-export type SceneWorkflowRun = {
-  id: number;
-  project_id: number;
-  chapter_id: number;
-  scene_id: number;
-  mode: RewriteMode;
-  status: string;
-  skeleton_id: number | null;
-  skeleton_version_id: number | null;
-  plan_id: number | null;
-  current_stage: string;
-  error_message: string | null;
-  skeleton_nodes?: Record<string, unknown>[];
-  plan?: Record<string, unknown> | null;
-  material_mappings?: Record<string, unknown>[];
-};
-
-export type SceneWorkflowExecutePayload = {
-  user_instruction?: string;
-  model_id?: number | null;
-  character_ids?: number[];
-  plot_skeleton_material_ids?: number[];
-  author_style_ids?: number[];
-};
-
 export type SplitChapterCandidate = {
   index: number;
   title: string;
@@ -1127,10 +948,6 @@ export type SplitPreview = {
   revision_id: number;
   chapter_count: number;
   chapters: SplitChapterCandidate[];
-};
-
-export type ProjectCharacterBindings = {
-  character_cards: CharacterCard[];
 };
 
 export type ProjectSettingsWrite = {
@@ -1196,109 +1013,13 @@ export type ProjectMasterPrompt = {
   updated_at: string;
 };
 
-export type BaseSceneAnalysis = {
-  scene_id: number;
-  summary: string;
-  characters: string[];
-  location: string;
-  time: string;
-  scene_type: string;
-  basic_events: string[];
-  status: 'draft' | 'confirmed' | 'stale';
-  user_edited: boolean;
-  confirmed_at: string | null;
-  updated_at: string;
-};
-
-export type CreativeStrategy = 'faithful' | 'plot_adjust' | 'expansion' | 'reimagine';
-
-export type CreativeIntent = {
-  scene_id: number;
-  strategy: CreativeStrategy;
-  user_instruction: string;
-  selected_character_ids: number[];
-  selected_plot_material_ids: number[];
-  selected_scene_material_ids: number[];
-  status: 'draft' | 'confirmed';
-  updated_at: string;
-};
-
-export type CharacterAnalysisItem = {
-  id: string;
-  summary: string;
-  source_text: string;
-  start_offset: number;
-  end_offset: number;
-  inferred: boolean;
-  source_state?: string;
-  target_state?: string;
-  difference?: string;
-};
-
-export type CharacterModificationAnalysis = {
-  scene_id: number;
-  source_character: string;
-  target_character_card_id: number;
-  target_character_name: string;
-  explicit_mentions: CharacterAnalysisItem[];
-  implicit_references: CharacterAnalysisItem[];
-  actions: CharacterAnalysisItem[];
-  dialogue: CharacterAnalysisItem[];
-  states: CharacterAnalysisItem[];
-  objects: CharacterAnalysisItem[];
-  spatial_relations: CharacterAnalysisItem[];
-  related_events: CharacterAnalysisItem[];
-  target_character_conflicts: CharacterAnalysisItem[];
-  status: 'draft' | 'confirmed' | 'stale';
-  user_edited: boolean;
-  confirmed_at: string | null;
-  updated_at: string;
-};
-export type StrategySceneAnalysis = { id: number; scene_id: number; strategy: Exclude<CreativeStrategy, 'faithful'>; analysis: Record<string, unknown>; status: 'draft' | 'confirmed' | 'stale'; user_edited: boolean; confirmed_at: string | null; created_at: string; updated_at: string };
-
-export type ChangeOperation = 'preserve' | 'adapt' | 'modify';
-export type ChangeSetItem = {
-  id: string;
-  label: string;
-  operation: ChangeOperation;
-  source_value: string;
-  target_value: string;
-  source_start_offset: number;
-  source_end_offset: number;
-};
-export type SceneTarget = {
-  id: number;
-  scene_id: number;
-  strategy: CreativeStrategy;
-  user_instruction: string;
-  design: { items?: ChangeSetItem[]; summary?: string[]; [key: string]: unknown };
-  status: 'draft' | 'confirmed' | 'stale';
-  created_at: string;
-  updated_at: string;
-  confirmed_at: string | null;
-};
-
-export type WritingOperation = 'preserve' | 'transform' | 'rewrite' | 'insert' | 'delete';
-export type WritingBlock = {
-  id: number; plan_id: number; scene_id: number; order: number; title: string;
-  source_start_offset: number; source_end_offset: number; source_text_snapshot: string;
-  operation: WritingOperation; instruction: string; preserve_constraints: string[];
-  target_requirements: string[]; resource_refs: number[];
-};
-export type WritingPlan = {
-  id: number; scene_id: number; target_id: number; strategy: CreativeStrategy;
-  status: 'draft' | 'ready' | 'stale'; coverage: Record<WritingOperation, number>;
-  blocks: WritingBlock[]; created_at: string; updated_at: string;
-};
-export type SceneDraft = {
-  scene_id: number; text: string; based_on_target_id: number; based_on_plan_id: number;
-  block_spans: Array<{ block_id: number; start_offset: number; end_offset: number }>;
-  status: 'draft' | 'confirmed' | 'stale'; created_at: string; updated_at: string;
-};
-export type DiffChunk = { tag: 'equal' | 'replace' | 'delete' | 'insert'; source_start_offset: number; source_end_offset: number; target_start_offset: number; target_end_offset: number; source_text: string; target_text: string };
-export type SceneReviewDiff = { scene_id: number; source_text: string; target_text: string; chunks: DiffChunk[] };
-export type ReviewMark = { id: number; scene_id: number; source_start_offset: number; source_end_offset: number; source_text: string; target_start_offset: number; target_end_offset: number; user_note: string; resolved: boolean; created_at: string; updated_at: string };
-
+export type CreativeStrategy = 'plot_adjust' | 'expansion' | 'reimagine';
+export type OutlineNode = { id: string; operation?: 'preserve' | 'modify' | 'delete' | 'insert'; source_ids?: string[]; [key: string]: unknown };
+export type ChapterSummary = { chapter_id: number; plot_summary: string; main_characters: unknown[]; key_events: unknown[]; relationships: unknown[]; start_state: Record<string, unknown>; end_state: Record<string, unknown>; important_facts: unknown[]; open_threads: unknown[]; source_hash: string; updated_at: string };
+export type ChapterCreativeIntent = { chapter_id: number; strategy: CreativeStrategy; user_instruction: string; updated_at: string };
+export type ChapterSpecialAnalysis = { chapter_id: number; strategy: CreativeStrategy; outline_detail_level: 'brief' | 'detailed' | null; source_outline: OutlineNode[]; target_outline: OutlineNode[]; constraints: Record<string, unknown>; analysis_notes: unknown[]; source_hash: string; updated_at: string };
+export type ChapterStyleContext = { chapter_id: number; strategy: CreativeStrategy; style_mode: 'source_auto' | 'selected_author_style'; source_scope: 'document' | 'chapter'; author_style_material_id: number | null; author_style_material_version: number | null; style_snapshot: Record<string, unknown>; extraction_settings_snapshot: Record<string, unknown>; generated_guidance: string; source_hash: string; created_at: string };
+export type ChapterWriting = { id: number; chapter_id: number; strategy: CreativeStrategy; writing_plan: Array<Record<string, unknown>>; result_text: string; created_chapter_id: number | null; source_hash: string; status: 'draft' | 'reviewed' | 'confirmed'; updated_at: string };
 export type SceneBoundaryItem = {
   start_offset: number;
   end_offset: number;
@@ -1327,7 +1048,6 @@ export type SceneFactLedger = {
 export type CharacterStoryState = {
   id: number;
   scene_id: number;
-  character_card_id: number | null;
   character_name: string;
   state: Record<string, unknown>;
 };

@@ -1,7 +1,7 @@
-import { Bot, BookOpen, LibraryBig, FolderOpen, ListTree, Moon, Sun, Users } from 'lucide-react';
+import { Bot, BookOpen, LibraryBig, FolderOpen, Moon, Sun, UserRound } from 'lucide-react';
 import type { UiTheme } from '../theme';
 
-export type RouteKey = 'library' | 'workspace' | 'models' | 'prompts' | 'outlines' | 'characters' | 'documents' | 'new-project';
+export type RouteKey = 'library' | 'workspace' | 'models' | 'prompts' | 'authors' | 'documents' | 'new-project';
 type SidebarProps = {
   active: RouteKey;
   onNavigate: (path: string) => void;
@@ -12,8 +12,7 @@ type SidebarProps = {
 const items = [
   { key: 'library', label: '工程', path: '/library', icon: FolderOpen },
   { key: 'prompts', label: '提示词', path: '/prompts', icon: BookOpen },
-  { key: 'outlines', label: '素材', path: '/materials', icon: ListTree },
-  { key: 'characters', label: '角色卡', path: '/characters', icon: Users },
+  { key: 'authors', label: '作者', path: '/authors', icon: UserRound },
   { key: 'documents', label: '文档库', path: '/documents', icon: LibraryBig },
   { key: 'models', label: '模型', path: '/models', icon: Bot },
 ] as const;

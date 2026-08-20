@@ -9,6 +9,7 @@ from rusty.db import default_database_path, session
 
 
 PROMPT_KINDS = {"master", "workflow_task", "common_task"}
+WORKFLOW_KEYS = {"plot_adjust", "expansion", "reimagine"}
 
 
 @dataclass(frozen=True)
@@ -62,6 +63,16 @@ class PromptDefinitionService:
                 ORDER BY is_default DESC, updated_at DESC, id DESC LIMIT 1
                 """,
                 (kind, workflow_key, task_key),
+            ).fetchone()
+        return self._from_row(row) if row is not None else None
+
+    def get_system_prompt(self) -> PromptDefinition | None:
+        """Return the single active system prompt used by every chapter-workflow AI call."""
+        with session(self.database_path) as connection:
+            row = connection.execute(
+                """SELECT * FROM prompt_definitions
+                   WHERE kind='master' AND is_default=1 AND deleted_at IS NULL
+                   ORDER BY updated_at DESC,id DESC LIMIT 1"""
             ).fetchone()
         return self._from_row(row) if row is not None else None
 
@@ -218,6 +229,8 @@ class PromptDefinitionService:
                 raise ValueError("Common task prompts require task_key.")
         elif workflow_key is None or task_key is None:
             raise ValueError("Workflow task prompts require workflow_key and task_key.")
+        elif workflow_key not in WORKFLOW_KEYS:
+            raise ValueError("workflow_key must be plot_adjust, expansion, or reimagine.")
         name = str(value.get("name") or "").strip()
         if not name:
             raise ValueError("Prompt name is required.")

@@ -28,7 +28,7 @@ from rusty.services.ai_client import (
     AIReadTimeoutError,
     AIResponseParseError,
 )
-from rusty.services.anchor_service import AnchorService, CharacterCard, OutlineTemplate
+from rusty.services.anchor_service import AnchorService, OutlineTemplate
 from rusty.services.material_service import Material, MaterialService, compile_material_ai_prompt
 from rusty.services.analysis_service import AnalysisService
 from rusty.services.chapter_split_service import ChapterSplitService
@@ -52,9 +52,8 @@ from rusty.services.project_service import ProjectService
 from rusty.services.prompt_service import PromptService
 from rusty.services.prompt_definition_service import PromptDefinitionService
 from rusty.services.context_service import ContextService
-from rusty.services.creative_workflow_service import CreativeWorkflowService
+from rusty.services.creative_workflow_service import CreativeWorkflowService, WorkflowSourceConflict
 from rusty.services.rewrite_workflow_service import RewriteWorkflowService
-from rusty.services.resource_analysis_service import ResourceAnalysisService
 from rusty.services.scene_service import SceneService
 from rusty.services.scene_rewrite_orchestrator import SceneRewriteOrchestrator
 from rusty.services.scene_boundary_ai_service import SceneBoundaryAIService
@@ -282,7 +281,6 @@ def create_app(
     context_service = ContextService(db_path)
     creative_workflow_service = CreativeWorkflowService(db_path, ai_client=workflow_ai_client)
     rewrite_workflow_service = RewriteWorkflowService(db_path)
-    resource_analysis_service = ResourceAnalysisService(db_path)
     scene_rewrite_orchestrator = SceneRewriteOrchestrator(db_path)
     branch_service = BranchService(db_path)
     plot_generation_orchestrator = PlotGenerationOrchestrator(
@@ -320,6 +318,10 @@ def create_app(
                 "details": detail.get("details"),
             },
         )
+
+    @app.exception_handler(WorkflowSourceConflict)
+    async def workflow_source_conflict_handler(_: Request, exc: WorkflowSourceConflict) -> JSONResponse:
+        return JSONResponse(status_code=409, content={"code": "workflow_source_changed", "message": str(exc)})
 
     @app.exception_handler(ValueError)
     async def value_error_handler(_: Request, exc: ValueError) -> JSONResponse:
@@ -1288,6 +1290,89 @@ def create_app(
         _require_scene(scene_service, scene_id)
         return creative_workflow_service.confirm_scene(scene_id)
 
+    @app.get("/api/chapters/{chapter_id}/workflow", response_model=dict[str, Any])
+    def get_chapter_workflow(chapter_id: int) -> dict[str, Any]:
+        _require_existing_chapter(project_service, chapter_id)
+        return creative_workflow_service.get_chapter_workflow(chapter_id)
+
+    @app.get("/api/chapters/{chapter_id}/workflow/summary", response_model=dict[str, Any] | None)
+    def get_chapter_workflow_summary(chapter_id: int) -> dict[str, Any] | None:
+        _require_existing_chapter(project_service, chapter_id)
+        return creative_workflow_service.get_chapter_summary(chapter_id)
+
+    @app.post("/api/chapters/{chapter_id}/workflow/summary/run", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def run_chapter_workflow_summary(chapter_id: int) -> dict[str, Any]:
+        _require_existing_chapter(project_service, chapter_id)
+        return creative_workflow_service.run_chapter_summary(chapter_id)
+
+    @app.put("/api/chapters/{chapter_id}/workflow/summary", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def save_chapter_workflow_summary(chapter_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        _require_existing_chapter(project_service, chapter_id)
+        return creative_workflow_service.save_chapter_summary(chapter_id, payload)
+
+    @app.put("/api/chapters/{chapter_id}/workflow/direction", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def save_chapter_workflow_direction(chapter_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        _require_existing_chapter(project_service, chapter_id)
+        return creative_workflow_service.save_chapter_direction(
+            chapter_id,
+            strategy=str(payload.get("strategy") or ""),
+            user_instruction=str(payload.get("user_instruction") or ""),
+        )
+
+    @app.get("/api/chapters/{chapter_id}/workflow/special-analysis", response_model=dict[str, Any] | None)
+    def get_chapter_workflow_special_analysis(chapter_id: int) -> dict[str, Any] | None:
+        _require_existing_chapter(project_service, chapter_id)
+        return creative_workflow_service.get_special_analysis(chapter_id)
+
+    @app.post("/api/chapters/{chapter_id}/workflow/special-analysis/run", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def run_chapter_workflow_special_analysis(chapter_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        _require_existing_chapter(project_service, chapter_id)
+        return creative_workflow_service.run_special_analysis(
+            chapter_id, outline_detail_level=payload.get("outline_detail_level")
+        )
+
+    @app.put("/api/chapters/{chapter_id}/workflow/special-analysis", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def save_chapter_workflow_special_analysis(chapter_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        _require_existing_chapter(project_service, chapter_id)
+        return creative_workflow_service.save_special_analysis(chapter_id, payload)
+
+    @app.get("/api/chapters/{chapter_id}/workflow/style", response_model=dict[str, Any] | None)
+    def get_chapter_workflow_style(chapter_id: int) -> dict[str, Any] | None:
+        _require_existing_chapter(project_service, chapter_id)
+        return creative_workflow_service.get_style(chapter_id)
+
+    @app.post("/api/chapters/{chapter_id}/workflow/style/resolve", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def resolve_chapter_workflow_style(chapter_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        _require_existing_chapter(project_service, chapter_id)
+        material_id = payload.get("author_style_material_id")
+        return creative_workflow_service.resolve_style(
+            chapter_id,
+            source_scope=str(payload.get("source_scope") or "document"),
+            author_style_material_id=int(material_id) if material_id is not None else None,
+        )
+
+    @app.get("/api/chapters/{chapter_id}/workflow/writing", response_model=dict[str, Any] | None)
+    def get_chapter_workflow_writing(chapter_id: int) -> dict[str, Any] | None:
+        _require_existing_chapter(project_service, chapter_id)
+        return creative_workflow_service.get_writing(chapter_id)
+
+    @app.post("/api/chapters/{chapter_id}/workflow/writing/generate", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def generate_chapter_workflow_writing(chapter_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        _require_existing_chapter(project_service, chapter_id)
+        return creative_workflow_service.generate_chapter(
+            chapter_id, replace_existing=bool(payload.get("replace_existing", False))
+        )
+
+    @app.put("/api/chapters/{chapter_id}/workflow/writing", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def save_chapter_workflow_writing(chapter_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        _require_existing_chapter(project_service, chapter_id)
+        return creative_workflow_service.save_writing(chapter_id, str(payload.get("result_text") or ""))
+
+    @app.post("/api/chapters/{chapter_id}/workflow/confirm", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
+    def confirm_chapter_workflow(chapter_id: int) -> dict[str, Any]:
+        _require_existing_chapter(project_service, chapter_id)
+        return creative_workflow_service.confirm_chapter(chapter_id)
+
     @app.get("/api/projects/{project_id}/export-plan", response_model=list[ExportPlanItemOut])
     def get_project_export_plan(project_id: int) -> list[ExportPlanItemOut]:
         _require_project(project_service, project_id)
@@ -1572,7 +1657,6 @@ def create_app(
             )
         if payload.confirm:
             scenes = scene_service.confirm_boundaries(chapter_id)
-        creative_workflow_service.reconcile_chapter_scenes(chapter_id)
         return [scene.__dict__ for scene in scenes]
 
     @app.post(
@@ -1589,7 +1673,6 @@ def create_app(
             chapter_id,
             [item.model_dump() for item in payload.boundaries],
         )
-        creative_workflow_service.reconcile_chapter_scenes(chapter_id)
         return [scene.__dict__ for scene in scenes]
 
     @app.post(
@@ -1601,7 +1684,6 @@ def create_app(
         chapter = _require_existing_chapter(project_service, chapter_id)
         _require_project(project_service, chapter.project_id)
         scenes = scene_service.confirm_boundaries(chapter_id)
-        creative_workflow_service.reconcile_chapter_scenes(chapter_id)
         return [scene.__dict__ for scene in scenes]
 
     @app.get("/api/scenes/{scene_id}/facts", response_model=dict[str, Any])
@@ -1636,7 +1718,6 @@ def create_app(
             scene_id,
             payload.character_name,
             payload.state,
-            character_card_id=payload.character_card_id,
         )
 
     @app.post(
@@ -3083,6 +3164,43 @@ def create_app(
         _require_project(project_service, project_id)
         anchor_service.unbind_project_character(project_id, card_id)
         return list_project_characters(project_id)
+
+    removed_character_prefixes = (
+        "/api/characters",
+        "/api/character-categories",
+        "/api/character-tags",
+        "/api/character-projects",
+        "/api/character-extraction",
+        "/api/selection/characters",
+    )
+    removed_scene_creative_parts = (
+        "/creative-workflow", "/preanalysis", "/creative-intent",
+        "/strategy-analysis", "/target-design", "/writing-plan",
+        "/current-draft", "/review-diff", "/review-marks", "/review/",
+    )
+    app.router.routes = [
+        route for route in app.router.routes
+        if not str(getattr(route, "path", "")).startswith(removed_character_prefixes)
+        and "/character-modification-analysis" not in str(getattr(route, "path", ""))
+        and not (
+            str(getattr(route, "path", "")).startswith("/api/scenes/")
+            and (
+                any(part in str(getattr(route, "path", "")) for part in removed_scene_creative_parts)
+                or str(getattr(route, "path", "")).endswith("/confirm")
+            )
+        )
+        and str(getattr(route, "path", "")) not in {
+            "/api/projects/{project_id}/creative-workflow",
+            "/api/chapters/{chapter_id}/creative-workflow",
+            "/api/chapters/{chapter_id}/creative-scene-states",
+        }
+        and str(getattr(route, "path", "")) != "/api/scenes/{scene_id}/workflow/start"
+        and not str(getattr(route, "path", "")).startswith("/api/scene-workflows/")
+        and not (
+            str(getattr(route, "path", "")).startswith("/api/projects/")
+            and "/characters" in str(getattr(route, "path", ""))
+        )
+    ]
 
     return app
 

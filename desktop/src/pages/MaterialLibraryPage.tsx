@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Clock, Folder, Plus, Search, Settings, Sparkles, Trash2, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, BookOpenText, CircleGauge, Clock, CloudSun, Folder, MessageCircle, Plus, Search, Settings, Sparkles, TextQuote, Trash2, X } from 'lucide-react';
+import coverBlue from '../assets/author-cover-blue.png';
+import coverIvory from '../assets/author-cover-ivory.png';
+import coverSage from '../assets/author-cover-sage.png';
 import {
   applyAuthorStyleDimension,
   applyMaterialExtraction,
@@ -36,18 +39,12 @@ import { useAutoDismiss } from '../hooks/useAutoDismiss';
 type Shelf = { kind: 'all' | 'recent' } | { kind: 'category'; categoryId: number };
 type Launch = { materialType: MaterialType; selectedText: string; sourceMetadata?: Record<string, unknown> };
 
-const TYPE_LABEL: Record<MaterialType, string> = {
-  plot_skeleton: '剧情骨架',
-  author_style: '作者风格',
-};
+const TYPE_LABEL = '作者风格';
+const MATERIAL_TYPE: MaterialType = 'author_style';
+const MATERIAL_TASK = 'author_style_extraction' as const;
 
-const TASK_BY_TYPE = {
-  plot_skeleton: 'plot_skeleton_extraction',
-  author_style: 'author_style_extraction',
-} as const;
-
-export function MaterialLibraryPage() {
-  const [type, setType] = useState<MaterialType>('plot_skeleton');
+export function AuthorLibraryPage() {
+  const type = MATERIAL_TYPE;
   const [shelf, setShelf] = useState<Shelf>({ kind: 'all' });
   const [query, setQuery] = useState('');
   const [materials, setMaterials] = useState<Material[]>([]);
@@ -73,7 +70,7 @@ export function MaterialLibraryPage() {
       setCategories(categoryRows);
       setSelectedId((current) => {
         const wanted = preferred === undefined ? current : preferred;
-        return materialRows.some((item) => item.id === wanted) ? wanted : null;
+        return materialRows.some((item) => item.id === wanted) ? wanted : materialRows[0]?.id ?? null;
       });
     } catch (reason) {
       setError(errorMessage(reason));
@@ -86,7 +83,6 @@ export function MaterialLibraryPage() {
   useEffect(() => {
     const incoming = window.history.state?.materialExtraction as Launch | undefined;
     if (!incoming?.selectedText || !incoming.materialType) return;
-    setType(incoming.materialType);
     setShelf({ kind: 'all' });
     setLaunch(incoming);
     setCreateOpen(true);
@@ -109,13 +105,6 @@ export function MaterialLibraryPage() {
   }, [materials, query, shelf, type]);
   const selected = materials.find((item) => item.id === selectedId && item.material_type === type) ?? null;
 
-  function switchType() {
-    setType((current) => current === 'plot_skeleton' ? 'author_style' : 'plot_skeleton');
-    setShelf({ kind: 'all' });
-    setSelectedId(null);
-    setQuery('');
-  }
-
   async function run(action: () => Promise<void>) {
     if (busy) return;
     setBusy(true);
@@ -124,7 +113,7 @@ export function MaterialLibraryPage() {
   }
 
   async function addCategory() {
-    const name = window.prompt(`新建${TYPE_LABEL[type]}分类`)?.trim();
+    const name = window.prompt(`新建${TYPE_LABEL}分类`)?.trim();
     if (!name) return;
     await run(async () => {
       const category = await createMaterialCategory(type, name);
@@ -135,17 +124,12 @@ export function MaterialLibraryPage() {
 
   return (
     <div className="document-library-page material-library-page">
-      <TopBar title="素材库" actions={(
+      <TopBar title="作者" actions={(
         <>
-          <div className="material-type-switcher" aria-label="素材类型切换">
-            <button aria-label="切换素材类型（左）" onClick={switchType} type="button"><ArrowLeft size={16} /></button>
-            <strong>{TYPE_LABEL[type]}</strong>
-            <button aria-label="切换素材类型（右）" onClick={switchType} type="button"><ArrowRight size={16} /></button>
-          </div>
           <PrimaryButton disabled={busy} onClick={() => { setLaunch(null); setCreateOpen(true); }}>
-            <Plus size={16} />新建{TYPE_LABEL[type]}
+            <Plus size={16} />新建作者
           </PrimaryButton>
-          <SecondaryButton aria-label={`${TYPE_LABEL[type]}提取设置`} className="icon-only" onClick={() => setSettingsOpen(true)}>
+          <SecondaryButton aria-label="作者风格提取设置" className="icon-only" onClick={() => setSettingsOpen(true)}>
             <Settings size={16} />
           </SecondaryButton>
         </>
@@ -155,7 +139,7 @@ export function MaterialLibraryPage() {
 
       <div className="document-library-layout material-browser-layout material-library-unified">
         <aside className="document-tag-panel material-library-sidebar">
-          <nav aria-label={`${TYPE_LABEL[type]}分类`}>
+          <nav aria-label="作者风格分类">
             <LibrarySidebarItem active={shelf.kind === 'all'} count={materials.filter((item) => item.material_type === type).length} icon={<Folder size={15} />} label="全部内容" onClick={() => setShelf({ kind: 'all' })} />
             <LibrarySidebarItem active={shelf.kind === 'recent'} count={materials.filter((item) => item.material_type === type && isRecent(item.created_at)).length} icon={<Clock size={15} />} label="最近导入" onClick={() => setShelf({ kind: 'recent' })} />
             <LibrarySidebarSectionTitle action={<button aria-label="新建分类" className="document-add-tag" onClick={() => void addCategory()} type="button"><Plus size={14} /></button>}>
@@ -178,69 +162,64 @@ export function MaterialLibraryPage() {
         <main className="document-shelf-panel material-browser-shelf">
           <header>
             <label className="search-field document-search material-library-search">
-              <Search size={15} /><span className="sr-only">搜索素材</span>
-              <input onChange={(event) => setQuery(event.target.value)} placeholder={`搜索${TYPE_LABEL[type]}、分类或标签`} type="search" value={query} />
+              <Search size={15} /><span className="sr-only">搜索作者</span>
+              <input onChange={(event) => setQuery(event.target.value)} placeholder="搜索作者、来源作品、分类或标签" type="search" value={query} />
             </label>
           </header>
-          {loading ? <LibraryEmptyState title="正在读取素材库…" /> : visible.length ? (
+          {loading ? <LibraryEmptyState title="正在读取作者档案…" /> : visible.length ? (
             <div className="document-shelf-scroll">
-              <div className="document-shelf-grid material-book-grid" aria-label={`${TYPE_LABEL[type]}列表`}>
+              <div className="author-profile-list" aria-label="作者列表">
                 {visible.map((material) => (
                   <button
                     aria-pressed={selectedId === material.id}
-                    className={`document-book ${selectedId === material.id ? 'selected' : ''}`}
+                    className={`author-profile-row ${selectedId === material.id ? 'selected' : ''}`}
                     key={material.id}
                     onClick={() => setSelectedId(material.id)}
                     onDoubleClick={() => setEditing(material)}
                     type="button"
                   >
-                    <MaterialBookCover material={material} />
-                    <strong className="document-book-title">{material.name}</strong>
+                    <AuthorCover author={authorProfile(material).name} id={material.id} />
+                    <span className="author-profile-copy"><strong>{authorProfile(material).name}</strong><small>{authorProfile(material).introduction || authorProfile(material).overallStyle || '尚未填写作者简介'}</small><em>添加时间：{formatDate(material.created_at)}</em></span>
                   </button>
                 ))}
               </div>
             </div>
           ) : (
-            <LibraryEmptyState action={<PrimaryButton onClick={() => setCreateOpen(true)}><Plus size={16} />新建{TYPE_LABEL[type]}</PrimaryButton>} description="可粘贴文本、使用文档选区或导入文本文件后由 AI 提取。" title={`暂无${TYPE_LABEL[type]}`} />
+            <LibraryEmptyState action={<PrimaryButton onClick={() => setCreateOpen(true)}><Plus size={16} />新建作者</PrimaryButton>} description="为一位作者录入来源作品和文本样本，AI 会整理整体风格与多个分析维度。" title="暂无作者" />
           )}
         </main>
 
         <aside className="document-detail-panel material-detail-panel">
-          <header><h2>素材详情</h2></header>
+          <header><h2>作者档案</h2></header>
           {selected ? (
             <>
               <div className="document-detail-scroll">
-                <section className="document-detail-identity">
-                  <MaterialBookCover compact material={selected} />
-                  <div><h3>{selected.name}</h3><p>{TYPE_LABEL[selected.material_type]}</p></div>
-                </section>
-                <section><div className="document-detail-heading"><span>概览</span></div><p className="material-detail-copy">{selected.description || contentSummary(selected)}</p></section>
+                <section className="document-detail-identity author-detail-identity"><div><h3>{authorProfile(selected).name}</h3><p>{selected.analysis_status === 'analyzed' ? '作者档案已分析' : '作者档案待分析'}</p></div></section>
+                <section><div className="document-detail-heading"><span>简介</span></div><p className="material-detail-copy">{authorProfile(selected).introduction || '尚未填写简介'}</p></section>
+                <section><div className="document-detail-heading"><span>来源作品</span></div><div className="author-work-list">{authorProfile(selected).works.length ? authorProfile(selected).works.map((work) => <span key={work}><BookOpenText size={13} />{work}</span>) : <span>尚未填写</span>}</div></section>
+                <section><div className="document-detail-heading"><span>整体风格</span></div><p className="material-detail-copy">{authorProfile(selected).overallStyle || '尚未形成整体风格总结'}</p></section>
+                <AuthorDimensionTable content={selected.content} />
                 <section><div className="document-detail-heading"><span>标签</span></div><div className="document-detail-badges">{selected.tags.length ? selected.tags.map((name) => <span key={name}>{name}</span>) : <span>无标签</span>}</div></section>
-                {selected.material_type === 'author_style' && 'legacy_scene_reference' in selected.content ? <div className="inline-alert">该素材来自旧版素材，可继续编辑或使用来源文本重新提取作者风格。</div> : null}
+                {selected.material_type === 'author_style' && 'legacy_scene_reference' in selected.content ? <div className="inline-alert">该档案来自旧版数据，可继续编辑或使用来源文本重新分析。</div> : null}
               </div>
               <footer className="library-detail-footer">
                 <SecondaryButton onClick={() => setEditing(selected)}>编辑</SecondaryButton>
                 <DangerButton onClick={() => void run(async () => { if (!window.confirm(`确认删除“${selected.name}”？`)) return; await deleteMaterial(selected.id); await load(null); })}>删除</DangerButton>
               </footer>
             </>
-          ) : <LibraryEmptyState description="单击素材查看详情，双击进入编辑。" title="未选择素材" />}
+          ) : <LibraryEmptyState description="单击作者查看档案，双击进入编辑。" title="未选择作者" />}
         </aside>
       </div>
 
-      {createOpen ? <CreateMaterialDialog busy={busy} categories={currentCategories} launch={launch} materialType={type} onClose={() => setCreateOpen(false)} onError={setError} onSaved={async (id) => { setCreateOpen(false); setLaunch(null); await load(id); setMessage(`${TYPE_LABEL[type]}已保存。`); }} /> : null}
+      {createOpen ? <CreateMaterialDialog busy={busy} categories={currentCategories} launch={launch} materialType={type} onClose={() => setCreateOpen(false)} onError={setError} onSaved={async (id) => { setCreateOpen(false); setLaunch(null); await load(id); setMessage('作者风格已保存。'); }} /> : null}
       {settingsOpen ? <MaterialSettingsDialog materialType={type} onClose={() => setSettingsOpen(false)} onError={setError} onSaved={() => setMessage('提取设置已保存，并成为新的默认配置。')} /> : null}
-      {editing ? <MaterialEditor material={editing} onClose={() => setEditing(null)} onError={setError} onSaved={async (id) => { await load(id); const updated = (await getMaterials()).find((item) => item.id === id) ?? null; setEditing(updated); setMessage('素材已保存。'); }} /> : null}
+      {editing ? <MaterialEditor material={editing} onClose={() => setEditing(null)} onError={setError} onSaved={async (id) => { await load(id); const updated = (await getMaterials()).find((item) => item.id === id) ?? null; setEditing(updated); setMessage('作者档案已保存。'); }} /> : null}
       {categoryMenu ? <LibraryContextMenu actions={[
         { label: '重命名', onSelect: () => { const name = window.prompt('重命名分类', categoryMenu.category.name)?.trim(); if (name) void run(async () => { await renameMaterialCategory(categoryMenu.category.id, name); await load(selectedId); }); } },
-        { danger: true, label: '删除分类', onSelect: () => { if (!window.confirm(`确认删除分类“${categoryMenu.category.name}”？素材本身不会被删除。`)) return; void run(async () => { await deleteMaterialCategory(categoryMenu.category.id); if (shelf.kind === 'category' && shelf.categoryId === categoryMenu.category.id) setShelf({ kind: 'all' }); await load(selectedId); }); } },
+        { danger: true, label: '删除分类', onSelect: () => { if (!window.confirm(`确认删除分类“${categoryMenu.category.name}”？作者档案本身不会被删除。`)) return; void run(async () => { await deleteMaterialCategory(categoryMenu.category.id); if (shelf.kind === 'category' && shelf.categoryId === categoryMenu.category.id) setShelf({ kind: 'all' }); await load(selectedId); }); } },
       ]} label={`${categoryMenu.category.name} 分类操作`} onClose={() => setCategoryMenu(null)} x={categoryMenu.x} y={categoryMenu.y} /> : null}
     </div>
   );
-}
-
-function MaterialBookCover({ compact = false, material }: { compact?: boolean; material: Material }) {
-  const palette = ['indigo', 'terracotta', 'jade', 'slate', 'ochre'][material.id % 5];
-  return <span className={`default-book-cover palette-${palette} ${compact ? 'compact' : ''}`}><span className="default-book-spine" /><span className="default-book-brand">RUSTY MATERIAL</span><strong>{material.name}</strong><span className="default-book-author">{material.material_type === 'author_style' ? '作者风格档案' : '可复用剧情结构'}</span></span>;
 }
 
 function CreateMaterialDialog({ busy, categories, launch, materialType, onClose, onError, onSaved }: {
@@ -248,15 +227,18 @@ function CreateMaterialDialog({ busy, categories, launch, materialType, onClose,
   onClose: () => void; onError: (value: string) => void; onSaved: (id: number) => Promise<void>;
 }) {
   const [name, setName] = useState('');
+  const [sourceWorks, setSourceWorks] = useState('');
   const [text, setText] = useState(launch?.selectedText ?? '');
   const [working, setWorking] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   async function extract() {
+    if (!name.trim()) { onError('请填写作者姓名。'); return; }
+    if (!sourceWorks.trim()) { onError('请至少填写一部来源作品。'); return; }
     if (!text.trim()) { onError('请输入或选择用于分析的来源文本。'); return; }
     setWorking(true);
     try {
       const result = await previewMaterialExtraction({
-        task_type: TASK_BY_TYPE[materialType], name: name.trim() || null, sample_text: text,
+        task_type: MATERIAL_TASK, name: name.trim() || null, sample_text: text,
         source_metadata: launch?.sourceMetadata ?? { source_type: 'paste' },
       });
       const candidate = result.candidates[0];
@@ -266,17 +248,18 @@ function CreateMaterialDialog({ busy, categories, launch, materialType, onClose,
       const applied = await applyMaterialExtraction({
         preview_token: result.preview_token,
         selected_candidate_ids: [candidate.candidate_id],
-        candidates: [{ ...candidate, name: finalName, selected: true, category_ids: [] }],
+        candidates: [{ ...candidate, name: finalName, description: candidate.description || '', content: { ...candidate.content, author_name: finalName, introduction: candidate.description || '', source_works: lines(sourceWorks), overall_style: String(candidate.content.overall_style ?? candidate.content.summary ?? '') }, selected: true, category_ids: [] }],
       });
       const created = applied.created[0]?.material_id;
       if (!created) throw new Error(applied.errors[0]?.error || '保存失败。');
       await onSaved(created);
     } catch (reason) { onError(errorMessage(reason)); } finally { setWorking(false); }
   }
-  return <LibraryDialog className="material-create-dialog" footer={<><SecondaryButton onClick={onClose}>取消</SecondaryButton><PrimaryButton disabled={busy || working || !text.trim()} onClick={() => void extract()}><Sparkles size={15} />AI 提取</PrimaryButton></>} onClose={onClose} title={`新建${TYPE_LABEL[materialType]}`}>
+  return <LibraryDialog className="material-create-dialog" footer={<><SecondaryButton onClick={onClose}>取消</SecondaryButton><PrimaryButton disabled={busy || working || !name.trim() || !sourceWorks.trim() || !text.trim()} onClick={() => void extract()}><Sparkles size={15} />分析并建档</PrimaryButton></>} onClose={onClose} subtitle="一个条目对应一位作者" title="新建作者">
     <div className="library-form-grid">
-      <label className="wide"><span>名称</span><input autoFocus value={name} onChange={(event) => setName(event.target.value)} /></label>
-      <label className="wide"><span>来源文本</span><textarea className="tall" maxLength={50000} value={text} onChange={(event) => setText(event.target.value)} /></label>
+      <label><span>作者姓名</span><input autoFocus value={name} onChange={(event) => setName(event.target.value)} /></label>
+      <label><span>来源作品（每行一部）</span><textarea value={sourceWorks} onChange={(event) => setSourceWorks(event.target.value)} /></label>
+      <label className="wide"><span>作品文本样本</span><textarea className="tall" maxLength={50000} value={text} onChange={(event) => setText(event.target.value)} /></label>
       <div className="wide material-source-options"><SecondaryButton onClick={() => fileRef.current?.click()}>选择文本文件</SecondaryButton><input ref={fileRef} hidden accept=".txt,.md,text/plain,text/markdown" type="file" onChange={(event) => { const file = event.target.files?.[0]; if (file) void file.text().then(setText); }} /></div>
     </div>
   </LibraryDialog>;
@@ -288,7 +271,7 @@ function MaterialSettingsDialog({ materialType, onClose, onError, onSaved }: { m
   const [busy, setBusy] = useState(true);
   const importRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
-    void Promise.all([getMaterialAISettings(TASK_BY_TYPE[materialType]), getModels()]).then(([value, modelRows]) => { setSettings(value as MaterialAISettings); setModels(modelRows); }).catch((reason) => onError(errorMessage(reason))).finally(() => setBusy(false));
+    void Promise.all([getMaterialAISettings(MATERIAL_TASK), getModels()]).then(([value, modelRows]) => { setSettings(value as MaterialAISettings); setModels(modelRows); }).catch((reason) => onError(errorMessage(reason))).finally(() => setBusy(false));
   }, [materialType, onError]);
   async function save(next = settings) {
     if (!next) return;
@@ -309,9 +292,9 @@ function MaterialSettingsDialog({ materialType, onClose, onError, onSaved }: { m
       anchor.href = url; anchor.download = 'author-style-extraction.json'; anchor.click(); URL.revokeObjectURL(url);
     } catch (reason) { onError(errorMessage(reason)); }
   }
-  if (!settings) return <LibraryDialog footer={<SecondaryButton onClick={onClose}>关闭</SecondaryButton>} onClose={onClose} title={`${TYPE_LABEL[materialType]}提取设置`}><LibraryEmptyState title={busy ? '正在加载设置…' : '设置加载失败'} /></LibraryDialog>;
+  if (!settings) return <LibraryDialog footer={<SecondaryButton onClick={onClose}>关闭</SecondaryButton>} onClose={onClose} title="作者风格提取设置"><LibraryEmptyState title={busy ? '正在加载设置…' : '设置加载失败'} /></LibraryDialog>;
   const patch = (value: Partial<MaterialAISettings>) => setSettings({ ...settings, ...value, prompt_preview: compilePreview({ ...settings, ...value }) });
-  return <LibraryDialog className="material-settings-dialog" footer={<><SecondaryButton onClick={onClose}>关闭</SecondaryButton><PrimaryButton disabled={busy} onClick={() => void save()}>保存为当前默认配置</PrimaryButton></>} onClose={onClose} subtitle="当前保存内容就是以后提取使用的唯一默认配置" title={`${TYPE_LABEL[materialType]}提取设置`}>
+  return <LibraryDialog className="material-settings-dialog" footer={<><SecondaryButton onClick={onClose}>关闭</SecondaryButton><PrimaryButton disabled={busy} onClick={() => void save()}>保存为当前默认配置</PrimaryButton></>} onClose={onClose} subtitle="当前保存内容就是以后提取使用的唯一默认配置" title="作者风格提取设置">
     <div className="material-settings-grid">
       <section className="library-form-grid">
         <label><span>默认模型</span><select value={settings.model_id ?? ''} onChange={(event) => patch({ model_id: event.target.value ? Number(event.target.value) : null })}><option value="">使用全局默认模型</option>{models.map((model) => <option key={model.id} value={model.id}>{model.display_name}</option>)}</select></label>
@@ -333,14 +316,20 @@ function DimensionSettings({ dimensions, onChange }: { dimensions: MaterialAIDim
 }
 
 function MaterialEditor({ material, onClose, onError, onSaved }: { material: Material; onClose: () => void; onError: (value: string) => void; onSaved: (id: number) => Promise<void> }) {
-  const [name, setName] = useState(material.name);
-  const [description, setDescription] = useState(material.description);
+  const profile = authorProfile(material);
+  const [name, setName] = useState(profile.name);
+  const [description, setDescription] = useState(profile.introduction);
+  const [sourceWorks, setSourceWorks] = useState(profile.works.join('\n'));
+  const [overallStyle, setOverallStyle] = useState(profile.overallStyle);
   const [rawText, setRawText] = useState(material.raw_text);
   const [content, setContent] = useState<Record<string, unknown>>(material.content);
   const [busy, setBusy] = useState(false);
+  function profileContent() {
+    return { ...content, author_name: name.trim(), introduction: description, source_works: lines(sourceWorks), overall_style: overallStyle, summary: overallStyle };
+  }
   async function save() {
     setBusy(true);
-    try { await updateMaterial(material.id, { name: name.trim(), description, detail_level: material.detail_level, raw_text: rawText, content, analysis_status: material.analysis_status, timeline_start_chapter: material.timeline_start_chapter, timeline_end_chapter: material.timeline_end_chapter, sort_order: material.sort_order }); await onSaved(material.id); }
+    try { await updateMaterial(material.id, { name: name.trim(), description, detail_level: material.detail_level, raw_text: rawText, content: profileContent(), analysis_status: material.analysis_status, timeline_start_chapter: material.timeline_start_chapter, timeline_end_chapter: material.timeline_end_chapter, sort_order: material.sort_order }); await onSaved(material.id); }
     catch (reason) { onError(errorMessage(reason)); } finally { setBusy(false); }
   }
   async function extractDimension(dimension: AuthorDimension) {
@@ -349,7 +338,7 @@ function MaterialEditor({ material, onClose, onError, onSaved }: { material: Mat
     }
     setBusy(true);
     try {
-      await updateMaterial(material.id, { name: name.trim(), description, detail_level: material.detail_level, raw_text: rawText, content, analysis_status: material.analysis_status, timeline_start_chapter: material.timeline_start_chapter, timeline_end_chapter: material.timeline_end_chapter, sort_order: material.sort_order });
+      await updateMaterial(material.id, { name: name.trim(), description, detail_level: material.detail_level, raw_text: rawText, content: profileContent(), analysis_status: material.analysis_status, timeline_start_chapter: material.timeline_start_chapter, timeline_end_chapter: material.timeline_end_chapter, sort_order: material.sort_order });
       const preview = await previewAuthorStyleDimension(material.id, { dimension_id: dimension.id, dimension_name: dimension.name, dimension_requirement: dimension.requirement });
       const summary = `风格分析：\n${preview.analysis}\n\n具体特征：\n${preview.features.join('\n')}\n\n原文实例：\n${preview.examples.join('\n')}\n\n确认应用到当前维度？`;
       if (!window.confirm(summary)) return;
@@ -357,9 +346,9 @@ function MaterialEditor({ material, onClose, onError, onSaved }: { material: Mat
       setContent(updated.content); await onSaved(material.id);
     } catch (reason) { onError(errorMessage(reason)); } finally { setBusy(false); }
   }
-  return <LibraryDialog className="author-style-editor-dialog" footer={<><SecondaryButton onClick={onClose}>关闭</SecondaryButton><PrimaryButton disabled={busy || !name.trim()} onClick={() => void save()}>保存</PrimaryButton></>} onClose={onClose} subtitle={TYPE_LABEL[material.material_type]} title={material.material_type === 'author_style' ? '作者风格编辑器' : '剧情骨架编辑器'}>
-    <div className="library-form-grid"><label><span>名称</span><input value={name} onChange={(event) => setName(event.target.value)} /></label><label><span>概览</span><input value={description} onChange={(event) => setDescription(event.target.value)} /></label><label className="wide"><span>原始分析文本</span><textarea value={rawText} onChange={(event) => setRawText(event.target.value)} /></label></div>
-    {material.material_type === 'author_style' ? <AuthorDimensionList content={content} editable onChange={setContent} onExtract={(dimension) => void extractDimension(dimension)} /> : <label className="material-json-editor"><span>剧情骨架结构</span><textarea value={JSON.stringify(content, null, 2)} onChange={(event) => { try { setContent(JSON.parse(event.target.value)); } catch { /* retain last valid structure */ } }} /></label>}
+  return <LibraryDialog className="author-style-editor-dialog" footer={<><SecondaryButton onClick={onClose}>关闭</SecondaryButton><PrimaryButton disabled={busy || !name.trim()} onClick={() => void save()}>保存档案</PrimaryButton></>} onClose={onClose} subtitle="一位作者对应一份档案" title="编辑作者档案">
+    <div className="library-form-grid"><label><span>作者姓名</span><input value={name} onChange={(event) => setName(event.target.value)} /></label><label><span>来源作品（每行一部）</span><textarea value={sourceWorks} onChange={(event) => setSourceWorks(event.target.value)} /></label><label className="wide"><span>作者简介</span><textarea value={description} onChange={(event) => setDescription(event.target.value)} /></label><label className="wide"><span>整体风格</span><textarea value={overallStyle} onChange={(event) => setOverallStyle(event.target.value)} /></label><label className="wide"><span>用于分析的作品原文</span><textarea value={rawText} onChange={(event) => setRawText(event.target.value)} /></label></div>
+    <AuthorDimensionList content={content} editable onChange={setContent} onExtract={(dimension) => void extractDimension(dimension)} />
   </LibraryDialog>;
 }
 
@@ -374,7 +363,28 @@ function authorDimensions(value: unknown): AuthorDimension[] { return Array.isAr
 function stringArray(value: unknown): string[] { return Array.isArray(value) ? value.map(String).filter(Boolean) : []; }
 function lines(value: string): string[] { return value.split('\n').map((item) => item.trim()).filter(Boolean); }
 function move<T>(items: T[], from: number, to: number): T[] { const copy = [...items]; const [item] = copy.splice(from, 1); if (item !== undefined) copy.splice(to, 0, item); return copy; }
-function contentSummary(material: Material): string { return String(material.content.summary ?? material.content.premise ?? material.raw_text ?? '暂无概览'); }
+function authorProfile(material: Material): { name: string; introduction: string; works: string[]; overallStyle: string } {
+  const storedWorks = stringArray(material.content.source_works);
+  const sourceLabel = String(material.source_metadata.document_title || material.source_metadata.source_filename || '').trim();
+  return {
+    name: String(material.content.author_name || material.name),
+    introduction: String(material.content.introduction || material.description || ''),
+    works: storedWorks.length ? storedWorks : sourceLabel ? [sourceLabel] : [],
+    overallStyle: String(material.content.overall_style || material.content.summary || ''),
+  };
+}
+
+function AuthorDimensionTable({ content }: { content: Record<string, unknown> }) {
+  const dimensions = authorDimensions(content.dimensions);
+  const icons = [<CircleGauge size={18} />, <TextQuote size={18} />, <MessageCircle size={18} />, <CloudSun size={18} />];
+  return <section className="author-dimension-table"><div className="document-detail-heading"><span>分析维度</span></div>{dimensions.length ? <div className="author-dimension-rows">{dimensions.map((item, index) => <article key={item.id}><div className="author-dimension-name"><span>{icons[index % icons.length]}</span><strong>{item.name}</strong></div><div className="author-dimension-analysis"><p><b>分析：</b>{item.analysis || item.requirement || '尚未分析'}</p>{item.features.length ? <p><b>特征：</b>{item.features.join('、')}</p> : null}{item.examples.length ? <p><b>来源示例：</b>{item.examples.join('；')}</p> : null}</div></article>)}</div> : <p className="material-detail-copy">尚未添加分析维度</p>}</section>;
+}
+
+function AuthorCover({ author, id }: { author: string; id: number }) {
+  const covers = [coverBlue, coverSage, coverIvory];
+  return <span className="author-cover"><img alt="" src={covers[id % covers.length]} /><strong>{author}</strong></span>;
+}
 function isRecent(value: string): boolean { const timestamp = Date.parse(value); return Number.isFinite(timestamp) && Date.now() - timestamp <= 30 * 24 * 60 * 60 * 1000; }
-function compilePreview(settings: MaterialAISettings): string { return `${settings.system_prompt}\n\n任务：\n${settings.base_instruction}\n\n分析维度：\n${settings.dimensions.map((item, index) => `${index + 1}. ${item.name}\nID: ${item.id}\n提取要求：${item.requirement}`).join('\n\n')}\n\n附加要求：\n${settings.extra_requirements || '无'}\n\n输出协议：\n${settings.task_type === 'author_style_extraction' ? '返回 summary 与按稳定 ID 对齐的 dimensions（analysis / features / examples）。' : '返回抽象剧情骨架结构。'}`; }
+function formatDate(value: string): string { const timestamp = Date.parse(value); return Number.isFinite(timestamp) ? new Date(timestamp).toLocaleDateString('zh-CN').replace(/\//g, '-') : '未知'; }
+function compilePreview(settings: MaterialAISettings): string { return `${settings.system_prompt}\n\n任务：\n${settings.base_instruction}\n\n分析维度：\n${settings.dimensions.map((item, index) => `${index + 1}. ${item.name}\nID: ${item.id}\n提取要求：${item.requirement}`).join('\n\n')}\n\n附加要求：\n${settings.extra_requirements || '无'}\n\n输出协议：\n返回 summary 与按稳定 ID 对齐的 dimensions（analysis / features / examples）。`; }
 function errorMessage(reason: unknown): string { return reason instanceof Error ? reason.message : String(reason); }

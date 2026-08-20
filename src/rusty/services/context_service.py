@@ -29,8 +29,6 @@ DEFAULT_PRIORITIES = {
     "previous_rewritten_tail": 7,
     "next_original_preview": 8,
     "foreshadowing": 9,
-    "character_context": 10,
-    "plot_skeleton_context": 11,
     "author_style_context": 12,
     "scene_style_rules": 12,
     "style_examples": 13,
@@ -44,7 +42,6 @@ STAGE_BLOCK_PRIORITIES = {
     "confirmed_skeleton": 4,
     "rewrite_plan": 4,
     "material_mappings": 5,
-    "plot_skeleton_mappings": 5,
     "author_style_context": 5,
     "candidate_rewrite_text": 3,
     "consistency_result": 4,
@@ -211,7 +208,6 @@ class ContextService:
         location: str = "",
         time_hint: str = "",
         manual_material_ids: Iterable[int] = (),
-        manual_character_ids: Iterable[int] = (),
         limit: int = 24,
     ) -> list[dict[str, Any]]:
         scene = self._require_scene(scene_id)
@@ -236,8 +232,6 @@ class ContextService:
         }
         project_material_ids = {item.id for item in project_materials}
         all_materials = self.material_service.list_materials(analysis_status="analyzed")
-        bound_characters = self.anchor_service.list_project_character_cards(scene.project_id)
-        character_by_id = {card.id: card for card in bound_characters}
         search_terms = _unique_terms(
             [
                 *keywords,
@@ -257,7 +251,6 @@ class ContextService:
             "location": location,
             "time_hint": time_hint,
             "manual_material_ids": list(manual_material_ids),
-            "manual_character_ids": list(manual_character_ids),
         }
         results: list[dict[str, Any]] = []
         for material_id, material in manual_materials.items():
@@ -277,39 +270,6 @@ class ContextService:
                     1.0,
                 )
             )
-        for character_id in manual_character_ids:
-            card = character_by_id.get(int(character_id)) or self.anchor_service.get_character_card(int(character_id))
-            if card is not None:
-                results.append(
-                    _result(
-                        "manual",
-                        "character_card",
-                        card.id,
-                        f"character:{card.name}@v{card.version}",
-                        _character_content(card),
-                        "用户手动指定角色卡，优先于自动检索。",
-                        1.0,
-                    )
-                )
-
-        for card in bound_characters:
-            if card.id in set(int(value) for value in manual_character_ids):
-                continue
-            names = [card.name, *card.aliases]
-            matched = [name for name in names if name and name in scene.original_text]
-            if matched:
-                results.append(
-                    _result(
-                        "structure",
-                        "character_card",
-                        card.id,
-                        f"character:{card.name}@v{card.version}",
-                        _character_content(card),
-                        f"当前场景出现角色名：{', '.join(matched)}。",
-                        0.96,
-                    )
-                )
-
         for material in project_materials:
             if material.id in manual_materials:
                 continue
@@ -580,7 +540,6 @@ class ContextService:
         return_anchor: dict[str, Any] | None,
         branch_id: int | None,
         user_direction: str,
-        selected_character_ids: Iterable[int] = (),
         selected_material_ids: Iterable[int] = (),
         style_profile_id: int | None = None,
         rewrite_source_snapshot: dict[str, Any] | None = None,
@@ -601,17 +560,11 @@ class ContextService:
             if return_anchor is not None
             else None
         )
-        characters = []
-        for card_id in selected_character_ids:
-            card = self.anchor_service.get_character_card(int(card_id))
-            if card is not None:
-                characters.append(card.__dict__)
         materials = []
         for material_id in selected_material_ids:
             material = self.material_service.get_material(int(material_id))
             if material is not None:
                 materials.append(material.__dict__)
-        plot_skeletons = [item for item in materials if item.get("material_type") == "plot_skeleton"]
         author_styles = [item for item in materials if item.get("material_type") == "author_style"]
         style = (
             self.style_service.get_template(style_profile_id).__dict__
@@ -630,9 +583,7 @@ class ContextService:
             "foreshadowing": facts.get("foreshadowing", []),
             "global_skeleton": start.get("global_skeleton", {}),
             "user_direction": user_direction,
-            "plot_skeleton_context": plot_skeletons,
             "author_style_context": author_styles,
-            "character_context": characters,
             "style_profile": style,
             "previous_generated_scene": start.get("previous_generated_scene", ""),
             "return_state_constraints": (
@@ -1029,14 +980,8 @@ class ContextService:
         character_states = self.scene_service.list_character_states(scene_id)
         retrieval = list(retrieval_results)
         material_context = [item for item in retrieval if item["source_type"] == "material"]
-        plot_skeleton_context = [
-            item for item in material_context if item.get("material_type") == "plot_skeleton"
-        ]
         author_style_context = [
             item for item in material_context if item.get("material_type") == "author_style"
-        ]
-        character_context = [
-            item for item in retrieval if item["source_type"] == "character_card"
         ]
         stage_values = {
             "stage_task": task,
@@ -1044,7 +989,6 @@ class ContextService:
             "confirmed_skeleton": task.get("confirmed_skeleton"),
             "rewrite_plan": task.get("rewrite_plan"),
             "material_mappings": task.get("material_mappings"),
-            "plot_skeleton_mappings": task.get("plot_skeleton_mappings"),
             "author_style_context": task.get("author_style_context"),
             "candidate_rewrite_text": task.get("candidate_rewrite_text"),
             "consistency_result": task.get("consistency_result", task.get("consistency")),
@@ -1082,8 +1026,6 @@ class ContextService:
             PromptBlock("previous_rewritten_tail", window["previous_rewritten_tail"], 7),
             PromptBlock("next_original_preview", window["next_original_preview"], 8),
             PromptBlock("foreshadowing", _json_text(facts["foreshadowing"]), 9),
-            PromptBlock("character_context", _json_text(character_context), 10),
-            PromptBlock("plot_skeleton_context", _json_text(plot_skeleton_context), 11),
             PromptBlock("author_style_context", _json_text(author_style_context), 12),
             PromptBlock("global_style_rules", _json_text((style_context or {}).get("global_rules", [])), 12),
             PromptBlock("scene_style_rules", _json_text((style_context or {}).get("scene_rules", [])), 12),
@@ -1152,13 +1094,7 @@ class ContextService:
                 )
             included_keys = {block.key for block in compiled.included_blocks()}
             for result in retrieval:
-                context_key = (
-                    ("author_style_context" if result.get("material_type") == "author_style" else "plot_skeleton_context")
-                    if result["source_type"] == "material"
-                    else "character_context"
-                    if result["source_type"] == "character_card"
-                    else "story_state"
-                )
+                context_key = "author_style_context" if result["source_type"] == "material" else "story_state"
                 if context_key in included_keys:
                     connection.execute(
                         """
@@ -1181,8 +1117,7 @@ class ContextService:
                 "global_context": {},
                 "local_context": window,
                 "story_state": facts,
-                "character_context": character_states,
-                "plot_skeleton_context": plot_skeleton_context,
+                "character_states": character_states,
                 "author_style_context": author_style_context,
                 "style_context": style_context or {},
                 "user_instruction": user_instruction,

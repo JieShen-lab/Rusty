@@ -534,7 +534,7 @@ class BackendApiTests(unittest.TestCase):
         self.assertEqual("file", extracted.json()["source_metadata"]["source_type"])
         self.assertEqual("style.txt", extracted.json()["source_metadata"]["source_file_name"])
 
-    def test_outline_and_character_anchor_api_crud_and_project_binding(self) -> None:
+    def test_outline_anchor_api_crud_and_project_binding(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)
             source = root / "book.txt"
@@ -584,82 +584,12 @@ class BackendApiTests(unittest.TestCase):
             )
             project_outline = client.get(f"/api/projects/{project_id}/outline")
 
-            alice_payload = {
-                "name": "Alice",
-                "aliases": ["A"],
-                "description": "Main role",
-                "priority": 90,
-                "is_main": True,
-                "relationship_notes": "",
-                "personality": "Direct.",
-                "speech_style": "",
-                "action_constraints": "",
-                "anti_ooc_rules": "",
-                "profile": {"role": "main"},
-                "source_metadata": {},
-                "import_metadata": {},
-            }
-            bob_payload = {
-                "name": "Bob",
-                "aliases": ["Bobby"],
-                "description": "",
-                "priority": 40,
-                "is_main": False,
-                "relationship_notes": "",
-                "personality": "",
-                "speech_style": "Plain.",
-                "action_constraints": "",
-                "anti_ooc_rules": "",
-                "profile": {},
-                "source_metadata": {},
-                "import_metadata": {},
-            }
-            rejected_character = client.post("/api/characters", json=alice_payload)
-            alice = client.post("/api/characters", json=alice_payload, headers=headers)
-            bob = client.post("/api/characters", json=bob_payload, headers=headers)
-            alice_id = alice.json()["id"]
-            bob_id = bob.json()["id"]
-            listed_characters = client.get("/api/characters")
-            copied_character = client.post(
-                f"/api/characters/{alice_id}/copy",
-                json={"target_scope": "project", "target_project_id": project_id},
-                headers=headers,
-            )
-            imported_character = client.post(
-                "/api/characters/import",
-                json={**bob_payload, "name": "Imported Bob"},
-                headers=headers,
-            )
-            updated_bob = client.post(
-                f"/api/characters/{bob_id}",
-                json={**bob_payload, "aliases": ["Robert"], "priority": 45},
-                headers=headers,
-            )
-            rejected_character_bind = client.post(
-                f"/api/projects/{project_id}/characters",
-                json={"character_card_id": alice_id, "sort_order": 1},
-            )
-            client.post(
-                f"/api/projects/{project_id}/characters",
-                json={"character_card_id": alice_id, "sort_order": 1},
-                headers=headers,
-            )
-            bound_characters = client.post(
-                f"/api/projects/{project_id}/characters",
-                json={"character_card_id": bob_id, "sort_order": 2},
-                headers=headers,
-            )
-            unbound_characters = client.post(
-                f"/api/projects/{project_id}/characters/{bob_id}/unbind",
-                headers=headers,
-            )
             unbound_outline = client.post(
                 f"/api/projects/{project_id}/outline",
                 json={"outline_template_id": None},
                 headers=headers,
             )
             deleted_outline = client.post(f"/api/outlines/{outline_id}/delete", headers=headers)
-            deleted_alice = client.post(f"/api/characters/{alice_id}/delete", headers=headers)
 
         self.assertEqual(403, rejected_outline.status_code)
         self.assertEqual(200, created_outline.status_code)
@@ -671,87 +601,8 @@ class BackendApiTests(unittest.TestCase):
         self.assertEqual(403, rejected_outline_bind.status_code)
         self.assertEqual(outline_id, bound_outline.json()["outline_template"]["id"])
         self.assertEqual(outline_id, project_outline.json()["outline_template"]["id"])
-        self.assertEqual(403, rejected_character.status_code)
-        self.assertEqual("Alice", alice.json()["name"])
-        self.assertEqual(["A"], alice.json()["aliases"])
-        self.assertEqual(2, len(listed_characters.json()))
-        self.assertEqual("project", copied_character.json()["scope"])
-        self.assertEqual(project_id, copied_character.json()["project_id"])
-        self.assertEqual(alice_id, copied_character.json()["source_character_card_id"])
-        self.assertEqual("Imported Bob", imported_character.json()["name"])
-        self.assertEqual("json_import", imported_character.json()["import_metadata"]["created_by"])
-        self.assertEqual(["Robert"], updated_bob.json()["aliases"])
-        self.assertEqual(45, updated_bob.json()["priority"])
-        self.assertEqual(403, rejected_character_bind.status_code)
-        self.assertEqual(["Alice", "Alice", "Bob"], [item["name"] for item in bound_characters.json()["character_cards"]])
-        self.assertEqual(["Alice", "Alice"], [item["name"] for item in unbound_characters.json()["character_cards"]])
         self.assertIsNone(unbound_outline.json()["outline_template"])
         self.assertEqual(200, deleted_outline.status_code)
-        self.assertEqual(200, deleted_alice.status_code)
-
-    def test_character_category_summary_and_atomic_copy_api(self) -> None:
-        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
-            root = Path(directory)
-            database_path = root / "rusty.db"
-            os.environ["RUSTY_DATABASE_PATH"] = str(database_path)
-            os.environ["RUSTY_API_TOKEN"] = "test-token"
-            api = importlib.import_module("backend.api")
-            app = api.create_app(database_path)
-            client = TestClient(app)
-            headers = {"X-Rusty-Token": "test-token"}
-            with session(database_path) as connection:
-                cursor = connection.execute(
-                    "INSERT INTO projects (name, updated_at) VALUES ('Character project', '2026-07-29 12:00:00')"
-                )
-                project_id = int(cursor.lastrowid)
-
-            category = client.post(
-                "/api/character-categories",
-                json={"name": "Lead"},
-                headers=headers,
-            )
-            tag = client.post(
-                "/api/character-tags",
-                json={"name": "Calm"},
-                headers=headers,
-            )
-            card = client.post(
-                "/api/characters",
-                json={"name": "Alice", "tag_ids": [tag.json()["id"]]},
-                headers=headers,
-            )
-            card_id = card.json()["id"]
-            assigned = client.post(
-                f"/api/characters/{card_id}/categories/{category.json()['id']}",
-                json={"selected": True},
-                headers=headers,
-            )
-            copied = client.post(
-                f"/api/characters/{card_id}/copy-to-project",
-                json={"target_project_id": project_id},
-                headers=headers,
-            )
-            project_cards = client.get(f"/api/projects/{project_id}/characters")
-            summaries = client.get("/api/character-projects/summary")
-            deleted_category = client.post(
-                f"/api/character-categories/{category.json()['id']}/delete",
-                headers=headers,
-            )
-            original_after_delete = client.get(f"/api/characters/{card_id}")
-
-        self.assertEqual(200, category.status_code)
-        self.assertEqual(["Lead"], assigned.json()["categories"])
-        self.assertEqual(["Calm"], assigned.json()["tags"])
-        self.assertEqual("project", copied.json()["scope"])
-        self.assertEqual(card_id, copied.json()["source_character_card_id"])
-        self.assertEqual([], copied.json()["categories"])
-        self.assertEqual(["Calm"], copied.json()["tags"])
-        self.assertEqual([copied.json()["id"]], [item["id"] for item in project_cards.json()["character_cards"]])
-        summary = next(item for item in summaries.json() if item["project_id"] == project_id)
-        self.assertEqual(1, summary["character_count"])
-        self.assertEqual(200, deleted_category.status_code)
-        self.assertEqual(card_id, original_after_delete.json()["id"])
-        self.assertEqual([], original_after_delete.json()["categories"])
 
     def test_anchor_extraction_api_from_text_and_file(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
@@ -791,13 +642,6 @@ class BackendApiTests(unittest.TestCase):
                 json={"name": "Seed outline", "detail_level": "detailed", "sample_text": "Alice chooses."},
                 headers=headers,
             )
-            rejected_characters = client.post("/api/characters/extract/preview", json={"target_character_name": "Alice", "source_text": "Alice protects Bob."})
-            missing_target = client.post("/api/characters/extract/preview", json={"source_text": "Alice protects Bob."}, headers=headers)
-            before_preview = len(client.get("/api/characters").json())
-            extracted_character = client.post("/api/characters/extract/preview", json={"target_character_name": "Alice", "source_text": "Alice protects Bob.", "source_metadata": {"source_type": "file", "source_file_name": "anchor.txt"}}, headers=headers)
-            after_preview = len(client.get("/api/characters").json())
-            draft = extracted_character.json()["character"]
-            saved_character = client.post("/api/characters", json={**draft, "priority": 50, "is_main": False, "relationship_notes": "Protects Bob.", "personality": "Direct.", "speech_style": "Short.", "action_constraints": "Acts quickly.", "anti_ooc_rules": "Do not make her passive.", "profile": {}, "scope": "public", "project_id": None, "custom_fields": [], "analysis_status": "analyzed", "tag_ids": []}, headers=headers)
 
         self.assertEqual(403, rejected_outline.status_code)
         self.assertEqual(400, invalid_source.status_code)
@@ -806,14 +650,6 @@ class BackendApiTests(unittest.TestCase):
         self.assertEqual("detailed", extracted_outline.json()["detail_level"])
         self.assertEqual(["choice", "fallout"], extracted_outline.json()["outline"]["fixed_plot_beats"])
         self.assertEqual("ai_outline_extraction", extracted_outline.json()["import_metadata"]["created_by"])
-        self.assertEqual(403, rejected_characters.status_code)
-        self.assertEqual(422, missing_target.status_code)
-        self.assertEqual(200, extracted_character.status_code)
-        self.assertNotIn("candidates", extracted_character.json())
-        self.assertEqual("Alice", extracted_character.json()["character"]["name"])
-        self.assertEqual(before_preview, after_preview)
-        self.assertEqual(200, saved_character.status_code)
-        self.assertEqual("Alice", saved_character.json()["name"])
 
 
 if __name__ == "__main__":

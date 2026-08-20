@@ -246,7 +246,7 @@ class PipelineServiceTests(unittest.TestCase):
         self.assertIn("RUSTY OUTPUT CONTRACT", rewrite_row[1])
         self.assertIn("rusty.native.rewrite.v1", rewrite_row[1])
         self.assertEqual(
-            {"style_template": None, "outline_template": None, "character_cards": []},
+            {"style_template": None, "outline_template": None},
             json.loads(rewrite_row[2]),
         )
         self.assertIsNotNone(rewrite_row[3])
@@ -501,7 +501,7 @@ class PipelineServiceTests(unittest.TestCase):
         self.assertEqual(style_id, anchor_snapshot["style_template"]["id"])
         self.assertEqual("Sharp style", anchor_snapshot["style_template"]["name"])
 
-    def test_rewrite_injects_outline_and_relevant_character_cards_only(self) -> None:
+    def test_rewrite_injects_outline_without_character_card_assets(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)
             database_path = initialized_database(root / "rusty.db")
@@ -532,27 +532,7 @@ class PipelineServiceTests(unittest.TestCase):
                 outline={"fixed_beats": ["Bobby chooses"]},
                 anchor_prompt="Keep the choice as the chapter pivot.",
             )
-            main_id = anchor_service.create_character_card(
-                name="Alice",
-                priority=90,
-                is_main=True,
-                personality="Direct and protective.",
-            )
-            matched_id = anchor_service.create_character_card(
-                name="Bob",
-                aliases=["Bobby"],
-                priority=40,
-                speech_style="Careful, plain speech.",
-            )
-            ignored_id = anchor_service.create_character_card(
-                name="Carol",
-                priority=40,
-                speech_style="Should not appear.",
-            )
             anchor_service.bind_project_outline(project_id, outline_id)
-            anchor_service.bind_project_character(project_id, main_id, sort_order=1)
-            anchor_service.bind_project_character(project_id, matched_id, sort_order=2)
-            anchor_service.bind_project_character(project_id, ignored_id, sort_order=3)
 
             fake_client = FakeAIClient()
             pipeline = PipelineService(database_path, ai_client=fake_client)
@@ -583,11 +563,9 @@ class PipelineServiceTests(unittest.TestCase):
         self.assertNotIn("Character anchors", scene_messages[-1]["content"])
         self.assertIn("Plot outline anchor (Arc outline)", rewrite_user_text)
         self.assertIn("Keep the choice as the chapter pivot.", rewrite_user_text)
-        self.assertIn("Name: Alice", rewrite_user_text)
-        self.assertIn("Name: Bob", rewrite_user_text)
-        self.assertNotIn("Name: Carol", rewrite_user_text)
+        self.assertNotIn("Character anchors", rewrite_user_text)
         self.assertEqual(outline_id, anchor_snapshot["outline_template"]["id"])
-        self.assertEqual(["Alice", "Bob"], [card["name"] for card in anchor_snapshot["character_cards"]])
+        self.assertNotIn("character_cards", anchor_snapshot)
 
     def test_rewrite_uses_project_targets_and_records_target_word_count(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:

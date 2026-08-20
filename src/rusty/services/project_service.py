@@ -608,17 +608,6 @@ class ProjectService:
                 """,
                 (project_id,),
             ).fetchall()
-            characters = connection.execute(
-                """
-                SELECT id, name, aliases_json, description, profile_json,
-                       relationship_notes, personality, speech_style,
-                       action_constraints, anti_ooc_rules
-                FROM character_cards
-                WHERE project_id = ? AND deleted_at IS NULL
-                ORDER BY id
-                """,
-                (project_id,),
-            ).fetchall()
             style = connection.execute(
                 "SELECT * FROM project_style_syntheses WHERE project_id = ?",
                 (project_id,),
@@ -654,7 +643,7 @@ class ProjectService:
             },
             "metadata": dict(metadata) if metadata else {},
             "chapter_analyses": [_decode_analysis_row(row) for row in chapters],
-            "character_analyses": [_decode_analysis_row(row) for row in characters],
+            "character_analyses": [],
             "style_analysis": _decode_analysis_row(style) if style else {},
             "generated_prompts": [dict(row) for row in prompts],
             "structured_skeletons": [_decode_analysis_row(row) for row in skeletons],
@@ -743,8 +732,6 @@ class ProjectService:
                 for table in (
                     "project_style_syntheses",
                     "project_custom_prompts",
-                    "character_cards",
-                    "materials",
                 ):
                     _copy_rows(connection, table, "project_id = ?", (source_project_id,), {"project_id": target_project_id})
                 for skeleton in connection.execute(

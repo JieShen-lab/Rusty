@@ -1,4 +1,4 @@
-from .anchor_service import AnchorService, CharacterCard, OutlineTemplate
+from .anchor_service import AnchorService, OutlineTemplate
 from .anchor_extraction_service import AnchorExtractionService
 from .analysis_service import AnalysisService
 from .branch_service import BranchService
@@ -17,7 +17,6 @@ from .shared_analysis_service import (
     SkeletonExtractionService,
     StyleAnalysisService,
 )
-from .resource_analysis_service import ResourceAnalysisService
 from .structured_model_service import StructuredModelService
 from .pipeline_service import PipelineResult, PipelineService
 from .plot_generation_orchestrator import PlotGenerationOrchestrator
@@ -38,7 +37,6 @@ __all__ = [
     "BranchService",
     "ChapterSplitService",
     "CharacterAnalysisService",
-    "CharacterCard",
     "ModelService",
     "ModelTestResult",
     "Material",

@@ -13,7 +13,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from rusty.db import session
 from rusty.services.ai_client import AIClient, AIResponse
-from rusty.services.anchor_service import AnchorService
 from rusty.services.context_service import ContextService
 from rusty.services.material_service import MaterialService
 from rusty.services.model_service import ModelService
@@ -26,7 +25,6 @@ from rusty.services.document_library_service import DocumentLibraryService
 from rusty.services.document_split_ai_service import DocumentSplitAIService
 from backend.schemas import MaterialUpdateRequest
 from pydantic import ValidationError
-from rusty.db.schema import _migrate_to_v16
 from rusty.services.resource_analysis_service import ResourceAnalysisService
 from rusty.services.structured_model_service import StructuredModelService
 
@@ -68,11 +66,10 @@ class PhaseTwoRemediationTests(unittest.TestCase):
             ],
             default_scope="public",
         )
-        self.assertEqual(2, len(result["imported"]))
-        self.assertEqual(1, len(result["errors"]))
-        migrated = service.get_material(result["imported"][0]["id"])
-        self.assertEqual("plot_skeleton", migrated.material_type)
-        self.assertEqual("outline", json.loads(migrated.import_metadata_json)["legacy_material_type"])
+        self.assertEqual(1, len(result["imported"]))
+        self.assertEqual(2, len(result["errors"]))
+        imported = service.get_material(result["imported"][0]["id"])
+        self.assertEqual("author_style", imported.material_type)
 
     def test_real_material_analysis_repairs_schema_and_keeps_audit(self) -> None:
         ModelService(self.database).create_model(
@@ -92,50 +89,6 @@ class PhaseTwoRemediationTests(unittest.TestCase):
             audit = connection.execute("SELECT status, response_text, token_usage_json FROM model_invocations WHERE id = ?", (result.invocation_id,)).fetchone()
         self.assertEqual("completed", audit["status"])
         self.assertIn("total_tokens", audit["token_usage_json"])
-
-    def test_character_custom_fields_validation_and_cover_management(self) -> None:
-        service = AnchorService(self.database)
-        card_id = service.create_character_card(name="林舟", identity="", age="", setting_text="")
-        with self.assertRaises(ValueError):
-            service.update_character_card(card_id, name="林舟", custom_fields=[{"label": "", "value": "x"}])
-        with self.assertRaises(ValueError):
-            service.update_character_card(card_id, name="林舟", custom_fields=[{"label": "能力", "value": "甲"}, {"label": " 能力 ", "value": "乙"}])
-        # 1x1 transparent PNG.
-        png = bytes.fromhex("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489")
-        saved = service.save_character_cover(card_id, png)
-        cover = service.character_cover_file(card_id)
-        self.assertTrue(cover.exists())
-        self.assertTrue(saved.cover_path)
-        with self.assertRaises(ValueError):
-            service.save_character_cover(card_id, b"plain text")
-        service.remove_character_cover(card_id)
-        self.assertFalse(cover.exists())
-
-    def test_v16_maps_nonempty_legacy_character_fields_to_custom_fields(self) -> None:
-        service = AnchorService(self.database)
-        card_id = service.create_character_card(name="旧角色", personality="沉着", speech_style="少言")
-        with session(self.database) as connection:
-            _migrate_to_v16(connection)
-        card = service.get_character_card(card_id)
-        values = {item["value"] for item in card.custom_fields}
-        self.assertIn("沉着", values)
-        self.assertIn("少言", values)
-
-    def test_character_analysis_preserves_existing_fields_and_reports_conflict(self) -> None:
-        ModelService(self.database).create_model(
-            display_name="fake", provider="openai_compatible", base_url="https://example.test/v1",
-            model_name="fake", is_default=True,
-        )
-        card_id = AnchorService(self.database).create_character_card(
-            name="林舟", identity="巡夜人", raw_text="林舟今年二十岁。",
-        )
-        fake = QueueAI({"name": "林舟", "identity": "剑客", "age": "二十岁", "setting": "谨慎", "custom_fields": [{"label": "武器", "value": "短剑"}]})
-        service = ResourceAnalysisService(self.database, structured_model_service=StructuredModelService(self.database, ai_client=fake))
-        result = service.propose_character_analysis(card_id)
-        self.assertEqual("巡夜人", result["merged"]["identity"])
-        self.assertEqual("二十岁", result["merged"]["age"])
-        self.assertEqual("identity", result["conflicts"][0]["field"])
-        self.assertEqual("", AnchorService(self.database).get_character_card(card_id).age)
 
     def test_empty_user_instruction_is_compiled_as_required_nonempty_block(self) -> None:
         source = self.root / "source.txt"
