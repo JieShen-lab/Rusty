@@ -433,6 +433,13 @@ export function renameLibraryDocumentVolume(documentId: number, volumeId: number
   });
 }
 
+export function createLibraryDocumentVolume(documentId: number, chapterId: number, title: string) {
+  return request<LibraryDocumentCleanupResult>(`/api/documents/${documentId}/volumes`, {
+    method: 'POST',
+    body: JSON.stringify({ chapter_id: chapterId, title }),
+  });
+}
+
 export function deleteLibraryDocument(documentId: number) {
   return request<{ ok: boolean }>(`/api/documents/${documentId}/delete`, { method: 'POST' });
 }
@@ -517,9 +524,9 @@ export function saveChapterDirection(chapterId: number, strategy: CreativeStrate
   });
 }
 
-export function runChapterSpecialAnalysis(chapterId: number, outlineDetailLevel?: 'brief' | 'detailed') {
+export function runChapterSpecialAnalysis(chapterId: number) {
   return request<import('./types').ChapterSpecialAnalysis>(`/api/chapters/${chapterId}/workflow/special-analysis/run`, {
-    method: 'POST', body: JSON.stringify({ outline_detail_level: outlineDetailLevel ?? null }),
+    method: 'POST', body: JSON.stringify({}),
   });
 }
 

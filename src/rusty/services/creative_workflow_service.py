@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -12,7 +13,7 @@ from rusty.services.material_service import MaterialService, compile_material_ai
 from rusty.services.workflow_ai import WorkflowAI
 
 
-STRATEGIES = {"plot_adjust", "expansion", "reimagine"}
+STRATEGIES = {"plot_adjust", "expansion", "plot_rewrite"}
 STAGES = {"not_started", "summary", "direction", "special_analysis", "style", "writing", "review", "confirmed"}
 class WorkflowSourceConflict(ValueError):
     """The current chapter text no longer matches the workflow source."""
@@ -64,13 +65,18 @@ class CreativeWorkflowService:
 
     def run_chapter_summary(self, chapter_id: int) -> dict[str, Any]:
         source = self.versions.resolve_chapter_source(chapter_id)
-        value = self.ai.generate_json(
+        response = self.ai.generate_text(
             project_id=source.project_id, stage="chapter_summary", workflow_key=None,
-            task_key="chapter_summary", payload={"chapter_id": chapter_id, "source_text": source.text},
-            output_contract=("JSON object: plot_summary string; main_characters, key_events, relationships, "
-                             "important_facts, open_threads arrays; start_state and end_state objects."),
+            task_key="chapter_summary", payload={"source_text": source.text},
+            output_contract=("按以下纯文本分段返回，标题必须保留：\n"
+                             "【剧情总结】\n...\n【关键事件】\n...\n【主要人物与设定】\n..."),
         )
-        summary = self._normalize_summary(value)
+        sections = self._parse_sections(response, ("剧情总结", "关键事件", "主要人物与设定"))
+        summary = {
+            "plot_summary": sections["剧情总结"],
+            "key_events": sections["关键事件"],
+            "main_characters": sections["主要人物与设定"],
+        }
         with session(self.database_path) as connection:
             self._reset_for_source(connection, source)
             self._write_summary(connection, chapter_id, source.content_hash, summary)
@@ -112,27 +118,37 @@ class CreativeWorkflowService:
             row = connection.execute("SELECT * FROM chapter_creative_intents WHERE chapter_id=?", (chapter_id,)).fetchone()
         return self._intent_out(row)
 
-    def run_special_analysis(self, chapter_id: int, *, outline_detail_level: str | None = None) -> dict[str, Any]:
+    def run_special_analysis(self, chapter_id: int) -> dict[str, Any]:
         source = self._require_current_source(chapter_id)
-        summary = self.get_chapter_summary(chapter_id)
         intent = self.get_chapter_direction(chapter_id)
-        if summary is None or intent is None:
-            raise ValueError("Summary and direction are required before special analysis.")
-        detail = None
-        if intent["strategy"] == "reimagine":
-            detail = outline_detail_level or "detailed"
-            if detail not in {"brief", "detailed"}:
-                raise ValueError("outline_detail_level must be brief or detailed.")
-        value = self.ai.generate_json(
+        if intent is None:
+            raise ValueError("Direction is required before special analysis.")
+        strategy = intent["strategy"]
+        payload = (
+            {"document_text": self._document_text(source)}
+            if strategy == "expansion"
+            else {"source_text": source.text}
+        )
+        output_contract = (
+            "按以下纯文本分段返回，标题必须保留：\n【旧大纲】\n...\n【新大纲及细节】\n..."
+            if strategy == "plot_adjust"
+            else "只返回一份可直接编辑的新大纲纯文本，不要添加JSON、代码围栏或解释。"
+        )
+        response = self.ai.generate_text(
             project_id=source.project_id, stage="special_analysis", workflow_key=intent["strategy"],
             task_key="special_analysis", user_instruction=intent["user_instruction"],
-            payload={"source_text": source.text, "summary": summary, "strategy": intent["strategy"],
-                     "outline_detail_level": detail},
-            output_contract=("JSON object: source_outline array, target_outline array, constraints object, "
-                             "analysis_notes array. Nodes have stable ids; plot_adjust targets have "
-                             "operation preserve|modify|delete|insert and source_ids."),
+            payload=payload,
+            output_contract=output_contract,
         )
-        return self.save_special_analysis(chapter_id, {**value, "strategy": intent["strategy"], "outline_detail_level": detail})
+        if strategy == "plot_adjust":
+            sections = self._parse_sections(response, ("旧大纲", "新大纲及细节"))
+            source_outline, target_outline = sections["旧大纲"], sections["新大纲及细节"]
+        else:
+            source_outline, target_outline = "", response.strip()
+        return self.save_special_analysis(
+            chapter_id,
+            {"strategy": strategy, "source_outline": source_outline, "target_outline": target_outline},
+        )
 
     def save_special_analysis(self, chapter_id: int, value: dict[str, Any]) -> dict[str, Any]:
         source = self._require_current_source(chapter_id)
@@ -142,32 +158,26 @@ class CreativeWorkflowService:
         strategy = self._strategy(str(value.get("strategy") or intent["strategy"]))
         if strategy != intent["strategy"]:
             raise ValueError("Special analysis strategy must match the direction.")
-        detail = value.get("outline_detail_level")
-        if strategy == "reimagine":
-            detail = str(detail or "detailed")
-            if detail not in {"brief", "detailed"}:
-                raise ValueError("outline_detail_level must be brief or detailed.")
-        else:
-            detail = None
-        source_outline = self._object_list(value.get("source_outline"), "source_outline")
-        target_outline = self._object_list(value.get("target_outline"), "target_outline")
-        constraints = value.get("constraints") if isinstance(value.get("constraints"), dict) else {}
-        notes = value.get("analysis_notes") if isinstance(value.get("analysis_notes"), list) else []
-        if not source_outline or not target_outline:
-            raise ValueError("Special analysis requires source_outline and target_outline.")
-        if strategy == "plot_adjust" and any(str(node.get("operation")) not in {"preserve", "modify", "delete", "insert"} for node in target_outline):
-            raise ValueError("plot_adjust target nodes require a valid operation.")
+        raw_source_outline = value.get("source_outline")
+        if not isinstance(raw_source_outline, str):
+            raise ValueError("Special analysis source_outline must be plain text.")
+        source_outline = raw_source_outline.strip() if strategy == "plot_adjust" else ""
+        if strategy == "plot_adjust" and not source_outline:
+            raise ValueError("Plot adjustment requires a non-empty source outline.")
+        raw_outline = value.get("target_outline")
+        if not isinstance(raw_outline, str):
+            raise ValueError("Special analysis target_outline must be plain text.")
+        target_outline = raw_outline.strip()
+        if not target_outline:
+            raise ValueError("Special analysis requires non-empty target_outline text.")
         with session(self.database_path) as connection:
             connection.execute(
-                """INSERT INTO chapter_special_analyses(chapter_id,strategy,outline_detail_level,
-                   source_outline_json,target_outline_json,constraints_json,analysis_notes_json,source_hash)
-                   VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(chapter_id) DO UPDATE SET
-                   strategy=excluded.strategy,outline_detail_level=excluded.outline_detail_level,
-                   source_outline_json=excluded.source_outline_json,target_outline_json=excluded.target_outline_json,
-                   constraints_json=excluded.constraints_json,analysis_notes_json=excluded.analysis_notes_json,
+                """INSERT INTO chapter_special_analyses(chapter_id,strategy,source_outline,target_outline,source_hash)
+                   VALUES(?,?,?,?,?) ON CONFLICT(chapter_id) DO UPDATE SET
+                   strategy=excluded.strategy,source_outline=excluded.source_outline,
+                   target_outline=excluded.target_outline,
                    source_hash=excluded.source_hash,updated_at=CURRENT_TIMESTAMP""",
-                (chapter_id, strategy, detail, self._dump(source_outline), self._dump(target_outline),
-                 self._dump(constraints), self._dump(notes), source.content_hash),
+                (chapter_id, strategy, source_outline, target_outline, source.content_hash),
             )
             connection.execute("DELETE FROM chapter_style_contexts WHERE chapter_id=?", (chapter_id,))
             connection.execute("DELETE FROM chapter_writings WHERE chapter_id=?", (chapter_id,))
@@ -176,7 +186,9 @@ class CreativeWorkflowService:
 
     def get_special_analysis(self, chapter_id: int) -> dict[str, Any] | None:
         with session(self.database_path) as connection:
-            row = connection.execute("SELECT * FROM chapter_special_analyses WHERE chapter_id=?", (chapter_id,)).fetchone()
+            row = connection.execute(
+                "SELECT * FROM chapter_special_analyses WHERE chapter_id=?", (chapter_id,)
+            ).fetchone()
         return self._analysis_out(row)
 
     def resolve_style(self, chapter_id: int, *, source_scope: str = "document", author_style_material_id: int | None = None) -> dict[str, Any]:
@@ -186,9 +198,7 @@ class CreativeWorkflowService:
         if intent is None or analysis is None:
             raise ValueError("Special analysis is required before resolving style.")
         strategy = intent["strategy"]
-        if strategy == "reimagine":
-            if author_style_material_id is None:
-                raise ValueError("reimagine requires a selected author_style material.")
+        if author_style_material_id is not None:
             material = self.materials.get_material(author_style_material_id)
             if material is None or material.material_type != "author_style":
                 raise ValueError("Selected author style material does not exist.")
@@ -201,20 +211,17 @@ class CreativeWorkflowService:
             guidance = self._style_guidance(snapshot)
             material_version = material.version
         else:
-            if author_style_material_id is not None:
-                raise ValueError("plot_adjust and expansion use source_auto style.")
-            if source_scope not in {"document", "chapter"}:
-                raise ValueError("source_scope must be document or chapter.")
-            style_text, scope = self._style_source(source, source_scope)
+            if strategy == "plot_rewrite":
+                raise ValueError("重写剧情需要选择一个作者风格。")
+            style_text, scope = self._document_text(source), "document"
             settings = self.materials.get_ai_settings("author_style_extraction")
             settings_snapshot = asdict(settings)
             extracted = self.ai.generate_json(
                 project_id=source.project_id, stage="author_style_extraction",
-                payload={"sample_text": self._sample_style_source(style_text),
-                         "extraction_prompt": compile_material_ai_prompt(settings),
-                         "dimensions": [dict(item) for item in settings.dimensions],
-                         "local_chapter_reference": source.text},
+                payload={"sample_text": style_text,
+                         "extraction_prompt": compile_material_ai_prompt(settings)},
                 output_contract="JSON object containing style_snapshot object and generated_guidance string.",
+                plain_context=True,
             )
             snapshot = extracted.get("style_snapshot") if isinstance(extracted.get("style_snapshot"), dict) else extracted
             guidance = str(extracted.get("generated_guidance") or self._style_guidance(snapshot))
@@ -252,27 +259,18 @@ class CreativeWorkflowService:
         if existing is not None and not replace_existing:
             raise ValueError("A writing result already exists.")
         strategy = intent["strategy"]
-        if strategy == "reimagine" and style["style_mode"] != "selected_author_style":
-            raise ValueError("reimagine requires a selected author_style snapshot.")
-        if strategy == "plot_adjust":
-            plan = self._create_patch_plan(source, intent, analysis)
-            result_text, plan = self._execute_patch(source, intent, analysis, style, plan)
-            created_chapter_id = None
-        else:
-            value = self.ai.generate_json(
-                project_id=source.project_id, stage="writing", workflow_key=strategy, task_key="writing",
-                payload={"source_text": source.text, "summary": self.get_chapter_summary(chapter_id),
-                         "special_analysis": analysis, "style_snapshot": style["style_snapshot"],
-                         "style_guidance": style["generated_guidance"]},
-                user_instruction=intent["user_instruction"],
-                output_contract="JSON object with non-empty text string and optional title string.",
-            )
-            result_text = str(value.get("text") or "").strip()
-            if not result_text:
-                raise ValueError("Writing did not return text.")
-            plan, created_chapter_id = [], None
-            if strategy == "expansion":
-                created_chapter_id = self._save_expansion_chapter(source, result_text, str(value.get("title") or ""), existing)
+        if strategy == "plot_rewrite" and style["style_mode"] != "selected_author_style":
+            raise ValueError("重写剧情需要已选择的作者风格。")
+        result_text = self.ai.generate_text(
+            project_id=source.project_id, stage="writing", workflow_key=strategy, task_key="writing",
+            payload=self._writing_payload(strategy, source.text, analysis["target_outline"], style),
+            output_contract="只返回完整小说正文，不要添加标题说明、分析、JSON或代码围栏。",
+        )
+        if not result_text:
+            raise ValueError("Writing did not return text.")
+        plan, created_chapter_id = [], None
+        if strategy == "expansion":
+            created_chapter_id = self._save_expansion_chapter(source, result_text, "", existing)
         with session(self.database_path) as connection:
             connection.execute(
                 """INSERT INTO chapter_writings(chapter_id,strategy,writing_plan_json,result_text,
@@ -334,7 +332,7 @@ class CreativeWorkflowService:
         writing = self.get_writing(chapter_id)
         if writing is None:
             raise ValueError("Writing is required before confirmation.")
-        if writing["strategy"] in {"plot_adjust", "reimagine"}:
+        if writing["strategy"] in {"plot_adjust", "plot_rewrite"}:
             with session(self.database_path) as connection:
                 self.versions.append_chapter_rewrite_version(
                     connection, chapter_id=chapter_id, rewritten_text=writing["result_text"],
@@ -349,60 +347,15 @@ class CreativeWorkflowService:
             self._set_stage(connection, chapter_id, "confirmed")
         return self.get_chapter_workflow(chapter_id)
 
-    def _create_patch_plan(self, source: Any, intent: dict[str, Any], analysis: dict[str, Any]) -> list[dict[str, Any]]:
-        value = self.ai.generate_json(
-            project_id=source.project_id, stage="writing_plan", workflow_key="plot_adjust", task_key="writing",
-            payload={"source_text": source.text, "special_analysis": analysis}, user_instruction=intent["user_instruction"],
-            output_contract=("JSON object with blocks array. Each has operation preserve|modify|delete|insert, "
-                             "start_offset, end_offset, instruction and order."),
-        )
-        return self._object_list(value.get("blocks"), "blocks")
-
-    def _execute_patch(self, source: Any, intent: dict[str, Any], analysis: dict[str, Any],
-                       style: dict[str, Any], plan: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
-        text, cursor, output, executed = source.text, 0, [], []
-        for order, block in enumerate(plan):
-            operation = str(block.get("operation") or "")
-            if operation not in {"preserve", "modify", "delete", "insert"}:
-                raise ValueError("Writing plan contains an unsupported operation.")
-            start = int(block.get("start_offset", cursor))
-            end = int(block.get("end_offset", start if operation == "insert" else cursor))
-            if start < cursor or end < start or end > len(text):
-                raise ValueError("Writing plan contains overlapping or invalid source spans.")
-            if start > cursor:
-                output.append(text[cursor:start])
-            generated = ""
-            if operation == "preserve":
-                generated = text[start:end]
-            elif operation in {"modify", "insert"}:
-                value = self.ai.generate_json(
-                    project_id=source.project_id, stage="writing", workflow_key="plot_adjust", task_key="writing",
-                    payload={"operation": operation, "source_text": text[start:end],
-                             "instruction": str(block.get("instruction") or ""),
-                             "context_before": text[max(0, start - 500):start], "context_after": text[end:end + 500],
-                             "special_analysis": analysis, "style_snapshot": style["style_snapshot"]},
-                    user_instruction=intent["user_instruction"],
-                    output_contract="JSON object with text string for only this block.",
-                )
-                generated = str(value.get("text") or "")
-                if not generated:
-                    raise ValueError("A modify/insert block returned empty text.")
-            output.append(generated)
-            executed.append({**block, "order": order, "start_offset": start, "end_offset": end,
-                             "source_text": text[start:end], "result_text": generated})
-            if operation != "insert":
-                cursor = end
-        output.append(text[cursor:])
-        return "".join(output), executed
-
     def _save_expansion_chapter(self, source: Any, text: str, title: str, existing: dict[str, Any] | None) -> int:
         if existing and existing.get("created_chapter_id"):
             created_id = int(existing["created_chapter_id"])
             with session(self.database_path) as connection:
-                connection.execute(
-                    "UPDATE chapters SET title=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                    (title.strip() or "新增章节", created_id),
-                )
+                if title.strip():
+                    connection.execute(
+                        "UPDATE chapters SET title=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                        (title.strip(), created_id),
+                    )
                 created_source = self.versions.resolve_chapter_source(created_id, connection=connection)
                 self.versions.append_chapter_rewrite_version(
                     connection,
@@ -466,26 +419,28 @@ class CreativeWorkflowService:
             raise ValueError(f"Unsupported chapter workflow stage: {stage}")
         connection.execute("UPDATE chapter_workflow_state SET current_stage=?,updated_at=CURRENT_TIMESTAMP WHERE chapter_id=?", (stage, chapter_id))
 
-    def _style_source(self, source: Any, requested_scope: str) -> tuple[str, str]:
-        if requested_scope == "document":
-            with session(self.database_path) as connection:
-                row = connection.execute("SELECT source_path FROM projects WHERE id=?", (source.project_id,)).fetchone()
-            path = Path(str(row["source_path"])) if row and row["source_path"] else None
-            if path and path.is_file() and path.suffix.lower() == ".txt":
-                try:
-                    value = path.read_text(encoding="utf-8").strip()
-                    if value:
-                        return value, "document"
-                except (OSError, UnicodeError):
-                    pass
-        return source.text, "chapter"
-
-    @staticmethod
-    def _sample_style_source(text: str, limit: int = 24000) -> str:
-        if len(text) <= limit:
-            return text
-        part, middle = limit // 3, max(0, len(text) // 2 - limit // 6)
-        return text[:part] + "\n\n[中段采样]\n\n" + text[middle:middle + part] + "\n\n[末段采样]\n\n" + text[-part:]
+    def _document_text(self, source: Any) -> str:
+        with session(self.database_path) as connection:
+            project = connection.execute(
+                "SELECT source_path FROM projects WHERE id=?", (source.project_id,)
+            ).fetchone()
+            chapters = connection.execute(
+                "SELECT title,original_text FROM chapters WHERE project_id=? ORDER BY chapter_index,id",
+                (source.project_id,),
+            ).fetchall()
+        path = Path(str(project["source_path"])) if project and project["source_path"] else None
+        if path and path.is_file() and path.suffix.lower() == ".txt":
+            try:
+                value = path.read_text(encoding="utf-8").strip()
+                if value:
+                    return value
+            except (OSError, UnicodeError):
+                pass
+        return "\n\n".join(
+            f"## {str(row['title'] or '未命名章节')}\n{str(row['original_text'] or '')}"
+            for row in chapters
+            if str(row["original_text"] or "").strip()
+        )
 
     @staticmethod
     def _style_guidance(snapshot: dict[str, Any]) -> str:
@@ -494,39 +449,42 @@ class CreativeWorkflowService:
     @staticmethod
     def _strategy(value: str) -> str:
         if value not in STRATEGIES:
-            raise ValueError("strategy must be plot_adjust, expansion, or reimagine.")
+            raise ValueError("strategy must be plot_adjust, expansion, or plot_rewrite.")
         return value
+
+    @staticmethod
+    def _writing_payload(
+        strategy: str, source_text: str, target_outline: str, style: dict[str, Any],
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "target_outline": target_outline,
+            "author_style": style["style_snapshot"],
+        }
+        if strategy == "plot_adjust":
+            payload = {"source_text": source_text, **payload}
+        return payload
 
     @staticmethod
     def _normalize_summary(value: dict[str, Any]) -> dict[str, Any]:
         return {
             "plot_summary": str(value.get("plot_summary") or ""),
-            "main_characters": value.get("main_characters") if isinstance(value.get("main_characters"), list) else [],
-            "key_events": value.get("key_events") if isinstance(value.get("key_events"), list) else [],
-            "relationships": value.get("relationships") if isinstance(value.get("relationships"), list) else [],
-            "start_state": value.get("start_state") if isinstance(value.get("start_state"), dict) else {},
-            "end_state": value.get("end_state") if isinstance(value.get("end_state"), dict) else {},
-            "important_facts": value.get("important_facts") if isinstance(value.get("important_facts"), list) else [],
-            "open_threads": value.get("open_threads") if isinstance(value.get("open_threads"), list) else [],
+            "main_characters": str(value.get("main_characters") or ""),
+            "key_events": str(value.get("key_events") or ""),
         }
 
     def _write_summary(self, connection: Any, chapter_id: int, source_hash: str, value: dict[str, Any]) -> None:
         connection.execute(
-            """INSERT INTO chapter_workflow_summaries(chapter_id,plot_summary,main_characters_json,
-               key_events_json,relationships_json,start_state_json,end_state_json,important_facts_json,
-               open_threads_json,source_hash) VALUES(?,?,?,?,?,?,?,?,?,?)""",
-            (chapter_id, value["plot_summary"], self._dump(value["main_characters"]), self._dump(value["key_events"]),
-             self._dump(value["relationships"]), self._dump(value["start_state"]), self._dump(value["end_state"]),
-             self._dump(value["important_facts"]), self._dump(value["open_threads"]), source_hash),
+            """INSERT INTO chapter_workflow_summaries(
+                   chapter_id,plot_summary,main_characters,key_events,source_hash
+               ) VALUES(?,?,?,?,?)""",
+            (chapter_id, value["plot_summary"], value["main_characters"], value["key_events"], source_hash),
         )
 
     def _summary_out(self, row: Any) -> dict[str, Any] | None:
         if row is None: return None
         return {"chapter_id": int(row["chapter_id"]), "plot_summary": str(row["plot_summary"]),
-                "main_characters": self._load(row["main_characters_json"], []), "key_events": self._load(row["key_events_json"], []),
-                "relationships": self._load(row["relationships_json"], []), "start_state": self._load(row["start_state_json"], {}),
-                "end_state": self._load(row["end_state_json"], {}), "important_facts": self._load(row["important_facts_json"], []),
-                "open_threads": self._load(row["open_threads_json"], []), "source_hash": str(row["source_hash"]),
+                "main_characters": str(row["main_characters"]), "key_events": str(row["key_events"]),
+                "source_hash": str(row["source_hash"]),
                 "updated_at": str(row["updated_at"])}
 
     @staticmethod
@@ -538,10 +496,22 @@ class CreativeWorkflowService:
     def _analysis_out(self, row: Any) -> dict[str, Any] | None:
         if row is None: return None
         return {"chapter_id": int(row["chapter_id"]), "strategy": str(row["strategy"]),
-                "outline_detail_level": row["outline_detail_level"], "source_outline": self._load(row["source_outline_json"], []),
-                "target_outline": self._load(row["target_outline_json"], []), "constraints": self._load(row["constraints_json"], {}),
-                "analysis_notes": self._load(row["analysis_notes_json"], []), "source_hash": str(row["source_hash"]),
+                "source_outline": str(row["source_outline"]),
+                "target_outline": str(row["target_outline"]), "source_hash": str(row["source_hash"]),
                 "updated_at": str(row["updated_at"])}
+
+    @staticmethod
+    def _parse_sections(text: str, labels: tuple[str, ...]) -> dict[str, str]:
+        pattern = "|".join(re.escape(label) for label in labels)
+        matches = list(re.finditer(rf"【({pattern})】", text))
+        found: dict[str, str] = {}
+        for index, match in enumerate(matches):
+            end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+            found[match.group(1)] = text[match.end():end].strip()
+        missing = [label for label in labels if not found.get(label)]
+        if missing:
+            raise ValueError("AI response is missing required plain-text sections: " + ", ".join(missing))
+        return found
 
     def _style_out(self, row: Any) -> dict[str, Any] | None:
         if row is None: return None
@@ -559,12 +529,6 @@ class CreativeWorkflowService:
                 "writing_plan": self._load(row["writing_plan_json"], []), "result_text": str(row["result_text"]),
                 "created_chapter_id": row["created_chapter_id"], "source_hash": str(row["source_hash"]),
                 "status": str(row["status"]), "updated_at": str(row["updated_at"])}
-
-    @staticmethod
-    def _object_list(value: Any, label: str) -> list[dict[str, Any]]:
-        if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
-            raise ValueError(f"{label} must be an array of objects.")
-        return [dict(item) for item in value]
 
     @staticmethod
     def _dump(value: Any) -> str: return json.dumps(value, ensure_ascii=False)

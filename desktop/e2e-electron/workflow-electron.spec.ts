@@ -58,14 +58,15 @@ test('Electron 新建统一普通小说工程且没有改写扩写选择', async
 test('Electron 完成内容总结到目标大纲保存的章节流程', async () => {
   await openSeedProject('真实 E2E 1');
   await page.getByRole('button', { name: '生成内容总结' }).click();
+  await page.getByRole('button', { name: '保存并选择方向' }).click();
   await page.getByRole('button', { name: '调整剧情' }).click();
   await page.getByPlaceholder(/保留人物相遇/).fill('让院门暗记成为明确线索。');
   await page.getByRole('button', { name: '保存并开始分析' }).click();
   await page.getByRole('button', { name: '开始分析' }).click();
-  await expect(page.getByRole('heading', { name: '原始大纲' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: '目标大纲' })).toBeVisible();
-  await expect(page.getByLabel('第 2 条操作')).toHaveValue('modify');
-  await page.getByRole('button', { name: '保存目标大纲' }).click();
+  await expect(page.getByRole('heading', { name: '旧大纲' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '新大纲及细节' })).toBeVisible();
+  await expect(page.getByLabel('新大纲及细节')).toHaveValue('1. 人物进入院子\n2. 李四发现院门暗记\n3. 人物返回客栈');
+  await page.getByRole('button', { name: '保存新大纲' }).click();
   await expect(page.getByRole('heading', { name: '确定写作风格' })).toBeVisible();
   await page.reload();
   await expect(page.getByRole('heading', { name: '专项分析' })).toBeVisible();

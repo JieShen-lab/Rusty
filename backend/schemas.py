@@ -189,6 +189,11 @@ class LibraryDocumentVolumeRenameRequest(BaseModel):
     title: str = Field(min_length=1)
 
 
+class LibraryDocumentVolumeCreateRequest(BaseModel):
+    chapter_id: int
+    title: str = Field(min_length=1)
+
+
 class LibraryDocumentContentOut(BaseModel):
     document_id: int
     revision_id: int

@@ -10,7 +10,7 @@ const SLOTS: Array<{ key: PromptSlot; label: string; description: string; icon: 
   { key: 'summary', label: '内容总结', description: '进入工程后的第一步', icon: BookOpenText },
   { key: 'plot_adjust', label: '调整剧情', description: '生成原始与目标大纲', icon: FileText },
   { key: 'expansion', label: '增加剧情', description: '设计新的下一章', icon: FileText },
-  { key: 'reimagine', label: '重新构思', description: '锁定边界并重建大纲', icon: Sparkles },
+  { key: 'plot_rewrite', label: '重写剧情', description: '生成重写后的剧情大纲', icon: Sparkles },
   { key: 'writing', label: '写作', description: '三个方向共用的正文规则', icon: FileText },
 ];
 

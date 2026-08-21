@@ -16,6 +16,39 @@ from backend.api import create_app
 
 
 class DocumentLibraryApiTests(unittest.TestCase):
+    def test_create_volume_starts_at_selected_chapter_and_keeps_following_chapters(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            source = root / "plain.txt"
+            source.write_text(
+                "第一章 开始\n正文一。\n\n第二章 转折\n正文二。\n\n第三章 收束\n正文三。\n",
+                encoding="utf-8",
+            )
+            environment = {
+                "RUSTY_API_TOKEN": "document-test-token",
+                "RUSTY_DOCUMENT_LIBRARY_PATH": str(root / "library"),
+            }
+            headers = {"X-Rusty-Token": "document-test-token"}
+            with patch.dict(os.environ, environment):
+                client = TestClient(create_app(root / "rusty.db"))
+                imported = client.post("/api/documents/import", headers=headers, json={"source_path": str(source)})
+                document_id = imported.json()["document"]["id"]
+                chapters = client.get(f"/api/documents/{document_id}/chapters").json()
+                created = client.post(
+                    f"/api/documents/{document_id}/volumes",
+                    headers=headers,
+                    json={"chapter_id": chapters[1]["id"], "title": "第二卷 转折"},
+                )
+                directory_after = client.get(f"/api/documents/{document_id}/directory")
+
+            self.assertEqual(200, created.status_code, created.text)
+            self.assertEqual(["开始"], [item["title"] for item in directory_after.json()["unassigned_chapters"]])
+            self.assertEqual("第二卷 转折", directory_after.json()["volumes"][0]["title"])
+            self.assertEqual(
+                ["转折", "收束"],
+                [item["title"] for item in directory_after.json()["volumes"][0]["chapters"]],
+            )
+
     def test_volume_directory_api_returns_nested_chapters_and_supports_rename(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)

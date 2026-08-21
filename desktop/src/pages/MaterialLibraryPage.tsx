@@ -1,13 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowDown, ArrowUp, BookOpenText, CircleGauge, Clock, CloudSun, Folder, MessageCircle, Plus, Search, Settings, Sparkles, TextQuote, Trash2, X } from 'lucide-react';
-import coverBlue from '../assets/author-cover-blue.png';
-import coverIvory from '../assets/author-cover-ivory.png';
-import coverSage from '../assets/author-cover-sage.png';
+import { ArrowDown, ArrowUp, BookOpenText, CircleGauge, CloudSun, MessageCircle, Plus, Search, Settings, Sparkles, TextQuote, Trash2, UserRound, X } from 'lucide-react';
 import {
   applyAuthorStyleDimension,
   applyMaterialExtraction,
-  createMaterialCategory,
-  deleteMaterialCategory,
   deleteMaterial,
   exportAuthorStyleSettings,
   getMaterialAISettings,
@@ -17,7 +12,6 @@ import {
   importAuthorStyleSettings,
   previewAuthorStyleDimension,
   previewMaterialExtraction,
-  renameMaterialCategory,
   updateMaterial,
   updateMaterialAISettings,
 } from '../api/client';
@@ -30,22 +24,19 @@ import type {
   ModelConfig,
 } from '../api/types';
 import { DangerButton } from '../components/DangerButton';
-import { LibraryContextMenu, LibraryDialog, LibraryEmptyState, LibrarySidebarItem, LibrarySidebarSectionTitle } from '../components/LibraryPrimitives';
+import { LibraryDialog, LibraryEmptyState } from '../components/LibraryPrimitives';
 import { PrimaryButton } from '../components/PrimaryButton';
 import { SecondaryButton } from '../components/SecondaryButton';
 import { TopBar } from '../components/TopBar';
 import { useAutoDismiss } from '../hooks/useAutoDismiss';
 
-type Shelf = { kind: 'all' | 'recent' } | { kind: 'category'; categoryId: number };
 type Launch = { materialType: MaterialType; selectedText: string; sourceMetadata?: Record<string, unknown> };
 
-const TYPE_LABEL = '作者风格';
 const MATERIAL_TYPE: MaterialType = 'author_style';
 const MATERIAL_TASK = 'author_style_extraction' as const;
 
 export function AuthorLibraryPage() {
   const type = MATERIAL_TYPE;
-  const [shelf, setShelf] = useState<Shelf>({ kind: 'all' });
   const [query, setQuery] = useState('');
   const [materials, setMaterials] = useState<Material[]>([]);
   const [categories, setCategories] = useState<MaterialCategory[]>([]);
@@ -58,7 +49,6 @@ export function AuthorLibraryPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
-  const [categoryMenu, setCategoryMenu] = useState<{ category: MaterialCategory; x: number; y: number } | null>(null);
   useAutoDismiss(error, setError, 6000);
   useAutoDismiss(message, setMessage);
 
@@ -83,7 +73,6 @@ export function AuthorLibraryPage() {
   useEffect(() => {
     const incoming = window.history.state?.materialExtraction as Launch | undefined;
     if (!incoming?.selectedText || !incoming.materialType) return;
-    setShelf({ kind: 'all' });
     setLaunch(incoming);
     setCreateOpen(true);
     window.history.replaceState(null, '', window.location.href);
@@ -97,12 +86,10 @@ export function AuthorLibraryPage() {
     const needle = query.trim().toLocaleLowerCase();
     return materials.filter((item) => {
       if (item.material_type !== type) return false;
-      if (shelf.kind === 'category' && !item.category_ids.includes(shelf.categoryId)) return false;
-      if (shelf.kind === 'recent' && !isRecent(item.created_at)) return false;
       return !needle || [item.name, item.description, item.tags.join(' '), item.categories.join(' ')]
         .join(' ').toLocaleLowerCase().includes(needle);
     });
-  }, [materials, query, shelf, type]);
+  }, [materials, query, type]);
   const selected = materials.find((item) => item.id === selectedId && item.material_type === type) ?? null;
 
   async function run(action: () => Promise<void>) {
@@ -110,16 +97,6 @@ export function AuthorLibraryPage() {
     setBusy(true);
     setError(null);
     try { await action(); } catch (reason) { setError(errorMessage(reason)); } finally { setBusy(false); }
-  }
-
-  async function addCategory() {
-    const name = window.prompt(`新建${TYPE_LABEL}分类`)?.trim();
-    if (!name) return;
-    await run(async () => {
-      const category = await createMaterialCategory(type, name);
-      await load(selectedId);
-      setShelf({ kind: 'category', categoryId: category.id });
-    });
   }
 
   return (
@@ -138,27 +115,6 @@ export function AuthorLibraryPage() {
       {message ? <div className="inline-alert success document-library-alert" role="status">{message}</div> : null}
 
       <div className="document-library-layout material-browser-layout material-library-unified">
-        <aside className="document-tag-panel material-library-sidebar">
-          <nav aria-label="作者风格分类">
-            <LibrarySidebarItem active={shelf.kind === 'all'} count={materials.filter((item) => item.material_type === type).length} icon={<Folder size={15} />} label="全部内容" onClick={() => setShelf({ kind: 'all' })} />
-            <LibrarySidebarItem active={shelf.kind === 'recent'} count={materials.filter((item) => item.material_type === type && isRecent(item.created_at)).length} icon={<Clock size={15} />} label="最近导入" onClick={() => setShelf({ kind: 'recent' })} />
-            <LibrarySidebarSectionTitle action={<button aria-label="新建分类" className="document-add-tag" onClick={() => void addCategory()} type="button"><Plus size={14} /></button>}>
-              我的分类
-            </LibrarySidebarSectionTitle>
-            {currentCategories.map((category) => (
-              <LibrarySidebarItem
-                active={shelf.kind === 'category' && shelf.categoryId === category.id}
-                count={category.resource_count}
-                icon={<Folder size={15} />}
-                key={category.id}
-                label={category.name}
-                onClick={() => setShelf({ kind: 'category', categoryId: category.id })}
-                onContextMenu={(event) => { event.preventDefault(); setCategoryMenu({ category, x: event.clientX, y: event.clientY }); }}
-              />
-            ))}
-          </nav>
-        </aside>
-
         <main className="document-shelf-panel material-browser-shelf">
           <header>
             <label className="search-field document-search material-library-search">
@@ -214,10 +170,6 @@ export function AuthorLibraryPage() {
       {createOpen ? <CreateMaterialDialog busy={busy} categories={currentCategories} launch={launch} materialType={type} onClose={() => setCreateOpen(false)} onError={setError} onSaved={async (id) => { setCreateOpen(false); setLaunch(null); await load(id); setMessage('作者风格已保存。'); }} /> : null}
       {settingsOpen ? <MaterialSettingsDialog materialType={type} onClose={() => setSettingsOpen(false)} onError={setError} onSaved={() => setMessage('提取设置已保存，并成为新的默认配置。')} /> : null}
       {editing ? <MaterialEditor material={editing} onClose={() => setEditing(null)} onError={setError} onSaved={async (id) => { await load(id); const updated = (await getMaterials()).find((item) => item.id === id) ?? null; setEditing(updated); setMessage('作者档案已保存。'); }} /> : null}
-      {categoryMenu ? <LibraryContextMenu actions={[
-        { label: '重命名', onSelect: () => { const name = window.prompt('重命名分类', categoryMenu.category.name)?.trim(); if (name) void run(async () => { await renameMaterialCategory(categoryMenu.category.id, name); await load(selectedId); }); } },
-        { danger: true, label: '删除分类', onSelect: () => { if (!window.confirm(`确认删除分类“${categoryMenu.category.name}”？作者档案本身不会被删除。`)) return; void run(async () => { await deleteMaterialCategory(categoryMenu.category.id); if (shelf.kind === 'category' && shelf.categoryId === categoryMenu.category.id) setShelf({ kind: 'all' }); await load(selectedId); }); } },
-      ]} label={`${categoryMenu.category.name} 分类操作`} onClose={() => setCategoryMenu(null)} x={categoryMenu.x} y={categoryMenu.y} /> : null}
     </div>
   );
 }
@@ -381,10 +333,8 @@ function AuthorDimensionTable({ content }: { content: Record<string, unknown> })
 }
 
 function AuthorCover({ author, id }: { author: string; id: number }) {
-  const covers = [coverBlue, coverSage, coverIvory];
-  return <span className="author-cover"><img alt="" src={covers[id % covers.length]} /><strong>{author}</strong></span>;
+  return <span className={`author-cover palette-${id % 3}`} aria-hidden="true"><UserRound size={24} /><strong>{Array.from(author.trim())[0] || '作'}</strong></span>;
 }
-function isRecent(value: string): boolean { const timestamp = Date.parse(value); return Number.isFinite(timestamp) && Date.now() - timestamp <= 30 * 24 * 60 * 60 * 1000; }
 function formatDate(value: string): string { const timestamp = Date.parse(value); return Number.isFinite(timestamp) ? new Date(timestamp).toLocaleDateString('zh-CN').replace(/\//g, '-') : '未知'; }
 function compilePreview(settings: MaterialAISettings): string { return `${settings.system_prompt}\n\n任务：\n${settings.base_instruction}\n\n分析维度：\n${settings.dimensions.map((item, index) => `${index + 1}. ${item.name}\nID: ${item.id}\n提取要求：${item.requirement}`).join('\n\n')}\n\n附加要求：\n${settings.extra_requirements || '无'}\n\n输出协议：\n返回 summary 与按稳定 ID 对齐的 dimensions（analysis / features / examples）。`; }
 function errorMessage(reason: unknown): string { return reason instanceof Error ? reason.message : String(reason); }

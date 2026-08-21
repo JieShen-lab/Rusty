@@ -122,6 +122,7 @@ from .schemas import (
     LibraryDocumentChapterReorderRequest,
     LibraryDocumentDirectoryOut,
     LibraryDocumentVolumeOut,
+    LibraryDocumentVolumeCreateRequest,
     LibraryDocumentVolumeRenameRequest,
     LibraryDocumentContentOut,
     LibraryDocumentDraftOut,
@@ -806,6 +807,26 @@ def create_app(
         ]
 
     @app.post(
+        "/api/documents/{document_id}/volumes",
+        response_model=LibraryDocumentCleanupResponse,
+        dependencies=[Depends(_require_token)],
+    )
+    def create_library_document_volume(
+        document_id: int,
+        payload: LibraryDocumentVolumeCreateRequest,
+    ) -> LibraryDocumentCleanupResponse:
+        result = document_library_service.create_volume(
+            document_id,
+            payload.chapter_id,
+            payload.title,
+        )
+        return LibraryDocumentCleanupResponse(
+            document=_library_document_out(result.document),
+            revision=_document_revision_out(result.revision),
+            created=result.created,
+        )
+
+    @app.post(
         "/api/documents/{document_id}/volumes/{volume_id}",
         response_model=LibraryDocumentCleanupResponse,
         dependencies=[Depends(_require_token)],
@@ -1327,9 +1348,7 @@ def create_app(
     @app.post("/api/chapters/{chapter_id}/workflow/special-analysis/run", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
     def run_chapter_workflow_special_analysis(chapter_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         _require_existing_chapter(project_service, chapter_id)
-        return creative_workflow_service.run_special_analysis(
-            chapter_id, outline_detail_level=payload.get("outline_detail_level")
-        )
+        return creative_workflow_service.run_special_analysis(chapter_id)
 
     @app.put("/api/chapters/{chapter_id}/workflow/special-analysis", response_model=dict[str, Any], dependencies=[Depends(_require_token)])
     def save_chapter_workflow_special_analysis(chapter_id: int, payload: dict[str, Any]) -> dict[str, Any]:

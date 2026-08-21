@@ -87,6 +87,38 @@ class PromptDefinitionTests(unittest.TestCase):
         self.assertEqual('JSON object: {"summary": string}', request.expected_output)
         self.assertEqual("rusty.native.creative.v1", request.ruleset_id)
 
+    def test_plain_text_compiler_keeps_story_blocks_plain_and_only_serializes_author_style(self) -> None:
+        request = PromptCompiler().compile_creative_text(
+            stage="writing",
+            system_prompt="系统规则",
+            task_prompt="生成正文",
+            payload={
+                "source_text": "章节原文",
+                "target_outline": "1. 新事件",
+                "author_style": {"voice": "克制"},
+            },
+            user_instruction="",
+            output_contract="只返回正文",
+        )
+        user = request.message_list()[1]["content"]
+        self.assertIn("## 当前章节原文\n章节原文", user)
+        self.assertIn("## 新大纲及细节\n1. 新事件", user)
+        self.assertIn('## 作者风格\n{\n  "voice": "克制"\n}', user)
+        self.assertNotIn('"source_text"', user)
+
+        extraction = PromptCompiler().compile_creative_json(
+            stage="author_style_extraction",
+            system_prompt="系统规则",
+            task_prompt="",
+            payload={"sample_text": "整本原文", "extraction_prompt": "提取风格"},
+            user_instruction="",
+            output_contract="返回作者风格 JSON",
+            plain_context=True,
+        ).message_list()[1]["content"]
+        self.assertIn("## 整本小说原文\n整本原文", extraction)
+        self.assertIn("## 作者风格提取提示词\n提取风格", extraction)
+        self.assertNotIn('"sample_text"', extraction)
+
     def test_project_creation_copies_selected_master_prompt(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd(), ignore_cleanup_errors=True) as directory:
             root = Path(directory)

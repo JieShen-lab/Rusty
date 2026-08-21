@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .connection import session
 
-CURRENT_SCHEMA_VERSION = 57
+CURRENT_SCHEMA_VERSION = 61
 
 logger = logging.getLogger(__name__)
 
@@ -5099,6 +5099,436 @@ def _migrate_to_v57(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_to_v58(connection: sqlite3.Connection) -> None:
+    """Keep chapter summaries focused on plot, main characters, and key events."""
+    if not _table_exists(connection, "prompt_definitions"):
+        return
+    connection.execute(
+        """UPDATE prompt_definitions
+           SET content = ?, input_description = ?, updated_at = CURRENT_TIMESTAMP
+           WHERE deleted_at IS NULL AND task_key = 'chapter_summary'""",
+        (
+            "只总结这一章发生了什么：剧情、主要人物和关键事件。不得提出改写方案或创作正文。",
+            "当前有效章节正文。",
+        ),
+    )
+    connection.execute(
+        """UPDATE prompt_definitions
+           SET content = ?, updated_at = CURRENT_TIMESTAMP
+           WHERE deleted_at IS NULL AND workflow_key = 'expansion' AND task_key = 'special_analysis'""",
+        (
+            "提取当前章关键事件和结束状态作为原始大纲，并设计承接它的新下一章目标大纲；不得修改当前章节。",
+        ),
+    )
+
+
+def _migrate_to_v59(connection: sqlite3.Connection) -> None:
+    """Store complete outline fields and rename reimagine to plot_rewrite."""
+    connection.execute("PRAGMA defer_foreign_keys = ON")
+
+    summaries = connection.execute("SELECT * FROM chapter_workflow_summaries").fetchall()
+    intents = connection.execute("SELECT * FROM chapter_creative_intents").fetchall()
+    analyses = connection.execute("SELECT * FROM chapter_special_analyses").fetchall()
+    styles = connection.execute("SELECT * FROM chapter_style_contexts").fetchall()
+    writings = connection.execute("SELECT * FROM chapter_writings").fetchall()
+
+    old_source_outlines: dict[int, dict[str, object]] = {}
+    old_target_outlines: dict[int, dict[str, object]] = {}
+    for row in analyses:
+        source_value = json.loads(str(row["source_outline_json"] or "[]"))
+        target_value = json.loads(str(row["target_outline_json"] or "[]"))
+        source_outline = source_value if isinstance(source_value, dict) else {"outline": source_value}
+        target_outline = target_value if isinstance(target_value, dict) else {"outline": target_value}
+        constraints = _safe_json_object(row["constraints_json"])
+        notes = json.loads(str(row["analysis_notes_json"] or "[]"))
+        if constraints:
+            target_outline.setdefault("constraints", constraints)
+        if isinstance(notes, list) and notes:
+            target_outline.setdefault("analysis_notes", notes)
+        old_source_outlines[int(row["chapter_id"])] = source_outline
+        old_target_outlines[int(row["chapter_id"])] = target_outline
+
+    for table in (
+        "chapter_writings", "chapter_style_contexts", "chapter_special_analyses",
+        "chapter_creative_intents", "chapter_workflow_summaries",
+    ):
+        connection.execute(f"DROP TABLE {table}")
+
+    connection.executescript(
+        """
+        CREATE TABLE chapter_workflow_summaries (
+            chapter_id INTEGER PRIMARY KEY,
+            plot_summary TEXT NOT NULL DEFAULT '',
+            main_characters_json TEXT NOT NULL DEFAULT '[]',
+            key_events_json TEXT NOT NULL DEFAULT '[]',
+            source_outline_json TEXT NOT NULL DEFAULT '{}',
+            relationships_json TEXT NOT NULL DEFAULT '[]',
+            start_state_json TEXT NOT NULL DEFAULT '{}',
+            end_state_json TEXT NOT NULL DEFAULT '{}',
+            important_facts_json TEXT NOT NULL DEFAULT '[]',
+            open_threads_json TEXT NOT NULL DEFAULT '[]',
+            source_hash TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE chapter_creative_intents (
+            chapter_id INTEGER PRIMARY KEY,
+            strategy TEXT NOT NULL CHECK (strategy IN ('plot_adjust', 'expansion', 'plot_rewrite')),
+            user_instruction TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE chapter_special_analyses (
+            chapter_id INTEGER PRIMARY KEY,
+            strategy TEXT NOT NULL CHECK (strategy IN ('plot_adjust', 'expansion', 'plot_rewrite')),
+            outline_detail_level TEXT CHECK (outline_detail_level IN ('brief', 'detailed')),
+            target_outline_json TEXT NOT NULL DEFAULT '{}',
+            source_hash TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE chapter_style_contexts (
+            chapter_id INTEGER PRIMARY KEY,
+            strategy TEXT NOT NULL CHECK (strategy IN ('plot_adjust', 'expansion', 'plot_rewrite')),
+            style_mode TEXT NOT NULL CHECK (style_mode IN ('source_auto', 'selected_author_style')),
+            source_scope TEXT NOT NULL CHECK (source_scope IN ('document', 'chapter')),
+            author_style_material_id INTEGER,
+            author_style_material_version INTEGER,
+            style_snapshot_json TEXT NOT NULL DEFAULT '{}',
+            extraction_settings_snapshot_json TEXT NOT NULL DEFAULT '{}',
+            generated_guidance TEXT NOT NULL DEFAULT '',
+            source_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE,
+            FOREIGN KEY (author_style_material_id) REFERENCES materials(id) ON DELETE SET NULL
+        );
+
+        CREATE TABLE chapter_writings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chapter_id INTEGER NOT NULL UNIQUE,
+            strategy TEXT NOT NULL CHECK (strategy IN ('plot_adjust', 'expansion', 'plot_rewrite')),
+            writing_plan_json TEXT NOT NULL DEFAULT '[]',
+            result_text TEXT NOT NULL DEFAULT '',
+            created_chapter_id INTEGER,
+            source_hash TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'reviewed', 'confirmed')),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE,
+            FOREIGN KEY (created_chapter_id) REFERENCES chapters(id) ON DELETE SET NULL
+        );
+        """
+    )
+
+    for row in summaries:
+        connection.execute(
+            """INSERT INTO chapter_workflow_summaries(
+                   chapter_id,plot_summary,main_characters_json,key_events_json,source_outline_json,
+                   relationships_json,start_state_json,end_state_json,important_facts_json,
+                   open_threads_json,source_hash,updated_at
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                row["chapter_id"], row["plot_summary"], row["main_characters_json"], row["key_events_json"],
+                json.dumps(old_source_outlines.get(int(row["chapter_id"]), {}), ensure_ascii=False),
+                row["relationships_json"], row["start_state_json"], row["end_state_json"],
+                row["important_facts_json"], row["open_threads_json"], row["source_hash"], row["updated_at"],
+            ),
+        )
+    for row in intents:
+        connection.execute(
+            "INSERT INTO chapter_creative_intents VALUES(?,?,?,?)",
+            (row["chapter_id"], "plot_rewrite" if row["strategy"] == "reimagine" else row["strategy"], row["user_instruction"], row["updated_at"]),
+        )
+    for row in analyses:
+        connection.execute(
+            "INSERT INTO chapter_special_analyses VALUES(?,?,?,?,?,?)",
+            (
+                row["chapter_id"], "plot_rewrite" if row["strategy"] == "reimagine" else row["strategy"],
+                row["outline_detail_level"], json.dumps(old_target_outlines[int(row["chapter_id"])], ensure_ascii=False),
+                row["source_hash"], row["updated_at"],
+            ),
+        )
+    for row in styles:
+        connection.execute(
+            """INSERT INTO chapter_style_contexts VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                row["chapter_id"], "plot_rewrite" if row["strategy"] == "reimagine" else row["strategy"],
+                row["style_mode"], row["source_scope"], row["author_style_material_id"],
+                row["author_style_material_version"], row["style_snapshot_json"],
+                row["extraction_settings_snapshot_json"], row["generated_guidance"], row["source_hash"],
+                row["created_at"], row["updated_at"],
+            ),
+        )
+    for row in writings:
+        connection.execute(
+            "INSERT INTO chapter_writings VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (
+                row["id"], row["chapter_id"], "plot_rewrite" if row["strategy"] == "reimagine" else row["strategy"],
+                row["writing_plan_json"], row["result_text"], row["created_chapter_id"], row["source_hash"],
+                row["status"], row["created_at"], row["updated_at"],
+            ),
+        )
+
+    connection.execute(
+        """UPDATE prompt_definitions
+           SET workflow_key='plot_rewrite', name=REPLACE(name,'重新构思','重写剧情'),
+               description=REPLACE(description,'重新构思','重写剧情'),
+               content=REPLACE(content,'重新构思','重写剧情'),
+               input_description=REPLACE(input_description,'重新构思','重写剧情'),
+               updated_at=CURRENT_TIMESTAMP
+           WHERE workflow_key='reimagine'"""
+    )
+    connection.execute(
+        """UPDATE prompt_definitions
+           SET content='只总结这一章发生了什么，返回剧情总结、主要人物、关键事件和完整原文大纲。原文大纲内部字段由本提示词定义，不得提出改写方案或创作正文。',
+               input_description='当前有效章节正文。', updated_at=CURRENT_TIMESTAMP
+           WHERE deleted_at IS NULL AND task_key='chapter_summary'"""
+    )
+    connection.execute(
+        """UPDATE prompt_definitions
+           SET content=CASE workflow_key
+               WHEN 'plot_adjust' THEN '根据内容总结、原文大纲和用户要求生成新的剧情大纲。target_outline 内部字段由本提示词定义，不要返回原文正文。'
+               WHEN 'expansion' THEN '根据内容总结、原文大纲和用户要求生成承接当前章的新剧情大纲。target_outline 内部字段由本提示词定义，不要返回原文正文。'
+               WHEN 'plot_rewrite' THEN '根据内容总结、原文大纲、用户要求和所选粒度生成重写后的剧情大纲。target_outline 内部字段由本提示词定义，不要返回原文正文。'
+               ELSE content END,
+               input_description='内容总结、原文大纲和用户具体要求。', updated_at=CURRENT_TIMESTAMP
+           WHERE deleted_at IS NULL AND task_key='special_analysis'"""
+    )
+    connection.execute(
+        """UPDATE prompt_definitions
+           SET content='严格执行用户已确认的新大纲和用户要求，结合作者提示词生成正文。调整剧情与增加剧情会同时提供原文；重写剧情不提供原文。',
+               input_description='修改后的新大纲、作者提示词、用户要求，以及当前方向需要时的原文。',
+               updated_at=CURRENT_TIMESTAMP
+           WHERE deleted_at IS NULL AND task_key='writing'"""
+    )
+
+
+def _migrate_to_v60(connection: sqlite3.Connection) -> None:
+    """Replace structured outline JSON with editable numbered plain text."""
+    connection.execute("PRAGMA defer_foreign_keys = ON")
+    summaries = connection.execute("SELECT * FROM chapter_workflow_summaries").fetchall()
+    analyses = connection.execute("SELECT * FROM chapter_special_analyses").fetchall()
+
+    connection.execute("DROP TABLE chapter_special_analyses")
+    connection.execute("DROP TABLE chapter_workflow_summaries")
+    connection.executescript(
+        """
+        CREATE TABLE chapter_workflow_summaries (
+            chapter_id INTEGER PRIMARY KEY,
+            plot_summary TEXT NOT NULL DEFAULT '',
+            main_characters_json TEXT NOT NULL DEFAULT '[]',
+            key_events_json TEXT NOT NULL DEFAULT '[]',
+            source_outline TEXT NOT NULL DEFAULT '',
+            relationships_json TEXT NOT NULL DEFAULT '[]',
+            start_state_json TEXT NOT NULL DEFAULT '{}',
+            end_state_json TEXT NOT NULL DEFAULT '{}',
+            important_facts_json TEXT NOT NULL DEFAULT '[]',
+            open_threads_json TEXT NOT NULL DEFAULT '[]',
+            source_hash TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE chapter_special_analyses (
+            chapter_id INTEGER PRIMARY KEY,
+            strategy TEXT NOT NULL CHECK (strategy IN ('plot_adjust', 'expansion', 'plot_rewrite')),
+            outline_detail_level TEXT CHECK (outline_detail_level IN ('brief', 'detailed')),
+            target_outline TEXT NOT NULL DEFAULT '',
+            source_hash TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE
+        );
+        """
+    )
+
+    for row in summaries:
+        connection.execute(
+            """INSERT INTO chapter_workflow_summaries(
+                   chapter_id,plot_summary,main_characters_json,key_events_json,source_outline,
+                   relationships_json,start_state_json,end_state_json,important_facts_json,
+                   open_threads_json,source_hash,updated_at
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                row["chapter_id"], row["plot_summary"], row["main_characters_json"], row["key_events_json"],
+                _outline_text_from_storage(row["source_outline_json"]), row["relationships_json"],
+                row["start_state_json"], row["end_state_json"], row["important_facts_json"],
+                row["open_threads_json"], row["source_hash"], row["updated_at"],
+            ),
+        )
+    for row in analyses:
+        connection.execute(
+            "INSERT INTO chapter_special_analyses VALUES(?,?,?,?,?,?)",
+            (
+                row["chapter_id"], row["strategy"], row["outline_detail_level"],
+                _outline_text_from_storage(row["target_outline_json"]), row["source_hash"], row["updated_at"],
+            ),
+        )
+
+    connection.execute(
+        """UPDATE prompt_definitions
+           SET content='阅读当前章节原文，按事件发生顺序总结原文大纲。source_outline 必须是一段带序号的纯文本，每行一个事件；只写序号和事件内容，不得返回 id、type、detail、状态字段、对象或数组。另返回剧情总结、主要人物和关键事件。',
+               input_description='当前有效章节原文。', updated_at=CURRENT_TIMESTAMP
+           WHERE deleted_at IS NULL AND task_key='chapter_summary'"""
+    )
+    connection.execute(
+        """UPDATE prompt_definitions
+           SET content=CASE workflow_key
+               WHEN 'plot_adjust' THEN '根据原文大纲和用户要求构思调整后的新大纲。target_outline 必须是一段带序号的纯文本，每行一个事件，不得返回结构化节点或其他字段。'
+               WHEN 'expansion' THEN '根据原文大纲和用户要求构思承接当前章的新大纲。target_outline 必须是一段带序号的纯文本，每行一个事件，不得返回结构化节点或其他字段。'
+               WHEN 'plot_rewrite' THEN '根据原文大纲、用户要求和所选粒度构思重写后的新大纲。target_outline 必须是一段带序号的纯文本，每行一个事件，不得返回结构化节点或其他字段。'
+               ELSE content END,
+               input_description='原文大纲和用户具体要求。', updated_at=CURRENT_TIMESTAMP
+           WHERE deleted_at IS NULL AND task_key='special_analysis'"""
+    )
+    connection.execute(
+        """UPDATE prompt_definitions
+           SET content='根据用户确认的新大纲和作者提示词直接生成正文。只按新大纲中的事件与顺序写作，不要求结构化节点或场景映射。',
+               input_description='修改后的新大纲、作者提示词和用户要求。', updated_at=CURRENT_TIMESTAMP
+           WHERE deleted_at IS NULL AND task_key='writing'"""
+    )
+
+
+def _migrate_to_v61(connection: sqlite3.Connection) -> None:
+    """Align stored workflow blocks with the three program-controlled creative flows."""
+    connection.execute("PRAGMA defer_foreign_keys = ON")
+    summaries = connection.execute("SELECT * FROM chapter_workflow_summaries").fetchall()
+    analyses = connection.execute("SELECT * FROM chapter_special_analyses").fetchall()
+    summary_outlines = {int(row["chapter_id"]): str(row["source_outline"] or "") for row in summaries}
+
+    connection.execute("DROP TABLE chapter_special_analyses")
+    connection.execute("DROP TABLE chapter_workflow_summaries")
+    connection.executescript(
+        """
+        CREATE TABLE chapter_workflow_summaries (
+            chapter_id INTEGER PRIMARY KEY,
+            plot_summary TEXT NOT NULL DEFAULT '',
+            main_characters TEXT NOT NULL DEFAULT '',
+            key_events TEXT NOT NULL DEFAULT '',
+            source_hash TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE chapter_special_analyses (
+            chapter_id INTEGER PRIMARY KEY,
+            strategy TEXT NOT NULL CHECK (strategy IN ('plot_adjust', 'expansion', 'plot_rewrite')),
+            source_outline TEXT NOT NULL DEFAULT '',
+            target_outline TEXT NOT NULL DEFAULT '',
+            source_hash TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE
+        );
+        """
+    )
+
+    for row in summaries:
+        connection.execute(
+            "INSERT INTO chapter_workflow_summaries VALUES(?,?,?,?,?,?)",
+            (
+                row["chapter_id"], row["plot_summary"],
+                _plain_text_from_storage(row["main_characters_json"]),
+                _plain_text_from_storage(row["key_events_json"], numbered=True),
+                row["source_hash"], row["updated_at"],
+            ),
+        )
+    for row in analyses:
+        strategy = str(row["strategy"])
+        connection.execute(
+            "INSERT INTO chapter_special_analyses VALUES(?,?,?,?,?,?)",
+            (
+                row["chapter_id"], strategy,
+                summary_outlines.get(int(row["chapter_id"]), "") if strategy == "plot_adjust" else "",
+                row["target_outline"], row["source_hash"], row["updated_at"],
+            ),
+        )
+
+    connection.execute(
+        """UPDATE prompt_definitions
+           SET content='阅读当前章节原文，按提示词要求生成剧情总结、关键事件、主要人物及人物设定。提示词可以决定总结的细节、视角和侧重点。不要生成原文大纲。',
+               input_description='当前章节原文。', updated_at=CURRENT_TIMESTAMP
+           WHERE deleted_at IS NULL AND task_key='chapter_summary'"""
+    )
+    connection.execute(
+        """UPDATE prompt_definitions
+           SET content=CASE workflow_key
+               WHEN 'plot_adjust' THEN '阅读当前章节原文并执行用户的调整要求。先按顺序编号总结一份用于对照的旧大纲，再生成按顺序编号且包含所需细节的新大纲。大纲使用可直接编辑的纯文本，不要返回节点对象、ID或类型字段。'
+               WHEN 'expansion' THEN '阅读整本小说原文并执行用户要求，设计应插入当前章之后的新章节大纲。大纲按顺序编号；只返回新大纲，不要返回旧大纲或正文。'
+               WHEN 'plot_rewrite' THEN '阅读当前章节原文并执行用户要求，生成按顺序编号的重写大纲。只返回新大纲，不要返回旧大纲或正文。'
+               ELSE content END,
+               input_description=CASE workflow_key
+               WHEN 'expansion' THEN '整本小说原文和用户要求。'
+               ELSE '当前章节原文和用户要求。' END,
+               updated_at=CURRENT_TIMESTAMP
+           WHERE deleted_at IS NULL AND task_key='special_analysis'"""
+    )
+    connection.execute(
+        """UPDATE prompt_definitions
+           SET content='根据程序提供的原文、新大纲及细节和作者风格生成完整小说正文。不同创作方向会提供不同组合；只使用实际提供的内容，不要输出说明、分析或JSON。',
+               input_description='程序按调整剧情、增加剧情或重写剧情组合所需原文、大纲和作者风格。',
+               updated_at=CURRENT_TIMESTAMP
+           WHERE deleted_at IS NULL AND task_key='writing'"""
+    )
+
+
+def _plain_text_from_storage(value: object, *, numbered: bool = False) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return raw
+    if isinstance(parsed, str):
+        return parsed.strip()
+    items = parsed if isinstance(parsed, list) else [parsed]
+    lines: list[str] = []
+    for item in items:
+        if isinstance(item, dict):
+            parts = [str(part).strip() for part in item.values() if str(part).strip()]
+            text = "；".join(parts)
+        else:
+            text = str(item).strip()
+        if text:
+            lines.append(text)
+    if numbered:
+        return "\n".join(f"{index}. {line}" for index, line in enumerate(lines, 1))
+    return "\n".join(lines)
+
+
+def _outline_text_from_storage(value: object) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        parsed = raw
+    lines = _outline_event_lines(parsed)
+    return "\n".join(f"{index}. {line}" for index, line in enumerate(lines, 1))
+
+
+def _outline_event_lines(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [re.sub(r"^\s*\d+[.、]\s*", "", line).strip() for line in value.splitlines() if line.strip()]
+    if isinstance(value, list):
+        return [line for item in value for line in _outline_event_lines(item)]
+    if not isinstance(value, dict):
+        return [str(value)] if value is not None else []
+    for wrapper in ("outline", "source_outline", "target_outline"):
+        if wrapper in value:
+            return _outline_event_lines(value[wrapper])
+    for text_key in ("event", "summary", "title", "content", "text"):
+        text = value.get(text_key)
+        if isinstance(text, str) and text.strip():
+            return [text.strip()]
+    ignored = {"id", "type", "detail", "state_after", "state_before", "source_ids", "operation", "constraints", "analysis_notes"}
+    return [line for key, item in value.items() if key not in ignored for line in _outline_event_lines(item)]
+
+
 def _safe_json_list(value: object) -> list[dict[str, object]]:
     try:
         parsed = json.loads(str(value or "[]"))
@@ -5508,6 +5938,10 @@ MIGRATIONS = {
     55: _migrate_to_v55,
     56: _migrate_to_v56,
     57: _migrate_to_v57,
+    58: _migrate_to_v58,
+    59: _migrate_to_v59,
+    60: _migrate_to_v60,
+    61: _migrate_to_v61,
 }
 
 

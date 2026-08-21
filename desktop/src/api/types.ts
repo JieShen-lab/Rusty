@@ -1013,11 +1013,10 @@ export type ProjectMasterPrompt = {
   updated_at: string;
 };
 
-export type CreativeStrategy = 'plot_adjust' | 'expansion' | 'reimagine';
-export type OutlineNode = { id: string; operation?: 'preserve' | 'modify' | 'delete' | 'insert'; source_ids?: string[]; [key: string]: unknown };
-export type ChapterSummary = { chapter_id: number; plot_summary: string; main_characters: unknown[]; key_events: unknown[]; relationships: unknown[]; start_state: Record<string, unknown>; end_state: Record<string, unknown>; important_facts: unknown[]; open_threads: unknown[]; source_hash: string; updated_at: string };
+export type CreativeStrategy = 'plot_adjust' | 'expansion' | 'plot_rewrite';
+export type ChapterSummary = { chapter_id: number; plot_summary: string; main_characters: string; key_events: string; source_hash: string; updated_at: string };
 export type ChapterCreativeIntent = { chapter_id: number; strategy: CreativeStrategy; user_instruction: string; updated_at: string };
-export type ChapterSpecialAnalysis = { chapter_id: number; strategy: CreativeStrategy; outline_detail_level: 'brief' | 'detailed' | null; source_outline: OutlineNode[]; target_outline: OutlineNode[]; constraints: Record<string, unknown>; analysis_notes: unknown[]; source_hash: string; updated_at: string };
+export type ChapterSpecialAnalysis = { chapter_id: number; strategy: CreativeStrategy; source_outline: string; target_outline: string; source_hash: string; updated_at: string };
 export type ChapterStyleContext = { chapter_id: number; strategy: CreativeStrategy; style_mode: 'source_auto' | 'selected_author_style'; source_scope: 'document' | 'chapter'; author_style_material_id: number | null; author_style_material_version: number | null; style_snapshot: Record<string, unknown>; extraction_settings_snapshot: Record<string, unknown>; generated_guidance: string; source_hash: string; created_at: string };
 export type ChapterWriting = { id: number; chapter_id: number; strategy: CreativeStrategy; writing_plan: Array<Record<string, unknown>>; result_text: string; created_chapter_id: number | null; source_hash: string; status: 'draft' | 'reviewed' | 'confirmed'; updated_at: string };
 export type SceneBoundaryItem = {

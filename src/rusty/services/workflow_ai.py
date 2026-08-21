@@ -39,6 +39,7 @@ class WorkflowAI:
         workflow_key: str | None = None,
         task_key: str | None = None,
         user_instruction: str = "",
+        plain_context: bool = False,
     ) -> dict[str, Any]:
         fake_method = getattr(self.client, "generate_json", None)
         if callable(fake_method):
@@ -48,12 +49,54 @@ class WorkflowAI:
             return value
 
         model = self.models.resolve_model_config(project_id=project_id)
-        system_definition = self.prompts.get_system_prompt()
+        system_prompt = self._require_system_prompt()
         task_workflow = workflow_key if task_key not in {"chapter_summary", "writing"} else None
         definition = self.prompts.find_task(workflow_key=task_workflow, task_key=task_key) if task_key else None
         request = self.compiler.compile_creative_json(
             stage=stage,
-            system_prompt=system_definition.content if system_definition else "",
+            system_prompt=system_prompt,
+            task_prompt=definition.content if definition else "",
+            payload=payload,
+            user_instruction=user_instruction,
+            output_contract=output_contract,
+            prompt_definition_id=definition.id if definition else None,
+            plain_context=plain_context,
+        )
+        response = self.client.chat(
+            model,
+            self.models.get_api_key(model.id),
+            request.message_list(),
+        )
+        parsed = _parse_json_object(response.text)
+        if not isinstance(parsed, dict):
+            raise ValueError(f"{stage} must return a JSON object.")
+        return parsed
+
+    def generate_text(
+        self,
+        *,
+        project_id: int,
+        stage: str,
+        payload: dict[str, Any],
+        output_contract: str,
+        workflow_key: str | None = None,
+        task_key: str | None = None,
+        user_instruction: str = "",
+    ) -> str:
+        fake_method = getattr(self.client, "generate_text", None)
+        if callable(fake_method):
+            value = fake_method(stage, payload)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{stage} must return non-empty plain text.")
+            return value.strip()
+
+        model = self.models.resolve_model_config(project_id=project_id)
+        system_prompt = self._require_system_prompt()
+        task_workflow = workflow_key if task_key not in {"chapter_summary", "writing"} else None
+        definition = self.prompts.find_task(workflow_key=task_workflow, task_key=task_key) if task_key else None
+        request = self.compiler.compile_creative_text(
+            stage=stage,
+            system_prompt=system_prompt,
             task_prompt=definition.content if definition else "",
             payload=payload,
             user_instruction=user_instruction,
@@ -65,10 +108,16 @@ class WorkflowAI:
             self.models.get_api_key(model.id),
             request.message_list(),
         )
-        parsed = _parse_json_object(response.text)
-        if not isinstance(parsed, dict):
-            raise ValueError(f"{stage} must return a JSON object.")
-        return parsed
+        value = response.text.strip()
+        if not value:
+            raise ValueError(f"{stage} returned empty plain text.")
+        return value
+
+    def _require_system_prompt(self) -> str:
+        definition = self.prompts.get_system_prompt()
+        if definition is None or not definition.content.strip():
+            raise ValueError("系统提示词不能为空；所有 AI 请求都必须携带系统提示词。")
+        return definition.content.strip()
 
 
 def _parse_json_object(text: str) -> dict[str, Any]:

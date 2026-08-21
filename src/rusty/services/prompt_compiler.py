@@ -96,6 +96,7 @@ class PromptCompiler:
         user_instruction: str,
         output_contract: str,
         prompt_definition_id: int | None = None,
+        plain_context: bool = False,
     ) -> CompiledRequest:
         """Compile new creative tasks while keeping the output contract program-owned."""
         internal_rules = (
@@ -108,9 +109,16 @@ class PromptCompiler:
             f"[RUSTY OUTPUT AND SAFETY RULES]\n{internal_rules}\n\n"
             f"[CURRENT TASK PROMPT]\n{task_prompt.strip() or 'None'}"
         )
+        dynamic_context = json.dumps(payload, ensure_ascii=False, indent=2)
+        if plain_context:
+            dynamic_context = "\n\n".join(
+                f"## {_creative_context_title(key)}\n{_creative_context_text(value)}"
+                for key, value in payload.items()
+                if _creative_context_text(value)
+            )
         user = (
             "[DYNAMIC CONTEXT]\n"
-            f"{json.dumps(payload, ensure_ascii=False, indent=2)}\n\n"
+            f"{dynamic_context or 'None'}\n\n"
             "[THIS REQUEST'S USER INSTRUCTION]\n"
             f"{user_instruction.strip() or 'None'}\n\n"
             "[PROGRAM-CONTROLLED OUTPUT CONTRACT]\n"
@@ -129,6 +137,55 @@ class PromptCompiler:
                 "prompt_definition_id": prompt_definition_id,
             },
             ruleset_id="rusty.native.creative.v1",
+        )
+
+    def compile_creative_text(
+        self,
+        *,
+        stage: str,
+        system_prompt: str,
+        task_prompt: str,
+        payload: dict[str, Any],
+        user_instruction: str,
+        output_contract: str,
+        prompt_definition_id: int | None = None,
+    ) -> CompiledRequest:
+        """Compile a creative task whose result is plain text rather than JSON."""
+        internal_rules = (
+            "Use only the context supplied by Rusty. Follow the current task prompt for content, "
+            "detail and viewpoint. Return plain text only and obey the program-controlled section format."
+        )
+        system = (
+            f"[GLOBAL SYSTEM PROMPT - HIGHEST PRIORITY]\n{system_prompt.strip() or 'None'}\n\n"
+            f"[RUSTY OUTPUT RULES]\n{internal_rules}\n\n"
+            f"[CURRENT TASK PROMPT]\n{task_prompt.strip() or 'None'}"
+        )
+        blocks: list[str] = []
+        for key, value in payload.items():
+            text = _creative_context_text(value)
+            if text:
+                blocks.append(f"## {_creative_context_title(key)}\n{text}")
+        context = "\n\n".join(blocks) or "None"
+        user = (
+            f"[DYNAMIC CONTEXT]\n{context}\n\n"
+            "[THIS REQUEST'S USER INSTRUCTION]\n"
+            f"{user_instruction.strip() or 'None'}\n\n"
+            "[PROGRAM-CONTROLLED OUTPUT FORMAT]\n"
+            f"{output_contract}"
+        )
+        return CompiledRequest(
+            stage=stage,
+            messages=(
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ),
+            expected_output=output_contract,
+            provenance={
+                "compiler": "rusty-creative-text-task",
+                "workflow_stage": stage,
+                "prompt_definition_id": prompt_definition_id,
+            },
+            ruleset_id="rusty.native.creative.text.v1",
         )
 
     def compile_summary(self, chapter, template) -> CompiledRequest:
@@ -386,3 +443,25 @@ def _chapter_section(title: str, text: str) -> str:
 
 def _join_nonempty(*parts: str) -> str:
     return "\n\n".join(part.strip() for part in parts if part and part.strip())
+
+
+def _creative_context_title(key: str) -> str:
+    return {
+        "source_text": "当前章节原文",
+        "document_text": "整本小说原文",
+        "source_outline": "旧大纲",
+        "target_outline": "新大纲及细节",
+        "author_style": "作者风格",
+        "sample_text": "整本小说原文",
+        "extraction_prompt": "作者风格提取提示词",
+    }.get(key, key)
+
+
+def _creative_context_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False, indent=2)
+    return str(value).strip()

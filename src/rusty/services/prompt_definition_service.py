@@ -9,7 +9,7 @@ from rusty.db import default_database_path, session
 
 
 PROMPT_KINDS = {"master", "workflow_task", "common_task"}
-WORKFLOW_KEYS = {"plot_adjust", "expansion", "reimagine"}
+WORKFLOW_KEYS = {"plot_adjust", "expansion", "plot_rewrite"}
 
 
 @dataclass(frozen=True)
@@ -230,7 +230,7 @@ class PromptDefinitionService:
         elif workflow_key is None or task_key is None:
             raise ValueError("Workflow task prompts require workflow_key and task_key.")
         elif workflow_key not in WORKFLOW_KEYS:
-            raise ValueError("workflow_key must be plot_adjust, expansion, or reimagine.")
+            raise ValueError("workflow_key must be plot_adjust, expansion, or plot_rewrite.")
         name = str(value.get("name") or "").strip()
         if not name:
             raise ValueError("Prompt name is required.")

@@ -1215,6 +1215,105 @@ class DocumentLibraryService:
             created=True,
         )
 
+    def create_volume(self, document_id: int, chapter_id: int, title: str) -> CleanupResult:
+        """Start a new volume at an existing chapter and preserve the remaining hierarchy."""
+        self._ensure_content_mutable(document_id)
+        normalized_title = title.strip()
+        if not normalized_title:
+            raise ValueError("卷标题不能为空。")
+        document = self._get_document(document_id)
+        current = self._ensure_initial_revision(document_id)
+        source_text = Path(current.storage_path).read_text(encoding="utf-8")
+        chapters = self.list_chapters(document_id)
+        target = next((chapter for chapter in chapters if chapter.id == chapter_id), None)
+        if target is None:
+            raise FileNotFoundError(f"找不到章节：{chapter_id}")
+        volumes = self.list_volumes(document_id)
+        target_start, _ = self._chapter_offsets(source_text, target)
+        current_volume = next(
+            (volume for volume in volumes if volume.id == target.volume_id),
+            None,
+        )
+        if current_volume is not None:
+            first_in_volume = next(
+                (chapter for chapter in chapters if chapter.volume_id == current_volume.id),
+                None,
+            )
+            if first_in_volume is not None and first_in_volume.id == target.id:
+                raise ValueError("所选章节已经是当前卷的第一章。")
+
+        leading_separator = "\n\n" if target_start > 0 and not source_text[:target_start].endswith("\n\n") else ""
+        volume_heading = f"{normalized_title}\n\n"
+        inserted_text = leading_separator + volume_heading
+        heading_start = target_start + len(leading_separator)
+        delta = len(inserted_text)
+        new_text = source_text[:target_start] + inserted_text + source_text[target_start:]
+        next_volume_start = min(
+            (volume.start_offset for volume in volumes if volume.start_offset > target_start),
+            default=len(source_text),
+        )
+        new_volume_key = max((volume.index for volume in volumes), default=0) + 1
+        volume_index_by_id = {volume.id: volume.index for volume in volumes}
+
+        chapter_boundaries: list[dict[str, object]] = []
+        for chapter in chapters:
+            start, end = self._chapter_offsets(source_text, chapter)
+            source_start = start
+            if start >= target_start:
+                start += delta
+                end += delta
+            chapter_boundaries.append(
+                {
+                    "title": chapter.title,
+                    "start_offset": start,
+                    "end_offset": end,
+                    "volume_index": (
+                        new_volume_key
+                        if target_start <= source_start < next_volume_start
+                        else volume_index_by_id.get(chapter.volume_id)
+                    ),
+                }
+            )
+
+        volume_boundaries: list[dict[str, object]] = []
+        for volume in volumes:
+            start, end = volume.start_offset, volume.end_offset
+            if start > target_start:
+                start += delta
+                end += delta
+            elif start < target_start < end:
+                end = heading_start
+            volume_boundaries.append(
+                {
+                    "volume_index": volume.index,
+                    "title": volume.title,
+                    "start_offset": start,
+                    "end_offset": end,
+                }
+            )
+        volume_boundaries.append(
+            {
+                "volume_index": new_volume_key,
+                "title": normalized_title,
+                "start_offset": heading_start,
+                "end_offset": next_volume_start + delta,
+            }
+        )
+        revision = self._create_text_revision(
+            document,
+            current,
+            new_text,
+            "manual_edit",
+            {"operation": "create_volume", "source_chapter_id": chapter_id},
+            chapter_boundaries=chapter_boundaries,
+            volume_boundaries=volume_boundaries,
+        )
+        return CleanupResult(
+            document=self._get_document(document_id),
+            revision=revision,
+            created=True,
+        )
+
     def _commit_content(
         self,
         document_id: int,

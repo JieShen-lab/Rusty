@@ -38,6 +38,7 @@ import {
   activateLibraryDocumentRevision,
   assignDocumentTag,
   cleanupLibraryDocumentWithAI,
+  createLibraryDocumentVolume,
   createDocumentCategory,
   createDocumentTag,
   createLibraryDocumentChapter,
@@ -133,6 +134,7 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
   const [metadataTitle, setMetadataTitle] = useState('');
   const [metadataAuthor, setMetadataAuthor] = useState('');
   const [actionDialog, setActionDialog] = useState<DocumentAction | null>(null);
+  const [volumeCreateOpen, setVolumeCreateOpen] = useState(false);
   const [cleanupOpen, setCleanupOpen] = useState(false);
   const [cleanupStatuses, setCleanupStatuses] = useState<CleanupStatus[]>([]);
   const [revisionsOpen, setRevisionsOpen] = useState(false);
@@ -403,6 +405,22 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
       );
       await refreshWorkspaceDocument(result.document, null);
       setMessage('卷标题已保存为新版本。');
+    });
+  }
+
+  async function openCreateVolume() {
+    if (!selectedDocument || selectedChapterId == null) return;
+    if (!(await flushEditorDraft('新建分卷'))) return;
+    setVolumeCreateOpen(true);
+  }
+
+  async function createVolume(title: string) {
+    if (!selectedDocument || selectedChapterId == null) return;
+    setVolumeCreateOpen(false);
+    await runProcessing(async () => {
+      const result = await createLibraryDocumentVolume(selectedDocument.id, selectedChapterId, title);
+      await refreshWorkspaceDocument(result.document, null);
+      setMessage(`已从当前章节开始新建“${title}”，本卷章节从 1 重新编号。`);
     });
   }
 
@@ -719,6 +737,7 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
           draft={documentDraft}
           document={selectedDocument}
           onContentChange={(chapterId) => void showDocumentContent(chapterId)}
+          onCreateVolume={() => void openCreateVolume()}
           onDeleteChapter={(chapter) => void deleteChapter(chapter)}
           onExport={() => { void flushEditorDraft('导出文档').then((saved) => { if (saved) setExportOpen(true); }); }}
           onDocumentAction={(action) => void handleDocumentAction(action)}
@@ -760,6 +779,14 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
             onRestore={(revisionId) => void restoreRevision(revisionId).then(() => setRevisionsOpen(false))}
             readOnly={selectedDocument.is_project_document}
             revisions={revisions}
+          />
+        ) : null}
+        {volumeCreateOpen ? (
+          <CreateVolumeDialog
+            busy={processingBusy}
+            defaultTitle={`第${volumes.length + 1}卷`}
+            onClose={() => setVolumeCreateOpen(false)}
+            onCreate={(title) => void createVolume(title)}
           />
         ) : null}
         {exportOpen ? <ExportDialog busy={busy} document={selectedDocument} onClose={() => setExportOpen(false)} onExport={(format) => void exportDocument(format)} /> : null}
@@ -1048,6 +1075,7 @@ type DocumentWorkspaceProps = {
   draft: LibraryDocumentDraft | null;
   document: LibraryDocument;
   onContentChange: (chapterId: number | null) => void;
+  onCreateVolume: () => void;
   onDeleteChapter: (chapter: LibraryDocumentChapter) => void;
   onExport: () => void;
   onReorder: (draggedId: number, targetId: number | null, targetVolumeId: number | null) => void;
@@ -1157,6 +1185,7 @@ const DocumentWorkspace = forwardRef<DocumentEditorController, DocumentWorkspace
             {!props.readOnly ? <div className="inspector-action-area">
               <button className="button secondary full" onClick={() => props.onDocumentAction('merge')} type="button"><Combine size={16} />合并文档</button>
               <button className="button secondary full" onClick={() => props.onDocumentAction('create-chapter')} type="button"><Plus size={16} />新增章节</button>
+              <button className="button secondary full" disabled={props.selectedChapterId == null} onClick={props.onCreateVolume} type="button"><FolderPlus size={16} />新建分卷</button>
               <button className="button secondary full" onClick={() => props.onDocumentAction('split')} type="button"><Scissors size={16} />分章</button>
               <button className="button secondary full" onClick={props.onOpenCleanup} type="button"><WandSparkles size={16} />文字整理</button>
               <button className="button secondary full" onClick={props.onOpenRevisions} type="button"><Clock3 size={16} />版本记录</button>
@@ -1226,7 +1255,7 @@ function WorkspaceChapterNav({
       volume,
     })),
   ].sort((left, right) => left.sort - right.sort);
-  const renderChapter = (chapter: LibraryDocumentChapter) => (
+  const renderChapter = (chapter: LibraryDocumentChapter, displayIndex: number) => (
     <button
       aria-current={selectedChapterId === chapter.id ? 'page' : undefined}
       className={`chapter-row draggable ${selectedChapterId === chapter.id ? 'selected' : ''}`}
@@ -1243,7 +1272,7 @@ function WorkspaceChapterNav({
       onDrop={(event) => { if (!readOnly) dropChapter(event, chapter.id, chapter.volume_id); }}
       type="button"
     >
-      <span className="chapter-number">{chapterOrdinal(chapter.index)}</span>
+      <span className="chapter-number">{chapterOrdinal(displayIndex)}</span>
       <span className="chapter-name" title={chapter.title || '未命名'}>{chapter.title || '未命名'}</span>
       <span className="chapter-state">{formatNumber(chapter.id === liveChapterId ? liveWordCount : chapter.word_count)} 字</span>
     </button>
@@ -1254,7 +1283,7 @@ function WorkspaceChapterNav({
       <div className="binder-heading"><h2>章节目录</h2><span>共 {chapters.length} 章</span></div>
       <nav className="chapter-list" ref={listRef}>
         {directoryItems.map((item) => {
-          if (item.kind === 'chapter') return renderChapter(item.chapter);
+          if (item.kind === 'chapter') return renderChapter(item.chapter, unassigned.findIndex((chapter) => chapter.id === item.chapter.id) + 1);
           const volume = item.volume;
           const volumeChapters = chapters.filter((chapter) => chapter.volume_id === volume.id);
           const isCollapsed = collapsed.has(volume.id);
@@ -1290,7 +1319,7 @@ function WorkspaceChapterNav({
                 />
                 <span>{formatNumber(volume.word_count)} 字</span>
               </div>
-              {!isCollapsed ? <div className="document-volume-chapters">{volumeChapters.map(renderChapter)}</div> : null}
+              {!isCollapsed ? <div className="document-volume-chapters">{volumeChapters.map((chapter, index) => renderChapter(chapter, index + 1))}</div> : null}
             </section>
           );
         })}
@@ -1794,6 +1823,32 @@ function DocumentCategoryNameDialog({
       title={category ? '重命名分类' : '新建分类'}
     >
       <label className="library-name-field"><span>分类名称</span><input autoFocus className="form-input" maxLength={40} onChange={(event) => setName(event.target.value)} value={name} /></label>
+    </LibraryDialog>
+  );
+}
+
+function CreateVolumeDialog({
+  busy,
+  defaultTitle,
+  onClose,
+  onCreate,
+}: {
+  busy: boolean;
+  defaultTitle: string;
+  onClose: () => void;
+  onCreate: (title: string) => void;
+}) {
+  const [title, setTitle] = useState(defaultTitle);
+  const normalizedTitle = title.trim();
+  return (
+    <LibraryDialog
+      className="document-volume-create-dialog"
+      footer={<><SecondaryButton onClick={onClose}>取消</SecondaryButton><PrimaryButton disabled={busy || !normalizedTitle} onClick={() => onCreate(normalizedTitle)}>新建分卷</PrimaryButton></>}
+      onClose={onClose}
+      subtitle="当前章节将成为新卷的第 1 章"
+      title="新建分卷"
+    >
+      <label className="library-name-field"><span>分卷名称</span><input autoFocus className="form-input" maxLength={80} onChange={(event) => setTitle(event.target.value)} value={title} /></label>
     </LibraryDialog>
   );
 }

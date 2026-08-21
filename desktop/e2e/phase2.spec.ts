@@ -271,9 +271,9 @@ async function mockApi(page: Page) {
       { id: 101, name: '系统提示词', description: '所有任务最高优先级携带', kind: 'master', workflow_key: null, task_key: null, content: '保持上下文一致。', input_description: '所有章节任务', is_default: true, created_at: '', updated_at: '' },
       { id: 102, name: '内容总结', description: '进入工程后的第一步', kind: 'common_task', workflow_key: null, task_key: 'chapter_summary', content: '提取章节事实。', input_description: '章节原文', is_default: true, created_at: '', updated_at: '' },
       { id: 103, name: '调整剧情', description: '生成原始与目标大纲', kind: 'workflow_task', workflow_key: 'plot_adjust', task_key: 'special_analysis', content: '识别需调整的章节片段。', input_description: '章节原文、具体要求', is_default: true, created_at: '', updated_at: '' },
-      { id: 104, name: '增加剧情', description: '设计新的下一章', kind: 'workflow_task', workflow_key: 'expansion', task_key: 'special_analysis', content: '设计承接章节。', input_description: '章节原文、具体要求', is_default: true, created_at: '', updated_at: '' },
-      { id: 105, name: '重新构思', description: '锁定边界并重建大纲', kind: 'workflow_task', workflow_key: 'reimagine', task_key: 'special_analysis', content: '重建章节事件链。', input_description: '章节原文、具体要求', is_default: true, created_at: '', updated_at: '' },
-      { id: 106, name: '写作', description: '三个方向共用的正文规则', kind: 'common_task', workflow_key: null, task_key: 'writing', content: '按目标大纲写作。', input_description: '目标大纲、风格', is_default: true, created_at: '', updated_at: '' },
+      { id: 104, name: '增加剧情', description: '设计新的下一章', kind: 'workflow_task', workflow_key: 'expansion', task_key: 'special_analysis', content: '设计承接章节。', input_description: '整本小说原文、具体要求', is_default: true, created_at: '', updated_at: '' },
+      { id: 105, name: '重写剧情', description: '生成重写后的剧情大纲', kind: 'workflow_task', workflow_key: 'plot_rewrite', task_key: 'special_analysis', content: '重写章节事件链。', input_description: '章节原文、具体要求', is_default: true, created_at: '', updated_at: '' },
+      { id: 106, name: '写作', description: '三个方向共用的正文规则', kind: 'common_task', workflow_key: null, task_key: 'writing', content: '按目标大纲写作。', input_description: '程序按方向组合原文、新大纲和作者风格', is_default: true, created_at: '', updated_at: '' },
     ];
     else if (path === '/api/prompts' || path === '/api/analysis-prompts' || path === '/api/projects/1/export-plan') body = [];
     else if (path === '/api/projects/1/style-synthesis') body = { prompt_template_id: null };
@@ -302,7 +302,7 @@ test('提示词菜单严格对应六个工程流程槽位并可保存', async ({
   await expect(page.locator('.prompt-definition-page > .page-topbar').getByRole('heading', { name: '提示词' })).toBeVisible();
   const menu = page.locator('.fixed-prompt-menu > button');
   await expect(menu).toHaveCount(6);
-  await expect(menu).toHaveText([/系统提示词/, /内容总结/, /调整剧情/, /增加剧情/, /重新构思/, /写作/]);
+  await expect(menu).toHaveText([/系统提示词/, /内容总结/, /调整剧情/, /增加剧情/, /重写剧情/, /写作/]);
   await expect(page.getByText('最高优先级', { exact: true })).toBeVisible();
   await expect(page.getByText('作者风格提取继续使用作者页面中的提取设置')).toBeVisible();
   await page.getByLabel('提示词正文').fill('始终先遵守系统规则。');
@@ -335,6 +335,13 @@ test('作者页以一位作者一份档案展示完整信息', async ({ page }) 
   await expect(page.locator('.material-detail-panel').getByText('冷静短句推进，重视环境细节。')).toBeVisible();
   await expect(page.getByText('句子特征')).toBeVisible();
   await expect(page.getByText('素材库', { exact: true })).toHaveCount(0);
+  await expect(page.locator('.material-library-sidebar')).toHaveCount(0);
+  await expect(page.locator('.material-library-unified')).toHaveCSS('grid-template-columns', /\S+px \S+px/);
+  await expect(page.locator('.author-cover img')).toHaveCount(0);
+  await expect(page.locator('.author-cover').first()).toBeVisible();
+  if (process.env.RUSTY_E2E_SCREENSHOT_DIR) {
+    await page.screenshot({ path: `${process.env.RUSTY_E2E_SCREENSHOT_DIR}/author-library.png` });
+  }
 });
 
 test('文档库在常用桌面窗口无横向溢出', async ({ page }) => {
@@ -349,6 +356,23 @@ test('文档库在常用桌面窗口无横向溢出', async ({ page }) => {
     await page.setViewportSize(viewport);
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
     expect(overflow).toBe(false);
+  }
+});
+
+test('文档工作区章节序号与标题分两行并提供分卷按钮', async ({ page }) => {
+  await page.goto('/documents');
+  await page.getByRole('button', { name: '示例长篇，作者' }).dblclick();
+  await expect(page.getByRole('button', { name: '新建分卷' })).toBeVisible();
+  const row = page.locator('.chapter-row').first();
+  const layout = await row.evaluate((node) => {
+    const number = node.querySelector('.chapter-number')!.getBoundingClientRect();
+    const name = node.querySelector('.chapter-name')!.getBoundingClientRect();
+    return { numberBottom: number.bottom, nameTop: name.top };
+  });
+  expect(layout.nameTop).toBeGreaterThanOrEqual(layout.numberBottom - 1);
+  await expect(row.locator('.chapter-number')).toHaveText('第一章');
+  if (process.env.RUSTY_E2E_SCREENSHOT_DIR) {
+    await page.screenshot({ path: `${process.env.RUSTY_E2E_SCREENSHOT_DIR}/document-volume-workspace.png` });
   }
 });
 

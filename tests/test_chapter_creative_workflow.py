@@ -16,6 +16,7 @@ from rusty.services.project_service import ProjectService
 class WorkflowAI:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict]] = []
+        self.strategy = "plot_adjust"
         self.patch_blocks = [
             {"operation": "preserve", "start_offset": 0, "end_offset": 4, "instruction": ""},
             {"operation": "modify", "start_offset": 4, "end_offset": 7, "instruction": "replace"},
@@ -24,41 +25,24 @@ class WorkflowAI:
 
     def generate_json(self, stage: str, payload: dict) -> dict:
         self.calls.append((stage, payload))
-        if stage == "chapter_summary":
-            return {
-                "plot_summary": "summary", "main_characters": ["甲"], "key_events": ["event"],
-                "relationships": [], "start_state": {"place": "A"}, "end_state": {"place": "B"},
-                "important_facts": ["fact"], "open_threads": ["thread"],
-            }
-        if stage == "special_analysis":
-            strategy = payload["strategy"]
-            target = [{"id": "t1", "operation": "preserve", "source_ids": ["s1"]}]
-            constraints = {}
-            if strategy == "reimagine":
-                target = [{"id": "t1", "summary": "new chain"}]
-                constraints = {
-                    "start_conditions": ["A"], "core_purpose": "goal",
-                    "required_end_state": ["B"], "hard_constraints": ["fact"],
-                }
-            elif strategy == "expansion":
-                target = [{"id": "next-1", "summary": "next chapter"}]
-            return {
-                "source_outline": [{"id": "s1", "start_offset": 0, "end_offset": 11}],
-                "target_outline": target, "constraints": constraints, "analysis_notes": [],
-            }
         if stage == "author_style_extraction":
             return {"style_snapshot": {"voice": "source"}, "generated_guidance": "follow source"}
-        if stage == "writing_plan":
-            return {"blocks": self.patch_blocks}
+        raise AssertionError(stage)
+
+    def generate_text(self, stage: str, payload: dict) -> str:
+        self.calls.append((stage, payload))
+        if stage == "chapter_summary":
+            return "【剧情总结】\nsummary\n【关键事件】\nevent\n【主要人物与设定】\n甲：主角"
+        if stage == "special_analysis":
+            if self.strategy == "plot_adjust":
+                return "【旧大纲】\n1. 甲进入\n2. 发现线索\n【新大纲及细节】\n1. 保留主线\n2. 改变冲突"
+            if self.strategy == "expansion":
+                return "1. 承接当前结尾\n2. 展开下一章"
+            return "1. 重写后的剧情\n2. 从 A 推进到 B"
         if stage == "writing":
-            if payload.get("operation") == "modify":
-                return {"text": "XXX"}
-            if payload.get("operation") == "insert":
-                return {"text": "INSERT"}
-            strategy = payload["special_analysis"]["strategy"]
-            if strategy == "expansion":
-                return {"text": getattr(self, "expansion_text", "NEW CHAPTER"), "title": "Inserted"}
-            return {"text": "REIMAGINED"}
+            if self.strategy == "expansion":
+                return getattr(self, "expansion_text", "NEW CHAPTER")
+            return "REWRITTEN" if self.strategy == "plot_rewrite" else "ADJUSTED"
         raise AssertionError(stage)
 
 
@@ -82,9 +66,10 @@ def make_project(root: Path, texts: list[str] | None = None) -> tuple[Path, list
 
 
 def prepare(service: CreativeWorkflowService, chapter_id: int, strategy: str, *, material_id: int | None = None) -> None:
+    service.ai.client.strategy = strategy
     service.run_chapter_summary(chapter_id)
     service.save_chapter_direction(chapter_id, strategy=strategy, user_instruction="do it")
-    service.run_special_analysis(chapter_id, outline_detail_level="brief" if strategy == "reimagine" else None)
+    service.run_special_analysis(chapter_id)
     service.resolve_style(chapter_id, author_style_material_id=material_id)
 
 
@@ -94,34 +79,54 @@ def test_workflow_is_chapter_only_and_accepts_exactly_three_strategies(tmp_path:
     service = CreativeWorkflowService(database, ai_client=ai)
 
     summary = service.run_chapter_summary(chapter_id)
-    assert summary["main_characters"] == ["甲"]
+    assert summary["main_characters"] == "甲：主角"
+    assert summary["key_events"] == "event"
+    assert "source_outline" not in summary
     assert service.get_chapter_workflow(chapter_id)["current_stage"] == "summary"
     assert not hasattr(service, "scenes")
     with pytest.raises(ValueError, match="plot_adjust"):
         service.save_chapter_direction(chapter_id, strategy="faithful", user_instruction="legacy")
-    for strategy in ("plot_adjust", "expansion", "reimagine"):
+    for strategy in ("plot_adjust", "expansion", "plot_rewrite"):
         saved = service.save_chapter_direction(chapter_id, strategy=strategy, user_instruction="x")
         assert saved == {"chapter_id": chapter_id, "strategy": strategy, "user_instruction": "x", "updated_at": saved["updated_at"]}
         assert "selected_character_ids" not in saved
         assert "selected_plot_material_ids" not in saved
 
 
-def test_plot_adjust_copies_preserve_spans_and_only_generates_changed_block(tmp_path: Path) -> None:
+def test_plot_adjust_packages_source_outline_and_author_style(tmp_path: Path) -> None:
     database, (chapter_id,) = make_project(tmp_path)
     ai = WorkflowAI()
     service = CreativeWorkflowService(database, ai_client=ai)
     prepare(service, chapter_id, "plot_adjust")
+    analysis_payload = next(payload for stage, payload in ai.calls if stage == "special_analysis")
+    assert set(analysis_payload) == {"source_text"}
+    assert analysis_payload["source_text"] == "AAA BBB CCC"
     ai.calls.clear()
 
     writing = service.generate_chapter(chapter_id)
 
-    assert writing["result_text"] == "AAA XXX CCC"
-    assert writing["writing_plan"][0]["result_text"] == "AAA "
+    assert writing["result_text"] == "ADJUSTED"
+    assert writing["writing_plan"] == []
     writing_calls = [payload for stage, payload in ai.calls if stage == "writing"]
     assert len(writing_calls) == 1
-    assert writing_calls[0]["operation"] == "modify"
+    assert set(writing_calls[0]) == {"source_text", "target_outline", "author_style"}
+    assert writing_calls[0]["source_text"] == "AAA BBB CCC"
+    assert writing_calls[0]["target_outline"] == "1. 保留主线\n2. 改变冲突"
     with session(database) as connection:
         assert connection.execute("SELECT original_text FROM chapters WHERE id=?", (chapter_id,)).fetchone()[0] == "AAA BBB CCC"
+
+
+def test_structured_outline_values_are_rejected_instead_of_displayed_as_json(tmp_path: Path) -> None:
+    database, (chapter_id,) = make_project(tmp_path)
+    service = CreativeWorkflowService(database, ai_client=WorkflowAI())
+    service.run_chapter_summary(chapter_id)
+    service.save_chapter_direction(chapter_id, strategy="plot_adjust", user_instruction="x")
+
+    with pytest.raises(ValueError, match="plain text"):
+        service.save_special_analysis(
+            chapter_id,
+            {"strategy": "plot_adjust", "source_outline": "1. 原事件", "target_outline": {"id": "tgt-1", "type": "event"}},
+        )
 
 
 def test_expansion_creates_new_chapter_without_changing_source_and_shifts_following_indices(tmp_path: Path) -> None:
@@ -129,14 +134,19 @@ def test_expansion_creates_new_chapter_without_changing_source_and_shifts_follow
     ai = WorkflowAI()
     service = CreativeWorkflowService(database, ai_client=ai)
     prepare(service, ids[0], "expansion")
+    analysis_payload = next(payload for stage, payload in ai.calls if stage == "special_analysis")
+    assert set(analysis_payload) == {"document_text"}
+    assert analysis_payload["document_text"] == "complete source document"
 
     writing = service.generate_chapter(ids[0])
+    writing_payload = next(payload for stage, payload in ai.calls if stage == "writing")
+    assert set(writing_payload) == {"target_outline", "author_style"}
 
     assert writing["created_chapter_id"] not in ids
     with session(database) as connection:
         rows = connection.execute("SELECT id,chapter_index,title,original_text FROM chapters ORDER BY chapter_index").fetchall()
     assert [(row["chapter_index"], row["original_text"]) for row in rows] == [(1, "FIRST"), (2, "NEW CHAPTER"), (3, "SECOND")]
-    assert rows[1]["title"] == "Inserted"
+    assert rows[1]["title"] == "第2章"
 
     ai.expansion_text = "REGENERATED"
     regenerated = service.generate_chapter(ids[0], replace_existing=True)
@@ -153,16 +163,16 @@ def test_expansion_creates_new_chapter_without_changing_source_and_shifts_follow
     assert [row["rewritten_text"] for row in versions] == ["REGENERATED"]
 
 
-def test_reimagine_requires_and_snapshots_analyzed_author_style(tmp_path: Path) -> None:
+def test_plot_rewrite_requires_author_style_and_omits_source_from_writing_payload(tmp_path: Path) -> None:
     database, (chapter_id,) = make_project(tmp_path)
     ai = WorkflowAI()
     service = CreativeWorkflowService(database, ai_client=ai)
+    ai.strategy = "plot_rewrite"
     service.run_chapter_summary(chapter_id)
-    service.save_chapter_direction(chapter_id, strategy="reimagine", user_instruction="new")
-    analysis = service.run_special_analysis(chapter_id, outline_detail_level="brief")
-    assert analysis["outline_detail_level"] == "brief"
-    assert analysis["constraints"]["hard_constraints"] == ["fact"]
-    with pytest.raises(ValueError, match="requires"):
+    service.save_chapter_direction(chapter_id, strategy="plot_rewrite", user_instruction="new")
+    analysis = service.run_special_analysis(chapter_id)
+    assert analysis["target_outline"] == "1. 重写后的剧情\n2. 从 A 推进到 B"
+    with pytest.raises(ValueError, match="作者风格"):
         service.resolve_style(chapter_id)
 
     material_id = MaterialService(database).create_material(
@@ -175,7 +185,9 @@ def test_reimagine_requires_and_snapshots_analyzed_author_style(tmp_path: Path) 
         content={"summary": "changed", "dimensions": []}, raw_text="new sample",
     )
     writing = service.generate_chapter(chapter_id)
-    assert writing["result_text"] == "REIMAGINED"
+    assert writing["result_text"] == "REWRITTEN"
+    writing_payload = next(payload for stage, payload in ai.calls if stage == "writing")
+    assert set(writing_payload) == {"target_outline", "author_style"}
     assert style["author_style_material_id"] == material_id
     assert style["style_snapshot"]["name"] == "Style"
 
@@ -195,6 +207,26 @@ def test_source_auto_reuses_author_style_settings_and_falls_back_to_chapter(tmp_
     assert "complete source document" in extraction_payload["sample_text"]
 
 
+def test_plot_adjust_can_use_saved_author_style_instead_of_extracting_source(tmp_path: Path) -> None:
+    database, (chapter_id,) = make_project(tmp_path)
+    ai = WorkflowAI()
+    service = CreativeWorkflowService(database, ai_client=ai)
+    ai.strategy = "plot_adjust"
+    service.run_chapter_summary(chapter_id)
+    service.save_chapter_direction(chapter_id, strategy="plot_adjust", user_instruction="x")
+    service.run_special_analysis(chapter_id)
+    material_id = MaterialService(database).create_material(
+        material_type="author_style", scope="public", name="Saved", raw_text="sample",
+        content={"summary": "profile", "dimensions": []}, analysis_status="analyzed",
+    )
+
+    style = service.resolve_style(chapter_id, author_style_material_id=material_id)
+
+    assert style["style_mode"] == "selected_author_style"
+    assert style["author_style_material_id"] == material_id
+    assert not any(stage == "author_style_extraction" for stage, _ in ai.calls)
+
+
 def test_source_hash_conflict_is_explicit(tmp_path: Path) -> None:
     database, (chapter_id,) = make_project(tmp_path)
     service = CreativeWorkflowService(database, ai_client=WorkflowAI())
@@ -205,12 +237,12 @@ def test_source_hash_conflict_is_explicit(tmp_path: Path) -> None:
     assert service.get_chapter_workflow(chapter_id)["source_changed"] is True
 
 
-@pytest.mark.parametrize("strategy", ["plot_adjust", "expansion", "reimagine"])
+@pytest.mark.parametrize("strategy", ["plot_adjust", "expansion", "plot_rewrite"])
 def test_review_is_human_edit_and_confirmation_without_model_call(tmp_path: Path, strategy: str) -> None:
     database, (chapter_id,) = make_project(tmp_path)
     ai = WorkflowAI()
     material_id = None
-    if strategy == "reimagine":
+    if strategy == "plot_rewrite":
         material_id = MaterialService(database).create_material(
             material_type="author_style", scope="public", name="S", raw_text="x",
             content={"summary": "s", "dimensions": []}, analysis_status="analyzed",

@@ -60,18 +60,27 @@ class RealE2EFakeLLM:
     def __init__(self):
         self.required_end = {}
 
-    def generate_json(self, stage, payload):
+    def generate_text(self, stage, payload):
         if stage == "chapter_summary":
-            return {
-                "plot_summary": "人物进入院子，检查院门后返回客栈。",
-                "main_characters": ["人物"],
-                "key_events": ["进入院子", "检查院门", "返回客栈"],
-                "relationships": [],
-                "start_state": {"location": "院外"},
-                "end_state": {"location": "客栈"},
-                "important_facts": ["旧设定仍有效"],
-                "open_threads": ["院门为何需要检查"],
-            }
+            return (
+                "【剧情总结】\n人物进入院子，检查院门后返回客栈。\n"
+                "【关键事件】\n1. 进入院子\n2. 检查院门\n3. 返回客栈\n"
+                "【主要人物与设定】\n人物：本章行动者，进入院子并检查院门。"
+            )
+        if stage == "special_analysis":
+            if "document_text" in payload:
+                return "1. 门外传来脚步声\n2. 人物停下并观察"
+            return (
+                "【旧大纲】\n1. 人物进入院子\n2. 检查院门\n3. 人物返回客栈\n"
+                "【新大纲及细节】\n1. 人物进入院子\n2. 李四发现院门暗记\n3. 人物返回客栈"
+            )
+        if stage == "writing":
+            if "source_text" in payload:
+                return "人物进入院子后，李四在院门上发现了一枚暗记。旧设定仍有效。人物返回客栈。"
+            return "门外忽然传来一阵脚步声，人物停下动作侧耳倾听。"
+        raise AssertionError(stage)
+
+    def generate_json(self, stage, payload):
         if stage == "scene_preanalysis":
             return {
                 "summary": "人物进入院子并检查院门。",
@@ -92,27 +101,13 @@ class RealE2EFakeLLM:
         if stage == "special_analysis":
             if "strategy" in payload:
                 strategy = payload["strategy"]
-                source_outline = [
-                    {"id": "source-1", "summary": "人物进入院子", "source_span": "第 1 段", "operation": "preserve"},
-                    {"id": "source-2", "summary": "人物检查院门", "source_span": "第 2 段", "operation": "preserve"},
-                    {"id": "source-3", "summary": "人物返回客栈", "source_span": "第 4 段", "operation": "preserve"},
-                ]
                 if strategy == "plot_adjust":
-                    target_outline = [
-                        {"id": "target-1", "summary": "人物进入院子", "operation": "preserve", "source_ids": ["source-1"]},
-                        {"id": "target-2", "summary": "李四发现院门暗记", "operation": "modify", "source_ids": ["source-2"]},
-                        {"id": "target-3", "summary": "人物返回客栈", "operation": "preserve", "source_ids": ["source-3"]},
-                    ]
+                    target_outline = "1. 人物进入院子\n2. 李四发现院门暗记\n3. 人物返回客栈"
                 elif strategy == "expansion":
-                    target_outline = [{"id": "target-1", "summary": "补充院门外的脚步声与人物反应"}]
+                    target_outline = "1. 门外传来脚步声\n2. 人物停下并观察"
                 else:
-                    target_outline = [{"id": "target-1", "summary": "李四识破院中伏击"}]
-                return {
-                    "source_outline": source_outline,
-                    "target_outline": target_outline,
-                    "constraints": {"hard_constraints": ["旧设定仍有效"]},
-                    "analysis_notes": ["强化院门事件的线索作用"],
-                }
+                    target_outline = "1. 李四进入院子\n2. 识破院中伏击\n3. 返回客栈"
+                return {"target_outline": target_outline}
             strategy = payload["creative_intent"]["strategy"]
             if strategy == "plot_adjust":
                 return {"source_events": ["进入院子", "检查院门"], "causal_links": ["进入→检查"],
@@ -181,12 +176,12 @@ class RealE2EFakeLLM:
                 "style_snapshot": {"voice": "简洁克制", "rhythm": "短句推进"},
                 "generated_guidance": "使用简洁克制的叙述，以动作推动情节。",
             }
-        if stage == "writing" and "operation" in payload:
-            return {"text": "人物进入院子后，李四在院门上发现了一枚暗记。旧设定仍有效。人物返回客栈。"}
         if stage == "writing":
-            strategy = payload["special_analysis"]["strategy"]
+            strategy = payload["strategy"]
             if strategy == "expansion":
                 return {"text": "门外忽然传来一阵脚步声，人物停下动作侧耳倾听。", "title": "院门外的脚步"}
+            if strategy == "plot_adjust":
+                return {"text": "人物进入院子后，李四在院门上发现了一枚暗记。旧设定仍有效。人物返回客栈。"}
             return {"text": "李四进入院子，识破伏击并检查院门，随后返回客栈。"}
         if stage == "transform_block":
             return {"text": "李四谨慎地检查了院门。\n\n"}
