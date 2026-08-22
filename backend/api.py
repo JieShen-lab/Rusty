@@ -207,10 +207,9 @@ from .schemas import (
     ConsistencyCheckWriteRequest,
     RegexSplitApplyRequest,
     RegexSplitPreviewRequest,
-    ResourceTagAssignmentRequest,
-    ResourceTagCreateRequest,
-    ResourceTagOut,
-    ResourceTagRenameRequest,
+    ResourceAssignmentRequest,
+    ResourceNameCreateRequest,
+    ResourceNameRenameRequest,
     SelectionResourceCreateRequest,
     StageStatusOut,
     StyleTemplateExtractRequest,
@@ -434,31 +433,6 @@ def create_app(
         migrated = document_library_service.migrate_library_path(payload.target_path)
         return DocumentLibrarySettingsOut(storage_path=str(migrated))
 
-    @app.get("/api/document-tags", response_model=list[ResourceTagOut])
-    def list_document_tags() -> list[ResourceTagOut]:
-        return [_resource_tag_out(tag) for tag in document_library_service.list_tags()]
-
-    @app.post("/api/document-tags", response_model=ResourceTagOut, dependencies=[Depends(_require_token)])
-    def create_document_tag(payload: ResourceTagCreateRequest) -> ResourceTagOut:
-        return _resource_tag_out(document_library_service.create_tag(payload.name))
-
-    @app.post("/api/document-tags/{tag_id}", response_model=ResourceTagOut, dependencies=[Depends(_require_token)])
-    def rename_document_tag(tag_id: int, payload: ResourceTagRenameRequest) -> ResourceTagOut:
-        return _resource_tag_out(document_library_service.rename_tag(tag_id, payload.name))
-
-    @app.post("/api/document-tags/{tag_id}/delete", response_model=dict[str, bool], dependencies=[Depends(_require_token)])
-    def delete_document_tag(tag_id: int) -> dict[str, bool]:
-        document_library_service.delete_tag(tag_id)
-        return {"ok": True}
-
-    @app.post(
-        "/api/documents/{document_id}/tags/{tag_id}",
-        response_model=LibraryDocumentOut,
-        dependencies=[Depends(_require_token)],
-    )
-    def assign_document_tag(document_id: int, tag_id: int, payload: ResourceTagAssignmentRequest) -> LibraryDocumentOut:
-        return _library_document_out(document_library_service.set_document_tag(document_id, tag_id, payload.selected))
-
     @app.get("/api/document-categories", response_model=list[DocumentCategoryOut])
     def list_document_categories() -> list[DocumentCategoryOut]:
         return [
@@ -471,7 +445,7 @@ def create_app(
         response_model=DocumentCategoryOut,
         dependencies=[Depends(_require_token)],
     )
-    def create_document_category(payload: ResourceTagCreateRequest) -> DocumentCategoryOut:
+    def create_document_category(payload: ResourceNameCreateRequest) -> DocumentCategoryOut:
         return DocumentCategoryOut(**document_library_service.create_category(payload.name).__dict__)
 
     @app.post(
@@ -481,7 +455,7 @@ def create_app(
     )
     def rename_document_category(
         category_id: int,
-        payload: ResourceTagRenameRequest,
+        payload: ResourceNameRenameRequest,
     ) -> DocumentCategoryOut:
         return DocumentCategoryOut(
             **document_library_service.rename_category(category_id, payload.name).__dict__
@@ -504,7 +478,7 @@ def create_app(
     def assign_document_category(
         document_id: int,
         category_id: int,
-        payload: ResourceTagAssignmentRequest,
+        payload: ResourceAssignmentRequest,
     ) -> LibraryDocumentOut:
         return _library_document_out(
             document_library_service.set_document_category(
@@ -2251,12 +2225,9 @@ def create_app(
         scope: str | None = None,
         project_id: int | None = None,
         material_type: str | None = None,
-        tag_id: int | None = None,
-        tag_group: str | None = None,
         category_id: int | None = None,
         analysis_status: str | None = None,
         pending_imports: bool = False,
-        untagged: bool = False,
         query: str | None = None,
         limit: int | None = None,
         offset: int = 0,
@@ -2267,44 +2238,14 @@ def create_app(
                 scope=scope,
                 project_id=project_id,
                 material_type=material_type,
-                tag_id=tag_id,
-                tag_group=tag_group,
                 category_id=category_id,
                 analysis_status=analysis_status,
                 pending_imports=pending_imports,
-                untagged=untagged,
                 query=query,
                 limit=limit,
                 offset=offset,
             )
         ]
-
-    @app.get("/api/material-tags", response_model=list[ResourceTagOut])
-    def list_material_tags(tag_group: str | None = None) -> list[ResourceTagOut]:
-        return [_resource_tag_out(tag) for tag in material_service.list_tags(tag_group)]
-
-    @app.post("/api/material-tags", response_model=ResourceTagOut, dependencies=[Depends(_require_token)])
-    def create_material_tag(payload: ResourceTagCreateRequest) -> ResourceTagOut:
-        return _resource_tag_out(
-            material_service.create_tag(payload.name, tag_group=payload.tag_group)
-        )
-
-    @app.post("/api/material-tags/{tag_id}", response_model=ResourceTagOut, dependencies=[Depends(_require_token)])
-    def rename_material_tag(tag_id: int, payload: ResourceTagRenameRequest) -> ResourceTagOut:
-        return _resource_tag_out(material_service.rename_tag(tag_id, payload.name))
-
-    @app.post("/api/material-tags/{tag_id}/delete", response_model=dict[str, bool], dependencies=[Depends(_require_token)])
-    def delete_material_tag(tag_id: int) -> dict[str, bool]:
-        material_service.delete_tag(tag_id)
-        return {"ok": True}
-
-    @app.post(
-        "/api/materials/{material_id}/tags/{tag_id}",
-        response_model=MaterialOut,
-        dependencies=[Depends(_require_token)],
-    )
-    def assign_material_tag(material_id: int, tag_id: int, payload: ResourceTagAssignmentRequest) -> MaterialOut:
-        return _material_out(material_service.set_material_tag(material_id, tag_id, payload.selected))
 
     @app.get("/api/material-categories", response_model=list[MaterialCategoryOut])
     def list_material_categories(material_type: str | None = None) -> list[MaterialCategoryOut]:
@@ -2330,7 +2271,7 @@ def create_app(
     )
     def rename_material_category(
         category_id: int,
-        payload: ResourceTagRenameRequest,
+        payload: ResourceNameRenameRequest,
     ) -> MaterialCategoryOut:
         return MaterialCategoryOut(
             **material_service.rename_category(category_id, payload.name).__dict__
@@ -2353,7 +2294,7 @@ def create_app(
     def assign_material_category(
         material_id: int,
         category_id: int,
-        payload: ResourceTagAssignmentRequest,
+        payload: ResourceAssignmentRequest,
     ) -> MaterialOut:
         return _material_out(
             material_service.set_material_category(material_id, category_id, payload.selected)
@@ -2368,11 +2309,8 @@ def create_app(
             ProjectMaterialFilterOut(
                 project_id=item.project_id,
                 material_type=item.material_type,
-                match_mode=item.match_mode,
-                tag_ids=list(item.tag_ids),
                 manual_material_ids=list(item.manual_material_ids),
                 include_scene_keywords=item.include_scene_keywords,
-                include_applicable_scene_tags=item.include_applicable_scene_tags,
             )
             for item in material_service.get_project_material_filters(project_id)
         ]
@@ -2408,11 +2346,8 @@ def create_app(
         return ProjectMaterialFilterOut(
             project_id=item.project_id,
             material_type=item.material_type,
-            match_mode=item.match_mode,
-            tag_ids=list(item.tag_ids),
             manual_material_ids=list(item.manual_material_ids),
             include_scene_keywords=item.include_scene_keywords,
-            include_applicable_scene_tags=item.include_applicable_scene_tags,
         )
 
     @app.get("/api/material-ai-settings", response_model=list[MaterialAISettingsOut])
@@ -2509,7 +2444,6 @@ def create_app(
             material_id,
             target_scope=payload.target_scope,
             target_project_id=payload.target_project_id,
-            tag_ids=payload.tag_ids,
         )
         copied = material_service.get_material(copied_id)
         if copied is None:
@@ -2710,20 +2644,16 @@ def create_app(
     def list_character_cards(
         scope: str | None = None,
         project_id: int | None = None,
-        tag_id: int | None = None,
         category_id: int | None = None,
         analysis_status: str | None = None,
-        untagged: bool = False,
     ) -> list[CharacterCardOut]:
         return [
             _character_out(card)
             for card in anchor_service.list_character_cards(
                 scope,
                 project_id,
-                tag_id=tag_id,
                 category_id=category_id,
                 analysis_status=analysis_status,
-                untagged=untagged,
             )
         ]
 
@@ -2745,7 +2675,7 @@ def create_app(
         response_model=CharacterCategoryOut,
         dependencies=[Depends(_require_token)],
     )
-    def create_character_category(payload: ResourceTagCreateRequest) -> CharacterCategoryOut:
+    def create_character_category(payload: ResourceNameCreateRequest) -> CharacterCategoryOut:
         category = anchor_service.create_character_category(payload.name)
         return CharacterCategoryOut(
             id=category.id,
@@ -2762,7 +2692,7 @@ def create_app(
     )
     def rename_character_category(
         category_id: int,
-        payload: ResourceTagRenameRequest,
+        payload: ResourceNameRenameRequest,
     ) -> CharacterCategoryOut:
         category = anchor_service.rename_character_category(category_id, payload.name)
         return CharacterCategoryOut(
@@ -2790,7 +2720,7 @@ def create_app(
     def assign_character_category(
         card_id: int,
         category_id: int,
-        payload: ResourceTagAssignmentRequest,
+        payload: ResourceAssignmentRequest,
     ) -> CharacterCardOut:
         return _character_out(
             anchor_service.set_character_category(card_id, category_id, payload.selected)
@@ -2811,31 +2741,6 @@ def create_app(
             for project in anchor_service.list_character_project_summaries()
         ]
 
-    @app.get("/api/character-tags", response_model=list[ResourceTagOut])
-    def list_character_tags() -> list[ResourceTagOut]:
-        return [ResourceTagOut(**tag) for tag in anchor_service.list_character_tags()]
-
-    @app.post("/api/character-tags", response_model=ResourceTagOut, dependencies=[Depends(_require_token)])
-    def create_character_tag(payload: ResourceTagCreateRequest) -> ResourceTagOut:
-        return ResourceTagOut(**anchor_service.create_character_tag(payload.name))
-
-    @app.post("/api/character-tags/{tag_id}", response_model=ResourceTagOut, dependencies=[Depends(_require_token)])
-    def rename_character_tag(tag_id: int, payload: ResourceTagRenameRequest) -> ResourceTagOut:
-        return ResourceTagOut(**anchor_service.rename_character_tag(tag_id, payload.name))
-
-    @app.post("/api/character-tags/{tag_id}/delete", response_model=dict[str, bool], dependencies=[Depends(_require_token)])
-    def delete_character_tag(tag_id: int) -> dict[str, bool]:
-        anchor_service.delete_character_tag(tag_id)
-        return {"ok": True}
-
-    @app.post(
-        "/api/characters/{card_id}/tags/{tag_id}",
-        response_model=CharacterCardOut,
-        dependencies=[Depends(_require_token)],
-    )
-    def assign_character_tag(card_id: int, tag_id: int, payload: ResourceTagAssignmentRequest) -> CharacterCardOut:
-        return _character_out(anchor_service.set_character_tag(card_id, tag_id, payload.selected))
-
     def _character_extraction_settings_out() -> CharacterExtractionSettingsOut:
         settings = anchor_extraction_service.get_character_extraction_settings()
         return CharacterExtractionSettingsOut(
@@ -2846,7 +2751,7 @@ def create_app(
                 "Target character: {{TARGET_CHARACTER_NAME}}\n"
                 f"Enabled dimensions: {json.dumps([item for item in settings.dimensions if item['enabled']], ensure_ascii=False)}\n"
                 f"Additional requirements: {settings.custom_requirements or 'None'}\n"
-                "JSON schema: {evidence_found,name,aliases,identity,age,description,stable_fields,suggested_tags}\n"
+                "JSON schema: {evidence_found,name,aliases,identity,age,description,stable_fields}\n"
                 "Source text: {{SOURCE_TEXT}}"
             ),
         )
@@ -3187,7 +3092,6 @@ def create_app(
     removed_character_prefixes = (
         "/api/characters",
         "/api/character-categories",
-        "/api/character-tags",
         "/api/character-projects",
         "/api/character-extraction",
         "/api/selection/characters",
@@ -3386,16 +3290,6 @@ def _document_revision_out(revision: DocumentRevision) -> LibraryDocumentRevisio
     return LibraryDocumentRevisionOut(**revision.__dict__)
 
 
-def _resource_tag_out(tag: Any) -> ResourceTagOut:
-    if isinstance(tag, dict):
-        return ResourceTagOut(**tag)
-    data = tag.__dict__.copy()
-    if "document_count" in data and "resource_count" not in data:
-        data["resource_count"] = data.pop("document_count")
-    data.setdefault("normalized_name", data.get("name", "").casefold())
-    return ResourceTagOut(**data)
-
-
 def _library_chapter_out(chapter: LibraryChapter) -> LibraryDocumentChapterOut:
     return LibraryDocumentChapterOut(**chapter.__dict__)
 
@@ -3491,9 +3385,6 @@ def _material_out(material: Material) -> MaterialOut:
         version=material.version,
         created_at=material.created_at,
         updated_at=material.updated_at,
-        tags=list(material.tags),
-        general_tags=list(material.general_tags),
-        applicable_scene_tags=list(material.applicable_scene_tags),
         category_ids=list(material.category_ids),
         categories=list(material.categories),
         source_summary=source_summary.__dict__,
@@ -3532,7 +3423,6 @@ def _character_out(card: CharacterCard) -> CharacterCardOut:
         analysis_status=card.analysis_status,
         cover_path=card.cover_path,
         cover_updated_at=card.cover_updated_at,
-        tags=list(card.tags),
         category_ids=list(card.category_ids),
         categories=list(card.categories),
         source_summary=CharacterSourceSummaryOut(

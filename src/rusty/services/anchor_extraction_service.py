@@ -61,7 +61,6 @@ MATERIAL_DIMENSIONS = {"author_style": ["summary", "dimensions"]}
 class CharacterExtractionSettings:
     model_id: int | None = None
     detail_level: str = "standard"
-    generate_tags: bool = True
     custom_requirements: str = ""
     system_prompt: str = DEFAULT_CHARACTER_SYSTEM_PROMPT
     dimensions: tuple[dict[str, Any], ...] = DEFAULT_CHARACTER_DIMENSIONS
@@ -75,7 +74,6 @@ class CharacterExtractionDraft:
     identity: str
     age: str
     stable_fields: list[dict[str, Any]]
-    suggested_tags: list[str]
     source_metadata: dict[str, Any]
     import_metadata: dict[str, Any]
     raw_text: str
@@ -112,8 +110,6 @@ class MaterialExtractionCandidate:
     name: str
     description: str
     content: dict[str, Any]
-    suggested_general_tags: list[str]
-    suggested_applicable_scene_tags: list[str]
     evidence: list[dict[str, Any]]
     evidence_summary: str
     confidence: float
@@ -240,8 +236,7 @@ class AnchorExtractionService:
                     key: value
                     for key, value in item.items()
                     if key not in {
-                        "name", "description", "suggested_general_tags",
-                        "suggested_applicable_scene_tags", "evidence_summary",
+                        "name", "description", "evidence_summary",
                     }
                 }
             candidates.append(
@@ -252,8 +247,6 @@ class AnchorExtractionService:
                     name=candidate_name,
                     description=str(item.get("description") or ""),
                     content=normalize_material_content(material_type, raw_content),
-                    suggested_general_tags=_suggested_tags(item.get("suggested_general_tags")),
-                    suggested_applicable_scene_tags=_suggested_tags(item.get("suggested_applicable_scene_tags")),
                     evidence=[],
                     evidence_summary=str(item.get("evidence_summary") or ""),
                     confidence=_confidence(item.get("confidence")),
@@ -363,10 +356,6 @@ class AnchorExtractionService:
                             stored.material_type, candidate.get("content")
                         ),
                         "sort_order": sort_order,
-                        "general_tags": _suggested_tags(candidate.get("confirmed_general_tags")),
-                        "applicable_scene_tags": _suggested_tags(
-                            candidate.get("confirmed_applicable_scene_tags")
-                        ),
                         "category_ids": list(
                             dict.fromkeys(int(value) for value in candidate.get("category_ids", []))
                         ),
@@ -652,7 +641,6 @@ class AnchorExtractionService:
         return CharacterExtractionSettings(
             model_id=row["model_id"],
             detail_level=str(row["detail_level"]),
-            generate_tags=bool(row["generate_tags"]),
             custom_requirements=str(row["custom_requirements"]),
             system_prompt=str(row["system_prompt"] or DEFAULT_CHARACTER_SYSTEM_PROMPT),
             dimensions=dimensions,
@@ -675,13 +663,12 @@ class AnchorExtractionService:
             connection.execute(
                 """
                 INSERT INTO character_extraction_settings (
-                    id, model_id, detail_level, generate_tags, custom_requirements,
+                    id, model_id, detail_level, custom_requirements,
                     system_prompt, dimensions_json
-                ) VALUES (1, ?, ?, ?, ?, ?, ?)
+                ) VALUES (1, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     model_id = excluded.model_id,
                     detail_level = excluded.detail_level,
-                    generate_tags = excluded.generate_tags,
                     custom_requirements = excluded.custom_requirements,
                     system_prompt = excluded.system_prompt,
                     dimensions_json = excluded.dimensions_json,
@@ -690,7 +677,6 @@ class AnchorExtractionService:
                 (
                     model_id,
                     detail_level,
-                    int(bool(current["generate_tags"])),
                     str(current["custom_requirements"] or ""),
                     str(current["system_prompt"] or DEFAULT_CHARACTER_SYSTEM_PROMPT),
                     json.dumps(dimensions, ensure_ascii=False),
@@ -806,7 +792,6 @@ class AnchorExtractionService:
                 identity=str(extracted.get("identity") or ""),
                 age=str(extracted.get("age") or ""),
                 stable_fields=stable_fields,
-                suggested_tags=_suggested_tags(extracted.get("suggested_tags")) if settings.generate_tags else [],
                 source_metadata=metadata,
                 import_metadata=import_metadata,
                 raw_text=full_source_text,
@@ -859,7 +844,6 @@ class AnchorExtractionService:
                         "aliases": _string_list(candidate.get("aliases")),
                         "profile": _object_or_empty(candidate.get("profile")),
                         "custom_fields": _custom_fields(candidate.get("custom_fields")),
-                        "confirmed_tags": _suggested_tags(candidate.get("confirmed_tags")),
                     }
                 )
             stored.state = "applying"
@@ -1014,12 +998,6 @@ class AnchorExtractionService:
             {"dimension_id": item["id"], "label": item["label"], "value": ""}
             for item in enabled_dimensions
         ]
-        tag_rule = (
-            "Return 0-8 short suggested_tags useful for retrieval (for example protagonist, antagonist, first-person, calm, combat). "
-            "Never use sentences as tags and never infer unsupported tags."
-            if settings.generate_tags
-            else "Return suggested_tags as an empty array."
-        )
         return [
             {
                 "role": "system",
@@ -1033,12 +1011,11 @@ class AnchorExtractionService:
                     "Enabled stable dimensions:\n"
                     f"{dimensions_text}\n\n"
                     "Return exactly one JSON object and no Markdown, code fence, explanation, or text outside JSON. "
-                    "The object must contain only: evidence_found, name, aliases, identity, age, description, stable_fields, suggested_tags. "
+                    "The object must contain only: evidence_found, name, aliases, identity, age, description, stable_fields. "
                     f"stable_fields must follow this schema and order: {json.dumps(stable_schema, ensure_ascii=False)}.\n"
                     "If a field has no direct evidence, return an empty string or empty array. Never guess for completeness. "
                     "Set evidence_found=false if the named character cannot be found; never switch to another person. "
                     f'The name field must identify "{target_name}" and aliases for the same person must be merged.\n'
-                    f"{tag_rule}\n"
                     f"Additional requirements: {settings.custom_requirements or 'None'}\n\n"
                     f"Source text:\n{sample_text}"
                 ),
@@ -1066,8 +1043,8 @@ class AnchorExtractionService:
         output_protocol = (
             '{"materials":[{"name":"","description":"","content":{"schema_version":1,'
             '"summary":"","dimensions":[{"id":"输入维度 id","name":"","requirement":"",'
-            '"analysis":"","features":[],"examples":[]}]},"suggested_general_tags":[],'
-            '"suggested_applicable_scene_tags":[],"evidence_summary":"","confidence":0.0,"warnings":[]}]}'
+            '"analysis":"","features":[],"examples":[]}]},"evidence_summary":"",'
+            '"confidence":0.0,"warnings":[]}]}'
         )
         separation_rule = "只创建一份完整作者风格档案。维度必须按稳定 ID 返回，examples 只能逐字引用输入文本，不得包含来源位置字段。"
         return [
@@ -1231,19 +1208,6 @@ def _string_list(value: Any) -> list[str]:
     if isinstance(value, str) and value.strip():
         return [value.strip()]
     return []
-
-
-def _suggested_tags(value: Any) -> list[str]:
-    tags: list[str] = []
-    seen: set[str] = set()
-    for item in _string_list(value)[:8]:
-        name = " ".join(item.strip().split())
-        key = name.casefold()
-        if not name or len(name) > 40 or key in seen:
-            continue
-        tags.append(name)
-        seen.add(key)
-    return tags
 
 
 def _material_extraction_source_summary(metadata: dict[str, Any]) -> dict[str, Any]:

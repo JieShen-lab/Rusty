@@ -29,7 +29,6 @@ export type LibraryDocument = {
   word_count: number;
   status: string;
   favorite: boolean;
-  tags: string[];
   is_project_document: boolean;
   category_ids: number[];
   categories: string[];
@@ -156,15 +155,6 @@ export type LibraryDocumentDraft = {
 
 export type LibraryDocumentCreateChapterResult = LibraryDocumentCleanupResult & {
   created_chapter_id: number;
-};
-
-export type ResourceTag = {
-  id: number;
-  name: string;
-  normalized_name: string;
-  sort_order: number;
-  resource_count: number;
-  tag_group?: 'general' | 'applicable_scene';
 };
 
 export type LibraryDocumentExportResult = {
@@ -762,7 +752,6 @@ export type ProjectStyleBinding = {
 export type AnalysisStatus = 'unanalyzed' | 'analyzed';
 export type MaterialType = 'author_style';
 export type MaterialScope = 'public' | 'project';
-export type MaterialTagGroup = 'general' | 'applicable_scene';
 export type MaterialAITask = 'author_style_extraction';
 
 export type MaterialAIDimension = {
@@ -818,9 +807,6 @@ export type Material = {
   version: number;
   created_at: string;
   updated_at: string;
-  tags: string[];
-  general_tags: string[];
-  applicable_scene_tags: string[];
   category_ids: number[];
   categories: string[];
   source_summary: MaterialSourceSummary;
@@ -841,7 +827,6 @@ export type MaterialWrite = {
   timeline_start_chapter?: number | null;
   timeline_end_chapter?: number | null;
   sort_order?: number;
-  tag_ids?: number[];
   category_ids?: number[];
 };
 
@@ -850,11 +835,8 @@ export type MaterialUpdate = Omit<MaterialWrite, 'material_type' | 'scope' | 'pr
 export type ProjectMaterialFilter = {
   project_id: number;
   material_type: MaterialType;
-  match_mode: 'any' | 'all';
-  tag_ids: number[];
   manual_material_ids: number[];
   include_scene_keywords: boolean;
-  include_applicable_scene_tags: boolean;
 };
 
 export type MaterialAISettings = {
@@ -876,10 +858,6 @@ export type MaterialExtractionCandidate = {
   name: string;
   description: string;
   content: Record<string, unknown>;
-  suggested_general_tags: string[];
-  suggested_applicable_scene_tags: string[];
-  confirmed_general_tags?: string[];
-  confirmed_applicable_scene_tags?: string[];
   category_ids?: number[];
   evidence: Array<Record<string, unknown>>;
   evidence_summary: string;
@@ -921,7 +899,6 @@ export type SelectionResourceCreate = {
   end_offset?: number | null;
   source_version?: number | null;
   save_to_public?: boolean;
-  tag_ids?: number[];
 };
 
 export type AISplitProposal = {

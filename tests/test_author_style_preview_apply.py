@@ -26,7 +26,6 @@ class StyleAI(AIClient):
                         {"id": "sentence", "name": "句式", "requirement": "分析句式",
                          "analysis": "短句", "features": ["短"], "examples": ["样本文本"]}
                     ]},
-                    "suggested_general_tags": ["简洁"], "suggested_applicable_scene_tags": ["叙事"],
                     "confidence": 0.9,
                 }]
             }, ensure_ascii=False),
@@ -49,8 +48,7 @@ def test_author_style_preview_is_pure_and_apply_token_is_single_use(tmp_path: Pa
     preview = extraction.preview_materials_from_text("样本文本", task_type="author_style_extraction")
     assert MaterialService(database).list_materials() == []
     candidate = preview.candidates[0]
-    payload = [{**candidate.__dict__, "confirmed_general_tags": ["简洁"],
-                "confirmed_applicable_scene_tags": ["叙事"], "category_ids": []}]
+    payload = [{**candidate.__dict__, "category_ids": []}]
     result = extraction.apply_material_extraction(
         preview_token=preview.preview_token, candidates=payload,
         selected_candidate_ids=[candidate.candidate_id],
@@ -59,7 +57,6 @@ def test_author_style_preview_is_pure_and_apply_token_is_single_use(tmp_path: Pa
     assert material is not None
     assert material.material_type == "author_style"
     assert material.raw_text == "样本文本"
-    assert material.general_tags == ("简洁",)
     with pytest.raises(ValueError, match="already used"):
         extraction.apply_material_extraction(
             preview_token=preview.preview_token, candidates=payload,
@@ -85,8 +82,7 @@ def test_apply_uses_preview_settings_snapshot_and_preserves_full_source(tmp_path
     )
     result = extraction.apply_material_extraction(
         preview_token=preview.preview_token,
-        candidates=[{**candidate.__dict__, "confirmed_general_tags": [],
-                     "confirmed_applicable_scene_tags": [], "category_ids": []}],
+        candidates=[{**candidate.__dict__, "category_ids": []}],
         selected_candidate_ids=[candidate.candidate_id],
     )
     material = MaterialService(database).get_material(result["created"][0]["material_id"])

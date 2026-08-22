@@ -21,11 +21,9 @@ import type {
   MaterialExtractionCandidate,
   MaterialExtractionPreview,
   MaterialScope,
-  MaterialTagGroup,
   MaterialType,
   MaterialUpdate,
   MaterialWrite,
-  ResourceTag,
   SplitPreview,
   ModelWrite,
   LibraryDocument,
@@ -213,29 +211,6 @@ export function migrateDocumentLibrary(targetPath: string) {
   return request<DocumentLibrarySettings>('/api/document-library/migrate', {
     method: 'POST',
     body: JSON.stringify({ target_path: targetPath }),
-  });
-}
-
-export function getDocumentTags() {
-  return request<ResourceTag[]>('/api/document-tags');
-}
-
-export function createDocumentTag(name: string) {
-  return request<ResourceTag>('/api/document-tags', { method: 'POST', body: JSON.stringify({ name }) });
-}
-
-export function renameDocumentTag(tagId: number, name: string) {
-  return request<ResourceTag>(`/api/document-tags/${tagId}`, { method: 'POST', body: JSON.stringify({ name }) });
-}
-
-export function deleteDocumentTag(tagId: number) {
-  return request<{ ok: boolean }>(`/api/document-tags/${tagId}/delete`, { method: 'POST' });
-}
-
-export function assignDocumentTag(documentId: number, tagId: number, selected: boolean) {
-  return request<LibraryDocument>(`/api/documents/${documentId}/tags/${tagId}`, {
-    method: 'POST',
-    body: JSON.stringify({ selected }),
   });
 }
 
@@ -696,12 +671,9 @@ export function getMaterials(filters: {
   scope?: MaterialScope;
   project_id?: number;
   material_type?: MaterialType;
-  tag_id?: number;
-  tag_group?: MaterialTagGroup;
   category_id?: number;
   analysis_status?: 'unanalyzed' | 'analyzed';
   pending_imports?: boolean;
-  untagged?: boolean;
   query?: string;
   limit?: number;
   offset?: number;
@@ -710,40 +682,14 @@ export function getMaterials(filters: {
   if (filters.scope) params.set('scope', filters.scope);
   if (filters.project_id !== undefined) params.set('project_id', String(filters.project_id));
   if (filters.material_type) params.set('material_type', filters.material_type);
-  if (filters.tag_id !== undefined) params.set('tag_id', String(filters.tag_id));
-  if (filters.tag_group) params.set('tag_group', filters.tag_group);
   if (filters.category_id !== undefined) params.set('category_id', String(filters.category_id));
   if (filters.analysis_status) params.set('analysis_status', filters.analysis_status);
   if (filters.pending_imports) params.set('pending_imports', 'true');
-  if (filters.untagged) params.set('untagged', 'true');
   if (filters.query) params.set('query', filters.query);
   if (filters.limit !== undefined) params.set('limit', String(filters.limit));
   if (filters.offset !== undefined) params.set('offset', String(filters.offset));
   const query = params.size ? `?${params.toString()}` : '';
   return request<Material[]>(`/api/materials${query}`);
-}
-
-export function getMaterialTags(tagGroup?: MaterialTagGroup) {
-  return request<ResourceTag[]>(`/api/material-tags${tagGroup ? `?tag_group=${tagGroup}` : ''}`);
-}
-
-export function createMaterialTag(name: string, tagGroup: MaterialTagGroup = 'general') {
-  return request<ResourceTag>('/api/material-tags', { method: 'POST', body: JSON.stringify({ name, tag_group: tagGroup }) });
-}
-
-export function renameMaterialTag(tagId: number, name: string) {
-  return request<ResourceTag>(`/api/material-tags/${tagId}`, { method: 'POST', body: JSON.stringify({ name }) });
-}
-
-export function deleteMaterialTag(tagId: number) {
-  return request<{ ok: boolean }>(`/api/material-tags/${tagId}/delete`, { method: 'POST' });
-}
-
-export function assignMaterialTag(materialId: number, tagId: number, selected: boolean) {
-  return request<Material>(`/api/materials/${materialId}/tags/${tagId}`, {
-    method: 'POST',
-    body: JSON.stringify({ selected }),
-  });
 }
 
 export function createMaterial(payload: MaterialWrite) {

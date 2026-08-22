@@ -14,19 +14,7 @@ from rusty.services.style_service import DETAIL_LEVELS
 MATERIAL_TYPES = {"author_style"}
 MATERIAL_SCOPES = {"public", "project"}
 ANALYSIS_STATUSES = {"unanalyzed", "analyzed"}
-MATERIAL_TAG_GROUPS = {"general", "applicable_scene"}
-PROJECT_FILTER_MATCH_MODES = {"any", "all"}
 MATERIAL_AI_TASK_TYPES = {"author_style_extraction"}
-
-
-@dataclass(frozen=True)
-class ResourceTag:
-    id: int
-    name: str
-    normalized_name: str
-    sort_order: int
-    resource_count: int
-    tag_group: str = "general"
 
 
 @dataclass(frozen=True)
@@ -52,11 +40,8 @@ class MaterialSourceSummary:
 class ProjectMaterialFilter:
     project_id: int
     material_type: str
-    match_mode: str
-    tag_ids: tuple[int, ...]
     manual_material_ids: tuple[int, ...]
     include_scene_keywords: bool
-    include_applicable_scene_tags: bool
 
 
 @dataclass(frozen=True)
@@ -94,15 +79,9 @@ class Material:
     version: int
     created_at: str
     updated_at: str
-    tags: tuple[str, ...] = ()
-    general_tags: tuple[str, ...] = ()
-    applicable_scene_tags: tuple[str, ...] = ()
     category_ids: tuple[int, ...] = ()
     categories: tuple[str, ...] = ()
     source_summary: MaterialSourceSummary | None = None
-
-MaterialTag = ResourceTag
-
 
 class MaterialService:
     def __init__(self, database_path: str | Path | None = None) -> None:
@@ -114,12 +93,9 @@ class MaterialService:
         scope: str | None = None,
         project_id: int | None = None,
         material_type: str | None = None,
-        tag_id: int | None = None,
-        tag_group: str | None = None,
         category_id: int | None = None,
         analysis_status: str | None = None,
         pending_imports: bool = False,
-        untagged: bool = False,
         query: str | None = None,
         limit: int | None = None,
         offset: int = 0,
@@ -130,8 +106,6 @@ class MaterialService:
             material_type = _validate_type(material_type)
         if analysis_status is not None:
             analysis_status = _validate_analysis_status(analysis_status)
-        if tag_group is not None and tag_group not in MATERIAL_TAG_GROUPS:
-            raise ValueError(f"Unsupported material tag group: {tag_group}")
         clauses = ["m.deleted_at IS NULL"]
         parameters: list[object] = []
         if material_type is not None:
@@ -146,42 +120,18 @@ class MaterialService:
                 "WHERE category_filter.material_id = m.id AND category_filter.category_id = ?)"
             )
             parameters.append(category_id)
-        if tag_id is not None:
-            clauses.append(
-                "EXISTS (SELECT 1 FROM material_tag_links filter_link "
-                "JOIN material_tags filter_tag ON filter_tag.id = filter_link.tag_id "
-                "WHERE filter_link.material_id = m.id AND filter_link.tag_id = ? "
-                "AND filter_tag.deleted_at IS NULL"
-                + (" AND filter_tag.tag_group = ?" if tag_group is not None else "")
-                + ")"
-            )
-            parameters.append(tag_id)
-            if tag_group is not None:
-                parameters.append(tag_group)
-        elif tag_group is not None:
-            clauses.append(
-                "EXISTS (SELECT 1 FROM material_tag_links group_link "
-                "JOIN material_tags group_tag ON group_tag.id = group_link.tag_id "
-                "WHERE group_link.material_id = m.id AND group_tag.deleted_at IS NULL "
-                "AND group_tag.tag_group = ?)"
-            )
-            parameters.append(tag_group)
         if pending_imports:
             clauses.append(
                 "(m.analysis_status = 'unanalyzed' AND "
                 "json_extract(m.import_metadata_json, '$.created_by') IN "
                 "('pending_material_import', 'selection_context_menu', 'json_batch_import'))"
             )
-        if untagged:
-            clauses.append("NOT EXISTS (SELECT 1 FROM material_tag_links tl WHERE tl.material_id = m.id)")
         if query and query.strip():
             like = f"%{query.strip()}%"
             clauses.append(
-                "(m.name LIKE ? OR m.description LIKE ? OR m.raw_text LIKE ? OR "
-                "EXISTS (SELECT 1 FROM material_tag_links ql JOIN material_tags qt ON qt.id = ql.tag_id "
-                "WHERE ql.material_id = m.id AND qt.deleted_at IS NULL AND qt.name LIKE ?))"
+                "(m.name LIKE ? OR m.description LIKE ? OR m.raw_text LIKE ?)"
             )
-            parameters.extend([like, like, like, like])
+            parameters.extend([like, like, like])
         pagination = ""
         if limit is not None:
             if limit < 1 or limit > 500:
@@ -192,26 +142,6 @@ class MaterialService:
             rows = connection.execute(
                 f"""
                 SELECT m.*, NULL AS project_name,
-                       COALESCE((
-                           SELECT GROUP_CONCAT(t.name, char(31))
-                           FROM material_tag_links link
-                           JOIN material_tags t ON t.id = link.tag_id
-                           WHERE link.material_id = m.id AND t.deleted_at IS NULL
-                       ), '') AS tag_names,
-                       COALESCE((
-                           SELECT GROUP_CONCAT(t.name, char(31))
-                           FROM material_tag_links link
-                           JOIN material_tags t ON t.id = link.tag_id
-                           WHERE link.material_id = m.id AND t.deleted_at IS NULL
-                             AND t.tag_group = 'general'
-                       ), '') AS general_tag_names,
-                       COALESCE((
-                           SELECT GROUP_CONCAT(t.name, char(31))
-                           FROM material_tag_links link
-                           JOIN material_tags t ON t.id = link.tag_id
-                           WHERE link.material_id = m.id AND t.deleted_at IS NULL
-                             AND t.tag_group = 'applicable_scene'
-                       ), '') AS applicable_scene_tag_names,
                        COALESCE((
                            SELECT GROUP_CONCAT(c.id, char(31))
                            FROM material_category_links link
@@ -238,23 +168,6 @@ class MaterialService:
             row = connection.execute(
                 """
                 SELECT m.*, NULL AS project_name,
-                       COALESCE((
-                           SELECT GROUP_CONCAT(t.name, char(31)) FROM material_tag_links link
-                           JOIN material_tags t ON t.id = link.tag_id
-                           WHERE link.material_id = m.id AND t.deleted_at IS NULL
-                       ), '') AS tag_names,
-                       COALESCE((
-                           SELECT GROUP_CONCAT(t.name, char(31)) FROM material_tag_links link
-                           JOIN material_tags t ON t.id = link.tag_id
-                           WHERE link.material_id = m.id AND t.deleted_at IS NULL
-                             AND t.tag_group = 'general'
-                       ), '') AS general_tag_names,
-                       COALESCE((
-                           SELECT GROUP_CONCAT(t.name, char(31)) FROM material_tag_links link
-                           JOIN material_tags t ON t.id = link.tag_id
-                           WHERE link.material_id = m.id AND t.deleted_at IS NULL
-                             AND t.tag_group = 'applicable_scene'
-                       ), '') AS applicable_scene_tag_names,
                        COALESCE((
                            SELECT GROUP_CONCAT(c.id, char(31)) FROM material_category_links link
                            JOIN material_categories c ON c.id = link.category_id
@@ -291,7 +204,6 @@ class MaterialService:
         timeline_start_chapter: int | None = None,
         timeline_end_chapter: int | None = None,
         sort_order: int = 0,
-        tag_ids: list[int] | None = None,
         category_ids: list[int] | None = None,
     ) -> int:
         material_type = _validate_type(material_type)
@@ -340,7 +252,6 @@ class MaterialService:
                 ),
             )
             material_id = int(cursor.lastrowid)
-            self._replace_tags(connection, material_id, tag_ids or [])
             self._replace_categories(connection, material_id, category_ids or [], material_type)
         return material_id
 
@@ -356,8 +267,6 @@ class MaterialService:
         source_metadata: dict[str, Any],
         import_metadata: dict[str, Any],
         sort_order: int,
-        general_tags: list[str],
-        applicable_scene_tags: list[str],
         category_ids: list[int],
     ) -> int:
         """Create one confirmed AI candidate and all accepted links atomically."""
@@ -369,8 +278,6 @@ class MaterialService:
                     "description": description,
                     "content": content,
                     "sort_order": sort_order,
-                    "general_tags": general_tags,
-                    "applicable_scene_tags": applicable_scene_tags,
                     "category_ids": category_ids,
                 }
             ],
@@ -406,10 +313,6 @@ class MaterialService:
                         "name": _required_name(str(candidate.get("name") or "")),
                         "content": normalize_material_content(
                             material_type, candidate.get("content")
-                        ),
-                        "general_tags": _normalized_tag_names(candidate.get("general_tags") or []),
-                        "applicable_scene_tags": _normalized_tag_names(
-                            candidate.get("applicable_scene_tags") or []
                         ),
                         "category_ids": [
                             int(value) for value in candidate.get("category_ids", [])
@@ -463,33 +366,6 @@ class MaterialService:
                     )
                     material_id = int(cursor.lastrowid)
                     created_ids.append(material_id)
-                    for group, names in (
-                        ("general", candidate["general_tags"]),
-                        ("applicable_scene", candidate["applicable_scene_tags"]),
-                    ):
-                        for tag_name in names:
-                            connection.execute(
-                                """
-                                INSERT INTO material_tags (name, normalized_name, tag_group)
-                                VALUES (?, ?, ?)
-                                ON CONFLICT(normalized_name, tag_group) WHERE deleted_at IS NULL
-                                DO UPDATE SET updated_at = CURRENT_TIMESTAMP
-                                """,
-                                (tag_name, _normalize_tag_name(tag_name), group),
-                            )
-                            tag_id = int(
-                                connection.execute(
-                                    """
-                                    SELECT id FROM material_tags
-                                    WHERE normalized_name = ? AND tag_group = ? AND deleted_at IS NULL
-                                    """,
-                                    (_normalize_tag_name(tag_name), group),
-                                ).fetchone()["id"]
-                            )
-                            connection.execute(
-                                "INSERT OR IGNORE INTO material_tag_links (material_id, tag_id) VALUES (?, ?)",
-                                (material_id, tag_id),
-                            )
                     self._replace_categories(
                         connection,
                         material_id,
@@ -516,7 +392,6 @@ class MaterialService:
         timeline_start_chapter: int | None = None,
         timeline_end_chapter: int | None = None,
         sort_order: int = 0,
-        tag_ids: list[int] | None = None,
         category_ids: list[int] | None = None,
     ) -> None:
         _validate_timeline(timeline_start_chapter, timeline_end_chapter)
@@ -562,8 +437,6 @@ class MaterialService:
                     material_id,
                 ),
             )
-            if tag_ids is not None:
-                self._replace_tags(connection, material_id, tag_ids)
             if category_ids is not None:
                 row = connection.execute(
                     "SELECT material_type FROM materials WHERE id = ?",
@@ -630,7 +503,6 @@ class MaterialService:
                 project_id = item.get("project_id", default_project_id)
                 if project_id is not None:
                     project_id = int(project_id)
-                tag_ids = self._tag_ids_from_names(item.get("tags", []))
                 import_metadata = _json_object_value(item.get("import_metadata"))
                 import_metadata["created_by"] = "json_batch_import"
                 material_id = self.create_material(
@@ -645,7 +517,6 @@ class MaterialService:
                     analysis_status=str(item.get("analysis_status") or "unanalyzed"),
                     source_metadata=_json_object_value(item.get("source_metadata")),
                     import_metadata=import_metadata,
-                    tag_ids=tag_ids,
                 )
                 material = self.get_material(material_id)
                 imported.append(
@@ -675,7 +546,6 @@ class MaterialService:
         *,
         target_scope: str,
         target_project_id: int | None = None,
-        tag_ids: list[int] | None = None,
     ) -> int:
         source = self.get_material(material_id)
         if source is None:
@@ -706,125 +576,8 @@ class MaterialService:
             timeline_start_chapter=source.timeline_start_chapter,
             timeline_end_chapter=source.timeline_end_chapter,
             sort_order=source.sort_order,
-            tag_ids=tag_ids,
         )
-        if tag_ids is None:
-            with session(self.database_path) as connection:
-                source_tags = [
-                    int(row["tag_id"])
-                    for row in connection.execute(
-                        "SELECT tag_id FROM material_tag_links WHERE material_id = ?",
-                        (source.id,),
-                    ).fetchall()
-                ]
-                self._replace_tags(connection, copied_id, source_tags)
         return copied_id
-
-    def list_tags(self, tag_group: str | None = None) -> list[MaterialTag]:
-        if tag_group is not None and tag_group not in MATERIAL_TAG_GROUPS:
-            raise ValueError(f"Unsupported material tag group: {tag_group}")
-        with session(self.database_path) as connection:
-            rows = connection.execute(
-                f"""
-                SELECT t.*, COUNT(m.id) AS resource_count
-                FROM material_tags t
-                LEFT JOIN material_tag_links link ON link.tag_id = t.id
-                LEFT JOIN materials m ON m.id = link.material_id AND m.deleted_at IS NULL
-                WHERE t.deleted_at IS NULL
-                  {"AND t.tag_group = ?" if tag_group is not None else ""}
-                GROUP BY t.id
-                ORDER BY t.sort_order, t.name
-                """,
-                (tag_group,) if tag_group is not None else (),
-            ).fetchall()
-        return [self._row_to_tag(row) for row in rows]
-
-    def _tag_ids_from_names(self, value: object, *, tag_group: str = "general") -> list[int]:
-        if value in (None, ""):
-            return []
-        if not isinstance(value, list):
-            raise ValueError("tags must be an array of names.")
-        existing = {tag.normalized_name: tag.id for tag in self.list_tags(tag_group)}
-        ids: list[int] = []
-        for raw_name in value:
-            name = str(raw_name).strip()
-            if not name:
-                continue
-            normalized = _normalize_tag_name(name)
-            tag_id = existing.get(normalized)
-            if tag_id is None:
-                tag = self.create_tag(name, tag_group=tag_group)
-                tag_id = tag.id
-                existing[tag.normalized_name] = tag.id
-            if tag_id not in ids:
-                ids.append(tag_id)
-        return ids
-
-    def create_tag(self, name: str, *, tag_group: str = "general") -> MaterialTag:
-        if tag_group not in MATERIAL_TAG_GROUPS:
-            raise ValueError(f"Unsupported material tag group: {tag_group}")
-        normalized_name = _required_tag_name(name)
-        with session(self.database_path) as connection:
-            cursor = connection.execute(
-                """
-                INSERT INTO material_tags (name, normalized_name, tag_group)
-                VALUES (?, ?, ?)
-                ON CONFLICT(normalized_name, tag_group) WHERE deleted_at IS NULL
-                DO UPDATE SET updated_at = CURRENT_TIMESTAMP
-                """,
-                (normalized_name, _normalize_tag_name(normalized_name), tag_group),
-            )
-            tag_id = int(cursor.lastrowid) if cursor.lastrowid else int(
-                connection.execute(
-                    "SELECT id FROM material_tags WHERE normalized_name = ? AND tag_group = ? AND deleted_at IS NULL",
-                    (_normalize_tag_name(normalized_name), tag_group),
-                ).fetchone()["id"]
-            )
-        return next(item for item in self.list_tags() if item.id == tag_id)
-
-    def rename_tag(self, tag_id: int, name: str) -> MaterialTag:
-        normalized_name = _required_tag_name(name)
-        with session(self.database_path) as connection:
-            cursor = connection.execute(
-                """
-                UPDATE material_tags
-                SET name = ?, normalized_name = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ? AND deleted_at IS NULL
-                """,
-                (normalized_name, _normalize_tag_name(normalized_name), tag_id),
-            )
-            if cursor.rowcount == 0:
-                raise FileNotFoundError(f"Material tag not found: {tag_id}")
-        return next(item for item in self.list_tags() if item.id == tag_id)
-
-    def delete_tag(self, tag_id: int) -> None:
-        with session(self.database_path) as connection:
-            connection.execute("DELETE FROM material_tag_links WHERE tag_id = ?", (tag_id,))
-            cursor = connection.execute(
-                "UPDATE material_tags SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND deleted_at IS NULL",
-                (tag_id,),
-            )
-            if cursor.rowcount == 0:
-                raise FileNotFoundError(f"Material tag not found: {tag_id}")
-
-    def set_material_tag(self, material_id: int, tag_id: int, selected: bool) -> Material:
-        with session(self.database_path) as connection:
-            self._require_material(connection, material_id)
-            self._require_tag(connection, tag_id)
-            if selected:
-                connection.execute(
-                    "INSERT OR IGNORE INTO material_tag_links (material_id, tag_id) VALUES (?, ?)",
-                    (material_id, tag_id),
-                )
-            else:
-                connection.execute(
-                    "DELETE FROM material_tag_links WHERE material_id = ? AND tag_id = ?",
-                    (material_id, tag_id),
-                )
-        material = self.get_material(material_id)
-        if material is None:
-            raise FileNotFoundError(f"Material not found: {material_id}")
-        return material
 
     def list_categories(self, material_type: str | None = None) -> list[MaterialCategory]:
         if material_type is not None:
@@ -858,7 +611,7 @@ class MaterialService:
     def create_category(self, material_type: str, name: str) -> MaterialCategory:
         material_type = _validate_type(material_type)
         clean_name = _required_category_name(name)
-        normalized_name = _normalize_tag_name(clean_name)
+        normalized_name = _normalize_resource_name(clean_name)
         with session(self.database_path) as connection:
             cursor = connection.execute(
                 """
@@ -889,7 +642,7 @@ class MaterialService:
                 SET name = ?, normalized_name = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ? AND deleted_at IS NULL
                 """,
-                (clean_name, _normalize_tag_name(clean_name), category_id),
+                (clean_name, _normalize_resource_name(clean_name), category_id),
             )
             if cursor.rowcount == 0:
                 raise FileNotFoundError(f"Material category not found: {category_id}")
@@ -945,12 +698,7 @@ class MaterialService:
             self._require_project(connection, project_id)
             rows = connection.execute(
                 """
-                SELECT f.*,
-                       COALESCE((
-                           SELECT GROUP_CONCAT(tag_id, char(31))
-                           FROM project_material_filter_tags
-                           WHERE filter_id = f.id
-                       ), '') AS tag_ids
+                SELECT f.*
                 FROM project_material_filters f
                 WHERE f.project_id = ?
                 ORDER BY f.material_type
@@ -960,7 +708,7 @@ class MaterialService:
         by_type = {str(row["material_type"]): self._row_to_project_filter(row) for row in rows}
         return [
             by_type.get(material_type)
-            or ProjectMaterialFilter(project_id, material_type, "any", (), (), True, True)
+            or ProjectMaterialFilter(project_id, material_type, (), True)
             for material_type in ("author_style",)
         ]
 
@@ -969,21 +717,13 @@ class MaterialService:
         project_id: int,
         material_type: str,
         *,
-        match_mode: str = "any",
-        tag_ids: list[int] | None = None,
         manual_material_ids: list[int] | None = None,
         include_scene_keywords: bool = True,
-        include_applicable_scene_tags: bool = True,
     ) -> ProjectMaterialFilter:
         material_type = _validate_type(material_type)
-        if match_mode not in PROJECT_FILTER_MATCH_MODES:
-            raise ValueError(f"Unsupported project material match mode: {match_mode}")
-        clean_tag_ids = list(dict.fromkeys(int(value) for value in (tag_ids or [])))
         clean_manual_ids = list(dict.fromkeys(int(value) for value in (manual_material_ids or [])))
         with session(self.database_path) as connection:
             self._require_project(connection, project_id)
-            for tag_id in clean_tag_ids:
-                self._require_tag(connection, tag_id)
             for material_id in clean_manual_ids:
                 row = connection.execute(
                     """
@@ -997,37 +737,21 @@ class MaterialService:
             connection.execute(
                 """
                 INSERT INTO project_material_filters (
-                    project_id, material_type, match_mode, manual_material_ids_json,
-                    include_scene_keywords, include_applicable_scene_tags
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    project_id, material_type, manual_material_ids_json,
+                    include_scene_keywords
+                ) VALUES (?, ?, ?, ?)
                 ON CONFLICT(project_id, material_type) DO UPDATE SET
-                    match_mode = excluded.match_mode,
                     manual_material_ids_json = excluded.manual_material_ids_json,
                     include_scene_keywords = excluded.include_scene_keywords,
-                    include_applicable_scene_tags = excluded.include_applicable_scene_tags,
                     updated_at = CURRENT_TIMESTAMP
                 """,
                 (
                     project_id,
                     material_type,
-                    match_mode,
                     json.dumps(clean_manual_ids),
                     int(include_scene_keywords),
-                    int(include_applicable_scene_tags),
                 ),
             )
-            filter_id = int(
-                connection.execute(
-                    "SELECT id FROM project_material_filters WHERE project_id = ? AND material_type = ?",
-                    (project_id, material_type),
-                ).fetchone()["id"]
-            )
-            connection.execute("DELETE FROM project_material_filter_tags WHERE filter_id = ?", (filter_id,))
-            for tag_id in clean_tag_ids:
-                connection.execute(
-                    "INSERT INTO project_material_filter_tags (filter_id, tag_id) VALUES (?, ?)",
-                    (filter_id, tag_id),
-                )
         return next(
             item for item in self.get_project_material_filters(project_id)
             if item.material_type == material_type
@@ -1046,21 +770,6 @@ class MaterialService:
             if material_type is None or item.material_type == _validate_type(material_type)
         ]
         materials = self.list_materials(material_type=material_type)
-        tags_by_material: dict[int, set[int]] = {}
-        if materials:
-            placeholders = ",".join("?" for _ in materials)
-            with session(self.database_path) as connection:
-                for row in connection.execute(
-                    f"""
-                    SELECT material_id, tag_id
-                    FROM material_tag_links
-                    WHERE material_id IN ({placeholders})
-                    """,
-                    [item.id for item in materials],
-                ).fetchall():
-                    tags_by_material.setdefault(int(row["material_id"]), set()).add(
-                        int(row["tag_id"])
-                    )
         selected: list[Material] = []
         for material in materials:
             filter_value = next(
@@ -1072,12 +781,7 @@ class MaterialService:
             is_manual = material.id in filter_value.manual_material_ids
             if material.analysis_status != "analyzed" and not (is_manual and include_unanalyzed_manual):
                 continue
-            material_tag_ids = tags_by_material.get(material.id, set())
-            matches = [tag_id in material_tag_ids for tag_id in filter_value.tag_ids]
-            tag_match = bool(matches) and (
-                all(matches) if filter_value.match_mode == "all" else any(matches)
-            )
-            if is_manual or tag_match:
+            if is_manual:
                 selected.append(material)
         return selected
 
@@ -1187,25 +891,6 @@ class MaterialService:
             raise FileNotFoundError(f"Material not found: {material_id}")
 
     @staticmethod
-    def _require_tag(connection, tag_id: int) -> None:
-        row = connection.execute(
-            "SELECT id FROM material_tags WHERE id = ? AND deleted_at IS NULL",
-            (tag_id,),
-        ).fetchone()
-        if row is None:
-            raise FileNotFoundError(f"Material tag not found: {tag_id}")
-
-    @staticmethod
-    def _replace_tags(connection, material_id: int, tag_ids: list[int]) -> None:
-        connection.execute("DELETE FROM material_tag_links WHERE material_id = ?", (material_id,))
-        for tag_id in dict.fromkeys(tag_ids):
-            MaterialService._require_tag(connection, int(tag_id))
-            connection.execute(
-                "INSERT INTO material_tag_links (material_id, tag_id) VALUES (?, ?)",
-                (material_id, int(tag_id)),
-            )
-
-    @staticmethod
     def _replace_categories(
         connection,
         material_id: int,
@@ -1232,9 +917,6 @@ class MaterialService:
 
     @staticmethod
     def _row_to_material(row) -> Material:
-        tag_names = str(row["tag_names"] or "")
-        general_tag_names = str(row["general_tag_names"] or "")
-        applicable_scene_tag_names = str(row["applicable_scene_tag_names"] or "")
         category_ids = str(row["category_ids"] or "")
         category_names = str(row["category_names"] or "")
         source_metadata = _json_object(str(row["source_metadata_json"]))
@@ -1265,39 +947,19 @@ class MaterialService:
             version=int(row["version"]),
             created_at=str(row["created_at"]),
             updated_at=str(row["updated_at"]),
-            tags=tuple(item for item in tag_names.split(chr(31)) if item),
-            general_tags=tuple(item for item in general_tag_names.split(chr(31)) if item),
-            applicable_scene_tags=tuple(
-                item for item in applicable_scene_tag_names.split(chr(31)) if item
-            ),
             category_ids=tuple(int(item) for item in category_ids.split(chr(31)) if item),
             categories=tuple(item for item in category_names.split(chr(31)) if item),
             source_summary=_material_source_summary(source_metadata, import_metadata),
         )
 
     @staticmethod
-    def _row_to_tag(row) -> MaterialTag:
-        return MaterialTag(
-            id=int(row["id"]),
-            name=str(row["name"]),
-            normalized_name=str(row["normalized_name"]),
-            sort_order=int(row["sort_order"]),
-            resource_count=int(row["resource_count"]),
-            tag_group=str(row["tag_group"] or "general"),
-        )
-
-    @staticmethod
     def _row_to_project_filter(row) -> ProjectMaterialFilter:
-        tag_ids = str(row["tag_ids"] or "")
         manual_ids = _json_int_list(row["manual_material_ids_json"])
         return ProjectMaterialFilter(
             project_id=int(row["project_id"]),
             material_type=str(row["material_type"]),
-            match_mode=str(row["match_mode"]),
-            tag_ids=tuple(int(value) for value in tag_ids.split(chr(31)) if value),
             manual_material_ids=tuple(manual_ids),
             include_scene_keywords=bool(row["include_scene_keywords"]),
-            include_applicable_scene_tags=bool(row["include_applicable_scene_tags"]),
         )
 
     @staticmethod
@@ -1349,29 +1011,8 @@ def _required_name(value: str) -> str:
     return normalized
 
 
-def _required_tag_name(value: str) -> str:
-    normalized = " ".join(value.strip().split())
-    if not normalized:
-        raise ValueError("Tag name is required.")
-    if len(normalized) > 40:
-        raise ValueError("Tag name must be 40 characters or fewer.")
-    return normalized
-
-
-def _normalize_tag_name(value: str) -> str:
+def _normalize_resource_name(value: str) -> str:
     return " ".join(value.strip().split()).casefold()
-
-
-def _normalized_tag_names(values: list[str]) -> list[str]:
-    names: list[str] = []
-    seen: set[str] = set()
-    for value in values[:8]:
-        name = _required_tag_name(str(value))
-        normalized = _normalize_tag_name(name)
-        if normalized not in seen:
-            names.append(name)
-            seen.add(normalized)
-    return names
 
 
 def _normalized_dimensions(values: list[str]) -> list[str]:

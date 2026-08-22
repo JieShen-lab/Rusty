@@ -35,16 +35,12 @@ class FakeMaterialPreviewClient(AIClient):
                                 "premise": "主角追踪线索进入遗迹。",
                                 "stages": ["进入", "受阻", "突破"],
                             },
-                            "suggested_general_tags": ["冒险", " 冲突 "],
-                            "suggested_applicable_scene_tags": ["遗迹", "战斗"],
                             "evidence_summary": "原文明确出现遗迹、守卫和突破。",
                         },
                         {
                             "name": "同行者争执",
                             "description": "同行者对路线发生争执。",
                             "content": {"premise": "路线选择造成分歧。"},
-                            "suggested_general_tags": ["关系"],
-                            "suggested_applicable_scene_tags": ["对话"],
                             "evidence_summary": "原文包含路线争执。",
                         },
                     ]
@@ -79,7 +75,7 @@ class MaterialLibraryV22Tests(unittest.TestCase):
             assert material is not None
             self.assertEqual((), material.category_ids)
 
-    def test_tag_groups_are_independent_and_project_filter_excludes_unanalyzed(self) -> None:
+    def test_project_filter_uses_manual_selection_and_includes_selected_unanalyzed(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             database_path = initialized_database(Path(directory) / "rusty.db")
             service = MaterialService(database_path)
@@ -89,16 +85,12 @@ class MaterialLibraryV22Tests(unittest.TestCase):
                         "INSERT INTO projects (name, status, current_stage) VALUES ('P', 'imported', 'split')"
                     ).lastrowid
                 )
-            general = service.create_tag("战斗", tag_group="general")
-            applicable = service.create_tag("战斗", tag_group="applicable_scene")
-            self.assertNotEqual(general.id, applicable.id)
             analyzed_id = service.create_material(
                 material_type="author_style",
                 scope="public",
                 name="近身战",
                 content={"summary": "短距离交锋。"},
                 analysis_status="analyzed",
-                tag_ids=[general.id],
             )
             pending_id = service.create_material(
                 material_type="author_style",
@@ -106,13 +98,11 @@ class MaterialLibraryV22Tests(unittest.TestCase):
                 name="待整理战斗",
                 content={},
                 analysis_status="unanalyzed",
-                tag_ids=[general.id],
             )
             service.set_project_material_filter(
                 project_id,
                 "author_style",
-                tag_ids=[general.id],
-                manual_material_ids=[],
+                manual_material_ids=[analyzed_id],
             )
             self.assertEqual(
                 [analyzed_id],
@@ -121,7 +111,6 @@ class MaterialLibraryV22Tests(unittest.TestCase):
             service.set_project_material_filter(
                 project_id,
                 "author_style",
-                tag_ids=[],
                 manual_material_ids=[pending_id],
             )
             self.assertEqual(
@@ -148,15 +137,12 @@ class MaterialLibraryV22Tests(unittest.TestCase):
                 task_type="author_style_extraction",
             )
             self.assertEqual([], service.list_materials())
-            self.assertEqual([], service.list_tags())
             first = preview.candidates[0]
             result = extraction.apply_material_extraction(
                 preview_token=preview.preview_token,
                 candidates=[
                     {
                         **candidate.__dict__,
-                        "confirmed_general_tags": ["冒险"] if candidate.candidate_id == first.candidate_id else [],
-                        "confirmed_applicable_scene_tags": ["遗迹"] if candidate.candidate_id == first.candidate_id else [],
                         "category_ids": [category.id] if candidate.candidate_id == first.candidate_id else [],
                     }
                     for candidate in preview.candidates
@@ -167,8 +153,6 @@ class MaterialLibraryV22Tests(unittest.TestCase):
             self.assertEqual([], result["errors"])
             material = service.get_material(int(result["created"][0]["material_id"]))
             assert material is not None
-            self.assertEqual(("冒险",), material.general_tags)
-            self.assertEqual(("遗迹",), material.applicable_scene_tags)
             self.assertEqual((category.id,), material.category_ids)
             with self.assertRaisesRegex(ValueError, "already used"):
                 extraction.apply_material_extraction(

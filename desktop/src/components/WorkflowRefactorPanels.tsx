@@ -256,7 +256,6 @@ export function RewriteOperationPanel({
           {chapter ? <StoryAnchorPicker chapters={[chapter]} label="插入点" onChange={setStartAnchor} projectId={projectId} source={workflowSource} sourceVersionId={selectedRewriteVersion?.id ?? null} value={startAnchor} /> : null}
           {rangeOperation === 'replace_range' && chapter ? <StoryAnchorPicker chapters={[chapter]} label="范围终点" onChange={setReturnAnchor} projectId={projectId} source={workflowSource} sourceVersionId={selectedRewriteVersion?.id ?? null} value={returnAnchor} /> : null}
           <label className="wide">新增剧情目标<textarea onChange={(event) => setDirection(event.target.value)} value={direction} /></label>
-          <p className="wide">默认基于当前正文版本继续操作；也可以显式选择原始基线或历史版本作为本次来源。</p>
           <p className="wide">本次来源：{sourceLabel}</p>
           {!plotRun ? <button disabled={busy || !chapter || !direction.trim()} onClick={() => void perform(beginPlot)} type="button">启动分析</button> : <RunStatus run={plotRun} />}
           {plotRun?.stage === 'confirm_target_skeleton' ? (
@@ -366,7 +365,7 @@ export function BranchWorkspacePanel({
 
   return (
     <div className="branch-workspace">
-      <header><div><span>扩写工程</span><h1>{projectName}</h1><p>每条路线独立保存；可以从原文创建新路线，也可以在当前路线中继续写。</p></div></header>
+      <header><div><span>扩写工程</span><h1>{projectName}</h1></div></header>
       <div className="branch-action-grid" aria-label="扩写入口">
         <OperationButton active={mode === 'open_continuation'} icon={<GitBranch size={18} />} label="继续写" onClick={() => setMode('open_continuation')} />
         <OperationButton active={mode === 'fork'} icon={<GitFork size={18} />} label="写另一种发展" onClick={() => setMode('fork')} />
@@ -434,7 +433,6 @@ export function LegacyExtractPanel({
   return (
     <div className="legacy-extract-panel">
       <span>旧版兼容</span><h1>{projectName}</h1>
-      <p>此项目属于旧版分析工程。<br />可以查看和导出已有分析结果，<br />或基于原文创建新的改写工程或扩写工程。</p>
       <div><button className="button secondary" onClick={() => void exportAnalysis()} type="button">导出已有分析</button><button className="button primary" onClick={() => setCreating(true)} type="button">基于此项目创建新工程</button></div>
       {creating ? <section aria-label="创建派生工程" className="operation-fields"><label>工程类型<select onChange={(event) => setTargetKind(event.target.value as 'rewrite' | 'branch')} value={targetKind}><option value="rewrite">改写工程</option><option value="branch">扩写工程</option></select></label><label><input checked={copyAnalysis} onChange={(event) => setCopyAnalysis(event.target.checked)} type="checkbox" />复制已有分析结果</label><button onClick={() => void createDerivedProject()} type="button">创建并打开</button></section> : null}
       {message ? <p role="status">{message}</p> : null}

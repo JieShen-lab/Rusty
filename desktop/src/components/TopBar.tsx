@@ -5,18 +5,16 @@ import { PrimaryButton } from './PrimaryButton';
 
 type TopBarProps = {
   title: string;
-  subtitle?: string;
   actions?: ReactNode;
   onRefresh?: () => void;
   onNewProject?: () => void;
 };
 
-export function TopBar({ title, subtitle, actions, onRefresh, onNewProject }: TopBarProps) {
+export function TopBar({ title, actions, onRefresh, onNewProject }: TopBarProps) {
   return (
     <header className="page-topbar">
       <div>
         <h1>{title}</h1>
-        {subtitle && <p>{subtitle}</p>}
       </div>
       <div className="page-topbar-actions">
         {actions}

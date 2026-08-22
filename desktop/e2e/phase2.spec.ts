@@ -6,25 +6,21 @@ const projects = [
   { id: 3, name: '旧城工程', author: '', status: 'ready', current_stage: 'imported', progress: 0, source_format: 'txt', total_chapters: 1, total_words: 100, processed_chapters: 0, progress_percent: 0, created_at: '', updated_at: '2026-07-27 12:00:00' },
   { id: 4, name: '海港工程', author: '', status: 'ready', current_stage: 'imported', progress: 0, source_format: 'txt', total_chapters: 1, total_words: 100, processed_chapters: 0, progress_percent: 0, created_at: '', updated_at: '2026-07-26 12:00:00' },
 ];
-const tags = [{ id: 1, name: '动作', normalized_name: '动作', sort_order: 0, resource_count: 1 }];
 const materials = [
-  { id: 1, material_type: 'author_style', scope: 'public', project_id: null, project_name: null, name: '沈砚', description: '擅长都市悬疑叙事。', detail_level: 'standard', raw_text: '雨落在屋檐。', content: { schema_version: 2, author_name: '沈砚', introduction: '擅长都市悬疑叙事。', source_works: ['雨夜旧城'], overall_style: '冷静短句推进，重视环境细节。', summary: '冷静短句推进，重视环境细节。', dimensions: [{ id: 'sentence-features', name: '句子特征', requirement: '分析句式', analysis: '短句推进动作', features: ['短句'], examples: ['雨落在屋檐。'] }] }, analysis_status: 'analyzed', source_metadata: {}, import_metadata: {}, source_material_id: null, source_version: null, timeline_start_chapter: null, timeline_end_chapter: null, sort_order: 0, version: 1, created_at: '', updated_at: '', tags: [], general_tags: [], applicable_scene_tags: [], category_ids: [], categories: [], source_summary: { kind: 'manual', label: '本地创建' } },
+  { id: 1, material_type: 'author_style', scope: 'public', project_id: null, project_name: null, name: '沈砚', description: '擅长都市悬疑叙事。', detail_level: 'standard', raw_text: '雨落在屋檐。', content: { schema_version: 2, author_name: '沈砚', introduction: '擅长都市悬疑叙事。', source_works: ['雨夜旧城'], overall_style: '冷静短句推进，重视环境细节。', summary: '冷静短句推进，重视环境细节。', dimensions: [{ id: 'sentence-features', name: '句子特征', requirement: '分析句式', analysis: '短句推进动作', features: ['短句'], examples: ['雨落在屋檐。'] }] }, analysis_status: 'analyzed', source_metadata: {}, import_metadata: {}, source_material_id: null, source_version: null, timeline_start_chapter: null, timeline_end_chapter: null, sort_order: 0, version: 1, created_at: '', updated_at: '', category_ids: [], categories: [], source_summary: { kind: 'manual', label: '本地创建' } },
 ];
 const baseDocumentItems = [
-  { id: 1, title: '示例长篇', author: '作者', description: null, source_filename: 'novel.txt', source_format: 'txt', storage_path: 'D:/Rusty/novel-v2.txt', source_size_bytes: 100, stored_size_bytes: 100, chapter_count: 1, word_count: 16, status: 'ready', favorite: false, tags: ['长篇', '历史'], is_project_document: false, category_ids: [11, 12], categories: ['研究', '待整理'], project_ids: [], created_at: '2026-07-29 10:00:00', updated_at: '' },
-  { id: 2, title: '工程原稿', author: '工程作者', description: null, source_filename: 'project.txt', source_format: 'txt', storage_path: 'D:/Rusty/project-v1.txt', source_size_bytes: 80, stored_size_bytes: 80, chapter_count: 1, word_count: 12, status: 'ready', favorite: false, tags: ['长篇'], is_project_document: true, category_ids: [11], categories: ['研究'], project_ids: [1], created_at: '2026-07-28 10:00:00', updated_at: '' },
-  { id: 3, title: '普通资料', author: '资料作者', description: null, source_filename: 'reference.txt', source_format: 'txt', storage_path: 'D:/Rusty/reference-v1.txt', source_size_bytes: 60, stored_size_bytes: 60, chapter_count: 1, word_count: 10, status: 'ready', favorite: false, tags: [], is_project_document: false, category_ids: [11], categories: ['研究'], project_ids: [], created_at: '2026-07-27 10:00:00', updated_at: '' },
+  { id: 1, title: '示例长篇', author: '作者', description: null, source_filename: 'novel.txt', source_format: 'txt', storage_path: 'D:/Rusty/novel-v2.txt', source_size_bytes: 100, stored_size_bytes: 100, chapter_count: 1, word_count: 16, status: 'ready', favorite: false, is_project_document: false, category_ids: [11, 12], categories: ['研究', '待整理'], project_ids: [], created_at: '2026-07-29 10:00:00', updated_at: '' },
+  { id: 2, title: '工程原稿', author: '工程作者', description: null, source_filename: 'project.txt', source_format: 'txt', storage_path: 'D:/Rusty/project-v1.txt', source_size_bytes: 80, stored_size_bytes: 80, chapter_count: 1, word_count: 12, status: 'ready', favorite: false, is_project_document: true, category_ids: [11], categories: ['研究'], project_ids: [1], created_at: '2026-07-28 10:00:00', updated_at: '' },
+  { id: 3, title: '普通资料', author: '资料作者', description: null, source_filename: 'reference.txt', source_format: 'txt', storage_path: 'D:/Rusty/reference-v1.txt', source_size_bytes: 60, stored_size_bytes: 60, chapter_count: 1, word_count: 10, status: 'ready', favorite: false, is_project_document: false, category_ids: [11], categories: ['研究'], project_ids: [], created_at: '2026-07-27 10:00:00', updated_at: '' },
 ];
-const documentTags = [{ id: 21, name: '长篇', normalized_name: '长篇', sort_order: 0, resource_count: 2 }, { id: 22, name: '历史', normalized_name: '历史', sort_order: 1, resource_count: 1 }];
 const documentCategories = [
   { id: 11, name: '研究', normalized_name: '研究', sort_order: 0, resource_count: 3 },
   { id: 12, name: '待整理', normalized_name: '待整理', sort_order: 1, resource_count: 1 },
 ];
 
-let tagAssignmentRequests: Array<{ documentId: number; tagId: number; selected: boolean }> = [];
-
 async function mockApi(page: Page) {
-  let documentItems = baseDocumentItems.map((item) => ({ ...item, tags: [...item.tags], category_ids: [...item.category_ids], categories: [...item.categories] }));
+  let documentItems = baseDocumentItems.map((item) => ({ ...item, category_ids: [...item.category_ids], categories: [...item.categories] }));
   let documentDraft: { id: number; document_id: number; chapter_id: number | null; base_revision_id: number; title: string; text: string; updated_at: string } | null = null;
   let documentRevisionNumber = 1;
   let documentBody = '林舟推门而入，看见桌上的钥匙。';
@@ -41,12 +37,9 @@ async function mockApi(page: Page) {
     const path = url.pathname;
     let body: unknown = [];
     if (path === '/api/projects') body = projects;
-    else if (path === '/api/material-tags') body = tags;
     else if (path === '/api/models') body = [{ id: 1, display_name: '测试模型', provider: 'openai_compatible', base_url: '', model_name: 'test', is_default: true, created_at: '', updated_at: '' }];
     else if (path === '/api/projects/1/materials') body = materials.filter((item) => !url.searchParams.get('material_type') || item.material_type === url.searchParams.get('material_type')).map((item) => ({
       ...item,
-      general_tags: item.tags,
-      applicable_scene_tags: [],
       category_ids: [],
       categories: [],
       source_summary: { kind: 'manual', label: '本地创建' },
@@ -87,7 +80,6 @@ async function mockApi(page: Page) {
       candidates: [{
         candidate_id: 'style-1', material_type: 'author_style', selected: true, name: '雨夜文风', description: '雨夜动作写法',
         content: { schema_version: 1, summary: '雨夜追逐的动作与感官提示。', key_beats: [{ id: 'beat-1', title: '跃上屋顶', summary: '快速追逐', evidence_summary: '湿滑屋顶' }] },
-        suggested_general_tags: ['动作'], suggested_applicable_scene_tags: ['雨夜'],
         evidence: [{ quote: '雨夜追逐' }], evidence_summary: '原文明确包含雨夜和追逐。',
         confidence: 0.9, warnings: [],
       }],
@@ -109,8 +101,6 @@ async function mockApi(page: Page) {
     }
     else if (path === '/api/materials') body = materialItems.map((item) => ({
       ...item,
-      general_tags: item.tags,
-      applicable_scene_tags: [],
       category_ids: [],
       categories: [],
       source_summary: { kind: 'manual', label: '本地创建' },
@@ -130,28 +120,13 @@ async function mockApi(page: Page) {
       const updated = materialItems.find((item) => item.id === materialId) ?? current;
       body = updated ? {
         ...updated,
-        general_tags: updated.tags,
-        applicable_scene_tags: [],
         category_ids: [],
         categories: [],
         source_summary: { kind: 'manual', label: '本地创建' },
       } : {};
     }
     else if (path === '/api/documents') body = documentItems;
-    else if (path === '/api/document-tags') body = documentTags;
     else if (path === '/api/document-categories') body = documentCategories;
-    else if (/^\/api\/documents\/\d+\/tags\/\d+$/.test(path)) {
-      const [, , , documentIdText, , tagIdText] = path.split('/');
-      const documentId = Number(documentIdText);
-      const tagId = Number(tagIdText);
-      const selected = Boolean((route.request().postDataJSON() as { selected: boolean }).selected);
-      tagAssignmentRequests.push({ documentId, tagId, selected });
-      const tag = documentTags.find((item) => item.id === tagId);
-      documentItems = documentItems.map((item) => item.id === documentId
-        ? { ...item, tags: selected && tag ? [...new Set([...item.tags, tag.name])] : item.tags.filter((name) => name !== tag?.name) }
-        : item);
-      body = documentItems.find((item) => item.id === documentId);
-    }
     else if (/^\/api\/documents\/\d+\/categories\/\d+$/.test(path)) {
       const [, , , documentIdText, , categoryIdText] = path.split('/');
       const documentId = Number(documentIdText);
@@ -180,7 +155,7 @@ async function mockApi(page: Page) {
     else if (path === '/api/document-processing-templates') body = [];
     else if (path === '/api/documents/merge' && route.request().method() === 'POST') {
       const request = route.request().postDataJSON() as { title: string };
-      const merged = { ...documentItems[0], id: 4, title: request.title, source_filename: 'merged.txt', storage_path: 'D:/Rusty/merged.txt', category_ids: [], categories: [], tags: [], chapter_count: 2 };
+      const merged = { ...documentItems[0], id: 4, title: request.title, source_filename: 'merged.txt', storage_path: 'D:/Rusty/merged.txt', category_ids: [], categories: [], chapter_count: 2 };
       documentItems = [...documentItems, merged];
       body = merged;
     }
@@ -384,11 +359,11 @@ test('全部文档包含工程文档且系统筛选与分类可组合', async ({
   const projectCard = page.getByRole('button', { name: '工程原稿，工程作者' });
   await expect(projectCard.locator('.default-book-cover .document-project-marker')).toHaveText('工程');
   await expect(projectCard.locator(':scope > .document-project-marker')).toHaveCount(0);
-  await page.locator('.document-tag-panel').getByRole('button', { name: /研究/ }).click();
-  await page.locator('.document-tag-panel').getByRole('button', { name: /工程文档/ }).click();
+  await page.locator('.document-library-sidebar').getByRole('button', { name: /研究/ }).click();
+  await page.locator('.document-library-sidebar').getByRole('button', { name: /工程文档/ }).click();
   await expect(page.getByRole('button', { name: '工程原稿，工程作者' })).toBeVisible();
   await expect(page.getByRole('button', { name: '示例长篇，作者' })).toHaveCount(0);
-  await page.locator('.document-tag-panel').getByRole('button', { name: /全部文档/ }).click();
+  await page.locator('.document-library-sidebar').getByRole('button', { name: /全部文档/ }).click();
   await expect(page.getByRole('button', { name: /分类：研究/ })).toHaveCount(0);
   await expect(page.getByRole('button', { name: '示例长篇，作者' })).toBeVisible();
   await expect(page.getByRole('button', { name: '普通资料，资料作者' })).toBeVisible();
@@ -413,7 +388,7 @@ test('我的分类加号只打开轻量新建分类弹窗', async ({ page }) => 
   await expect(dialog.getByRole('button', { name: '新建' })).toBeVisible();
 });
 
-test('文档详情只保留标签、导出和删除操作', async ({ page }) => {
+test('文档详情只保留导出和删除操作', async ({ page }) => {
   await page.goto('/documents');
   const detail = page.locator('.document-detail-panel');
   await expect(detail.getByText('分类', { exact: true })).toHaveCount(0);
@@ -426,43 +401,28 @@ test('文档详情只保留标签、导出和删除操作', async ({ page }) => 
 
 test('最近导入排除工程自动同步文档', async ({ page }) => {
   await page.goto('/documents');
-  await page.locator('.document-tag-panel').getByRole('button', { name: /最近导入/ }).click();
+  await page.locator('.document-library-sidebar').getByRole('button', { name: /最近导入/ }).click();
   await expect(page.getByRole('button', { name: '示例长篇，作者' })).toBeVisible();
   await expect(page.getByRole('button', { name: '普通资料，资料作者' })).toBeVisible();
   await expect(page.getByRole('button', { name: '工程原稿，工程作者' })).toHaveCount(0);
 });
 
-test('分类标签和搜索按交集筛选且标签胶囊不修改关联', async ({ page }) => {
+test('分类和搜索按交集筛选', async ({ page }) => {
   await page.goto('/documents');
   await expect(page.locator('.document-detail-panel').getByText('分类', { exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: '管理当前文档分类' })).toHaveCount(0);
-  await page.locator('.document-tag-panel').getByRole('button', { name: /研究/ }).click();
-  await page.locator('.document-detail-panel').getByRole('button', { name: '长篇', exact: true }).click();
-  await page.locator('.document-detail-panel').getByRole('button', { name: '历史', exact: true }).click();
+  await page.locator('.document-library-sidebar').getByRole('button', { name: /研究/ }).click();
   await page.getByRole('searchbox', { name: '搜索文档' }).fill('示例');
   await expect(page.getByRole('button', { name: '示例长篇，作者' })).toBeVisible();
   await expect(page.getByRole('button', { name: '普通资料，资料作者' })).toHaveCount(0);
-  expect(tagAssignmentRequests).toHaveLength(0);
   await expect(page.getByRole('button', { name: /分类：研究/ })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: /标签：长篇/ })).toHaveCount(0);
-  await expect(page.locator('.document-detail-panel').getByRole('button', { name: '长篇', exact: true })).toHaveAttribute('aria-pressed', 'true');
-  await expect(page.locator('.document-detail-panel').getByRole('button', { name: '历史', exact: true })).toHaveAttribute('aria-pressed', 'true');
-  await page.locator('.document-detail-panel').getByRole('button', { name: '历史', exact: true }).click();
-  await expect(page.locator('.document-detail-panel').getByRole('button', { name: '历史', exact: true })).toHaveAttribute('aria-pressed', 'false');
 });
 
-test('标签管理弹窗显式移除关联并显示文档库存储目录', async ({ page }) => {
+test('文档库显示存储目录', async ({ page }) => {
   await page.goto('/documents');
   await expect(page.getByText('文档库存储目录', { exact: true })).toBeVisible();
   await expect(page.getByText('D:/Rusty', { exact: true })).toBeVisible();
   await expect(page.getByText('D:/Rusty/novel-v2.txt', { exact: true })).toHaveCount(0);
-  await page.getByRole('button', { name: '管理当前文档标签' }).click();
-  const dialog = page.getByRole('dialog', { name: '管理标签' });
-  await dialog.getByRole('checkbox', { name: '长篇' }).uncheck();
-  await expect(dialog.getByRole('button', { name: '保存关联' })).toHaveCount(0);
-  expect(tagAssignmentRequests).toEqual([{ documentId: 1, tagId: 21, selected: false }]);
-  await expect(page.locator('.document-detail-panel').getByRole('button', { name: '长篇', exact: true })).toHaveCount(0);
-  await dialog.getByRole('button', { name: '关闭', exact: true }).click();
 });
 
 test('正文自动保存草稿、手动保存单一版本并打开文字整理弹窗', async ({ page }) => {

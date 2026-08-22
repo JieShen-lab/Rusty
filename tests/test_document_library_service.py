@@ -348,7 +348,7 @@ class DocumentLibraryServiceTests(unittest.TestCase):
             self.assertIsNone(service.get_draft(document.id, first.id))
             self.assertEqual(other.id, service.get_draft(document.id, second.id).id)
 
-    def test_categories_are_many_to_many_and_independent_from_tags(self) -> None:
+    def test_categories_are_many_to_many(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)
             source = root / "classified.txt"
@@ -357,27 +357,23 @@ class DocumentLibraryServiceTests(unittest.TestCase):
             document = service.import_document(source).document
             first = service.create_category("参考")
             second = service.create_category("待整理")
-            tag = service.create_tag("长篇")
             second = service.rename_category(second.id, "归档")
             with self.assertRaisesRegex(ValueError, "已存在"):
                 service.rename_category(second.id, "参考")
 
             service.set_document_category(document.id, first.id, True)
             service.set_document_category(document.id, second.id, True)
-            service.set_document_tag(document.id, tag.id, True)
             assigned = service.list_documents()[0]
 
             self.assertEqual({first.id, second.id}, set(assigned.category_ids))
             self.assertEqual({"参考", "归档"}, set(assigned.categories))
-            self.assertEqual(["长篇"], assigned.tags)
             service.delete_category(first.id)
             remaining = service.list_documents()[0]
             self.assertEqual([second.id], remaining.category_ids)
             self.assertEqual(["归档"], remaining.categories)
-            self.assertEqual(["长篇"], remaining.tags)
             self.assertTrue(Path(remaining.storage_path).is_file())
 
-    def test_project_document_uses_relation_without_creating_legacy_tag(self) -> None:
+    def test_project_document_uses_relation(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)
             source = root / "project-source.txt"
@@ -403,8 +399,6 @@ class DocumentLibraryServiceTests(unittest.TestCase):
 
             self.assertTrue(linked.is_project_document)
             self.assertEqual([project_id], linked.project_ids)
-            self.assertNotIn("工程", linked.tags)
-            self.assertNotIn("工程", [tag.name for tag in service.list_tags()])
             with self.assertRaisesRegex(ValueError, "仅支持阅读"):
                 service.save_content(linked.id, text="不应写回工程")
             project_chapter = ProjectService(database).list_chapters(project_id)[0]
@@ -613,7 +607,7 @@ class DocumentLibraryServiceTests(unittest.TestCase):
             self.assertEqual("作者甲", renamed.author)
             self.assertEqual(1, len(service.list_documents()))
 
-    def test_tags_chapters_migration_and_exports_are_functional(self) -> None:
+    def test_chapters_migration_and_exports_are_functional(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)
             source = root / "长篇.txt"
@@ -627,8 +621,6 @@ class DocumentLibraryServiceTests(unittest.TestCase):
             service = DocumentLibraryService(database_path, original_library)
 
             imported = service.import_document(source)
-            tag = service.create_tag("参考资料")
-            assigned = service.set_document_tag(imported.document.id, tag.id, True)
             chapters = service.list_chapters(imported.document.id)
             full_content = service.get_content(imported.document.id)
             chapter_content = service.get_content(imported.document.id, chapters[1].id)
@@ -643,8 +635,6 @@ class DocumentLibraryServiceTests(unittest.TestCase):
             epub_output = service.export_document(imported.document.id, "epub", root / "export.epub")
             restarted = DocumentLibraryService(database_path)
 
-            self.assertEqual(["参考资料"], assigned.tags)
-            self.assertEqual(1, service.list_tags()[0].resource_count)
             self.assertEqual(["风起", "归途"], [item.title for item in chapters])
             self.assertIn("第一章 风起", full_content.text)
             self.assertEqual("归途", chapter_content.title)

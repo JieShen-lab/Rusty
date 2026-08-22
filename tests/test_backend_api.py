@@ -46,8 +46,7 @@ class FakeStyleAIClient(AIClient):
                     '{"dimension_id":"speech_style","label":"语言风格","value":"Short."},'
                     '{"dimension_id":"action_constraints","label":"动作习惯 / 动作约束","value":"Acts quickly."},'
                     '{"dimension_id":"abilities_background","label":"能力与背景","value":""},'
-                    '{"dimension_id":"anti_ooc_rules","label":"反 OOC 规则","value":"Do not make her passive."}],'
-                    '"suggested_tags":["主角"]}'
+                    '{"dimension_id":"anti_ooc_rules","label":"反 OOC 规则","value":"Do not make her passive."}]}'
                 ),
                 token_usage={"total_tokens": 18},
                 elapsed_ms=7,

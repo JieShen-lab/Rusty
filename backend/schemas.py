@@ -30,7 +30,6 @@ class LibraryDocumentOut(BaseModel):
     word_count: int
     status: str
     favorite: bool
-    tags: list[str] = Field(default_factory=list)
     is_project_document: bool = False
     category_ids: list[int] = Field(default_factory=list)
     categories: list[str] = Field(default_factory=list)
@@ -126,15 +125,6 @@ class DocumentLibraryMigrateRequest(BaseModel):
     target_path: str = Field(min_length=1)
 
 
-class ResourceTagOut(BaseModel):
-    id: int
-    name: str
-    normalized_name: str = ""
-    sort_order: int = 0
-    resource_count: int = 0
-    tag_group: Literal["general", "applicable_scene"] = "general"
-
-
 class DocumentCategoryOut(BaseModel):
     id: int
     name: str
@@ -143,16 +133,15 @@ class DocumentCategoryOut(BaseModel):
     resource_count: int = 0
 
 
-class ResourceTagCreateRequest(BaseModel):
-    name: str = Field(min_length=1, max_length=40)
-    tag_group: Literal["general", "applicable_scene"] = "general"
-
-
-class ResourceTagRenameRequest(BaseModel):
+class ResourceNameCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=40)
 
 
-class ResourceTagAssignmentRequest(BaseModel):
+class ResourceNameRenameRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=40)
+
+
+class ResourceAssignmentRequest(BaseModel):
     selected: bool
 
 
@@ -968,9 +957,6 @@ class MaterialOut(BaseModel):
     version: int
     created_at: str
     updated_at: str
-    tags: list[str] = Field(default_factory=list)
-    general_tags: list[str] = Field(default_factory=list)
-    applicable_scene_tags: list[str] = Field(default_factory=list)
     category_ids: list[int] = Field(default_factory=list)
     categories: list[str] = Field(default_factory=list)
     source_summary: MaterialSourceSummaryOut
@@ -991,7 +977,6 @@ class MaterialWriteRequest(BaseModel):
     timeline_start_chapter: int | None = Field(default=None, ge=1)
     timeline_end_chapter: int | None = Field(default=None, ge=1)
     sort_order: int = 0
-    tag_ids: list[int] = Field(default_factory=list)
     category_ids: list[int] = Field(default_factory=list)
 
 
@@ -1007,14 +992,12 @@ class MaterialUpdateRequest(BaseModel):
     timeline_start_chapter: int | None = Field(default=None, ge=1)
     timeline_end_chapter: int | None = Field(default=None, ge=1)
     sort_order: int = 0
-    tag_ids: list[int] | None = None
     category_ids: list[int] | None = None
 
 
 class MaterialCopyRequest(BaseModel):
     target_scope: Literal["public", "project"]
     target_project_id: int | None = None
-    tag_ids: list[int] = Field(default_factory=list)
 
 
 class MaterialAnalyzeRequest(BaseModel):
@@ -1044,19 +1027,13 @@ class MaterialExtractOut(BaseModel):
 class ProjectMaterialFilterOut(BaseModel):
     project_id: int
     material_type: Literal["author_style"]
-    match_mode: Literal["any", "all"]
-    tag_ids: list[int] = Field(default_factory=list)
     manual_material_ids: list[int] = Field(default_factory=list)
     include_scene_keywords: bool = True
-    include_applicable_scene_tags: bool = True
 
 
 class ProjectMaterialFilterWriteRequest(BaseModel):
-    match_mode: Literal["any", "all"] = "any"
-    tag_ids: list[int] = Field(default_factory=list)
     manual_material_ids: list[int] = Field(default_factory=list)
     include_scene_keywords: bool = True
-    include_applicable_scene_tags: bool = True
 
 
 class MaterialAIDimension(BaseModel):
@@ -1108,8 +1085,6 @@ class MaterialExtractionCandidateOut(BaseModel):
     name: str
     description: str = ""
     content: dict[str, Any] = Field(default_factory=dict)
-    suggested_general_tags: list[str] = Field(default_factory=list)
-    suggested_applicable_scene_tags: list[str] = Field(default_factory=list)
     evidence: list[dict[str, Any]] = Field(default_factory=list)
     evidence_summary: str = ""
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -1209,7 +1184,6 @@ class CharacterCardOut(BaseModel):
     analysis_status: Literal["unanalyzed", "analyzed"] = "analyzed"
     cover_path: str | None = None
     cover_updated_at: str | None = None
-    tags: list[str] = Field(default_factory=list)
     category_ids: list[int] = Field(default_factory=list)
     categories: list[str] = Field(default_factory=list)
     source_summary: CharacterSourceSummaryOut
@@ -1255,7 +1229,6 @@ class CharacterCardWriteRequest(BaseModel):
     stable_fields: list[dict[str, Any]] = Field(default_factory=list)
     raw_text: str = ""
     analysis_status: Literal["unanalyzed", "analyzed"] = "analyzed"
-    tag_ids: list[int] = Field(default_factory=list)
 
 
 class CharacterCardCopyRequest(BaseModel):
@@ -1275,7 +1248,6 @@ class CharacterPublishRequest(BaseModel):
 class CharacterExtractionSettingsOut(BaseModel):
     model_id: int | None = None
     detail_level: Literal["brief", "standard", "detailed"] = "standard"
-    generate_tags: bool = True
     custom_requirements: str = ""
     system_prompt: str = ""
     dimensions: list[dict[str, Any]] = Field(default_factory=list)
@@ -1285,7 +1257,6 @@ class CharacterExtractionSettingsOut(BaseModel):
 class CharacterExtractionSettingsWriteRequest(BaseModel):
     model_id: int | None = None
     detail_level: Literal["brief", "standard", "detailed"] = "standard"
-    generate_tags: bool = True
     custom_requirements: str = ""
     system_prompt: str = ""
     dimensions: list[dict[str, Any]] = Field(default_factory=list)
@@ -1306,7 +1277,6 @@ class CharacterExtractionDraftOut(BaseModel):
     identity: str = ""
     age: str = ""
     stable_fields: list[dict[str, Any]] = Field(default_factory=list)
-    suggested_tags: list[str] = Field(default_factory=list)
     source_metadata: dict[str, Any] = Field(default_factory=dict)
     import_metadata: dict[str, Any] = Field(default_factory=dict)
     raw_text: str = ""
@@ -1324,7 +1294,6 @@ class CharacterExtractionCandidateOut(CharacterExtractionDraftOut):
 
 
 class CharacterExtractionCandidateApply(CharacterExtractionCandidateOut):
-    confirmed_tags: list[str] = Field(default_factory=list)
 
 
 class CharacterExtractionApplyRequest(BaseModel):
@@ -1374,7 +1343,6 @@ class SelectionResourceCreateRequest(BaseModel):
     end_offset: int | None = None
     source_version: int | None = None
     save_to_public: bool = False
-    tag_ids: list[int] = Field(default_factory=list)
 
 
 class ProjectOutlineBindingRequest(BaseModel):

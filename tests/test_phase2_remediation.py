@@ -117,18 +117,6 @@ class PhaseTwoRemediationTests(unittest.TestCase):
         self.assertTrue(block["content"].strip())
         self.assertEqual("included", block["decision"])
 
-    def test_tag_rename_delete_only_changes_associations(self) -> None:
-        service = MaterialService(self.database)
-        tag_id = service.create_tag(" 气氛 ").id
-        material_id = service.create_material(
-            material_type="author_style", scope="public", name="灯影", content={}, tag_ids=[tag_id],
-        )
-        service.rename_tag(tag_id, "夜景")
-        self.assertIn("夜景", service.get_material(material_id).tags)
-        service.delete_tag(tag_id)
-        self.assertIsNotNone(service.get_material(material_id))
-        self.assertEqual((), service.get_material(material_id).tags)
-
     def test_scene_orchestrator_enforces_confirmation_gates_and_executes_models(self) -> None:
         source = self.root / "novel.txt"
         source.write_text("林舟推门而入。\n\n他看见桌上的钥匙。", encoding="utf-8")

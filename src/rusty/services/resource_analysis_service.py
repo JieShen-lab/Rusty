@@ -73,8 +73,8 @@ def _material_messages(material: Material) -> list[dict[str, str]]:
             "Return strict JSON with summary and dimensions[{id,name,requirement,analysis,features[],examples[]}]."
         )},
         {"role": "user", "content": (
-            f"Name: {material.name}\nExisting description: {material.description}\n"
-            f"Tags: {' / '.join(material.tags) or 'none'}\n\nOriginal source text:\n{material.raw_text}"
+            f"Name: {material.name}\nExisting description: {material.description}"
+            f"\n\nOriginal source text:\n{material.raw_text}"
         )},
     ]
 

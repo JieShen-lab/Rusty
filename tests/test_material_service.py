@@ -54,14 +54,12 @@ class MaterialServiceTests(unittest.TestCase):
                         "INSERT INTO projects (name, status, current_stage) VALUES ('测试工程', 'imported', 'split')"
                     ).lastrowid
                 )
-            tag = service.create_tag("冒险")
             public_id = service.create_material(
                 material_type="author_style",
                 scope="public",
                 name="遗迹探索",
                 description="公共作者风格",
                 content={"summary": "短句"},
-                tag_ids=[tag.id],
             )
             project_copy_id = service.copy_material(
                 public_id,
@@ -74,7 +72,6 @@ class MaterialServiceTests(unittest.TestCase):
                 description="公共作者风格更新",
                 detail_level="detailed",
                 content={"summary": "短句与动作"},
-                tag_ids=[tag.id],
             )
 
             public = service.get_material(public_id)
@@ -82,7 +79,6 @@ class MaterialServiceTests(unittest.TestCase):
             self.assertIsNotNone(public)
             self.assertIsNotNone(project_copy)
             assert public is not None and project_copy is not None
-            self.assertEqual(("冒险",), public.tags)
             self.assertEqual("public", project_copy.scope)
             self.assertIsNone(project_copy.project_id)
             self.assertEqual(

@@ -35,7 +35,6 @@ class LibraryDocument:
     word_count: int
     status: str
     favorite: bool
-    tags: list[str]
     is_project_document: bool
     category_ids: list[int]
     categories: list[str]
@@ -93,15 +92,6 @@ class LibraryDocumentDraft:
     title: str
     text: str
     updated_at: str
-
-
-@dataclass(frozen=True)
-class LibraryTag:
-    id: int
-    name: str
-    normalized_name: str
-    sort_order: int
-    resource_count: int
 
 
 @dataclass(frozen=True)
@@ -236,12 +226,6 @@ class DocumentLibraryService:
                 """
                 SELECT d.*,
                        COALESCE((
-                           SELECT GROUP_CONCAT(tags.name, char(31))
-                           FROM document_tag_links links
-                           JOIN document_tags tags ON tags.id = links.tag_id
-                           WHERE links.document_id = d.id AND tags.deleted_at IS NULL
-                       ), '') AS tag_names,
-                       COALESCE((
                            SELECT GROUP_CONCAT(categories.id, char(31))
                            FROM document_category_links links
                            JOIN document_categories categories ON categories.id = links.category_id
@@ -368,97 +352,6 @@ class DocumentLibraryService:
                 source.unlink(missing_ok=True)
         self.library_path = destination
         return destination
-
-    def list_tags(self) -> list[LibraryTag]:
-        with session(self.database_path) as connection:
-            rows = connection.execute(
-                """
-                SELECT t.id, t.name, t.normalized_name, t.sort_order, COUNT(d.id) AS document_count
-                FROM document_tags t
-                LEFT JOIN document_tag_links link ON link.tag_id = t.id
-                LEFT JOIN library_documents d ON d.id = link.document_id AND d.deleted_at IS NULL
-                WHERE t.deleted_at IS NULL
-                GROUP BY t.id
-                ORDER BY t.sort_order, t.name
-                """
-            ).fetchall()
-        return [
-            LibraryTag(
-                id=int(row["id"]),
-                name=str(row["name"]),
-                normalized_name=str(row["normalized_name"]),
-                sort_order=int(row["sort_order"]),
-                resource_count=int(row["document_count"]),
-            )
-            for row in rows
-        ]
-
-    def create_tag(self, name: str) -> LibraryTag:
-        normalized_name = " ".join(name.strip().split())
-        if not normalized_name:
-            raise ValueError("标签名称不能为空。")
-        if len(normalized_name) > 40:
-            raise ValueError("标签名称不能超过 40 个字符。")
-        key = normalized_name.casefold()
-        with session(self.database_path) as connection:
-            connection.execute(
-                """
-                INSERT INTO document_tags (name, normalized_name)
-                VALUES (?, ?)
-                ON CONFLICT(normalized_name) WHERE deleted_at IS NULL
-                DO UPDATE SET updated_at = CURRENT_TIMESTAMP
-                """,
-                (normalized_name, key),
-            )
-        return next(tag for tag in self.list_tags() if tag.name == normalized_name)
-
-    def rename_tag(self, tag_id: int, name: str) -> LibraryTag:
-        normalized_name = " ".join(name.strip().split())
-        if not normalized_name:
-            raise ValueError("标签名称不能为空。")
-        with session(self.database_path) as connection:
-            cursor = connection.execute(
-                """
-                UPDATE document_tags
-                SET name = ?, normalized_name = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ? AND deleted_at IS NULL
-                """,
-                (normalized_name, normalized_name.casefold(), tag_id),
-            )
-            if cursor.rowcount == 0:
-                raise FileNotFoundError(f"找不到文档标签：{tag_id}")
-        return next(tag for tag in self.list_tags() if tag.id == tag_id)
-
-    def delete_tag(self, tag_id: int) -> None:
-        with session(self.database_path) as connection:
-            connection.execute("DELETE FROM document_tag_links WHERE tag_id = ?", (tag_id,))
-            cursor = connection.execute(
-                "UPDATE document_tags SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND deleted_at IS NULL",
-                (tag_id,),
-            )
-            if cursor.rowcount == 0:
-                raise FileNotFoundError(f"找不到文档标签：{tag_id}")
-
-    def set_document_tag(self, document_id: int, tag_id: int, selected: bool) -> LibraryDocument:
-        self._get_document(document_id)
-        with session(self.database_path) as connection:
-            tag = connection.execute(
-                "SELECT id FROM document_tags WHERE id = ? AND deleted_at IS NULL",
-                (tag_id,),
-            ).fetchone()
-            if tag is None:
-                raise FileNotFoundError(f"找不到文档标签：{tag_id}")
-            if selected:
-                connection.execute(
-                    "INSERT OR IGNORE INTO document_tag_links (document_id, tag_id) VALUES (?, ?)",
-                    (document_id, tag_id),
-                )
-            else:
-                connection.execute(
-                    "DELETE FROM document_tag_links WHERE document_id = ? AND tag_id = ?",
-                    (document_id, tag_id),
-                )
-        return self._get_document(document_id)
 
     def list_categories(self) -> list[LibraryCategory]:
         with session(self.database_path) as connection:
@@ -2785,12 +2678,6 @@ class DocumentLibraryService:
                 """
                 SELECT d.*,
                        COALESCE((
-                           SELECT GROUP_CONCAT(tags.name, char(31))
-                           FROM document_tag_links links
-                           JOIN document_tags tags ON tags.id = links.tag_id
-                           WHERE links.document_id = d.id AND tags.deleted_at IS NULL
-                       ), '') AS tag_names,
-                       COALESCE((
                            SELECT GROUP_CONCAT(categories.id, char(31))
                            FROM document_category_links links
                            JOIN document_categories categories ON categories.id = links.category_id
@@ -2992,8 +2879,6 @@ class DocumentLibraryService:
 
     @staticmethod
     def _row_to_document(row) -> LibraryDocument:
-        raw_tags = str(row["tag_names"] or "")
-        tags = [name for name in raw_tags.split(chr(31)) if name]
         category_ids = [
             int(value)
             for value in str(row["category_ids"] or "").split(chr(31))
@@ -3023,7 +2908,6 @@ class DocumentLibraryService:
             word_count=int(row["word_count"]),
             status=str(row["status"]),
             favorite=bool(row["favorite"]),
-            tags=tags,
             is_project_document=bool(row["is_project_document"]),
             category_ids=category_ids,
             categories=categories,

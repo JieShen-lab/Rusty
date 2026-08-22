@@ -6,7 +6,6 @@ import {
   deleteMaterial,
   exportAuthorStyleSettings,
   getMaterialAISettings,
-  getMaterialCategories,
   getMaterials,
   getModels,
   importAuthorStyleSettings,
@@ -19,7 +18,6 @@ import type {
   Material,
   MaterialAIDimension,
   MaterialAISettings,
-  MaterialCategory,
   MaterialType,
   ModelConfig,
 } from '../api/types';
@@ -39,7 +37,6 @@ export function AuthorLibraryPage() {
   const type = MATERIAL_TYPE;
   const [query, setQuery] = useState('');
   const [materials, setMaterials] = useState<Material[]>([]);
-  const [categories, setCategories] = useState<MaterialCategory[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -55,9 +52,8 @@ export function AuthorLibraryPage() {
   const load = useCallback(async (preferred?: number | null) => {
     setLoading(true);
     try {
-      const [materialRows, categoryRows] = await Promise.all([getMaterials(), getMaterialCategories()]);
+      const materialRows = await getMaterials();
       setMaterials(materialRows);
-      setCategories(categoryRows);
       setSelectedId((current) => {
         const wanted = preferred === undefined ? current : preferred;
         return materialRows.some((item) => item.id === wanted) ? wanted : materialRows[0]?.id ?? null;
@@ -78,15 +74,11 @@ export function AuthorLibraryPage() {
     window.history.replaceState(null, '', window.location.href);
   }, []);
 
-  const currentCategories = useMemo(
-    () => categories.filter((item) => item.material_type === type),
-    [categories, type],
-  );
   const visible = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase();
     return materials.filter((item) => {
       if (item.material_type !== type) return false;
-      return !needle || [item.name, item.description, item.tags.join(' '), item.categories.join(' ')]
+      return !needle || [item.name, item.description, item.categories.join(' ')]
         .join(' ').toLocaleLowerCase().includes(needle);
     });
   }, [materials, query, type]);
@@ -119,7 +111,7 @@ export function AuthorLibraryPage() {
           <header>
             <label className="search-field document-search material-library-search">
               <Search size={15} /><span className="sr-only">搜索作者</span>
-              <input onChange={(event) => setQuery(event.target.value)} placeholder="搜索作者、来源作品、分类或标签" type="search" value={query} />
+              <input onChange={(event) => setQuery(event.target.value)} placeholder="搜索作者、来源作品或分类" type="search" value={query} />
             </label>
           </header>
           {loading ? <LibraryEmptyState title="正在读取作者档案…" /> : visible.length ? (
@@ -141,7 +133,7 @@ export function AuthorLibraryPage() {
               </div>
             </div>
           ) : (
-            <LibraryEmptyState action={<PrimaryButton onClick={() => setCreateOpen(true)}><Plus size={16} />新建作者</PrimaryButton>} description="为一位作者录入来源作品和文本样本，AI 会整理整体风格与多个分析维度。" title="暂无作者" />
+            <LibraryEmptyState action={<PrimaryButton onClick={() => setCreateOpen(true)}><Plus size={16} />新建作者</PrimaryButton>} title="暂无作者" />
           )}
         </main>
 
@@ -155,27 +147,25 @@ export function AuthorLibraryPage() {
                 <section><div className="document-detail-heading"><span>来源作品</span></div><div className="author-work-list">{authorProfile(selected).works.length ? authorProfile(selected).works.map((work) => <span key={work}><BookOpenText size={13} />{work}</span>) : <span>尚未填写</span>}</div></section>
                 <section><div className="document-detail-heading"><span>整体风格</span></div><p className="material-detail-copy">{authorProfile(selected).overallStyle || '尚未形成整体风格总结'}</p></section>
                 <AuthorDimensionTable content={selected.content} />
-                <section><div className="document-detail-heading"><span>标签</span></div><div className="document-detail-badges">{selected.tags.length ? selected.tags.map((name) => <span key={name}>{name}</span>) : <span>无标签</span>}</div></section>
-                {selected.material_type === 'author_style' && 'legacy_scene_reference' in selected.content ? <div className="inline-alert">该档案来自旧版数据，可继续编辑或使用来源文本重新分析。</div> : null}
               </div>
               <footer className="library-detail-footer">
                 <SecondaryButton onClick={() => setEditing(selected)}>编辑</SecondaryButton>
                 <DangerButton onClick={() => void run(async () => { if (!window.confirm(`确认删除“${selected.name}”？`)) return; await deleteMaterial(selected.id); await load(null); })}>删除</DangerButton>
               </footer>
             </>
-          ) : <LibraryEmptyState description="单击作者查看档案，双击进入编辑。" title="未选择作者" />}
+          ) : <LibraryEmptyState title="未选择作者" />}
         </aside>
       </div>
 
-      {createOpen ? <CreateMaterialDialog busy={busy} categories={currentCategories} launch={launch} materialType={type} onClose={() => setCreateOpen(false)} onError={setError} onSaved={async (id) => { setCreateOpen(false); setLaunch(null); await load(id); setMessage('作者风格已保存。'); }} /> : null}
+      {createOpen ? <CreateMaterialDialog busy={busy} launch={launch} onClose={() => setCreateOpen(false)} onError={setError} onSaved={async (id) => { setCreateOpen(false); setLaunch(null); await load(id); setMessage('作者风格已保存。'); }} /> : null}
       {settingsOpen ? <MaterialSettingsDialog materialType={type} onClose={() => setSettingsOpen(false)} onError={setError} onSaved={() => setMessage('提取设置已保存，并成为新的默认配置。')} /> : null}
       {editing ? <MaterialEditor material={editing} onClose={() => setEditing(null)} onError={setError} onSaved={async (id) => { await load(id); const updated = (await getMaterials()).find((item) => item.id === id) ?? null; setEditing(updated); setMessage('作者档案已保存。'); }} /> : null}
     </div>
   );
 }
 
-function CreateMaterialDialog({ busy, categories, launch, materialType, onClose, onError, onSaved }: {
-  busy: boolean; categories: MaterialCategory[]; launch: Launch | null; materialType: MaterialType;
+function CreateMaterialDialog({ busy, launch, onClose, onError, onSaved }: {
+  busy: boolean; launch: Launch | null;
   onClose: () => void; onError: (value: string) => void; onSaved: (id: number) => Promise<void>;
 }) {
   const [name, setName] = useState('');
@@ -207,7 +197,7 @@ function CreateMaterialDialog({ busy, categories, launch, materialType, onClose,
       await onSaved(created);
     } catch (reason) { onError(errorMessage(reason)); } finally { setWorking(false); }
   }
-  return <LibraryDialog className="material-create-dialog" footer={<><SecondaryButton onClick={onClose}>取消</SecondaryButton><PrimaryButton disabled={busy || working || !name.trim() || !sourceWorks.trim() || !text.trim()} onClick={() => void extract()}><Sparkles size={15} />分析并建档</PrimaryButton></>} onClose={onClose} subtitle="一个条目对应一位作者" title="新建作者">
+  return <LibraryDialog className="material-create-dialog" footer={<><SecondaryButton onClick={onClose}>取消</SecondaryButton><PrimaryButton disabled={busy || working || !name.trim() || !sourceWorks.trim() || !text.trim()} onClick={() => void extract()}><Sparkles size={15} />分析并建档</PrimaryButton></>} onClose={onClose} title="新建作者">
     <div className="library-form-grid">
       <label><span>作者姓名</span><input autoFocus value={name} onChange={(event) => setName(event.target.value)} /></label>
       <label><span>来源作品（每行一部）</span><textarea value={sourceWorks} onChange={(event) => setSourceWorks(event.target.value)} /></label>
@@ -246,7 +236,7 @@ function MaterialSettingsDialog({ materialType, onClose, onError, onSaved }: { m
   }
   if (!settings) return <LibraryDialog footer={<SecondaryButton onClick={onClose}>关闭</SecondaryButton>} onClose={onClose} title="作者风格提取设置"><LibraryEmptyState title={busy ? '正在加载设置…' : '设置加载失败'} /></LibraryDialog>;
   const patch = (value: Partial<MaterialAISettings>) => setSettings({ ...settings, ...value, prompt_preview: compilePreview({ ...settings, ...value }) });
-  return <LibraryDialog className="material-settings-dialog" footer={<><SecondaryButton onClick={onClose}>关闭</SecondaryButton><PrimaryButton disabled={busy} onClick={() => void save()}>保存为当前默认配置</PrimaryButton></>} onClose={onClose} subtitle="当前保存内容就是以后提取使用的唯一默认配置" title="作者风格提取设置">
+  return <LibraryDialog className="material-settings-dialog" footer={<><SecondaryButton onClick={onClose}>关闭</SecondaryButton><PrimaryButton disabled={busy} onClick={() => void save()}>保存为当前默认配置</PrimaryButton></>} onClose={onClose} title="作者风格提取设置">
     <div className="material-settings-grid">
       <section className="library-form-grid">
         <label><span>默认模型</span><select value={settings.model_id ?? ''} onChange={(event) => patch({ model_id: event.target.value ? Number(event.target.value) : null })}><option value="">使用全局默认模型</option>{models.map((model) => <option key={model.id} value={model.id}>{model.display_name}</option>)}</select></label>
@@ -298,7 +288,7 @@ function MaterialEditor({ material, onClose, onError, onSaved }: { material: Mat
       setContent(updated.content); await onSaved(material.id);
     } catch (reason) { onError(errorMessage(reason)); } finally { setBusy(false); }
   }
-  return <LibraryDialog className="author-style-editor-dialog" footer={<><SecondaryButton onClick={onClose}>关闭</SecondaryButton><PrimaryButton disabled={busy || !name.trim()} onClick={() => void save()}>保存档案</PrimaryButton></>} onClose={onClose} subtitle="一位作者对应一份档案" title="编辑作者档案">
+  return <LibraryDialog className="author-style-editor-dialog" footer={<><SecondaryButton onClick={onClose}>关闭</SecondaryButton><PrimaryButton disabled={busy || !name.trim()} onClick={() => void save()}>保存档案</PrimaryButton></>} onClose={onClose} title="编辑作者档案">
     <div className="library-form-grid"><label><span>作者姓名</span><input value={name} onChange={(event) => setName(event.target.value)} /></label><label><span>来源作品（每行一部）</span><textarea value={sourceWorks} onChange={(event) => setSourceWorks(event.target.value)} /></label><label className="wide"><span>作者简介</span><textarea value={description} onChange={(event) => setDescription(event.target.value)} /></label><label className="wide"><span>整体风格</span><textarea value={overallStyle} onChange={(event) => setOverallStyle(event.target.value)} /></label><label className="wide"><span>用于分析的作品原文</span><textarea value={rawText} onChange={(event) => setRawText(event.target.value)} /></label></div>
     <AuthorDimensionList content={content} editable onChange={setContent} onExtract={(dimension) => void extractDimension(dimension)} />
   </LibraryDialog>;

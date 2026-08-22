@@ -2,6 +2,10 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type MouseEvent, t
 import { createPortal } from 'react-dom';
 import { CircleDashed, X } from 'lucide-react';
 
+export function BodyPortal({ children }: { children: ReactNode }) {
+  return createPortal(children, document.body);
+}
+
 export function LibrarySidebarItem({
   active,
   count,
@@ -20,7 +24,7 @@ export function LibrarySidebarItem({
   return (
     <button
       aria-pressed={active}
-      className={`document-tag-item ${active ? 'selected' : ''}`}
+      className={`library-sidebar-item ${active ? 'selected' : ''}`}
       onClick={onClick}
       onContextMenu={onContextMenu}
       type="button"
@@ -58,14 +62,6 @@ export function LibraryResourceCard({
   selected: boolean;
 }) {
   return <button aria-label={ariaLabel} aria-pressed={selected} className={`document-book ${selected ? 'selected' : ''}`} onClick={onClick} onDoubleClick={onDoubleClick} type="button">{children}</button>;
-}
-
-export function LibraryTagChip({ active = false, children, onClick }: { active?: boolean; children: ReactNode; onClick?: () => void }) {
-  return <button aria-pressed={active} className={active ? 'selected' : ''} onClick={onClick} type="button">{children}</button>;
-}
-
-export function LibraryDetailSection({ action, children, title }: { action?: ReactNode; children: ReactNode; title: string }) {
-  return <section className="library-detail-section"><div className="document-detail-heading"><span>{title}</span>{action}</div>{children}</section>;
 }
 
 export type LibraryContextMenuAction = {
@@ -149,18 +145,15 @@ export function LibraryContextMenu({
 
 export function LibraryEmptyState({
   action,
-  description,
   title,
 }: {
   action?: ReactNode;
-  description?: string;
   title: string;
 }) {
   return (
     <div className="document-shelf-empty">
       <CircleDashed aria-hidden="true" size={28} />
       <strong>{title}</strong>
-      {description ? <span>{description}</span> : null}
       {action ? <div className="document-shelf-empty-action">{action}</div> : null}
     </div>
   );
@@ -173,7 +166,6 @@ export function LibraryDialog({
   closeOnBackdrop = true,
   footer,
   onClose,
-  subtitle,
   title,
 }: {
   bodyClassName?: string;
@@ -182,7 +174,6 @@ export function LibraryDialog({
   closeOnBackdrop?: boolean;
   footer: ReactNode;
   onClose: () => void;
-  subtitle?: string;
   title: string;
 }) {
   const titleId = useId();
@@ -203,12 +194,11 @@ export function LibraryDialog({
     }
   };
 
-  return (
+  return createPortal(
     <div className="library-dialog-backdrop" onMouseDown={handleBackdrop} role="presentation">
       <section aria-labelledby={titleId} aria-modal="true" className={`library-dialog ${className ?? ''}`} role="dialog">
         <header>
           <div>
-            {subtitle ? <span>{subtitle}</span> : null}
             <h2 id={titleId}>{title}</h2>
           </div>
           <button aria-label="关闭" className="icon-button" onClick={onClose} type="button">
@@ -218,7 +208,8 @@ export function LibraryDialog({
         <div className={`library-dialog-body ${bodyClassName ?? ''}`}>{children}</div>
         <footer>{footer}</footer>
       </section>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

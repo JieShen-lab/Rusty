@@ -32,12 +32,12 @@ type Props = { onNavigate: (path: string) => void };
 type WizardStep = 'purpose' | 'import' | 'split' | 'preview' | 'model' | 'confirm';
 type SplitMode = ChapterSplitOptions['mode'];
 
-const FLOW_STEPS: Array<{ key: Exclude<WizardStep, 'purpose'>; label: string; hint: string; icon: ReactNode }> = [
-  { key: 'import', label: '导入文件', hint: '选择源文件与工作目录', icon: <Upload size={17} /> },
-  { key: 'split', label: '章节拆分', hint: '配置章节识别规则', icon: <Scissors size={17} /> },
-  { key: 'preview', label: '预览信息', hint: '确认章节与元数据', icon: <Eye size={17} /> },
-  { key: 'model', label: '模型配置', hint: '选择 AI 推理引擎', icon: <Cpu size={17} /> },
-  { key: 'confirm', label: '确认创建', hint: '检查并启动工程', icon: <ClipboardCheck size={17} /> },
+const FLOW_STEPS: Array<{ key: Exclude<WizardStep, 'purpose'>; label: string; icon: ReactNode }> = [
+  { key: 'import', label: '导入文件', icon: <Upload size={17} /> },
+  { key: 'split', label: '章节拆分', icon: <Scissors size={17} /> },
+  { key: 'preview', label: '预览信息', icon: <Eye size={17} /> },
+  { key: 'model', label: '模型配置', icon: <Cpu size={17} /> },
+  { key: 'confirm', label: '确认创建', icon: <ClipboardCheck size={17} /> },
 ];
 
 export function NewProjectPage({ onNavigate }: Props) {
@@ -231,7 +231,6 @@ export function NewProjectPage({ onNavigate }: Props) {
       <header className="setup-header wizard-header">
         <div>
           <h1>新建工程</h1>
-          <p>普通小说创作工程 · 按步骤完成导入与配置</p>
         </div>
         <span className="wizard-purpose-badge">小说创作工程</span>
       </header>
@@ -252,7 +251,7 @@ export function NewProjectPage({ onNavigate }: Props) {
               return (
                 <li className={`${active ? 'active' : ''} ${complete ? 'complete' : ''}`} key={item.key}>
                   <span>{complete ? <Check size={16} /> : index + 1}</span>
-                  <div><strong>{item.label}</strong><small>{item.hint}</small></div>
+                  <div><strong>{item.label}</strong></div>
                 </li>
               );
             })}
@@ -261,18 +260,16 @@ export function NewProjectPage({ onNavigate }: Props) {
 
         <main className="wizard-content">
           {step === 'purpose' ? (
-            <WizardSection title="选择工程类型" description="选择后才会释放导入文件步骤。">
+            <WizardSection title="选择工程类型">
               <div className="purpose-choice-grid">
                 <PurposeOption
                   active={purpose === 'rewrite'}
-                  description="基于项目设定、人物卡和提示词逐章改写正文。"
                   icon={<FilePenLine size={26} />}
                   onClick={() => setPurpose('rewrite')}
                   title="改写工程"
                 />
                 <PurposeOption
                   active={purpose === 'branch'}
-                  description="从原文末尾或任意节点派生新路线，原始文本始终保持不变。"
                   icon={<BookOpenText size={26} />}
                   onClick={() => setPurpose('branch')}
                   title="扩写工程"
@@ -282,11 +279,11 @@ export function NewProjectPage({ onNavigate }: Props) {
           ) : null}
 
           {step === 'import' ? (
-            <WizardSection title="导入文件" description="源文件和工作目录都确认后才能继续。">
+            <WizardSection title="导入文件">
               <div className="import-dropzone">
                 <Upload size={34} />
                 <strong>{sourcePath ? fileNameOf(sourcePath) : '选择 TXT、EPUB 或 DOCX 文件'}</strong>
-                <small>{sourcePath || '点击按钮选择本地电子书文件'}</small>
+                {sourcePath ? <small>{sourcePath}</small> : null}
                 <button className="button secondary" onClick={() => void chooseFile()} type="button">
                   <FolderOpen size={17} />选择文件
                 </button>
@@ -309,12 +306,11 @@ export function NewProjectPage({ onNavigate }: Props) {
           ) : null}
 
           {step === 'split' ? (
-            <WizardSection title="配置章节拆分规则" description={sourceFormat === 'txt' ? '选择一种方式，把原文识别成一章一章。' : '该格式使用文档自身的章节结构。'}>
+            <WizardSection title="配置章节拆分规则">
               {sourceFormat !== 'txt' ? (
                 <div className="wizard-empty-panel">
                   <FileText size={30} />
                   <strong>{sourceFormat.toUpperCase()} 自动拆分</strong>
-                  <p>Rusty 将读取文档标题层级和元数据，不需要配置 TXT 正则。</p>
                 </div>
               ) : (
                 <>
@@ -339,7 +335,7 @@ export function NewProjectPage({ onNavigate }: Props) {
           ) : null}
 
           {step === 'preview' && preview ? (
-            <WizardSection title="预览信息" description="确认书籍元数据和章节边界。">
+            <WizardSection title="预览信息">
               <div className="preview-facts">
                 <Fact label="识别书名" value={preview.title} />
                 <Fact label="文件格式" value={preview.source_format.toUpperCase()} />
@@ -362,7 +358,7 @@ export function NewProjectPage({ onNavigate }: Props) {
           ) : null}
 
           {step === 'model' ? (
-            <WizardSection title="模型配置" description="选择本工程后续处理使用的 AI 模型。">
+            <WizardSection title="模型配置">
               <div className="wizard-model-list">
                 {models.map((model) => (
                   <button className={`wizard-choice-card ${model.id === modelId ? 'selected' : ''}`} key={model.id} onClick={() => { setModelId(model.id); setModelTestMessage(null); }} type="button">
@@ -382,7 +378,7 @@ export function NewProjectPage({ onNavigate }: Props) {
           ) : null}
 
           {step === 'confirm' && preview ? (
-            <WizardSection title="确认配置" description="检查无误后创建工程。">
+            <WizardSection title="确认配置">
               <div className="confirm-grid">
                 <ConfirmItem label="工程类型" value="小说创作工程" />
                 <ConfirmItem label="工程名称" value={projectName} />
@@ -401,19 +397,18 @@ export function NewProjectPage({ onNavigate }: Props) {
 
       <footer className="setup-actions wizard-actions">
         <button className="button secondary" onClick={previous} type="button"><ArrowLeft size={17} />{step === 'purpose' ? '取消' : '上一步'}</button>
-        <span>{footerHint(step, preview)}</span>
         <button className="button primary wide" disabled={!canContinue} onClick={() => void next()} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); } }} type="button">{primaryLabel}<ArrowRight size={17} /></button>
       </footer>
     </div>
   );
 }
 
-function WizardSection({ children, description, title }: { children: ReactNode; description: string; title: string }) {
-  return <section className="wizard-section"><header><h2>{title}</h2><p>{description}</p></header>{children}</section>;
+function WizardSection({ children, title }: { children: ReactNode; title: string }) {
+  return <section className="wizard-section"><header><h2>{title}</h2></header>{children}</section>;
 }
 
-function PurposeOption({ active, description, icon, onClick, title }: { active: boolean; description: string; icon: ReactNode; onClick: () => void; title: string }) {
-  return <button aria-pressed={active} className={`purpose-card ${active ? 'selected' : ''}`} onClick={onClick} type="button"><span className="purpose-icon">{icon}</span><span><strong>{title}</strong><small>{description}</small></span><span className="radio-mark" /></button>;
+function PurposeOption({ active, icon, onClick, title }: { active: boolean; icon: ReactNode; onClick: () => void; title: string }) {
+  return <button aria-pressed={active} className={`purpose-card ${active ? 'selected' : ''}`} onClick={onClick} type="button"><span className="purpose-icon">{icon}</span><span><strong>{title}</strong></span><span className="radio-mark" /></button>;
 }
 
 function SplitModeButton({ active, label, onClick }: { active: boolean; label: string; onClick: () => void }) {
@@ -426,15 +421,6 @@ function Fact({ label, value }: { label: string; value: string }) {
 
 function ConfirmItem({ label, value, wide = false }: { label: string; value: string; wide?: boolean }) {
   return <div className={wide ? 'wide' : ''}><small>{label}</small><strong title={value}>{value}</strong></div>;
-}
-
-function footerHint(step: WizardStep, preview: PreviewResponse | null) {
-  if (step === 'purpose') return '选择一种工程类型后继续';
-  if (step === 'import') return '必须同时选择源文件和工作目录';
-  if (step === 'split') return '拆分后进入章节预览';
-  if (step === 'preview' && preview) return `已识别 ${preview.total_chapters} 章`;
-  if (step === 'model') return '模型配置将用于后续工程处理';
-  return '创建后进入工程工作台';
 }
 
 function splitModeLabel(mode: string) {

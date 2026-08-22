@@ -275,12 +275,12 @@ class ContextService:
                 continue
             results.append(
                 _result(
-                    "project_tag_filter",
+                    "project_filter",
                     "material",
                     material.id,
                     _material_location(material),
                     _material_context_content(material),
-                    "命中当前工程配置的素材标签筛选。",
+                    "由当前工程配置纳入。",
                     0.92,
                 )
             )
@@ -296,7 +296,6 @@ class ContextService:
                     material.description,
                     material.raw_text,
                     material.content_json,
-                    " ".join(material.tags),
                 ]
             )
             structural = _timeline_matches(
@@ -304,19 +303,6 @@ class ContextService:
                 material.timeline_end_chapter,
                 chapter.index,
             )
-            applicable_matches = [
-                tag
-                for tag in material.applicable_scene_tags
-                if project_filters[material.material_type].include_applicable_scene_tags
-                if any(
-                    term
-                    and (
-                        term.casefold() in tag.casefold()
-                        or tag.casefold() in term.casefold()
-                    )
-                    for term in search_terms
-                )
-            ]
             matched_terms = [
                 term
                 for term in search_terms
@@ -324,7 +310,7 @@ class ContextService:
                 and term
                 and term.casefold() in content.casefold()
             ]
-            if structural or applicable_matches:
+            if structural:
                 results.append(
                     _result(
                         "structure",

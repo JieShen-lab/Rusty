@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .connection import session
 
-CURRENT_SCHEMA_VERSION = 61
+CURRENT_SCHEMA_VERSION = 62
 
 logger = logging.getLogger(__name__)
 
@@ -269,31 +269,6 @@ CREATE TABLE IF NOT EXISTS materials (
     FOREIGN KEY (source_material_id) REFERENCES materials(id) ON DELETE SET NULL
 );
 
-CREATE TABLE IF NOT EXISTS material_tags (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    normalized_name TEXT NOT NULL,
-    tag_group TEXT NOT NULL DEFAULT 'general'
-        CHECK (tag_group IN ('general', 'applicable_scene')),
-    sort_order INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    deleted_at TEXT
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_material_tags_normalized_active
-    ON material_tags(normalized_name)
-    WHERE deleted_at IS NULL;
-
-CREATE TABLE IF NOT EXISTS material_tag_links (
-    material_id INTEGER NOT NULL,
-    tag_id INTEGER NOT NULL,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (material_id, tag_id),
-    FOREIGN KEY (material_id) REFERENCES materials(id) ON DELETE CASCADE,
-    FOREIGN KEY (tag_id) REFERENCES material_tags(id) ON DELETE CASCADE
-);
-
 CREATE TABLE IF NOT EXISTS project_documents (
     project_id INTEGER PRIMARY KEY,
     document_id INTEGER NOT NULL,
@@ -533,29 +508,6 @@ CREATE TABLE IF NOT EXISTS library_documents (
     current_revision_id INTEGER
 );
 
-CREATE TABLE IF NOT EXISTS document_tags (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    normalized_name TEXT NOT NULL,
-    sort_order INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    deleted_at TEXT
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_document_tags_normalized_active
-    ON document_tags(normalized_name)
-    WHERE deleted_at IS NULL;
-
-CREATE TABLE IF NOT EXISTS document_tag_links (
-    document_id INTEGER NOT NULL,
-    tag_id INTEGER NOT NULL,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (document_id, tag_id),
-    FOREIGN KEY (document_id) REFERENCES library_documents(id) ON DELETE CASCADE,
-    FOREIGN KEY (tag_id) REFERENCES document_tags(id) ON DELETE CASCADE
-);
-
 CREATE TABLE IF NOT EXISTS document_categories (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
@@ -665,8 +617,6 @@ CREATE INDEX IF NOT EXISTS idx_library_documents_created_at
     ON library_documents(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_library_documents_content_hash
     ON library_documents(content_hash);
-CREATE INDEX IF NOT EXISTS idx_document_tags_order
-    ON document_tags(sort_order, name);
 CREATE INDEX IF NOT EXISTS idx_library_revisions_document_number
     ON library_document_revisions(document_id, revision_number DESC);
 CREATE INDEX IF NOT EXISTS idx_library_chapters_revision_order
@@ -5474,6 +5424,53 @@ def _migrate_to_v61(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_to_v62(connection: sqlite3.Connection) -> None:
+    """Remove the document, material, and character tag systems."""
+    connection.executescript(
+        """
+        DROP TABLE IF EXISTS project_material_filter_tags;
+        DROP TABLE IF EXISTS document_tag_links;
+        DROP TABLE IF EXISTS material_tag_links;
+        DROP TABLE IF EXISTS character_tag_links;
+        DROP TABLE IF EXISTS document_tags;
+        DROP TABLE IF EXISTS material_tags;
+        DROP TABLE IF EXISTS character_tags;
+        """
+    )
+    if _table_exists(connection, "project_material_filters") and (
+        _column_exists(connection, "project_material_filters", "include_applicable_scene_tags")
+        or _column_exists(connection, "project_material_filters", "match_mode")
+    ):
+        connection.executescript(
+            """
+            ALTER TABLE project_material_filters RENAME TO project_material_filters_v61;
+            CREATE TABLE project_material_filters (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id INTEGER NOT NULL,
+                material_type TEXT NOT NULL CHECK (material_type = 'author_style'),
+                manual_material_ids_json TEXT NOT NULL DEFAULT '[]',
+                include_scene_keywords INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (project_id, material_type),
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+            );
+            INSERT INTO project_material_filters (
+                id, project_id, material_type, manual_material_ids_json,
+                include_scene_keywords, created_at, updated_at
+            )
+            SELECT id, project_id, material_type, manual_material_ids_json,
+                   include_scene_keywords, created_at, updated_at
+            FROM project_material_filters_v61;
+            DROP TABLE project_material_filters_v61;
+            """
+        )
+    if _column_exists(connection, "character_extraction_settings", "generate_tags"):
+        connection.execute(
+            "ALTER TABLE character_extraction_settings DROP COLUMN generate_tags"
+        )
+
+
 def _plain_text_from_storage(value: object, *, numbered: bool = False) -> str:
     raw = str(value or "").strip()
     if not raw:
@@ -5942,6 +5939,7 @@ MIGRATIONS = {
     59: _migrate_to_v59,
     60: _migrate_to_v60,
     61: _migrate_to_v61,
+    62: _migrate_to_v62,
 }
 
 

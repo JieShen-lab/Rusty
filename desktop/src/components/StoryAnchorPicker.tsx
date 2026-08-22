@@ -150,7 +150,7 @@ export function StoryAnchorPicker({
         {anchorType === 'scene_start' || anchorType === 'scene_end' ? <label>场景<select aria-label={`${label}场景`} onChange={(event) => setSceneId(Number(event.target.value))} value={sceneId ?? ''}>{scenes.map((scene) => <option key={scene.id} value={scene.id}>{scene.title || `场景 ${scene.scene_index}`}</option>)}</select></label> : null}
         {anchorType === 'skeleton_node' ? <><label>事件<select aria-label={`${label}细纲事件`} onChange={(event) => setNodeId(event.target.value)} value={nodeId}>{visibleNodes.map((node) => <option key={node.id} value={node.id}>{node.summary}</option>)}</select></label><label>位置<select onChange={(event) => setSide(event.target.value as typeof side)} value={side}><option value="before">事件之前</option><option value="after">事件之后</option></select></label></> : null}
       <button onClick={() => void loadPreview()} type="button">预览位置</button>
-      {preview ? <aside aria-label={`${label}锚点预览`}><p>将在这里开始：</p><blockquote>{preview.text_excerpt}</blockquote>{preview.mapping_method === 'semantic' && preview.confidence < 0.8 ? <p>位置识别不确定，请确认附近正文是否正确。</p> : null}</aside> : null}
+      {preview ? <aside aria-label={`${label}锚点预览`}><blockquote>{preview.text_excerpt}</blockquote>{preview.mapping_method === 'semantic' && preview.confidence < 0.8 ? <p>位置识别不确定，请确认附近正文是否正确。</p> : null}</aside> : null}
       {error ? <p role="alert">{error}</p> : null}
     </fieldset>
   );
