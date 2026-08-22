@@ -1293,12 +1293,9 @@ class CharacterExtractionCandidateOut(CharacterExtractionDraftOut):
     selected: bool = True
 
 
-class CharacterExtractionCandidateApply(CharacterExtractionCandidateOut):
-
-
 class CharacterExtractionApplyRequest(BaseModel):
     preview_token: str
-    candidates: list[CharacterExtractionCandidateApply]
+    candidates: list[CharacterExtractionCandidateOut]
     selected_candidate_ids: list[str]
     scope: Literal["public", "project"] = "public"
     project_id: int | None = None
