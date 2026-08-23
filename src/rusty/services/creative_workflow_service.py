@@ -195,7 +195,7 @@ class CreativeWorkflowService:
             ).fetchone()
         return self._analysis_out(row)
 
-    def resolve_style(self, chapter_id: int, *, source_scope: str = "document", author_style_material_id: int | None = None) -> dict[str, Any]:
+    def resolve_style(self, chapter_id: int, *, author_style_material_id: int | None = None) -> dict[str, Any]:
         source = self._require_current_source(chapter_id)
         intent = self.get_chapter_direction(chapter_id)
         analysis = self.get_special_analysis(chapter_id)
@@ -206,44 +206,32 @@ class CreativeWorkflowService:
             material = self.materials.get_material(author_style_material_id)
             if material is None:
                 raise ValueError("Selected author style material does not exist.")
-            mode, scope = "selected_author_style", "chapter"
-            snapshot = {"name": material.name, "description": material.description, "raw_text": material.raw_text,
+            mode = "selected_author_style"
+            snapshot = {"name": material.name, "raw_text": material.raw_text,
                         "profile": self._load(material.content_json, {})}
             settings_snapshot: dict[str, Any] = {}
             guidance = self._style_guidance(snapshot)
-            material_version = material.version
         else:
             if strategy == "plot_rewrite":
                 raise ValueError("重写剧情需要选择一个作者风格。")
-            style_text, scope = self._document_text(source), "document"
-            settings = self.materials.get_ai_settings("author_style_extraction")
-            settings_snapshot = {
-                "task_type": settings.task_type,
-                "model_id": settings.model_id,
-                "detail_level": settings.detail_level,
-                "extraction_rules": settings.extraction_rules,
-                "base_instruction": settings.base_instruction,
-                "dimensions": [dict(item) for item in settings.dimensions],
-                "extra_requirements": settings.extra_requirements,
-                "updated_at": settings.updated_at,
-            }
-            snapshot = self.author_styles.extract(style_text).to_dict()
+            outcome = self.author_styles.extract(self._document_text(source))
+            settings_snapshot = outcome.settings_snapshot
+            snapshot = outcome.result.to_dict()
             guidance = self._style_guidance(snapshot)
-            mode, author_style_material_id, material_version = "source_auto", None, None
+            mode, author_style_material_id = "source_auto", None
         with session(self.database_path) as connection:
             connection.execute(
-                """INSERT INTO chapter_style_contexts(chapter_id,strategy,style_mode,source_scope,
-                   author_style_material_id,author_style_material_version,style_snapshot_json,
-                   extraction_settings_snapshot_json,generated_guidance,source_hash) VALUES(?,?,?,?,?,?,?,?,?,?)
+                """INSERT INTO chapter_style_contexts(chapter_id,strategy,style_mode,
+                   author_style_material_id,style_snapshot_json,extraction_settings_snapshot_json,
+                   generated_guidance,source_hash) VALUES(?,?,?,?,?,?,?,?)
                    ON CONFLICT(chapter_id) DO UPDATE SET strategy=excluded.strategy,style_mode=excluded.style_mode,
-                   source_scope=excluded.source_scope,author_style_material_id=excluded.author_style_material_id,
-                   author_style_material_version=excluded.author_style_material_version,
+                   author_style_material_id=excluded.author_style_material_id,
                    style_snapshot_json=excluded.style_snapshot_json,
                    extraction_settings_snapshot_json=excluded.extraction_settings_snapshot_json,
                    generated_guidance=excluded.generated_guidance,source_hash=excluded.source_hash,
                    created_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP""",
-                (chapter_id, strategy, mode, scope, author_style_material_id, material_version,
-                 self._dump(snapshot), self._dump(settings_snapshot), guidance, source.content_hash),
+                (chapter_id, strategy, mode, author_style_material_id, self._dump(snapshot),
+                 self._dump(settings_snapshot), guidance, source.content_hash),
             )
             connection.execute("DELETE FROM chapter_writings WHERE chapter_id=?", (chapter_id,))
             self._set_stage(connection, chapter_id, "style")
@@ -272,18 +260,18 @@ class CreativeWorkflowService:
         )
         if not result_text:
             raise ValueError("Writing did not return text.")
-        plan, created_chapter_id = [], None
+        created_chapter_id = None
         if strategy == "expansion":
             created_chapter_id = self._save_expansion_chapter(source, result_text, "", existing)
         with session(self.database_path) as connection:
             connection.execute(
-                """INSERT INTO chapter_writings(chapter_id,strategy,writing_plan_json,result_text,
-                   created_chapter_id,source_hash,status) VALUES(?,?,?,?,?,?,'draft')
+                """INSERT INTO chapter_writings(chapter_id,strategy,result_text,
+                   created_chapter_id,source_hash,status) VALUES(?,?,?,?,?,'draft')
                    ON CONFLICT(chapter_id) DO UPDATE SET strategy=excluded.strategy,
-                   writing_plan_json=excluded.writing_plan_json,result_text=excluded.result_text,
-                   created_chapter_id=excluded.created_chapter_id,source_hash=excluded.source_hash,
+                   result_text=excluded.result_text,created_chapter_id=excluded.created_chapter_id,
+                   source_hash=excluded.source_hash,
                    status='draft',updated_at=CURRENT_TIMESTAMP""",
-                (chapter_id, strategy, self._dump(plan), result_text, created_chapter_id, source.content_hash),
+                (chapter_id, strategy, result_text, created_chapter_id, source.content_hash),
             )
             self._set_stage(connection, chapter_id, "writing")
         return self.get_writing(chapter_id) or {}
@@ -537,8 +525,7 @@ class CreativeWorkflowService:
     def _style_out(self, row: Any) -> dict[str, Any] | None:
         if row is None: return None
         return {"chapter_id": int(row["chapter_id"]), "strategy": str(row["strategy"]), "style_mode": str(row["style_mode"]),
-                "source_scope": str(row["source_scope"]), "author_style_material_id": row["author_style_material_id"],
-                "author_style_material_version": row["author_style_material_version"],
+                "author_style_material_id": row["author_style_material_id"],
                 "style_snapshot": self._load(row["style_snapshot_json"], {}),
                 "extraction_settings_snapshot": self._load(row["extraction_settings_snapshot_json"], {}),
                 "generated_guidance": str(row["generated_guidance"]), "source_hash": str(row["source_hash"]),
@@ -547,7 +534,7 @@ class CreativeWorkflowService:
     def _writing_out(self, row: Any) -> dict[str, Any] | None:
         if row is None: return None
         return {"id": int(row["id"]), "chapter_id": int(row["chapter_id"]), "strategy": str(row["strategy"]),
-                "writing_plan": self._load(row["writing_plan_json"], []), "result_text": str(row["result_text"]),
+                "result_text": str(row["result_text"]),
                 "created_chapter_id": row["created_chapter_id"], "source_hash": str(row["source_hash"]),
                 "status": str(row["status"]), "updated_at": str(row["updated_at"])}
 

@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
 import sqlite3
 from dataclasses import dataclass, replace
@@ -18,6 +19,7 @@ from rusty.models import ChapterRecord, ParsedBook, ParsedChapter, ParsedVolume,
 
 
 SUPPORTED_DOCUMENT_SUFFIXES = {".txt", ".epub", ".docx"}
+DOCUMENT_COVER_PALETTES = ("indigo", "terracotta", "jade", "slate", "ochre", "plum", "bluegray")
 
 
 @dataclass(frozen=True)
@@ -33,6 +35,7 @@ class LibraryDocument:
     stored_size_bytes: int
     chapter_count: int
     word_count: int
+    cover_palette: str
     status: str
     favorite: bool
     is_project_document: bool
@@ -56,7 +59,6 @@ class DocumentRevision:
     revision_number: int
     revision_type: str
     storage_path: str
-    template_id: int | None
     parent_revision_id: int | None
     created_at: str
 
@@ -436,8 +438,8 @@ class DocumentLibraryService:
                     INSERT INTO library_documents (
                         title, author, description, source_filename, source_format,
                         storage_path, content_hash, source_size_bytes, stored_size_bytes,
-                        chapter_count, word_count, source_metadata_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        chapter_count, word_count, source_metadata_json, cover_palette
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         book.title or path.stem,
@@ -452,6 +454,7 @@ class DocumentLibraryService:
                         len(book.chapters),
                         count_text_units(normalized_text),
                         json.dumps(metadata, ensure_ascii=False),
+                        secrets.choice(DOCUMENT_COVER_PALETTES),
                     ),
                 )
                 document_id = int(cursor.lastrowid)
@@ -1255,8 +1258,8 @@ class DocumentLibraryService:
                     INSERT INTO library_documents (
                         title, author, description, source_filename, source_format,
                         storage_path, content_hash, source_size_bytes, stored_size_bytes,
-                        chapter_count, word_count, source_metadata_json, status
-                    ) VALUES (?, ?, '', ?, 'txt', ?, ?, ?, ?, ?, ?, ?, 'imported')
+                        chapter_count, word_count, source_metadata_json, cover_palette, status
+                    ) VALUES (?, ?, '', ?, 'txt', ?, ?, ?, ?, ?, ?, ?, ?, 'imported')
                     """,
                     (
                         normalized_title,
@@ -1269,6 +1272,7 @@ class DocumentLibraryService:
                         len(chapter_boundaries),
                         count_text_units(merged_text),
                         json.dumps({"merge_sources": sources}, ensure_ascii=False),
+                        secrets.choice(DOCUMENT_COVER_PALETTES),
                     ),
                 )
                 document_id = int(cursor.lastrowid)
@@ -2291,6 +2295,7 @@ class DocumentLibraryService:
             stored_size_bytes=int(row["stored_size_bytes"]),
             chapter_count=int(row["chapter_count"]),
             word_count=int(row["word_count"]),
+            cover_palette=str(row["cover_palette"]) if str(row["cover_palette"]) in DOCUMENT_COVER_PALETTES else "slate",
             status=str(row["status"]),
             favorite=bool(row["favorite"]),
             is_project_document=bool(row["is_project_document"]),
@@ -2318,7 +2323,6 @@ class DocumentLibraryService:
             revision_number=int(row["revision_number"]),
             revision_type=str(row["revision_type"]),
             storage_path=str(row["storage_path"]),
-            template_id=int(row["template_id"]) if row["template_id"] is not None else None,
             parent_revision_id=int(row["parent_revision_id"]) if row["parent_revision_id"] is not None else None,
             created_at=str(row["created_at"]),
         )

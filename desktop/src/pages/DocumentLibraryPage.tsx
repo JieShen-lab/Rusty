@@ -97,7 +97,6 @@ const systemFilters = [
 ] as const;
 type SystemFilter = typeof systemFilters[number]['key'];
 
-const palettes = ['indigo', 'terracotta', 'jade', 'slate', 'ochre', 'plum', 'bluegray'] as const;
 
 export function DocumentLibraryPage() {
   const [documents, setDocuments] = useState<LibraryDocument[]>([]);
@@ -1895,7 +1894,7 @@ function SidebarFilterButton({ active, count, icon, label, onClick, onContextMen
 }
 
 function DefaultBookCover({ compact = false, document }: { compact?: boolean; document: LibraryDocument }) {
-  const palette = palettes[(document.id - 1) % palettes.length];
+  const palette = document.cover_palette || 'slate';
   return <span className={`default-book-cover palette-${palette} ${compact ? 'compact' : ''}`}><span className="default-book-spine" />{document.is_project_document ? <span className="document-project-marker">工程</span> : null}<strong>{document.title}</strong><span className="default-book-author">{document.author || '未知作者'}</span></span>;
 }
 

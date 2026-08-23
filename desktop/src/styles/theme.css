@@ -88,7 +88,17 @@
   --library-title-size: 16px;
   --library-body-size: 12px;
   --library-muted-size: 10px;
+  --manuscript-font-size: 14px;
+  --manuscript-line-height: 1.9;
 }
+
+.palette-indigo { --cover-bg: #596680; --cover-spine: #414b61; --cover-ink: #f4f1e8; }
+.palette-terracotta { --cover-bg: #9a6654; --cover-spine: #744b3f; --cover-ink: #fff2df; }
+.palette-jade { --cover-bg: #547668; --cover-spine: #3d594e; --cover-ink: #f0f4e7; }
+.palette-slate { --cover-bg: #65707d; --cover-spine: #48515c; --cover-ink: #f5f1e8; }
+.palette-ochre { --cover-bg: #957746; --cover-spine: #705a35; --cover-ink: #fff4d9; }
+.palette-plum { --cover-bg: #765d74; --cover-spine: #574455; --cover-ink: #f8edf4; }
+.palette-bluegray { --cover-bg: #597486; --cover-spine: #425867; --cover-ink: #edf5f5; }
 
 :root[data-theme="dark"] {
   color-scheme: dark;
@@ -101,9 +111,9 @@
   --border-strong: #46505d;
   --border-hover: #667180;
   --selected-border: #4666a3;
-  --ink: #edf1f7;
-  --ink-muted: #abb4c1;
-  --ink-soft: #7f8997;
+  --ink: #d7dce5;
+  --ink-muted: #a3acb9;
+  --ink-soft: #7b8491;
   --accent: #5277c8;
   --accent-hover: #6386d0;
   --accent-soft: #243657;
@@ -143,6 +153,14 @@
   --accent-cyan: #65aee5;
   --accent-violet: #a99af0;
 }
+
+:root[data-theme="dark"] .palette-indigo { --cover-bg: #414b60; --cover-spine: #303746; --cover-ink: #e8e5dc; }
+:root[data-theme="dark"] .palette-terracotta { --cover-bg: #714c40; --cover-spine: #543830; --cover-ink: #f1e3d2; }
+:root[data-theme="dark"] .palette-jade { --cover-bg: #405c51; --cover-spine: #30453c; --cover-ink: #e5eadf; }
+:root[data-theme="dark"] .palette-slate { --cover-bg: #4a535f; --cover-spine: #373e47; --cover-ink: #e8e5de; }
+:root[data-theme="dark"] .palette-ochre { --cover-bg: #6e5937; --cover-spine: #524329; --cover-ink: #f1e5ca; }
+:root[data-theme="dark"] .palette-plum { --cover-bg: #574656; --cover-spine: #40333f; --cover-ink: #eadfe6; }
+:root[data-theme="dark"] .palette-bluegray { --cover-bg: #435968; --cover-spine: #32434e; --cover-ink: #e1e9e9; }
 
 .surface-card {
   border-color: var(--border) !important;

@@ -2,13 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { ArrowLeft, BookOpenText, Check, ChevronRight, RefreshCw, Save, Sparkles, WandSparkles } from 'lucide-react';
 import { confirmChapterWorkflow, generateChapterWriting, getChapter, getChapters, getChapterWorkflow, getMaterials, resolveChapterStyle, runChapterSpecialAnalysis, runChapterSummary, saveChapterDirection, saveChapterSpecialAnalysis, saveChapterSummary, saveChapterWriting } from '../api/client';
-import type { Chapter, ChapterCreativeIntent, ChapterSpecialAnalysis, ChapterSummary, ChapterWorkflowState, CreativeStrategy, CreativeWorkflowStage, Material } from '../api/types';
+import type { Chapter, ChapterSpecialAnalysis, ChapterSummary, ChapterWorkflowState, CreativeStrategy, CreativeWorkflowStage, Material } from '../api/types';
+import { FloatingNotice } from '../components/FloatingNotice';
 import { PrimaryButton } from '../components/PrimaryButton';
 import { SecondaryButton } from '../components/SecondaryButton';
-import { FloatingNotice } from '../components/FloatingNotice';
 
 type Props = { projectId: number; projectName: string; onNavigate: (path: string, state?: unknown) => void };
 type UiStage = 'summary' | 'direction' | 'special_analysis' | 'style' | 'writing' | 'review';
+type StyleMode = 'document' | 'author';
 const STAGES: Array<{ key: UiStage; label: string }> = [{ key: 'summary', label: '内容总结' }, { key: 'direction', label: '方向选择' }, { key: 'special_analysis', label: '专项分析' }, { key: 'style', label: '风格' }, { key: 'writing', label: '写作' }, { key: 'review', label: '审查' }];
 
 export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Props) {
@@ -21,6 +22,13 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [summaryDraft, setSummaryDraft] = useState<ChapterSummary | null>(null);
+  const [directionStrategy, setDirectionStrategy] = useState<CreativeStrategy>('plot_adjust');
+  const [directionInstruction, setDirectionInstruction] = useState('');
+  const [analysisDraft, setAnalysisDraft] = useState<ChapterSpecialAnalysis | null>(null);
+  const [styleMode, setStyleMode] = useState<StyleMode>('document');
+  const [authorId, setAuthorId] = useState<number | null>(null);
+  const [reviewDraft, setReviewDraft] = useState('');
 
   useEffect(() => {
     let cancelled = false;
@@ -44,6 +52,16 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
     return () => { cancelled = true; };
   }, [selectedId]);
 
+  useEffect(() => {
+    setSummaryDraft(workflow?.summary ?? null);
+    setDirectionStrategy(workflow?.direction?.strategy ?? 'plot_adjust');
+    setDirectionInstruction(workflow?.direction?.user_instruction ?? '');
+    setAnalysisDraft(workflow?.special_analysis ?? null);
+    setStyleMode(workflow?.style?.style_mode === 'selected_author_style' ? 'author' : 'document');
+    setAuthorId(workflow?.style?.author_style_material_id ?? authors[0]?.id ?? null);
+    setReviewDraft(workflow?.writing?.result_text ?? '');
+  }, [workflow, authors]);
+
   async function act(action: () => Promise<unknown>, next?: UiStage, success?: string) {
     if (!selectedId || busy) return;
     setBusy(true); setError(null); setMessage(null);
@@ -52,14 +70,17 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
     finally { setBusy(false); }
   }
 
+  const drafts: Drafts = { summaryDraft, directionStrategy, directionInstruction, analysisDraft, styleMode, authorId, reviewDraft };
+  const setters: Setters = { setSummaryDraft, setDirectionStrategy, setDirectionInstruction, setAnalysisDraft, setStyleMode, setAuthorId, setReviewDraft };
+
   return <div className="creative-workspace chapter-flow-page">
     <FloatingNotice error={error ?? (workflow?.source_changed ? '章节原文已经变化，请从内容总结重新开始，避免沿用过期分析。' : null)} message={message} />
     <header className="creative-topbar"><div className="creative-project-title"><button className="button primary navigation-back-button" onClick={() => onNavigate('/library')} type="button"><ArrowLeft size={16} />工程</button><div><h1>{projectName}</h1><span>章节创作工作台</span></div></div></header>
     <div className="creative-columns chapter-flow-columns">
       <StageProgress active={activeStage} availableIndex={workflow ? availableStageIndex(workflow) : 0} onSelect={setActiveStage} workflow={workflow} />
       <aside className="chapter-rail"><div className="binder-heading"><h2>章节</h2><span>共 {chapters.length} 章</span></div><nav className="chapter-list project-chapter-list">{chapters.map((chapter) => <button aria-current={chapter.id === selectedId ? 'page' : undefined} className={`chapter-row ${chapter.id === selectedId ? 'selected' : ''}`} key={chapter.id} onClick={() => setSelectedId(chapter.id)} type="button"><span className="chapter-number">第 {chapter.index} 章</span><span className="chapter-name">{chapter.title || '未命名'}</span><span className={`chapter-state ${chapter.workflow_stage === 'confirmed' ? 'complete' : ''}`}>{chapter.workflow_stage === 'confirmed' ? '已完成' : '未完成'}</span></button>)}</nav></aside>
-      <main className="chapter-workspace"><div className="chapter-workspace-head"><span>第 {detail?.index ?? '—'} 章</span><h1>{detail?.title ?? '请选择章节'}</h1></div>{!selectedId || !workflow ? <div className="stage-placeholder"><h2>正在读取章节工作流…</h2></div> : <StageContent active={activeStage} authors={authors} busy={busy} detail={detail} workflow={workflow} act={act} />}</main>
-      <ContextPanel authors={authors} detail={detail} workflow={workflow} />
+      <main className={`chapter-workspace stage-${activeStage}`}>{!selectedId || !workflow ? <div className="stage-placeholder"><h2>正在读取章节工作流…</h2></div> : <StageContent active={activeStage} authors={authors} detail={detail} drafts={drafts} setters={setters} workflow={workflow} />}</main>
+      <ContextPanel active={activeStage} act={act} authors={authors} busy={busy} detail={detail} drafts={drafts} workflow={workflow} />
     </div>
   </div>;
 }
@@ -68,95 +89,84 @@ function StageProgress({ active, availableIndex, onSelect, workflow }: { active:
   return <nav aria-label="章节创作阶段" className="creative-workflow-progress creative-stage-rail">{STAGES.map((stage, index) => { const complete = workflow ? stageComplete(workflow, stage.key) : false; return <button className={`${active === stage.key ? 'active' : ''} ${complete ? 'complete' : ''}`} disabled={index > availableIndex} key={stage.key} onClick={() => onSelect(stage.key)} type="button"><span>{complete ? <Check size={9} /> : null}</span>{stage.label}</button>; })}</nav>;
 }
 
-function StageContent({ active, authors, busy, detail, workflow, act }: { active: UiStage; authors: Material[]; busy: boolean; detail: Chapter | null; workflow: ChapterWorkflowState; act: (action: () => Promise<unknown>, next?: UiStage, success?: string) => Promise<void> }) {
-  if (active === 'summary') return <SummaryStage busy={busy} value={workflow.summary} onRun={() => act(() => runChapterSummary(workflow.chapter_id), 'summary', '内容总结已生成。')} onSave={(value) => act(() => saveChapterSummary(workflow.chapter_id, value), 'direction', '内容总结已保存。')} />;
-  if (active === 'direction') return <DirectionStage busy={busy} value={workflow.direction} onSave={(strategy, instruction) => act(() => saveChapterDirection(workflow.chapter_id, strategy, instruction), 'special_analysis', '创作方向已保存。')} />;
-  if (active === 'special_analysis') return <AnalysisStage busy={busy} instruction={workflow.direction?.user_instruction ?? ''} value={workflow.special_analysis} strategy={workflow.direction?.strategy} onRun={() => act(() => runChapterSpecialAnalysis(workflow.chapter_id), 'special_analysis', '专项分析已生成。')} onSave={(value) => act(() => saveChapterSpecialAnalysis(workflow.chapter_id, value), 'style', '新大纲已保存。')} />;
-  if (active === 'style') return <StyleStage authors={authors} busy={busy} workflow={workflow} onResolve={(value) => act(() => resolveChapterStyle(workflow.chapter_id, value), 'writing', '写作风格已确定。')} />;
-  if (active === 'writing') return <WritingStage busy={busy} workflow={workflow} onGenerate={(replace) => act(() => generateChapterWriting(workflow.chapter_id, replace), 'review', '章节草稿已生成。')} />;
-  return <ReviewStage busy={busy} detail={detail} workflow={workflow} onSave={(text) => act(() => saveChapterWriting(workflow.chapter_id, text), 'review', '修改稿已保存。')} onConfirm={(text) => act(async () => { await saveChapterWriting(workflow.chapter_id, text); await confirmChapterWorkflow(workflow.chapter_id); }, 'review', '本章已由人工确认，可进入下一章。')} />;
+type Drafts = { summaryDraft: ChapterSummary | null; directionStrategy: CreativeStrategy; directionInstruction: string; analysisDraft: ChapterSpecialAnalysis | null; styleMode: StyleMode; authorId: number | null; reviewDraft: string };
+type Setters = { setSummaryDraft: (value: ChapterSummary) => void; setDirectionStrategy: (value: CreativeStrategy) => void; setDirectionInstruction: (value: string) => void; setAnalysisDraft: (value: ChapterSpecialAnalysis) => void; setStyleMode: (value: StyleMode) => void; setAuthorId: (value: number | null) => void; setReviewDraft: (value: string) => void };
+
+function StageContent({ active, authors, detail, drafts, setters, workflow }: { active: UiStage; authors: Material[]; detail: Chapter | null; drafts: Drafts; setters: Setters; workflow: ChapterWorkflowState }) {
+  if (active === 'summary') return <SummaryStage draft={drafts.summaryDraft} onChange={setters.setSummaryDraft} />;
+  if (active === 'direction') return <DirectionStage instruction={drafts.directionInstruction} onInstruction={setters.setDirectionInstruction} onStrategy={setters.setDirectionStrategy} strategy={drafts.directionStrategy} />;
+  if (active === 'special_analysis') return <AnalysisStage draft={drafts.analysisDraft} instruction={workflow.direction?.user_instruction ?? ''} onChange={setters.setAnalysisDraft} strategy={workflow.direction?.strategy} />;
+  if (active === 'style') return <StyleStage authorId={drafts.authorId} authors={authors} mode={drafts.styleMode} onAuthor={setters.setAuthorId} onMode={setters.setStyleMode} workflow={workflow} />;
+  if (active === 'writing') return <WritingStage workflow={workflow} />;
+  return <ReviewStage detail={detail} draft={drafts.reviewDraft} onChange={setters.setReviewDraft} workflow={workflow} />;
 }
 
-function SummaryStage({ busy, value, onRun, onSave }: { busy: boolean; value: ChapterSummary | null; onRun: () => void; onSave: (value: ChapterSummary) => void }) {
-  const [draft, setDraft] = useState(value); useEffect(() => setDraft(value), [value]);
-  if (!draft) return <EmptyStage icon={<Sparkles size={22} />} title="先理解这一章" action={<PrimaryButton disabled={busy} onClick={onRun}><Sparkles size={15} />生成内容总结</PrimaryButton>} />;
-  return <section className="flow-stage-card summary-stage"><StageHeading eyebrow="第一阶段" title="内容总结" action={<SecondaryButton disabled={busy} onClick={onRun}><RefreshCw size={14} />重新生成</SecondaryButton>} /><label className="flow-field"><span>剧情总结</span><textarea value={draft.plot_summary} onChange={(event) => setDraft({ ...draft, plot_summary: event.target.value })} /></label><label className="flow-field"><span>关键事件</span><textarea value={draft.key_events} onChange={(event) => setDraft({ ...draft, key_events: event.target.value })} /></label><label className="flow-field"><span>主要人物及设定</span><textarea value={draft.main_characters} onChange={(event) => setDraft({ ...draft, main_characters: event.target.value })} /></label><footer><PrimaryButton disabled={busy || !draft.plot_summary.trim()} onClick={() => onSave(draft)}>保存并选择方向<ChevronRight size={15} /></PrimaryButton></footer></section>;
+function SummaryStage({ draft, onChange }: { draft: ChapterSummary | null; onChange: (value: ChapterSummary) => void }) {
+  if (!draft) return <EmptyStage icon={<Sparkles size={22} />} title="先理解这一章" />;
+  return <section className="flow-stage-card summary-stage"><label className="flow-field"><span>剧情总结</span><textarea value={draft.plot_summary} onChange={(event) => onChange({ ...draft, plot_summary: event.target.value })} /></label><label className="flow-field"><span>关键事件</span><textarea value={draft.key_events} onChange={(event) => onChange({ ...draft, key_events: event.target.value })} /></label><label className="flow-field"><span>主要人物及设定</span><textarea value={draft.main_characters} onChange={(event) => onChange({ ...draft, main_characters: event.target.value })} /></label></section>;
 }
 
-function DirectionStage({ busy, value, onSave }: { busy: boolean; value: ChapterCreativeIntent | null; onSave: (strategy: CreativeStrategy, instruction: string) => void }) {
-  const [strategy, setStrategy] = useState<CreativeStrategy>(value?.strategy ?? 'plot_adjust'); const [instruction, setInstruction] = useState(value?.user_instruction ?? ''); useEffect(() => { if (value) { setStrategy(value.strategy); setInstruction(value.user_instruction); } }, [value]);
+function DirectionStage({ instruction, onInstruction, onStrategy, strategy }: { instruction: string; onInstruction: (value: string) => void; onStrategy: (value: CreativeStrategy) => void; strategy: CreativeStrategy }) {
   const options: Array<[CreativeStrategy, string]> = [['plot_adjust', '调整剧情'], ['expansion', '增加剧情'], ['plot_rewrite', '重写剧情']];
-  return <section className="flow-stage-card direction-stage"><StageHeading eyebrow="第二阶段" title="选择本章怎么改" /><div className="strategy-grid compact">{options.map(([key, title]) => <button className={strategy === key ? 'active' : ''} key={key} onClick={() => setStrategy(key)} type="button"><strong>{title}</strong></button>)}</div><label className="flow-field"><span>你的具体要求</span><textarea value={instruction} onChange={(event) => setInstruction(event.target.value)} /></label><footer><PrimaryButton disabled={busy} onClick={() => onSave(strategy, instruction)}>保存并开始分析<ChevronRight size={15} /></PrimaryButton></footer></section>;
+  return <section className="flow-stage-card direction-stage"><div className="strategy-grid compact">{options.map(([key, title]) => <button className={strategy === key ? 'active' : ''} key={key} onClick={() => onStrategy(key)} type="button"><strong>{title}</strong></button>)}</div><label className="flow-field"><span>你的具体要求</span><textarea value={instruction} onChange={(event) => onInstruction(event.target.value)} /></label></section>;
 }
 
-function AnalysisStage({ busy, instruction, value, strategy, onRun, onSave }: { busy: boolean; instruction: string; value: ChapterSpecialAnalysis | null; strategy?: CreativeStrategy; onRun: () => void; onSave: (value: ChapterSpecialAnalysis) => void }) {
-  const [draft, setDraft] = useState(value); useEffect(() => setDraft(value), [value]);
+function AnalysisStage({ draft, instruction, onChange, strategy }: { draft: ChapterSpecialAnalysis | null; instruction: string; onChange: (value: ChapterSpecialAnalysis) => void; strategy?: CreativeStrategy }) {
   if (!strategy) return <LockedStage text="请先完成方向选择。" />;
-  if (!draft) return <EmptyStage icon={<WandSparkles size={22} />} title="生成专项分析" action={<PrimaryButton disabled={busy} onClick={onRun}><Sparkles size={15} />开始分析</PrimaryButton>} />;
-  return <section className="flow-stage-card analysis-stage"><StageHeading eyebrow="第三阶段" title="专项分析" action={<SecondaryButton disabled={busy} onClick={onRun}><RefreshCw size={14} />重新分析</SecondaryButton>} /><div className="analysis-brief"><span>选择方向</span><strong>{strategyTitle(strategy)}</strong><span>具体要求</span><p>{instruction || '按当前方向生成大纲。'}</p></div>{strategy === 'plot_adjust' ? <OutlineTextComparison source={draft.source_outline} target={draft.target_outline} onChange={(target) => setDraft({ ...draft, target_outline: target })} /> : <SingleOutlineEditor value={draft.target_outline} onChange={(target) => setDraft({ ...draft, target_outline: target })} />}<footer><PrimaryButton disabled={busy || !draft.target_outline.trim()} onClick={() => onSave(draft)}>保存新大纲<ChevronRight size={15} /></PrimaryButton></footer></section>;
+  if (!draft) return <EmptyStage icon={<WandSparkles size={22} />} title="生成专项分析" />;
+  return <section className="flow-stage-card analysis-stage"><div className="analysis-brief"><span>选择方向</span><strong>{strategyTitle(strategy)}</strong><span>具体要求</span><p>{instruction || '按当前方向生成大纲。'}</p></div>{strategy === 'plot_adjust' ? <OutlineTextComparison source={draft.source_outline} target={draft.target_outline} onChange={(target) => onChange({ ...draft, target_outline: target })} /> : <SingleOutlineEditor value={draft.target_outline} onChange={(target) => onChange({ ...draft, target_outline: target })} />}</section>;
 }
 
-function StyleStage({ authors, busy, workflow, onResolve }: { authors: Material[]; busy: boolean; workflow: ChapterWorkflowState; onResolve: (value: { source_scope?: 'document' | 'chapter'; author_style_material_id?: number | null }) => void }) {
-  const plotRewrite = workflow.direction?.strategy === 'plot_rewrite'; const usable = authors; const [authorId, setAuthorId] = useState<number | null>(workflow.style?.author_style_material_id ?? usable[0]?.id ?? null); const [mode, setMode] = useState<'document' | 'author'>(workflow.style?.style_mode === 'selected_author_style' ? 'author' : 'document'); const selectingAuthor = plotRewrite || mode === 'author';
+function StyleStage({ authorId, authors, mode, onAuthor, onMode, workflow }: { authorId: number | null; authors: Material[]; mode: StyleMode; onAuthor: (value: number | null) => void; onMode: (value: StyleMode) => void; workflow: ChapterWorkflowState }) {
+  const plotRewrite = workflow.direction?.strategy === 'plot_rewrite'; const selectingAuthor = plotRewrite || mode === 'author';
   if (!workflow.special_analysis) return <LockedStage text="请先完成专项分析。" />;
-  return <section className="flow-stage-card style-stage"><StageHeading eyebrow="第四阶段" title="确定写作风格" />{!plotRewrite ? <div className="scope-choice"><button className={mode === 'document' ? 'active' : ''} onClick={() => setMode('document')} type="button"><strong>提取本文风格</strong></button><button className={mode === 'author' ? 'active' : ''} onClick={() => setMode('author')} type="button"><strong>使用已保存作者</strong></button></div> : null}{selectingAuthor ? <><div className="author-choice-grid">{usable.map((author) => <button className={authorId === author.id ? 'active' : ''} key={author.id} onClick={() => setAuthorId(author.id)} type="button"><span className="author-profile-avatar"><BookOpenText size={18} /></span><strong>{author.name}</strong><small>{author.categories.join(' · ') || '作者档案'}</small></button>)}</div>{!usable.length ? <div className="inline-alert">还没有可用的已分析作者，请先到“作者”页面完成档案分析。</div> : null}</> : null}{workflow.style?.generated_guidance ? <div className="style-guidance"><strong>已生成的写作指引</strong><p>{workflow.style.generated_guidance}</p></div> : null}<footer><PrimaryButton disabled={busy || (selectingAuthor && !authorId)} onClick={() => onResolve(selectingAuthor ? { author_style_material_id: authorId } : { source_scope: 'document' })}>{workflow.style ? '重新确定风格' : selectingAuthor ? '使用所选作者风格' : '提取并使用本文风格'}<ChevronRight size={15} /></PrimaryButton></footer></section>;
+  return <section className="flow-stage-card style-stage">{!plotRewrite ? <div className="style-mode-choice"><button className={mode === 'document' ? 'active' : ''} onClick={() => onMode('document')} type="button"><strong>提取本文风格</strong></button><button className={mode === 'author' ? 'active' : ''} onClick={() => onMode('author')} type="button"><strong>使用已保存作者</strong></button></div> : null}{selectingAuthor ? <><div className="author-choice-grid">{authors.map((author) => <button className={authorId === author.id ? 'active' : ''} key={author.id} onClick={() => onAuthor(author.id)} type="button"><span className="author-profile-avatar"><BookOpenText size={18} /></span><strong>{author.name}</strong><small>{String(author.content.work || '').trim() || '尚未填写作品'}</small></button>)}</div>{!authors.length ? <div className="inline-alert">还没有可用的已分析作者，请先到“作者”页面完成档案分析。</div> : null}</> : null}{workflow.style?.generated_guidance ? <div className="style-guidance"><strong>已生成的写作指引</strong><p>{workflow.style.generated_guidance}</p></div> : null}</section>;
 }
 
-function WritingStage({ busy, workflow, onGenerate }: { busy: boolean; workflow: ChapterWorkflowState; onGenerate: (replace: boolean) => void }) {
+function WritingStage({ workflow }: { workflow: ChapterWorkflowState }) {
   if (!workflow.style) return <LockedStage text="请先确定写作风格。" />;
-  if (!workflow.writing) return <EmptyStage icon={<WandSparkles size={22} />} title="生成章节草稿" action={<PrimaryButton disabled={busy} onClick={() => onGenerate(false)}><Sparkles size={15} />开始写作</PrimaryButton>} />;
-  return <section className="flow-stage-card writing-stage"><StageHeading eyebrow="第五阶段" title="章节草稿" action={<SecondaryButton disabled={busy} onClick={() => onGenerate(true)}><RefreshCw size={14} />重新生成</SecondaryButton>} /><article className="writing-paper">{workflow.writing.result_text}</article><footer><PrimaryButton disabled={busy} onClick={() => onGenerate(true)}>重新生成草稿</PrimaryButton></footer></section>;
+  if (!workflow.writing) return <EmptyStage icon={<WandSparkles size={22} />} title="生成章节草稿" />;
+  return <section className="flow-stage-card writing-stage"><article className="writing-paper">{workflow.writing.result_text}</article></section>;
 }
 
-function ReviewStage({ busy, detail, workflow, onSave, onConfirm }: { busy: boolean; detail: Chapter | null; workflow: ChapterWorkflowState; onSave: (text: string) => void; onConfirm: (text: string) => void }) {
-  const [draft, setDraft] = useState(workflow.writing?.result_text ?? ''); useEffect(() => setDraft(workflow.writing?.result_text ?? ''), [workflow.writing?.result_text]);
+function ReviewStage({ detail, draft, onChange, workflow }: { detail: Chapter | null; draft: string; onChange: (value: string) => void; workflow: ChapterWorkflowState }) {
   if (!workflow.writing) return <LockedStage text="请先生成章节草稿。" />;
-  const saved = draft === workflow.writing.result_text; const expansion = workflow.writing.strategy === 'expansion';
-  return <section className="flow-stage-card review-stage manual-review-stage"><StageHeading eyebrow="第六阶段 · 人工" title={expansion ? '新增章节审查' : '原文与修改后对照'} /><DiffEditor draft={draft} original={detail?.original_text ?? ''} expansion={expansion} onChange={setDraft} /><footer><SecondaryButton disabled={busy || saved || !draft.trim()} onClick={() => onSave(draft)}><Save size={14} />保存修改</SecondaryButton><PrimaryButton disabled={busy || !draft.trim() || workflow.current_stage === 'confirmed'} onClick={() => onConfirm(draft)}>{workflow.current_stage === 'confirmed' ? '本章已确认' : '保存并人工确认'}<Check size={15} /></PrimaryButton></footer></section>;
+  return <section className="flow-stage-card review-stage manual-review-stage"><DiffEditor draft={draft} original={detail?.original_text ?? ''} expansion={workflow.writing.strategy === 'expansion'} onChange={onChange} /></section>;
+}
+
+function ContextPanel({ active, act, authors, busy, detail, drafts, workflow }: { active: UiStage; act: (action: () => Promise<unknown>, next?: UiStage, success?: string) => Promise<void>; authors: Material[]; busy: boolean; detail: Chapter | null; drafts: Drafts; workflow: ChapterWorkflowState | null }) {
+  const selectedAuthor = authors.find((author) => author.id === workflow?.style?.author_style_material_id);
+  return <aside className="creative-context-panel"><h2>章节上下文</h2><div className="context-panel-scroll"><section><h3>当前来源</h3><p>{workflow?.source_base_kind === 'rewrite_version' ? '已改写版本' : '原文章节'} · {detail?.word_count ?? 0} 字</p></section><section><h3>创作方向</h3><p>{workflow?.direction ? strategyTitle(workflow.direction.strategy) : '尚未选择'}</p></section><section><h3>风格来源</h3><p>{workflow?.style?.style_mode === 'selected_author_style' ? selectedAuthor?.name ?? '已保存作者' : workflow?.style ? '整部原作' : '尚未确定'}</p></section></div><div className="context-stage-actions"><strong>当前阶段功能</strong>{workflow ? <StageActions active={active} act={act} busy={busy} drafts={drafts} workflow={workflow} /> : null}</div></aside>;
+}
+
+function StageActions({ active, act, busy, drafts, workflow }: { active: UiStage; act: (action: () => Promise<unknown>, next?: UiStage, success?: string) => Promise<void>; busy: boolean; drafts: Drafts; workflow: ChapterWorkflowState }) {
+  if (active === 'summary') return <>{drafts.summaryDraft ? <SecondaryButton disabled={busy} onClick={() => void act(() => runChapterSummary(workflow.chapter_id), 'summary', '内容总结已生成。')}><RefreshCw size={14} />重新生成</SecondaryButton> : <PrimaryButton disabled={busy} onClick={() => void act(() => runChapterSummary(workflow.chapter_id), 'summary', '内容总结已生成。')}><Sparkles size={15} />生成内容总结</PrimaryButton>}{drafts.summaryDraft ? <PrimaryButton disabled={busy || !drafts.summaryDraft.plot_summary.trim()} onClick={() => void act(() => saveChapterSummary(workflow.chapter_id, drafts.summaryDraft!), 'direction', '内容总结已保存。')}>保存并选择方向<ChevronRight size={15} /></PrimaryButton> : null}</>;
+  if (active === 'direction') return <PrimaryButton disabled={busy} onClick={() => void act(() => saveChapterDirection(workflow.chapter_id, drafts.directionStrategy, drafts.directionInstruction), 'special_analysis', '创作方向已保存。')}>保存并开始分析<ChevronRight size={15} /></PrimaryButton>;
+  if (active === 'special_analysis') return <>{drafts.analysisDraft ? <SecondaryButton disabled={busy} onClick={() => void act(() => runChapterSpecialAnalysis(workflow.chapter_id), 'special_analysis', '专项分析已生成。')}><RefreshCw size={14} />重新分析</SecondaryButton> : <PrimaryButton disabled={busy || !workflow.direction} onClick={() => void act(() => runChapterSpecialAnalysis(workflow.chapter_id), 'special_analysis', '专项分析已生成。')}><Sparkles size={15} />开始分析</PrimaryButton>}{drafts.analysisDraft ? <PrimaryButton disabled={busy || !drafts.analysisDraft.target_outline.trim()} onClick={() => void act(() => saveChapterSpecialAnalysis(workflow.chapter_id, drafts.analysisDraft!), 'style', '新大纲已保存。')}>保存新大纲<ChevronRight size={15} /></PrimaryButton> : null}</>;
+  if (active === 'style') { const selectingAuthor = workflow.direction?.strategy === 'plot_rewrite' || drafts.styleMode === 'author'; return <PrimaryButton disabled={busy || !workflow.special_analysis || (selectingAuthor && !drafts.authorId)} onClick={() => void act(() => resolveChapterStyle(workflow.chapter_id, { author_style_material_id: selectingAuthor ? drafts.authorId : null }), 'writing', '写作风格已确定。')}>{workflow.style ? '重新确定风格' : selectingAuthor ? '使用所选作者风格' : '提取并使用本文风格'}<ChevronRight size={15} /></PrimaryButton>; }
+  if (active === 'writing') return <PrimaryButton disabled={busy || !workflow.style} onClick={() => void act(() => generateChapterWriting(workflow.chapter_id, Boolean(workflow.writing)), 'review', '章节草稿已生成。')}>{workflow.writing ? <><RefreshCw size={14} />重新生成草稿</> : <><Sparkles size={15} />开始写作</>}</PrimaryButton>;
+  if (!workflow.writing) return null;
+  const saved = drafts.reviewDraft === workflow.writing.result_text;
+  return <><SecondaryButton disabled={busy || saved || !drafts.reviewDraft.trim()} onClick={() => void act(() => saveChapterWriting(workflow.chapter_id, drafts.reviewDraft), 'review', '修改稿已保存。')}><Save size={14} />保存修改</SecondaryButton><PrimaryButton disabled={busy || !drafts.reviewDraft.trim() || workflow.current_stage === 'confirmed'} onClick={() => void act(async () => { await saveChapterWriting(workflow.chapter_id, drafts.reviewDraft); await confirmChapterWorkflow(workflow.chapter_id); }, 'review', '本章已由人工确认，可进入下一章。')}>{workflow.current_stage === 'confirmed' ? '本章已确认' : '保存并人工确认'}<Check size={15} /></PrimaryButton></>;
 }
 
 type DiffPart = { text: string; changed: boolean };
-
 function DiffEditor({ draft, expansion, onChange, original }: { draft: string; expansion: boolean; onChange: (value: string) => void; original: string }) {
-  const highlighted = useMemo(() => sentenceDiff(original, draft), [original, draft]);
-  const previewRef = useRef<HTMLElement>(null);
+  const highlighted = useMemo(() => sentenceDiff(original, draft), [original, draft]); const previewRef = useRef<HTMLElement>(null);
   return <div className="manual-review-columns"><section><header><strong>{expansion ? '前一章原文' : '原始正文'}</strong><span>红色为删除或替换 · 只读</span></header><article>{renderDiff(highlighted.original, 'removed')}</article></section><section><header><strong>{expansion ? '新增章节正文' : '修改后正文'}</strong><span>绿色为新增或替换 · 可编辑</span></header><div className="review-diff-editor"><article aria-hidden="true" ref={previewRef}>{renderDiff(highlighted.draft, 'added')}</article><textarea aria-label={expansion ? '新增章节正文' : '修改后正文'} value={draft} onChange={(event) => onChange(event.target.value)} onScroll={(event) => { if (previewRef.current) { previewRef.current.scrollTop = event.currentTarget.scrollTop; previewRef.current.scrollLeft = event.currentTarget.scrollLeft; } }} /></div></section></div>;
 }
-
-function renderDiff(parts: DiffPart[], kind: 'added' | 'removed'): ReactNode {
-  return parts.map((part, index) => part.changed ? <mark className={`review-diff-${kind}`} key={index}>{part.text}</mark> : <span key={index}>{part.text}</span>);
-}
-
+function renderDiff(parts: DiffPart[], kind: 'added' | 'removed'): ReactNode { return parts.map((part, index) => part.changed ? <mark className={`review-diff-${kind}`} key={index}>{part.text}</mark> : <span key={index}>{part.text}</span>); }
 function sentenceDiff(original: string, draft: string): { original: DiffPart[]; draft: DiffPart[] } {
-  const left = diffTokens(original); const right = diffTokens(draft);
-  const table = Array.from({ length: left.length + 1 }, () => new Uint32Array(right.length + 1));
+  const left = diffTokens(original); const right = diffTokens(draft); const table = Array.from({ length: left.length + 1 }, () => new Uint32Array(right.length + 1));
   for (let i = left.length - 1; i >= 0; i -= 1) for (let j = right.length - 1; j >= 0; j -= 1) table[i][j] = left[i] === right[j] ? table[i + 1][j + 1] + 1 : Math.max(table[i + 1][j], table[i][j + 1]);
   const source: DiffPart[] = []; const target: DiffPart[] = []; let i = 0; let j = 0;
-  while (i < left.length || j < right.length) {
-    if (i < left.length && j < right.length && left[i] === right[j]) { source.push({ text: left[i], changed: false }); target.push({ text: right[j], changed: false }); i += 1; j += 1; }
-    else if (i < left.length && (j >= right.length || table[i + 1][j] >= table[i][j + 1])) { source.push({ text: left[i], changed: true }); i += 1; }
-    else { target.push({ text: right[j], changed: true }); j += 1; }
-  }
+  while (i < left.length || j < right.length) { if (i < left.length && j < right.length && left[i] === right[j]) { source.push({ text: left[i], changed: false }); target.push({ text: right[j], changed: false }); i += 1; j += 1; } else if (i < left.length && (j >= right.length || table[i + 1][j] >= table[i][j + 1])) { source.push({ text: left[i], changed: true }); i += 1; } else { target.push({ text: right[j], changed: true }); j += 1; } }
   return { original: source, draft: target };
 }
-
-function diffTokens(text: string): string[] {
-  return text.match(/[^。！？!?；;\n]+[。！？!?；;\n]*|[。！？!?；;\n]+/g) ?? (text ? [text] : []);
-}
-
-function ContextPanel({ authors, detail, workflow }: { authors: Material[]; detail: Chapter | null; workflow: ChapterWorkflowState | null }) {
-  const selectedAuthor = authors.find((author) => author.id === workflow?.style?.author_style_material_id);
-  return <aside className="creative-context-panel"><h2>章节上下文</h2><section><h3>当前来源</h3><p>{workflow?.source_base_kind === 'rewrite_version' ? '已改写版本' : '原文章节'} · {detail?.word_count ?? 0} 字</p></section><section><h3>创作方向</h3><p>{workflow?.direction ? strategyTitle(workflow.direction.strategy) : '尚未选择'}</p></section><section><h3>风格来源</h3><p>{selectedAuthor?.name ?? (workflow?.style ? workflow.style.source_scope === 'chapter' ? '当前章节' : '整部原作' : '尚未确定')}</p></section></aside>;
-}
-
-function OutlineTextComparison({ source, target, onChange }: { source: string; target: string; onChange: (value: string) => void }) {
-  return <section className="outline-text-comparison"><header><div><h3>旧大纲</h3><span>只读</span></div><div><h3>新大纲及细节</h3><span>可修改</span></div></header><div className="outline-text-columns"><pre>{source || '暂无旧大纲'}</pre><textarea aria-label="新大纲及细节" onChange={(event) => onChange(event.target.value)} value={target} /></div></section>;
-}
-function SingleOutlineEditor({ value, onChange }: { value: string; onChange: (value: string) => void }) {
-  return <label className="flow-field single-outline-editor"><span>新大纲</span><textarea aria-label="新大纲" value={value} onChange={(event) => onChange(event.target.value)} /></label>;
-}
-function StageHeading({ action, eyebrow, title }: { action?: ReactNode; eyebrow: string; title: string }) { return <header className="flow-stage-heading"><div><span>{eyebrow}</span><h2>{title}</h2></div>{action}</header>; }
-function EmptyStage({ action, icon, title }: { action: ReactNode; icon: ReactNode; title: string }) { return <section className="flow-stage-card empty-stage"><span>{icon}</span><h2>{title}</h2>{action}</section>; }
+function diffTokens(text: string): string[] { return text.match(/[^。！？!?；;\n]+[。！？!?；;\n]*|[。！？!?；;\n]+/g) ?? (text ? [text] : []); }
+function OutlineTextComparison({ source, target, onChange }: { source: string; target: string; onChange: (value: string) => void }) { return <section className="outline-text-comparison"><header><div><h3>旧大纲</h3><span>只读</span></div><div><h3>新大纲及细节</h3><span>可修改</span></div></header><div className="outline-text-columns"><pre>{source || '暂无旧大纲'}</pre><textarea aria-label="新大纲及细节" onChange={(event) => onChange(event.target.value)} value={target} /></div></section>; }
+function SingleOutlineEditor({ value, onChange }: { value: string; onChange: (value: string) => void }) { return <label className="flow-field single-outline-editor"><span>新大纲</span><textarea aria-label="新大纲" value={value} onChange={(event) => onChange(event.target.value)} /></label>; }
+function EmptyStage({ icon, title }: { icon: ReactNode; title: string }) { return <section className="flow-stage-card empty-stage"><span>{icon}</span><h2>{title}</h2><p>请使用右侧的当前阶段功能继续。</p></section>; }
 function LockedStage({ text }: { text: string }) { return <section className="flow-stage-card empty-stage"><span><ChevronRight size={22} /></span><h2>前一步尚未完成</h2><p>{text}</p></section>; }
 function stageForState(stage: CreativeWorkflowStage): UiStage { return stage === 'not_started' ? 'summary' : stage === 'confirmed' ? 'review' : stage; }
 function stageComplete(workflow: ChapterWorkflowState, stage: UiStage): boolean { return Boolean(stage === 'summary' ? workflow.summary : stage === 'direction' ? workflow.direction : stage === 'special_analysis' ? workflow.special_analysis : stage === 'style' ? workflow.style : stage === 'writing' ? workflow.writing : workflow.writing?.status === 'reviewed' || workflow.current_stage === 'confirmed'); }

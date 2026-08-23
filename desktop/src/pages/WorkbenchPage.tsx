@@ -121,7 +121,7 @@ export function WorkbenchPage({ onNavigate }: Props) {
 
           {selected ? (
             <section className="project-detail-card" aria-label={`${selected.name} 工程详情`}>
-              <div className="project-cover">{selected.name.trim().slice(0, 2).toUpperCase() || '工程'}</div>
+              <div className="project-cover">{selected.name.trim() || '未命名工程'}</div>
               <div className="project-detail-content">
                 <div className="project-detail-meta">
                   <span><i />{formatStatus(selected.status)}</span>

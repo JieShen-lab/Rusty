@@ -241,7 +241,7 @@ def create_app(
     def resolve_style(chapter_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         _require_chapter(projects, chapter_id)
         material_id = payload.get("author_style_material_id")
-        return creative.resolve_style(chapter_id, source_scope=str(payload.get("source_scope") or "document"), author_style_material_id=int(material_id) if material_id is not None else None)
+        return creative.resolve_style(chapter_id, author_style_material_id=int(material_id) if material_id is not None else None)
 
     @app.post("/api/chapters/{chapter_id}/workflow/writing/generate", dependencies=[Depends(_require_token)])
     def generate_writing(chapter_id: int, payload: dict[str, Any]) -> dict[str, Any]:
@@ -492,16 +492,10 @@ def _material_out(material: Any) -> dict[str, Any]:
     return {
         "id": material.id,
         "name": material.name,
-        "description": material.description,
-        "detail_level": material.detail_level,
         "raw_text": material.raw_text,
         "content": json.loads(material.content_json),
-        "sort_order": material.sort_order,
-        "version": material.version,
         "created_at": material.created_at,
         "updated_at": material.updated_at,
-        "category_ids": list(material.category_ids),
-        "categories": list(material.categories),
     }
 
 

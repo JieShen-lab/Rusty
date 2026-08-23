@@ -64,7 +64,7 @@ export function AuthorLibraryPage() {
     const needle = query.trim().toLocaleLowerCase();
     return materials.filter((item) => {
       const profile = authorProfile(item);
-      return !needle || [profile.name, profile.work, item.categories.join(' ')]
+      return !needle || [profile.name, profile.work]
         .join(' ').toLocaleLowerCase().includes(needle);
     });
   }, [materials, query]);
@@ -103,7 +103,7 @@ export function AuthorLibraryPage() {
           <header>
             <label className="search-field document-search material-library-search">
               <Search size={15} /><span className="sr-only">搜索作者</span>
-              <input onChange={(event) => setQuery(event.target.value)} placeholder="搜索作者、作品或分类" type="search" value={query} />
+              <input onChange={(event) => setQuery(event.target.value)} placeholder="搜索作者或作品" type="search" value={query} />
             </label>
           </header>
           {loading ? <LibraryEmptyState title="正在读取作者档案…" /> : visible.length ? (
@@ -192,7 +192,7 @@ function CreateMaterialDialog({ busy, onClose, onError, onSaved }: {
       const applied = await applyMaterialExtraction({
         preview_token: result.preview_token,
         selected_candidate_ids: [candidate.candidate_id],
-        candidates: [{ ...candidate, name: finalName, description: candidate.description || '', content: { ...candidate.content, work: workName } }],
+        candidates: [{ ...candidate, name: finalName, content: { ...candidate.content, work: workName } }],
       });
       const created = applied.created[0]?.material_id;
       if (!created) throw new Error(applied.errors[0]?.error || '保存失败。');
@@ -277,7 +277,7 @@ function MaterialEditor({ material, onClose, onError, onSaved }: { material: Mat
   }
   async function save() {
     setBusy(true);
-    try { const saved = await updateMaterial(material.id, { name: name.trim(), description: material.description, detail_level: material.detail_level, content: profileContent(), sort_order: material.sort_order }); onSaved(saved); }
+    try { const saved = await updateMaterial(material.id, { name: name.trim(), content: profileContent() }); onSaved(saved); }
     catch (reason) { onError(errorMessage(reason)); } finally { setBusy(false); }
   }
   return <LibraryDialog className="author-style-editor-dialog" footer={<><SecondaryButton onClick={onClose}>关闭</SecondaryButton><PrimaryButton disabled={busy || !name.trim()} onClick={() => void save()}>保存档案</PrimaryButton></>} onClose={onClose} title="编辑作者档案">

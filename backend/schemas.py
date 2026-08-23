@@ -133,10 +133,7 @@ class MaterialUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1)
-    description: str = ""
-    detail_level: Literal["brief", "standard", "detailed"] = "standard"
     content: dict[str, Any] = Field(default_factory=dict)
-    sort_order: int = 0
 
 
 class MaterialAIDimension(BaseModel):

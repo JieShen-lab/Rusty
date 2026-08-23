@@ -109,8 +109,8 @@ test('审查由人工对照编辑并保存确认，不请求模型审查', async
     chapter_id: 901, strategy: 'plot_adjust', current_stage: 'review', source_base_kind: 'original', source_base_version_id: null, source_hash: 'source-hash', source_changed: false,
     summary: { chapter_id: 901, plot_summary: '发现线索。', main_characters: '', key_events: '', source_hash: 'source-hash', updated_at: '' },
     direction: { chapter_id: 901, strategy: 'plot_adjust', user_instruction: '', updated_at: '' }, special_analysis: { chapter_id: 901, strategy: 'plot_adjust', source_outline: '', target_outline: '', source_hash: 'source-hash', updated_at: '' },
-    style: { chapter_id: 901, strategy: 'plot_adjust', style_mode: 'source_auto', source_scope: 'document', author_style_material_id: null, author_style_material_version: null, style_snapshot: {}, extraction_settings_snapshot: {}, generated_guidance: '', source_hash: 'source-hash', created_at: '' },
-    writing: { id: 1, chapter_id: 901, strategy: 'plot_adjust', writing_plan: [], result_text: '修改后的雨夜正文。', created_chapter_id: null, source_hash: 'source-hash', status: 'draft', updated_at: '' }, updated_at: '',
+    style: { chapter_id: 901, strategy: 'plot_adjust', style_mode: 'source_auto', author_style_material_id: null, style_snapshot: {}, extraction_settings_snapshot: {}, generated_guidance: '', source_hash: 'source-hash', created_at: '' },
+    writing: { id: 1, chapter_id: 901, strategy: 'plot_adjust', result_text: '修改后的雨夜正文。', created_chapter_id: null, source_hash: 'source-hash', status: 'draft', updated_at: '' }, updated_at: '',
   }) }));
   await page.route('http://127.0.0.1:8765/api/chapters/901/workflow/writing', async (route) => { savedText = String(route.request().postDataJSON().result_text); await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' }); });
   await page.route('http://127.0.0.1:8765/api/chapters/901/workflow/confirm', async (route) => { confirmed = true; await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' }); });

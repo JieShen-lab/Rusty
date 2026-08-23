@@ -27,17 +27,11 @@ class MaterialAISettings:
 class Material:
     id: int
     name: str
-    description: str
-    detail_level: str
     raw_text: str
     content_json: str
     source_metadata_json: str
-    sort_order: int
-    version: int
     created_at: str
     updated_at: str
-    category_ids: tuple[int, ...] = ()
-    categories: tuple[str, ...] = ()
 
 
 class MaterialService:
@@ -60,13 +54,7 @@ class MaterialService:
         with session(self.database_path) as connection:
             rows = connection.execute(
                 f"""
-                SELECT m.*,
-                       COALESCE((SELECT GROUP_CONCAT(c.id, char(31))
-                         FROM material_category_links l JOIN material_categories c ON c.id=l.category_id
-                         WHERE l.material_id=m.id AND c.deleted_at IS NULL), '') AS category_ids,
-                       COALESCE((SELECT GROUP_CONCAT(c.name, char(31))
-                         FROM material_category_links l JOIN material_categories c ON c.id=l.category_id
-                         WHERE l.material_id=m.id AND c.deleted_at IS NULL), '') AS category_names
+                SELECT m.*
                 FROM materials m WHERE {' AND '.join(clauses)}
                 ORDER BY m.updated_at DESC, m.id DESC
                 """,
@@ -81,14 +69,11 @@ class MaterialService:
         self,
         *,
         name: str,
-        description: str = "",
-        detail_level: str = "standard",
         raw_text: str = "",
         content: dict[str, Any],
         source_metadata: dict[str, Any] | None = None,
     ) -> int:
         clean_name = _required_name(name)
-        _detail_level(detail_level)
         metadata = canonical_source_metadata(source_metadata)
         normalized = normalize_author_style_content(content)
         if not normalized["work"]:
@@ -97,14 +82,11 @@ class MaterialService:
             cursor = connection.execute(
                 """
                 INSERT INTO materials(
-                    name, description, detail_level, raw_text,
-                    content_json, source_metadata_json
-                ) VALUES(?,?,?,?,?,?)
+                    name, raw_text, content_json, source_metadata_json
+                ) VALUES(?,?,?,?)
                 """,
                 (
                     clean_name,
-                    description,
-                    detail_level,
                     raw_text,
                     json.dumps(normalized, ensure_ascii=False),
                     json.dumps(metadata, ensure_ascii=False),
@@ -117,25 +99,17 @@ class MaterialService:
         material_id: int,
         *,
         name: str,
-        description: str,
-        detail_level: str,
         content: dict[str, Any],
-        sort_order: int = 0,
     ) -> None:
-        _detail_level(detail_level)
         with session(self.database_path) as connection:
             cursor = connection.execute(
                 """
-                UPDATE materials SET name=?, description=?, detail_level=?, content_json=?,
-                    sort_order=?, version=version+1, updated_at=CURRENT_TIMESTAMP
+                UPDATE materials SET name=?, content_json=?, updated_at=CURRENT_TIMESTAMP
                 WHERE id=? AND deleted_at IS NULL
                 """,
                 (
                     _required_name(name),
-                    description,
-                    detail_level,
                     json.dumps(normalize_author_style_content(content), ensure_ascii=False),
-                    sort_order,
                     material_id,
                 ),
             )
@@ -211,7 +185,7 @@ class MaterialService:
     def export_author_style_settings(self) -> dict[str, Any]:
         settings = self.get_ai_settings("author_style_extraction")
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "config_type": "author_style_extraction",
             "detail_level": settings.detail_level,
             "extraction_rules": settings.extraction_rules,
@@ -223,7 +197,9 @@ class MaterialService:
     def import_author_style_settings(self, value: object) -> MaterialAISettings:
         if not isinstance(value, dict):
             raise ValueError("Author style settings JSON must be an object.")
-        if value.get("schema_version") != 1 or value.get("config_type") != "author_style_extraction":
+        if value.get("schema_version") == 1:
+            raise ValueError("该文件属于旧版作者风格提取设置，请使用新版 Rusty 重新导出。")
+        if value.get("schema_version") != 2 or value.get("config_type") != "author_style_extraction":
             raise ValueError("Invalid author style extraction settings file.")
         dimensions = value.get("dimensions")
         if not isinstance(dimensions, list) or any(not isinstance(item, dict) for item in dimensions):
@@ -242,22 +218,14 @@ class MaterialService:
     @staticmethod
     def _material(row) -> Material:
         metadata = _json_object(row["source_metadata_json"])
-        category_ids = tuple(int(item) for item in str(row["category_ids"] or "").split(chr(31)) if item)
-        categories = tuple(item for item in str(row["category_names"] or "").split(chr(31)) if item)
         return Material(
             id=int(row["id"]),
             name=str(row["name"]),
-            description=str(row["description"]),
-            detail_level=str(row["detail_level"]),
             raw_text=str(row["raw_text"]),
             content_json=str(row["content_json"]),
             source_metadata_json=json.dumps(metadata, ensure_ascii=False),
-            sort_order=int(row["sort_order"]),
-            version=int(row["version"]),
             created_at=str(row["created_at"]),
             updated_at=str(row["updated_at"]),
-            category_ids=category_ids,
-            categories=categories,
         )
 
 

@@ -46,10 +46,15 @@ class AuthorStyleExtractionResult:
 
 
 @dataclass(frozen=True)
+class AuthorStyleExtractionOutcome:
+    result: AuthorStyleExtractionResult
+    settings_snapshot: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class AuthorStyleCandidate:
     candidate_id: str
     name: str
-    description: str
     content: dict[str, Any]
 
 
@@ -89,7 +94,7 @@ class AuthorStyleExtractionService:
         self.materials = MaterialService(self.database_path)
         self.projects = ProjectService(self.database_path)
 
-    def extract(self, sample_text: str, *, model_id: int | None = None) -> AuthorStyleExtractionResult:
+    def extract(self, sample_text: str, *, model_id: int | None = None) -> AuthorStyleExtractionOutcome:
         source = sample_text.replace("\r\n", "\n").replace("\r", "\n").strip()
         if not source:
             raise ValueError("Author style extraction text is empty.")
@@ -102,9 +107,12 @@ class AuthorStyleExtractionService:
             model_id=model_id if model_id is not None else settings.model_id,
         )
         value = result.value
-        return AuthorStyleExtractionResult(
-            overall_style=str(value["overall_style"]),
-            dimensions=tuple(dict(item) for item in value["dimensions"]),
+        return AuthorStyleExtractionOutcome(
+            result=AuthorStyleExtractionResult(
+                overall_style=str(value["overall_style"]),
+                dimensions=tuple(dict(item) for item in value["dimensions"]),
+            ),
+            settings_snapshot=asdict(settings),
         )
 
     def preview_from_file(
@@ -116,8 +124,7 @@ class AuthorStyleExtractionService:
     ) -> AuthorStylePreview:
         book = self.projects.preview_book(source_path)
         source = "\n\n".join(f"# {chapter.title}\n{chapter.text}" for chapter in book.chapters).strip()
-        extracted = self.extract(source, model_id=model_id)
-        settings = self.materials.get_ai_settings("author_style_extraction")
+        outcome = self.extract(source, model_id=model_id)
         candidate_id = secrets.token_hex(8)
         token = secrets.token_urlsafe(24)
         expires = time.monotonic() + PREVIEW_TTL_SECONDS
@@ -128,7 +135,7 @@ class AuthorStyleExtractionService:
             "source_format": book.source_format,
             "book_title": book.title,
         }
-        settings_snapshot = asdict(settings)
+        settings_snapshot = outcome.settings_snapshot
         key = (str(self.database_path.resolve()), token)
         with _PREVIEWS_LOCK:
             self._prune_previews()
@@ -144,8 +151,7 @@ class AuthorStyleExtractionService:
             candidates=(AuthorStyleCandidate(
                 candidate_id=candidate_id,
                 name=name.strip(),
-                description="",
-                content=extracted.to_dict(),
+                content=outcome.result.to_dict(),
             ),),
         )
 
@@ -174,8 +180,6 @@ class AuthorStyleExtractionService:
         try:
             material_id = self.materials.create_material(
                 name=str(candidate.get("name") or "").strip(),
-                description=str(candidate.get("description") or ""),
-                detail_level=str(stored.settings_snapshot["detail_level"]),
                 raw_text=stored.raw_text,
                 content=merge_author_style_content(
                     candidate.get("content"), stored.settings_snapshot["dimensions"]
