@@ -1149,8 +1149,9 @@ def compile_material_ai_prompt(settings: MaterialAISettings) -> str:
         for index, item in enumerate(settings.dimensions, 1)
     )
     output = (
-        "返回一份包含 overall_style、summary 与 dimensions 的 JSON；overall_style 是独立顶层字段，"
-        "不属于 dimensions；每个维度必须返回输入 ID、name、analysis、features 字符串数组和 examples 原文字符串数组。"
+        "返回一份包含 overall_style 与 dimensions 的 JSON；overall_style 是独立顶层字段，"
+        "不属于 dimensions；dimensions 必须按输入的稳定 ID 对齐；每个维度只返回 id、analysis、features 字符串数组和 examples 原文字符串数组；"
+        "name 来自系统维度配置，不要求模型返回；requirement 只是提取要求，不属于返回结果。"
         if settings.task_type == "author_style_extraction"
         else "返回一份包含 premise、stages、conflicts、turning_points、climax、resolution 和 hooks 的剧情骨架 JSON。"
     )
@@ -1174,6 +1175,51 @@ def normalize_material_content(material_type: str, value: object) -> dict[str, A
     raise ValueError(f"Unsupported material type: {material_type}")
 
 
+def merge_author_style_content(value: object, configured_dimensions: object) -> dict[str, Any]:
+    source = dict(value) if isinstance(value, dict) else {}
+    returned_by_id: dict[str, dict[str, Any]] = {}
+    raw_dimensions = source.get("dimensions")
+    if isinstance(raw_dimensions, list):
+        for item in raw_dimensions:
+            if not isinstance(item, dict):
+                continue
+            dimension_id = str(item.get("id") or "").strip()
+            if dimension_id and dimension_id not in returned_by_id:
+                returned_by_id[dimension_id] = item
+
+    dimensions: list[dict[str, Any]] = []
+    configured = configured_dimensions if isinstance(configured_dimensions, (list, tuple)) else []
+    for item in configured:
+        if not isinstance(item, dict):
+            continue
+        dimension_id = str(item.get("id") or "").strip()
+        if not dimension_id:
+            continue
+        returned = returned_by_id.get(dimension_id, {})
+        dimensions.append(
+            {
+                "id": dimension_id,
+                "name": str(item.get("name") or "未命名维度").strip(),
+                "analysis": str(returned.get("analysis") or "").strip(),
+                "features": _string_values(returned.get("features")),
+                "examples": _string_values(returned.get("examples")),
+            }
+        )
+
+    overall_style = str(source.get("overall_style") or "").strip()
+    if not overall_style:
+        overall_style = str(source.get("summary") or "").strip()
+    merged = {
+        "schema_version": 1,
+        "work": str(source.get("work") or "").strip(),
+        "overall_style": overall_style,
+        "dimensions": dimensions,
+    }
+    if "legacy_scene_reference" in source:
+        merged["legacy_scene_reference"] = source["legacy_scene_reference"]
+    return merged
+
+
 def normalize_author_style_content(value: object) -> dict[str, Any]:
     source = dict(value) if isinstance(value, dict) else {}
     dimensions: list[dict[str, Any]] = []
@@ -1188,16 +1234,17 @@ def normalize_author_style_content(value: object) -> dict[str, Any]:
         dimensions.append({
             "id": dimension_id,
             "name": str(item.get("name") or "未命名维度").strip(),
-            "requirement": str(item.get("requirement") or "").strip(),
             "analysis": str(item.get("analysis") or "").strip(),
             "features": _string_values(item.get("features")),
             "examples": _string_values(item.get("examples")),
         })
+    overall_style = str(source.get("overall_style") or "").strip()
+    if not overall_style:
+        overall_style = str(source.get("summary") or "").strip()
     return {
         "schema_version": 1,
         "work": str(source.get("work") or "").strip(),
-        "summary": str(source.get("summary") or "").strip(),
-        "overall_style": str(source.get("overall_style") or "").strip(),
+        "overall_style": overall_style,
         "dimensions": dimensions,
         **({"legacy_scene_reference": source["legacy_scene_reference"]} if "legacy_scene_reference" in source else {}),
     }

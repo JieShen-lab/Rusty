@@ -34,6 +34,7 @@ from rusty.services.material_service import (
     MaterialService,
     compile_material_ai_prompt,
     material_work_from_source_metadata,
+    normalize_material_content,
 )
 from rusty.services.analysis_service import AnalysisService
 from rusty.services.chapter_split_service import ChapterSplitService
@@ -3338,14 +3339,12 @@ def _material_out(material: Material) -> MaterialOut:
     content.pop("introduction", None)
     source_metadata = _json_object(material.source_metadata_json)
     if material.material_type == "author_style":
-        if "work" not in content:
+        has_stored_work = "work" in content
+        content = normalize_material_content(material.material_type, content)
+        if not has_stored_work:
             work = material_work_from_source_metadata(source_metadata)
             if work:
                 content["work"] = work
-        if "overall_style" not in content:
-            content["overall_style"] = str(content.get("summary") or "").strip()
-        content.setdefault("summary", "")
-        content.setdefault("dimensions", [])
     return MaterialOut(
         id=material.id,
         material_type=material.material_type,

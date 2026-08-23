@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .connection import session
 
-CURRENT_SCHEMA_VERSION = 62
+CURRENT_SCHEMA_VERSION = 63
 
 logger = logging.getLogger(__name__)
 
@@ -5485,6 +5485,67 @@ def _migrate_to_v62(connection: sqlite3.Connection) -> None:
         )
 
 
+def _migrate_to_v63(connection: sqlite3.Connection) -> None:
+    """Canonicalize stored author-style content without configuration fields."""
+    rows = connection.execute(
+        "SELECT id, content_json FROM materials WHERE material_type = 'author_style'"
+    ).fetchall()
+    for row in rows:
+        try:
+            source = json.loads(str(row["content_json"] or "{}"))
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(source, dict):
+            continue
+
+        dimensions: list[dict[str, object]] = []
+        seen_ids: set[str] = set()
+        raw_dimensions = source.get("dimensions")
+        if isinstance(raw_dimensions, list):
+            for index, item in enumerate(raw_dimensions):
+                if not isinstance(item, dict):
+                    continue
+                dimension_id = str(item.get("id") or f"dimension-{index + 1}").strip()
+                if not dimension_id or dimension_id in seen_ids:
+                    continue
+                seen_ids.add(dimension_id)
+                features = item.get("features")
+                examples = item.get("examples")
+                dimensions.append(
+                    {
+                        "id": dimension_id,
+                        "name": str(item.get("name") or "未命名维度").strip(),
+                        "analysis": str(item.get("analysis") or "").strip(),
+                        "features": [
+                            str(value).strip()
+                            for value in features
+                            if str(value).strip()
+                        ] if isinstance(features, list) else [],
+                        "examples": [
+                            str(value).strip()
+                            for value in examples
+                            if str(value).strip()
+                        ] if isinstance(examples, list) else [],
+                    }
+                )
+
+        overall_style = str(source.get("overall_style") or "").strip()
+        if not overall_style:
+            overall_style = str(source.get("summary") or "").strip()
+        canonical = {
+            "schema_version": 1,
+            "work": str(source.get("work") or "").strip(),
+            "overall_style": overall_style,
+            "dimensions": dimensions,
+        }
+        if "legacy_scene_reference" in source:
+            canonical["legacy_scene_reference"] = source["legacy_scene_reference"]
+        connection.execute(
+            "UPDATE materials SET content_json = ? WHERE id = ?",
+            (json.dumps(canonical, ensure_ascii=False), int(row["id"])),
+        )
+
+
 def _plain_text_from_storage(value: object, *, numbered: bool = False) -> str:
     raw = str(value or "").strip()
     if not raw:
@@ -5954,6 +6015,7 @@ MIGRATIONS = {
     60: _migrate_to_v60,
     61: _migrate_to_v61,
     62: _migrate_to_v62,
+    63: _migrate_to_v63,
 }
 
 

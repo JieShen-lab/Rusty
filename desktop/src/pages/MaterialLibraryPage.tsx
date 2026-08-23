@@ -269,10 +269,18 @@ function MaterialEditor({ material, onClose, onError, onSaved }: { material: Mat
   const [content, setContent] = useState<Record<string, unknown>>(material.content);
   const [busy, setBusy] = useState(false);
   function profileContent() {
-    const next = { ...content, work: work.trim(), overall_style: overallStyle };
+    const next = {
+      ...content,
+      work: work.trim(),
+      overall_style: overallStyle,
+      dimensions: authorDimensions(content.dimensions).map(({ id, name, analysis, features, examples }) => ({
+        id, name, analysis, features, examples,
+      })),
+    };
     delete next.author_name;
     delete next.introduction;
     delete next.source_works;
+    delete next.summary;
     return next;
   }
   async function save() {
@@ -286,24 +294,23 @@ function MaterialEditor({ material, onClose, onError, onSaved }: { material: Mat
   </LibraryDialog>;
 }
 
-type AuthorDimension = { id: string; name: string; requirement: string; analysis: string; features: string[]; examples: string[] };
+type AuthorDimension = { id: string; name: string; analysis: string; features: string[]; examples: string[] };
 function AuthorDimensionList({ content, editable = false, onChange }: { content: Record<string, unknown>; editable?: boolean; onChange: (value: Record<string, unknown>) => void }) {
   const dimensions = authorDimensions(content.dimensions);
   const update = (id: string, value: Partial<AuthorDimension>) => onChange({ ...content, dimensions: dimensions.map((item) => item.id === id ? { ...item, ...value } : item) });
-  return <section className="author-dimension-editor"><div className="section-heading"><h3>作者风格维度</h3>{editable ? <button onClick={() => onChange({ ...content, dimensions: [...dimensions, { id: crypto.randomUUID(), name: '新维度', requirement: '', analysis: '', features: [], examples: [] }] })} type="button"><Plus size={14} />新增维度</button> : null}</div>{dimensions.map((item, index) => <details key={item.id} open={index === 0}><summary><span>{item.name}</span><small>{item.analysis ? '已分析' : '待分析'}</small></summary><div className="author-dimension-body">{editable ? <><label><span>维度名称</span><input value={item.name} onChange={(event) => update(item.id, { name: event.target.value })} /></label><label><span>提取要求</span><textarea value={item.requirement} onChange={(event) => update(item.id, { requirement: event.target.value })} /></label><label><span>风格分析</span><textarea value={item.analysis} onChange={(event) => update(item.id, { analysis: event.target.value })} /></label><label><span>具体特征 / 常用表达（每行一项）</span><textarea value={item.features.join('\n')} onChange={(event) => update(item.id, { features: lines(event.target.value) })} /></label><label><span>原文实例（每行一项）</span><textarea value={item.examples.join('\n')} onChange={(event) => update(item.id, { examples: lines(event.target.value) })} /></label><div className="author-dimension-actions"><button disabled={index === 0} onClick={() => onChange({ ...content, dimensions: move(dimensions, index, index - 1) })} type="button"><ArrowUp size={14} />上移</button><button disabled={index === dimensions.length - 1} onClick={() => onChange({ ...content, dimensions: move(dimensions, index, index + 1) })} type="button"><ArrowDown size={14} />下移</button><button className="danger" onClick={() => onChange({ ...content, dimensions: dimensions.filter((value) => value.id !== item.id) })} type="button"><Trash2 size={14} />删除</button></div></> : <><p>{item.requirement}</p><p>{item.analysis || '尚未分析'}</p><ul>{item.features.map((value) => <li key={value}>{value}</li>)}</ul><blockquote>{item.examples.join('\n')}</blockquote></>}</div></details>)}</section>;
+  return <section className="author-dimension-editor"><div className="section-heading"><h3>作者风格维度</h3>{editable ? <button onClick={() => onChange({ ...content, dimensions: [...dimensions, { id: crypto.randomUUID(), name: '新维度', analysis: '', features: [], examples: [] }] })} type="button"><Plus size={14} />新增维度</button> : null}</div>{dimensions.map((item, index) => <details key={item.id} open={index === 0}><summary><span>{item.name}</span><small>{item.analysis ? '已分析' : '待分析'}</small></summary><div className="author-dimension-body">{editable ? <><label><span>维度名称</span><input value={item.name} onChange={(event) => update(item.id, { name: event.target.value })} /></label><label><span>风格分析</span><textarea value={item.analysis} onChange={(event) => update(item.id, { analysis: event.target.value })} /></label><label><span>具体特征 / 常用表达（每行一项）</span><textarea value={item.features.join('\n')} onChange={(event) => update(item.id, { features: lines(event.target.value) })} /></label><label><span>原文实例（每行一项）</span><textarea value={item.examples.join('\n')} onChange={(event) => update(item.id, { examples: lines(event.target.value) })} /></label><div className="author-dimension-actions"><button disabled={index === 0} onClick={() => onChange({ ...content, dimensions: move(dimensions, index, index - 1) })} type="button"><ArrowUp size={14} />上移</button><button disabled={index === dimensions.length - 1} onClick={() => onChange({ ...content, dimensions: move(dimensions, index, index + 1) })} type="button"><ArrowDown size={14} />下移</button><button className="danger" onClick={() => onChange({ ...content, dimensions: dimensions.filter((value) => value.id !== item.id) })} type="button"><Trash2 size={14} />删除</button></div></> : <><p>{item.analysis || '尚未分析'}</p><ul>{item.features.map((value) => <li key={value}>{value}</li>)}</ul><blockquote>{item.examples.join('\n')}</blockquote></>}</div></details>)}</section>;
 }
 
-function authorDimensions(value: unknown): AuthorDimension[] { return Array.isArray(value) ? value.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object')).map((item, index) => ({ id: String(item.id || `dimension-${index + 1}`), name: String(item.name || '未命名维度'), requirement: String(item.requirement || ''), analysis: String(item.analysis || ''), features: stringArray(item.features), examples: stringArray(item.examples) })) : []; }
+function authorDimensions(value: unknown): AuthorDimension[] { return Array.isArray(value) ? value.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object')).map((item, index) => ({ id: String(item.id || `dimension-${index + 1}`), name: String(item.name || '未命名维度'), analysis: String(item.analysis || ''), features: stringArray(item.features), examples: stringArray(item.examples) })) : []; }
 function stringArray(value: unknown): string[] { return Array.isArray(value) ? value.map(String).filter(Boolean) : []; }
 function lines(value: string): string[] { return value.split('\n').map((item) => item.trim()).filter(Boolean); }
 function move<T>(items: T[], from: number, to: number): T[] { const copy = [...items]; const [item] = copy.splice(from, 1); if (item !== undefined) copy.splice(to, 0, item); return copy; }
 function authorProfile(material: Material): { name: string; work: string; overallStyle: string } {
   const hasStoredWork = Object.prototype.hasOwnProperty.call(material.content, 'work');
-  const hasStoredOverallStyle = Object.prototype.hasOwnProperty.call(material.content, 'overall_style');
   return {
     name: String(material.content.author_name || material.name),
     work: hasStoredWork ? String(material.content.work || '').trim() : sourceWorkName(material.source_metadata),
-    overallStyle: hasStoredOverallStyle ? String(material.content.overall_style || '').trim() : String(material.content.summary || '').trim(),
+    overallStyle: String(material.content.overall_style || '').trim(),
   };
 }
 
@@ -334,9 +341,9 @@ function visibleFileName(value: unknown): string {
 
 function AuthorDimensionTable({ content }: { content: Record<string, unknown> }) {
   const dimensions = authorDimensions(content.dimensions);
-  return <section className="author-dimension-table"><div className="document-detail-heading"><span>分析维度</span></div>{dimensions.length ? <div className="author-dimension-rows">{dimensions.map((item) => <article key={item.id}><div className="author-dimension-name"><strong>{item.name}</strong></div><div className="author-dimension-analysis"><p><b>分析：</b>{item.analysis || item.requirement || '尚未分析'}</p>{item.features.length ? <p><b>特征：</b>{item.features.join('、')}</p> : null}{item.examples.length ? <p><b>来源示例：</b>{item.examples.join('；')}</p> : null}</div></article>)}</div> : <p className="material-detail-copy">尚未添加分析维度</p>}</section>;
+  return <section className="author-dimension-table"><div className="document-detail-heading"><span>分析维度</span></div>{dimensions.length ? <div className="author-dimension-rows">{dimensions.map((item) => <article key={item.id}><div className="author-dimension-name"><strong>{item.name}</strong></div><div className="author-dimension-analysis"><p><b>分析：</b>{item.analysis || '尚未分析'}</p>{item.features.length ? <p><b>特征：</b>{item.features.join('、')}</p> : null}{item.examples.length ? <p><b>来源示例：</b>{item.examples.join('；')}</p> : null}</div></article>)}</div> : <p className="material-detail-copy">尚未添加分析维度</p>}</section>;
 }
 
 function formatDate(value: string): string { const timestamp = Date.parse(value); return Number.isFinite(timestamp) ? new Date(timestamp).toLocaleDateString('zh-CN').replace(/\//g, '-') : '未知'; }
-function compilePreview(settings: MaterialAISettings): string { return `${settings.system_prompt}\n\n任务：\n${settings.base_instruction}\n\n分析维度：\n${settings.dimensions.map((item, index) => `${index + 1}. ${item.name}\nID: ${item.id}\n提取要求：${item.requirement}`).join('\n\n')}\n\n附加要求：\n${settings.extra_requirements || '无'}\n\n输出协议：\n返回 overall_style、summary 与按稳定 ID 对齐的 dimensions（analysis / features / examples）；overall_style 是独立顶层字段，不属于 dimensions。`; }
+function compilePreview(settings: MaterialAISettings): string { return `${settings.system_prompt}\n\n任务：\n${settings.base_instruction}\n\n分析维度：\n${settings.dimensions.map((item, index) => `${index + 1}. ${item.name}\nID: ${item.id}\n提取要求：${item.requirement}`).join('\n\n')}\n\n附加要求：\n${settings.extra_requirements || '无'}\n\n输出协议：\n返回 overall_style 与按稳定 ID 对齐的 dimensions；overall_style 是独立顶层字段，不属于 dimensions。每个维度只返回 id、analysis、features、examples；name 由系统根据维度配置映射，requirement 仅作为提取要求发送给模型，不属于返回结果。`; }
 function errorMessage(reason: unknown): string { return reason instanceof Error ? reason.message : String(reason); }

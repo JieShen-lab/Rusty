@@ -761,13 +761,12 @@ export type MaterialAIDimension = {
 };
 
 export type AuthorStyleContent = Record<string, unknown> & {
+  schema_version?: number;
   work?: string;
-  summary?: string;
   overall_style?: string;
   dimensions?: Array<{
     id: string;
     name: string;
-    requirement: string;
     analysis: string;
     features: string[];
     examples: string[];

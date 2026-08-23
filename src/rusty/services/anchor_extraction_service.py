@@ -18,6 +18,7 @@ from rusty.services.material_service import (
     MATERIAL_AI_TASK_TYPES,
     MATERIAL_TYPES,
     MaterialService,
+    merge_author_style_content,
     normalize_material_content,
 )
 from rusty.services.model_service import ModelConfig, ModelService
@@ -53,7 +54,7 @@ DEFAULT_CHARACTER_SYSTEM_PROMPT = (
     "Never invent facts unsupported by the source. Missing dimensions must be empty. "
     "Other people may only appear as relationship evidence for the target character."
 )
-MATERIAL_DIMENSIONS = {"author_style": ["summary", "dimensions"]}
+MATERIAL_DIMENSIONS = {"author_style": ["dimensions"]}
 
 
 @dataclass(frozen=True)
@@ -224,9 +225,25 @@ class AnchorExtractionService:
                         "name", "description", "evidence_summary",
                     }
                 }
-            normalized_content = normalize_material_content(material_type, raw_content)
+            if material_type == "author_style":
+                normalized_content = merge_author_style_content(raw_content, settings.dimensions)
+            else:
+                normalized_content = normalize_material_content(material_type, raw_content)
             normalized_content["work"] = ""
             warnings = _string_list(item.get("warnings"))
+            returned_dimensions = raw_content.get("dimensions") if isinstance(raw_content, dict) else None
+            returned_ids = {
+                str(dimension.get("id") or "").strip()
+                for dimension in returned_dimensions
+                if isinstance(dimension, dict) and str(dimension.get("id") or "").strip()
+            } if isinstance(returned_dimensions, list) else set()
+            configured_ids = [str(dimension["id"]).strip() for dimension in settings.dimensions]
+            missing_ids = [dimension_id for dimension_id in configured_ids if dimension_id not in returned_ids]
+            unknown_ids = sorted(returned_ids.difference(configured_ids))
+            if missing_ids:
+                warnings.append(f"AI 未返回配置维度：{', '.join(missing_ids)}；已按空结果保留。")
+            if unknown_ids:
+                warnings.append(f"AI 返回了未知维度 ID：{', '.join(unknown_ids)}；已忽略。")
             if not normalized_content.get("overall_style"):
                 warnings.append("AI 未返回 overall_style；整体风格暂为空，请在作者档案中补充。")
             candidates.append(
@@ -337,14 +354,21 @@ class AnchorExtractionService:
                 candidate_type = str(candidate.get("material_type") or stored.material_type)
                 if candidate_type != stored.material_type:
                     raise ValueError("Material candidate type does not match the preview.")
+                snapshot_dimensions = stored.prompt_snapshot.get("dimensions", [])
+                if stored.material_type == "author_style":
+                    content = merge_author_style_content(
+                        candidate.get("content"), snapshot_dimensions
+                    )
+                else:
+                    content = normalize_material_content(
+                        stored.material_type, candidate.get("content")
+                    )
                 prepared.append(
                     {
                         "candidate_id": candidate_id,
                         "name": name,
                         "description": str(candidate.get("description") or ""),
-                        "content": normalize_material_content(
-                            stored.material_type, candidate.get("content")
-                        ),
+                        "content": content,
                         "sort_order": sort_order,
                         "category_ids": list(
                             dict.fromkeys(int(value) for value in candidate.get("category_ids", []))
@@ -410,11 +434,22 @@ class AnchorExtractionService:
                 f"Material extraction text must be {MAX_MATERIAL_EXTRACTION_TEXT_CHARS:,} characters or fewer."
             )
         model_sample = _sample_text(full_source_text)
+        settings = (
+            self.material_service.get_ai_settings("author_style_extraction")
+            if material_type == "author_style"
+            else None
+        )
         model = self._resolve_model(model_id)
         response = self.ai_client.chat(
             model,
             self.model_service.get_api_key(model.id),
-            self._material_messages(model_sample, material_type, detail_level, name),
+            self._material_messages(
+                model_sample,
+                material_type,
+                detail_level,
+                name,
+                dimensions=settings.dimensions if settings is not None else None,
+            ),
         )
         extracted = _parse_json_object(response.text, "Material extraction")
         items = extracted.get("materials")
@@ -452,6 +487,8 @@ class AnchorExtractionService:
                     for key, value in item.items()
                     if key not in {"name", "description", "timeline_start_chapter", "timeline_end_chapter"}
                 }
+            if material_type == "author_style" and settings is not None:
+                content = merge_author_style_content(content, settings.dimensions)
             material_ids.append(
                 self.material_service.create_material(
                     material_type=material_type,
@@ -945,11 +982,18 @@ class AnchorExtractionService:
         )
         output_protocol = (
             '{"materials":[{"name":"","description":"","content":{"schema_version":1,'
-            '"summary":"","overall_style":"","dimensions":[{"id":"输入维度 id","name":"","requirement":"",'
+            '"overall_style":"","dimensions":[{"id":"输入维度 id",'
             '"analysis":"","features":[],"examples":[]}]},"evidence_summary":"",'
             '"confidence":0.0,"warnings":[]}]}'
         )
-        separation_rule = "只创建一份完整作者风格档案。必须单独返回顶层 overall_style，不能把它放进 dimensions。维度必须按稳定 ID 返回，examples 只能逐字引用输入文本，不得包含来源位置字段。作品名称由系统根据来源文件设置，不是 AI 输出。"
+        separation_rule = (
+            "只创建一份完整作者风格档案。必须单独返回顶层 overall_style，不能把它放进 dimensions。"
+            "dimensions 必须使用输入的稳定 ID，不得自行创建或修改维度 ID。"
+            "维度名称 name 与提取要求 requirement 已由系统配置提供，不属于模型输出；"
+            "每个维度只返回 id、analysis、features、examples，不返回 name 或 requirement。"
+            "examples 只能逐字引用输入文本，不得包含来源位置字段。"
+            "不返回 summary。作品名称由系统根据来源文件设置，不是 AI 输出。"
+        )
         return [
             {
                 "role": "system",
@@ -975,10 +1019,23 @@ class AnchorExtractionService:
         material_type: str,
         detail_level: str,
         name: str | None,
+        dimensions: tuple[dict[str, str], ...] | None = None,
     ) -> list[dict[str, str]]:
-        dimensions = "\n".join(f"- {item}" for item in MATERIAL_DIMENSIONS[material_type])
+        configured_dimensions = dimensions or ()
+        dimensions_text = "\n\n".join(
+            f"{index}. {item['name']}\nID: {item['id']}\n提取要求：{item['requirement']}"
+            for index, item in enumerate(configured_dimensions, 1)
+        )
+        dimensions_text = dimensions_text or "\n".join(
+            f"- {item}" for item in MATERIAL_DIMENSIONS[material_type]
+        )
         requested_name = name.strip() if name and name.strip() else "derive from source"
-        shape = "author_style content keys: overall_style, summary, dimensions[{id,name,requirement,analysis,features[],examples[]}]. overall_style is a separate top-level field, not a dimension."
+        shape = (
+            "author_style content keys: overall_style, dimensions[{id,analysis,features[],examples[]}]. "
+            "overall_style is a separate top-level field, not a dimension; do not return summary. "
+            "Each dimension returns only id, analysis, features, and examples. "
+            "Dimension name and requirement come from system configuration and are not model output."
+        )
         return [
             {
                 "role": "system",
@@ -997,7 +1054,7 @@ class AnchorExtractionService:
                     f"Suggested name: {requested_name}\n"
                     f"Detail level: {detail_level}\n"
                     "Required dimensions:\n"
-                    f"{dimensions}\n\n"
+                    f"{dimensions_text}\n\n"
                     f"{shape}\n"
                     "Return JSON: {\"materials\":[{\"name\":\"\", \"description\":\"\", \"content\":{}, \"evidence\":[], \"confidence\":0.0}]}\n\n"
                     f"Source prose:\n{sample_text}"

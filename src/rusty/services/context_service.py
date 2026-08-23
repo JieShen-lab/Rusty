@@ -9,7 +9,7 @@ from typing import Any, Iterable
 
 from rusty.db import session
 from rusty.services.anchor_service import AnchorService
-from rusty.services.material_service import MaterialService
+from rusty.services.material_service import MaterialService, normalize_material_content
 from rusty.db import default_database_path
 from rusty.services.prompt_service import PromptService
 from rusty.services.scene_service import SceneRecord, SceneService
@@ -1164,10 +1164,11 @@ def _material_context_content(material) -> str:
             content = json.loads(material.content_json)
         except (TypeError, ValueError):
             content = {}
+        normalized = normalize_material_content("author_style", content)
         return json.dumps(
             {
-                "summary": str(content.get("summary") or material.description or ""),
-                "dimensions": content.get("dimensions") if isinstance(content.get("dimensions"), list) else [],
+                "overall_style": str(normalized.get("overall_style") or material.description or ""),
+                "dimensions": normalized.get("dimensions", []),
             },
             ensure_ascii=False,
         )
