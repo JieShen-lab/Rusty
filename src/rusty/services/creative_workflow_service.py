@@ -426,7 +426,7 @@ class CreativeWorkflowService:
             connection.execute("UPDATE chapters SET chapter_index=-chapter_index WHERE project_id=? AND chapter_index>?", (project_id, chapter_index))
             connection.execute("UPDATE chapters SET chapter_index=-chapter_index+1 WHERE project_id=? AND chapter_index<0", (project_id,))
             cursor = connection.execute(
-                "INSERT INTO chapters(project_id,chapter_index,title,original_text,word_count,status) VALUES(?,?,?,?,?,'imported')",
+                "INSERT INTO chapters(project_id,chapter_index,title,original_text,word_count,origin_kind,status) VALUES(?,?,?,?,?,'expansion','imported')",
                 (project_id, chapter_index + 1, title.strip() or f"第{chapter_index + 1}章", text, count_text_units(text)),
             )
             created_id = int(cursor.lastrowid)

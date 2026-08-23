@@ -8,7 +8,7 @@ from pathlib import Path
 from .connection import session
 
 
-CURRENT_SCHEMA_VERSION = 65
+CURRENT_SCHEMA_VERSION = 66
 
 PROMPT_SLOTS = (
     ("global_system", "只使用提供的事实与当前有效章节正文；用户明确要求优先。严格遵守当前任务和输出契约，不虚构未提供事实，不跨阶段擅自创作。"),
@@ -148,6 +148,7 @@ CREATE TABLE IF NOT EXISTS chapters (
     source_end_offset INTEGER,
     volume_id INTEGER,
     word_count INTEGER NOT NULL DEFAULT 0,
+    origin_kind TEXT NOT NULL DEFAULT 'source' CHECK(origin_kind IN ('source','expansion')),
     status TEXT NOT NULL DEFAULT 'imported',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -414,14 +415,6 @@ CREATE TABLE IF NOT EXISTS document_library_settings (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS project_documents (
-    project_id INTEGER PRIMARY KEY,
-    document_id INTEGER NOT NULL,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-    FOREIGN KEY (document_id) REFERENCES library_documents(id) ON DELETE CASCADE
-);
-
 CREATE TABLE IF NOT EXISTS document_split_proposals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     document_id INTEGER NOT NULL,
@@ -465,12 +458,14 @@ CANONICAL_TABLES = (
     "chapter_style_contexts", "chapter_writings", "library_documents", "document_categories",
     "document_category_links", "library_document_revisions", "library_document_volumes",
     "library_document_chapters", "library_document_drafts", "document_library_settings",
-    "project_documents", "document_split_proposals",
+    "document_split_proposals",
 )
+
+LEGACY_MIGRATION_TABLES = (*CANONICAL_TABLES, "project_documents")
 
 
 def initialize_database(connection: sqlite3.Connection) -> None:
-    """Create v65 directly or migrate the supported v63/v64 baselines."""
+    """Create v66 directly or migrate the supported v63/v64/v65 baselines."""
     connection.execute(
         "CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
     )
@@ -479,20 +474,20 @@ def initialize_database(connection: sqlite3.Connection) -> None:
     if version == 0:
         connection.executescript(SCHEMA_SQL)
         _seed_defaults(connection)
-    elif version in {63, 64}:
-        _migrate_to_v65(connection, version)
+    elif version in {63, 64, 65}:
+        _migrate_to_v66(connection, version)
     elif version == CURRENT_SCHEMA_VERSION:
         connection.executescript(SCHEMA_SQL)
         _seed_defaults(connection)
     else:
         raise RuntimeError(
-            f"Unsupported Rusty schema version {version}; only a fresh database, v63, or v64 can be opened."
+            f"Unsupported Rusty schema version {version}; only a fresh database, v63, v64, or v65 can be opened."
         )
     connection.execute("DELETE FROM schema_migrations")
     connection.execute("INSERT INTO schema_migrations(version) VALUES(?)", (CURRENT_SCHEMA_VERSION,))
 
 
-def _migrate_to_v65(connection: sqlite3.Connection, source_version: int) -> None:
+def _migrate_to_v66(connection: sqlite3.Connection, source_version: int) -> None:
     connection.commit()
     connection.execute("PRAGMA foreign_keys=OFF")
     try:
@@ -502,7 +497,7 @@ def _migrate_to_v65(connection: sqlite3.Connection, source_version: int) -> None
                 "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
             ).fetchall()
         }
-        for table in CANONICAL_TABLES:
+        for table in LEGACY_MIGRATION_TABLES:
             if table in old_tables:
                 connection.execute(f'ALTER TABLE "{table}" RENAME TO "{prefix}{table}"')
         connection.executescript(SCHEMA_SQL)
@@ -559,6 +554,8 @@ def _migrate_to_v65(connection: sqlite3.Connection, source_version: int) -> None
         if source_version == 64:
             _restore_v64_unmodified_defaults(connection)
         _assign_existing_cover_palettes(connection)
+        _mark_expansion_chapters(connection, f"{prefix}chapter_writings")
+        _detach_legacy_project_documents(connection, f"{prefix}project_documents")
 
         keep = {"schema_migrations", *CANONICAL_TABLES}
         for row in connection.execute(
@@ -575,6 +572,54 @@ def _migrate_to_v65(connection: sqlite3.Connection, source_version: int) -> None
         connection.commit()
     finally:
         connection.execute("PRAGMA foreign_keys=ON")
+
+
+def _mark_expansion_chapters(connection: sqlite3.Connection, writings_table: str) -> None:
+    if not _table_exists(connection, writings_table) or "created_chapter_id" not in _columns(connection, writings_table):
+        return
+    connection.execute(
+        f"""UPDATE chapters SET origin_kind='expansion'
+            WHERE id IN (
+                SELECT DISTINCT created_chapter_id
+                FROM "{writings_table}"
+                WHERE created_chapter_id IS NOT NULL
+            )"""
+    )
+
+
+def _detach_legacy_project_documents(connection: sqlite3.Connection, links_table: str) -> None:
+    """Remove the old relation without deleting documents or their files."""
+    if not _table_exists(connection, links_table):
+        return
+    document_ids = connection.execute(
+        f'SELECT DISTINCT document_id FROM "{links_table}" WHERE document_id IS NOT NULL'
+    ).fetchall()
+    for row in document_ids:
+        document_id = int(row[0])
+        if not _is_pure_project_mirror(connection, document_id):
+            continue
+        connection.execute(
+            "UPDATE library_documents SET deleted_at=COALESCE(deleted_at,CURRENT_TIMESTAMP) WHERE id=?",
+            (document_id,),
+        )
+
+
+def _is_pure_project_mirror(connection: sqlite3.Connection, document_id: int) -> bool:
+    if connection.execute(
+        "SELECT 1 FROM document_category_links WHERE document_id=? LIMIT 1", (document_id,)
+    ).fetchone() is not None:
+        return False
+    if connection.execute(
+        "SELECT 1 FROM library_document_drafts WHERE document_id=? LIMIT 1", (document_id,)
+    ).fetchone() is not None:
+        return False
+    revision_types = {
+        str(row[0]).strip()
+        for row in connection.execute(
+            "SELECT revision_type FROM library_document_revisions WHERE document_id=?", (document_id,)
+        ).fetchall()
+    }
+    return revision_types <= {"import", "project_sync"}
 
 
 def _seed_defaults(connection: sqlite3.Connection) -> None:

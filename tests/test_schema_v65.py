@@ -88,18 +88,20 @@ def legacy_database(version: int) -> sqlite3.Connection:
     return connection
 
 
-class SchemaV65Tests(unittest.TestCase):
-    def test_fresh_v65_is_canonical_and_has_complete_defaults(self) -> None:
+class SchemaV66Tests(unittest.TestCase):
+    def test_fresh_v66_is_canonical_and_has_complete_defaults(self) -> None:
         connection = sqlite3.connect(":memory:")
         connection.row_factory = sqlite3.Row
         initialize_database(connection)
-        self.assertEqual(65, CURRENT_SCHEMA_VERSION)
-        self.assertEqual(65, connection.execute("SELECT version FROM schema_migrations").fetchone()[0])
+        self.assertEqual(66, CURRENT_SCHEMA_VERSION)
+        self.assertEqual(66, connection.execute("SELECT version FROM schema_migrations").fetchone()[0])
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertFalse({"material_categories", "material_category_links"} & tables)
         for table, removed in REMOVED_COLUMNS.items():
             self.assertFalse(removed & columns(connection, table))
         self.assertIn("cover_palette", columns(connection, "library_documents"))
+        self.assertIn("origin_kind", columns(connection, "chapters"))
+        self.assertNotIn("project_documents", tables)
         self.assertEqual(dict(PROMPT_SLOTS), dict(connection.execute("SELECT slot_key,content FROM prompt_slots")))
         dimensions = json.loads(connection.execute("SELECT dimensions_json FROM material_ai_settings").fetchone()[0])
         self.assertEqual(12, len(dimensions))
@@ -118,7 +120,7 @@ class SchemaV65Tests(unittest.TestCase):
     def test_v63_can_upgrade_directly_without_losing_prompts_or_settings(self) -> None:
         connection = legacy_database(63)
         initialize_database(connection)
-        self.assertEqual(65, connection.execute("SELECT version FROM schema_migrations").fetchone()[0])
+        self.assertEqual(66, connection.execute("SELECT version FROM schema_migrations").fetchone()[0])
         self.assertEqual("保留工程", connection.execute("SELECT name FROM projects").fetchone()[0])
         self.assertEqual("legacy rules", connection.execute("SELECT extraction_rules FROM material_ai_settings").fetchone()[0])
         self.assertEqual(dict(PROMPT_SLOTS), dict(connection.execute("SELECT slot_key,content FROM prompt_slots")))

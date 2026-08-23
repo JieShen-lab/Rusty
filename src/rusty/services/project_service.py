@@ -7,7 +7,7 @@ from rusty.content_hash import hash_text
 from rusty.db import default_database_path, session
 from rusty.exporters import build_txt_export, export_epub
 from rusty.importers import parse_docx, parse_epub, parse_txt
-from rusty.models import ChapterRecord, ParsedBook, ProjectSettings, ProjectSummary
+from rusty.models import ChapterRecord, ParsedBook, ProjectSettings, ProjectSummary, count_text_units
 
 
 class ProjectService:
@@ -65,8 +65,8 @@ class ProjectService:
                 chapter_id = int(connection.execute(
                     """INSERT INTO chapters(
                            project_id,chapter_index,title,original_text,source_start_line,source_end_line,
-                           source_start_offset,source_end_offset,word_count,status,volume_id
-                       ) VALUES(?,?,?,?,?,?,?,?,?,'imported',?)""",
+                           source_start_offset,source_end_offset,word_count,origin_kind,status,volume_id
+                       ) VALUES(?,?,?,?,?,?,?,?,?,'source','imported',?)""",
                     (
                         project_id, chapter.index, chapter.title, chapter.text, chapter.start_line,
                         chapter.end_line, source_offset, end_offset, chapter.word_count, volume_id,
@@ -105,7 +105,7 @@ class ProjectService:
         with session(self.database_path) as connection:
             rows = connection.execute(
                 """SELECT c.id,c.project_id,c.chapter_index,c.title,c.original_text,c.rewritten_text,c.word_count,
-                          c.status,c.source_start_line,c.source_end_line,c.volume_id,
+                          c.origin_kind,c.status,c.source_start_line,c.source_end_line,c.volume_id,
                           COALESCE(w.current_stage,'not_started') AS workflow_stage
                    FROM chapters c LEFT JOIN chapter_workflow_state w ON w.chapter_id=c.id
                    WHERE c.project_id=? ORDER BY c.chapter_index,c.id""",
@@ -166,7 +166,7 @@ class ProjectService:
         with session(self.database_path) as connection:
             row = connection.execute(
                 """SELECT c.id,c.project_id,c.chapter_index,c.title,c.original_text,c.rewritten_text,c.word_count,
-                          c.status,c.source_start_line,c.source_end_line,c.volume_id,
+                          c.origin_kind,c.status,c.source_start_line,c.source_end_line,c.volume_id,
                           COALESCE(w.current_stage,'not_started') AS workflow_stage
                    FROM chapters c LEFT JOIN chapter_workflow_state w ON w.chapter_id=c.id
                    WHERE c.id=?""",
@@ -203,11 +203,21 @@ class ProjectService:
 
     @staticmethod
     def _chapter(row) -> ChapterRecord:
+        original_text = str(row["original_text"] or "")
+        is_added_chapter = str(row["origin_kind"] or "source") == "expansion"
+        baseline_word_count = 0 if is_added_chapter else count_text_units(original_text)
+        rewritten_text = str(row["rewritten_text"] or "").strip()
+        effective_text = rewritten_text or original_text
+        current_word_count = count_text_units(effective_text)
         return ChapterRecord(
             id=int(row["id"]), project_id=int(row["project_id"]), index=int(row["chapter_index"]),
-            title=str(row["title"]), original_text=str(row["original_text"]),
+            title=str(row["title"]), original_text=original_text,
             rewritten_text=row["rewritten_text"], word_count=int(row["word_count"]),
             status=str(row["status"]), start_line=row["source_start_line"],
             end_line=row["source_end_line"], volume_id=row["volume_id"],
             workflow_stage=str(row["workflow_stage"]),
+            baseline_word_count=baseline_word_count,
+            current_word_count=current_word_count,
+            word_delta=current_word_count - baseline_word_count,
+            is_added_chapter=is_added_chapter,
         )

@@ -85,6 +85,10 @@ class ChapterRecord:
     end_line: int | None
     volume_id: int | None = None
     workflow_stage: str = "not_started"
+    baseline_word_count: int = 0
+    current_word_count: int = 0
+    word_delta: int = 0
+    is_added_chapter: bool = False
 
 
 @dataclass(frozen=True)
