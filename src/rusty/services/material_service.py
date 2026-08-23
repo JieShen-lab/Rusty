@@ -197,8 +197,6 @@ class MaterialService:
     def import_author_style_settings(self, value: object) -> MaterialAISettings:
         if not isinstance(value, dict):
             raise ValueError("Author style settings JSON must be an object.")
-        if value.get("schema_version") == 1:
-            raise ValueError("该文件属于旧版作者风格提取设置，请使用新版 Rusty 重新导出。")
         if value.get("schema_version") != 2 or value.get("config_type") != "author_style_extraction":
             raise ValueError("Invalid author style extraction settings file.")
         dimensions = value.get("dimensions")

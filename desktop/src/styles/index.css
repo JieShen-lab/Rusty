@@ -115,10 +115,8 @@ select:focus-visible {
 .ai-task-notice { display: flex; align-items: center; gap: 8px; }
 .ai-task-notice svg { flex: 0 0 auto; animation: ai-task-spin 900ms linear infinite; color: var(--accent); }
 @keyframes ai-task-spin { to { transform: rotate(360deg); } }
-.status-pill-default { border-color: var(--line); background: var(--paper-muted); color: var(--muted); }
 .status-pill-success { border-color: var(--success-border); background: var(--success-soft); color: var(--success); }
 .status-pill-warning { border-color: var(--warning); background: var(--warning-soft); color: var(--warning); }
-.status-pill-danger { border-color: var(--danger-border); background: var(--danger-soft); color: var(--danger); }
 .status-pill-info { border-color: var(--info-border); background: var(--info-soft); color: var(--info); }
 .compact-empty { padding: 24px 16px; color: var(--muted); text-align: center; line-height: 1.7; }
 .section-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
@@ -201,6 +199,9 @@ select:focus-visible {
 }
 .library-context-menu button:hover { background: var(--surface-hover); color: var(--text-primary); }
 .library-context-menu button.danger { color: var(--danger-emphasis); }
+.document-category-context-menu button,
+.document-category-context-menu button:hover { color: #000; }
+.document-category-context-menu button svg { color: #2563eb; }
 .library-name-field { display: black; gap: 7px; color: black; font-size: 16px; }
 .document-shelf-panel { display: grid; grid-template-rows: auto minmax(0, 1fr); border-right: 1px solid var(--line); background: var(--canvas); }
 .document-shelf-tools { display: flex; width: min(360px, 48%); min-width: 0; align-items: center; gap: 7px; margin-left: 8px; }
@@ -1189,7 +1190,6 @@ select:focus-visible {
 .style-guidance-list ul { display: grid; gap: 5px; margin: 0; padding-left: 22px; color: var(--text-primary); font-size: var(--creative-editor-font-size); line-height: var(--creative-editor-line-height); }
 .style-guidance-examples { color: var(--text-secondary); font-size: 13px; line-height: 1.65; }
 .style-guidance-examples p { color: var(--text-secondary); font-size: 13px; line-height: 1.65; }
-.style-guidance-fallback { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .author-choice-grid,
 .style-mode-choice { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .author-choice-grid button,

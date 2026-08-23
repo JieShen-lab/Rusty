@@ -27,7 +27,7 @@ Rusty 只有一个产品入口：Electron 桌面端。Electron 启动本地 Fast
 
 ## 章节工作流
 
-工作流只以章节为单位。三个方向是 `plot_adjust`、`expansion` 和 `plot_rewrite`。流程数据分别保存在 summary、intent、special analysis、style context 和 writing 表中。原文保存在 `chapters.original_text` 与 `chapter_source_versions`；确认后的修改追加到 `chapter_rewrite_versions`，当前正文只是不可变版本的投影。
+工作流只以章节为单位。三个方向是 `plot_adjust`、`expansion` 和 `plot_rewrite`。流程数据分别保存在 summary、intent、special analysis、style context 和 writing 表中。原文保存在 `chapters.original_text` 与 `chapter_source_versions`；人工审查保存后的修改追加到 `chapter_rewrite_versions`，当前正文只是不可变版本的投影。
 
 ## 工程与文档库边界
 
@@ -37,6 +37,6 @@ Rusty 只有一个产品入口：Electron 桌面端。Electron 启动本地 Fast
 
 ## 数据库
 
-当前 schema 版本为 v66。新数据库直接创建 canonical schema；升级支持当前发布基线 v63/v64 以及 v65 到 v66。v66 删除 `project_documents`：迁移先读取旧关联，纯工程镜像（没有分类、草稿且 revision 类型只有 `import`/`project_sync`）仅软删除 `library_documents`，不删除物理文件；存在用户编辑证据的关联文档保留为普通文档库文档，并保留其历史 revision。普通工程章节通过 `chapters.origin_kind` 区分 `source` 与 `expansion`，章节 API 同时返回基准字数、当前有效字数和字数变化量。
+应用启动时直接幂等创建当前 canonical schema 和必需默认值，不维护 schema 版本表，也不升级旧数据库。普通工程章节通过 `chapters.origin_kind` 区分 `source` 与 `expansion`，章节 API 同时返回基准字数、当前有效字数和字数变化量。
 
 模型 API key 不保存在 SQLite 正文中；`ai_models` 只保存系统 keyring 引用。

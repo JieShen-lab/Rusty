@@ -5,7 +5,6 @@ import re
 from pathlib import Path
 from typing import Any
 
-from rusty.content_hash import hash_text
 from rusty.db import default_database_path, session
 from rusty.models import count_text_units
 from rusty.services.chapter_version_service import ChapterVersionService
@@ -16,7 +15,7 @@ from rusty.services.workflow_ai import WorkflowAI
 
 
 STRATEGIES = {"plot_adjust", "expansion", "plot_rewrite"}
-STAGES = {"not_started", "summary", "direction", "special_analysis", "style", "writing", "review", "confirmed"}
+STAGES = {"not_started", "summary", "direction", "special_analysis", "style", "writing", "review"}
 
 
 def normalize_style_profile(snapshot: object) -> dict[str, Any]:
@@ -85,9 +84,6 @@ class CreativeWorkflowService:
             analysis = connection.execute("SELECT * FROM chapter_special_analyses WHERE chapter_id=?", (chapter_id,)).fetchone()
             style = connection.execute("SELECT * FROM chapter_style_contexts WHERE chapter_id=?", (chapter_id,)).fetchone()
             writing = connection.execute("SELECT * FROM chapter_writings WHERE chapter_id=?", (chapter_id,)).fetchone()
-            if self._is_confirmed_output(state, writing, source):
-                self._adopt_source(connection, source)
-                state = connection.execute("SELECT * FROM chapter_workflow_state WHERE chapter_id=?", (chapter_id,)).fetchone()
         return {
             "chapter_id": chapter_id,
             "current_stage": str(state["current_stage"]),
@@ -363,40 +359,6 @@ class CreativeWorkflowService:
             self._set_stage(connection, chapter_id, "review")
         return self.get_writing(chapter_id) or {}
 
-    def confirm_chapter(self, chapter_id: int) -> dict[str, Any]:
-        source = self._require_current_source(chapter_id)
-        confirmed_kind = source.source_kind
-        confirmed_version_id = source.source_version_id
-        confirmed_hash = source.content_hash
-        writing = self.get_writing(chapter_id)
-        if writing is None:
-            raise ValueError("Writing is required before confirmation.")
-        if writing["strategy"] in {"plot_adjust", "plot_rewrite"}:
-            if source.source_kind == "rewrite_version" and source.text == writing["result_text"].strip():
-                confirmed_kind = source.source_kind
-                confirmed_version_id = source.source_version_id
-                confirmed_hash = source.content_hash
-            else:
-                with session(self.database_path) as connection:
-                    version = self.versions.append_chapter_rewrite_version(
-                        connection, chapter_id=chapter_id, rewritten_text=writing["result_text"],
-                        source_base_kind=source.source_kind,
-                        source_base_version_id=source.source_version_id, source_hash=source.content_hash,
-                        expected_head_version_id=source.expected_head_version_id, source_kind="ai",
-                    )
-                    confirmed_kind = "rewrite_version"
-                    confirmed_version_id = int(version["id"])
-                    confirmed_hash = str(version["content_hash"])
-        with session(self.database_path) as connection:
-            connection.execute("UPDATE chapter_writings SET status='confirmed',updated_at=CURRENT_TIMESTAMP WHERE chapter_id=?", (chapter_id,))
-            connection.execute(
-                """UPDATE chapter_workflow_state SET current_stage='confirmed',source_base_kind=?,
-                          source_base_version_id=?,source_hash=?,updated_at=CURRENT_TIMESTAMP
-                   WHERE chapter_id=?""",
-                (confirmed_kind, confirmed_version_id, confirmed_hash, chapter_id),
-            )
-        return self.get_chapter_workflow(chapter_id)
-
     def _save_expansion_chapter(self, source: Any, text: str, title: str, existing: dict[str, Any] | None) -> int:
         if existing and existing.get("created_chapter_id"):
             created_id = int(existing["created_chapter_id"])
@@ -438,29 +400,9 @@ class CreativeWorkflowService:
         with session(self.database_path) as connection:
             self._ensure_state(connection, source)
             row = connection.execute("SELECT * FROM chapter_workflow_state WHERE chapter_id=?", (chapter_id,)).fetchone()
-            writing = connection.execute("SELECT * FROM chapter_writings WHERE chapter_id=?", (chapter_id,)).fetchone()
-            if self._is_confirmed_output(row, writing, source):
-                self._adopt_source(connection, source)
-                return source
         if row and row["source_hash"] and str(row["source_hash"]) != source.content_hash:
             raise WorkflowSourceConflict("当前章节已变化，需要重新确认或重新分析受影响阶段。")
         return source
-
-    @staticmethod
-    def _is_confirmed_output(state: Any, writing: Any, source: Any) -> bool:
-        return bool(
-            state and writing and state["current_stage"] == "confirmed"
-            and state["source_hash"] != source.content_hash
-            and hash_text(str(writing["result_text"]).strip()) == source.content_hash
-        )
-
-    @staticmethod
-    def _adopt_source(connection: Any, source: Any) -> None:
-        connection.execute(
-            """UPDATE chapter_workflow_state SET source_base_kind=?,source_base_version_id=?,
-                      source_hash=?,updated_at=CURRENT_TIMESTAMP WHERE chapter_id=?""",
-            (source.source_kind, source.source_version_id, source.content_hash, source.chapter_id),
-        )
 
     @staticmethod
     def _ensure_state(connection: Any, source: Any) -> None:
@@ -547,13 +489,6 @@ class CreativeWorkflowService:
         strategy: str, source_text: str, target_outline: str, style: dict[str, Any],
     ) -> dict[str, Any]:
         guidance = str(style.get("generated_guidance") or "").strip()
-        if guidance.startswith(("{", "[")):
-            try:
-                legacy_snapshot = json.loads(guidance)
-            except json.JSONDecodeError:
-                guidance = ""
-            else:
-                guidance = CreativeWorkflowService._style_guidance(legacy_snapshot) if isinstance(legacy_snapshot, dict) else ""
         if not guidance:
             guidance = CreativeWorkflowService._style_guidance(style.get("style_snapshot", {}))
         payload: dict[str, Any] = {

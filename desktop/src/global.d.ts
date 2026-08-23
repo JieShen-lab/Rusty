@@ -3,9 +3,6 @@ export {};
 declare global {
   interface Window {
     rustyDesktop?: {
-      bridgeVersion?: number;
-      platform?: string;
-      versions?: Record<string, string>;
       backend?: {
         apiBase?: string;
         apiToken?: string;

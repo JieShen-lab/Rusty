@@ -91,22 +91,5 @@ class ChapterRecord:
     is_added_chapter: bool = False
 
 
-@dataclass(frozen=True)
-class EffectiveExportChapter:
-    id: int
-    project_id: int
-    index: int
-    title: str
-    original_title: str
-    original_text: str
-    rewritten_text: str | None
-    word_count: int
-    status: str
-    source_status: str
-    include_in_export: bool
-    start_line: int | None
-    end_line: int | None
-
-
 def count_text_units(text: str) -> int:
     return sum(1 for char in text if not char.isspace())

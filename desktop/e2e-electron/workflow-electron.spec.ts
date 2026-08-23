@@ -1,6 +1,5 @@
 import { expect, test, type ElectronApplication, type Page, _electron as electron } from '@playwright/test';
 import path from 'node:path';
-import fs from 'node:fs';
 
 let electronApp: ElectronApplication;
 let page: Page;
@@ -26,9 +25,6 @@ test.beforeAll(async () => {
   await page.waitForLoadState('domcontentloaded');
   await page.evaluate(() => localStorage.clear());
   await page.reload();
-  await electronApp.evaluate(({ session }, outputPath) => {
-    session.defaultSession.on('will-download', (_event, item) => item.setSavePath(outputPath));
-  }, path.join(runtimeRoot, 'legacy-analysis.json'));
 });
 
 test.afterAll(async () => {
@@ -37,14 +33,10 @@ test.afterAll(async () => {
 
 test('Electron 启动、preload 桥接和后端连接正常', async () => {
   const bridge = await page.evaluate(async () => ({
-    version: window.rustyDesktop?.bridgeVersion,
-    platform: window.rustyDesktop?.platform,
     backend: await window.rustyDesktop?.getBackendConfig?.(),
     selectedBook: await window.rustyDesktop?.selectBookFile?.(),
     exportPath: await window.rustyDesktop?.selectDocumentExportPath?.('txt', 'electron'),
   }));
-  expect(bridge.version).toBe(2);
-  expect(bridge.platform).toBeTruthy();
   expect(bridge.backend?.apiBase).toBe('http://127.0.0.1:8767');
   expect(bridge.selectedBook).toBe(path.join(runtimeRoot, 'source-1.txt'));
   expect(bridge.exportPath).toBe(path.join(runtimeRoot, 'electron-export.txt'));
@@ -72,26 +64,6 @@ test('Electron 完成内容总结到目标大纲保存的章节流程', async ()
   await expect(page.getByRole('heading', { name: '专项分析' })).toBeVisible();
   await page.getByRole('button', { name: '风格', exact: true }).click();
   await expect(page.getByRole('heading', { name: '确定写作风格' })).toBeVisible();
-});
-
-test('Electron 历史扩写工程仍保持独立扩写工作台', async () => {
-  await openSeedProject('真实 E2E 4');
-  await expect(page.getByRole('heading', { name: '真实 E2E 4' })).toBeVisible();
-  await expect(page.getByText('每条路线独立保存；可以从原文创建新路线，也可以在当前路线中继续写。')).toBeVisible();
-  await expect(page.getByRole('button', { name: '继续写' })).toBeVisible();
-});
-
-test('Electron 旧提取工程可下载分析并创建派生工程', async () => {
-  await openSeedProject('真实 E2E 8');
-  const exportFile = path.join(runtimeRoot, 'legacy-analysis.json');
-  await page.getByRole('button', { name: '导出已有分析' }).click();
-  await expect(page.getByRole('status')).toContainText('分析结果已导出');
-  await expect.poll(() => fs.existsSync(exportFile)).toBe(true);
-  await page.getByRole('button', { name: '基于此项目创建新工程' }).click();
-  await page.getByLabel('工程类型').selectOption('branch');
-  await page.getByRole('button', { name: '创建并打开' }).click();
-  await expect(page.getByText('扩写工程', { exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: '继续写' })).toBeVisible();
 });
 
 async function createProject() {
@@ -124,7 +96,5 @@ async function openSeedProject(name: string) {
   await goToProjectLibrary();
   await page.getByRole('button', { name: new RegExp(name) }).first().click();
   await page.getByRole('button', { name: '进入工程' }).click();
-  if (name.endsWith('8')) await expect(page.getByText('此项目属于旧版分析工程。')).toBeVisible();
-  else if (name === '真实 E2E 4') await expect(page.getByText('扩写工程', { exact: true })).toBeVisible();
-  else await expect(page.locator('.creative-project-title h1')).toBeVisible();
+  await expect(page.locator('.creative-project-title h1')).toBeVisible();
 }

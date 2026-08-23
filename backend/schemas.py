@@ -33,6 +33,10 @@ class ResourceNameRenameRequest(BaseModel):
     name: str = Field(min_length=1, max_length=40)
 
 
+class DocumentCategoryAssignmentRequest(BaseModel):
+    category_ids: list[int]
+
+
 class LibraryDocumentVolumeRenameRequest(BaseModel):
     title: str = Field(min_length=1)
 

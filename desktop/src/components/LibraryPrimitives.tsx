@@ -23,7 +23,7 @@ export function LibrarySidebarItem({
 }) {
   return (
     <button
-      aria-pressed={active}
+      aria-current={active ? 'page' : undefined}
       className={`library-sidebar-item ${active ? 'selected' : ''}`}
       onClick={onClick}
       onContextMenu={onContextMenu}
@@ -52,16 +52,18 @@ export function LibraryResourceCard({
   ariaLabel,
   children,
   onClick,
+  onContextMenu,
   onDoubleClick,
   selected,
 }: {
   ariaLabel: string;
   children: ReactNode;
   onClick: () => void;
+  onContextMenu?: (event: MouseEvent<HTMLButtonElement>) => void;
   onDoubleClick?: () => void;
   selected: boolean;
 }) {
-  return <button aria-label={ariaLabel} aria-pressed={selected} className={`document-book ${selected ? 'selected' : ''}`} onClick={onClick} onDoubleClick={onDoubleClick} type="button">{children}</button>;
+  return <button aria-label={ariaLabel} aria-pressed={selected} className={`document-book ${selected ? 'selected' : ''}`} onClick={onClick} onContextMenu={onContextMenu} onDoubleClick={onDoubleClick} type="button">{children}</button>;
 }
 
 export type LibraryContextMenuAction = {
@@ -73,12 +75,14 @@ export type LibraryContextMenuAction = {
 
 export function LibraryContextMenu({
   actions,
+  className = '',
   label = '分类操作',
   onClose,
   x,
   y,
 }: {
   actions: LibraryContextMenuAction[];
+  className?: string;
   label?: string;
   onClose: () => void;
   x: number;
@@ -122,7 +126,7 @@ export function LibraryContextMenu({
   return createPortal(
     <div
       aria-label={label}
-      className="library-context-menu"
+      className={`library-context-menu ${className}`}
       ref={menuRef}
       role="menu"
       style={{ left: position.left, top: position.top }}

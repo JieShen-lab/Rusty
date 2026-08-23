@@ -20,6 +20,23 @@ from rusty.models import ParsedBook, ParsedChapter, ParsedVolume, count_text_uni
 
 SUPPORTED_DOCUMENT_SUFFIXES = {".txt", ".epub", ".docx"}
 DOCUMENT_COVER_PALETTES = ("indigo", "terracotta", "jade", "slate", "ochre", "plum", "bluegray")
+DOCUMENT_SELECT_SQL = """
+    SELECT d.*,
+           COALESCE((
+               SELECT GROUP_CONCAT(categories.id, char(31))
+               FROM document_category_links links
+               JOIN document_categories categories ON categories.id = links.category_id
+               WHERE links.document_id = d.id AND categories.deleted_at IS NULL
+           ), '') AS category_ids,
+           COALESCE((
+               SELECT GROUP_CONCAT(categories.name, char(31))
+               FROM document_category_links links
+               JOIN document_categories categories ON categories.id = links.category_id
+               WHERE links.document_id = d.id AND categories.deleted_at IS NULL
+           ), '') AS category_names
+    FROM library_documents d
+    WHERE d.deleted_at IS NULL
+"""
 
 
 @dataclass(frozen=True)
@@ -202,24 +219,7 @@ class DocumentLibraryService:
     def list_documents(self) -> list[LibraryDocument]:
         with session(self.database_path) as connection:
             rows = connection.execute(
-                """
-                SELECT d.*,
-                       COALESCE((
-                           SELECT GROUP_CONCAT(categories.id, char(31))
-                           FROM document_category_links links
-                           JOIN document_categories categories ON categories.id = links.category_id
-                           WHERE links.document_id = d.id AND categories.deleted_at IS NULL
-                       ), '') AS category_ids,
-                       COALESCE((
-                           SELECT GROUP_CONCAT(categories.name, char(31))
-                           FROM document_category_links links
-                           JOIN document_categories categories ON categories.id = links.category_id
-                           WHERE links.document_id = d.id AND categories.deleted_at IS NULL
-                       ), '') AS category_names
-                FROM library_documents d
-                WHERE d.deleted_at IS NULL
-                ORDER BY d.created_at DESC, d.id DESC
-                """
+                DOCUMENT_SELECT_SQL + " ORDER BY d.created_at DESC, d.id DESC"
             ).fetchall()
         return [self._row_to_document(row) for row in rows]
 
@@ -394,6 +394,30 @@ class DocumentLibraryService:
             )
             if cursor.rowcount == 0:
                 raise FileNotFoundError(f"找不到文档分类：{category_id}")
+
+    def set_document_categories(self, document_id: int, category_ids: list[int]) -> LibraryDocument:
+        self._get_document(document_id)
+        normalized_ids = list(dict.fromkeys(category_ids))
+        with session(self.database_path) as connection:
+            if normalized_ids:
+                placeholders = ",".join("?" for _ in normalized_ids)
+                rows = connection.execute(
+                    f"SELECT id FROM document_categories WHERE deleted_at IS NULL AND id IN ({placeholders})",
+                    normalized_ids,
+                ).fetchall()
+                existing_ids = {int(row["id"]) for row in rows}
+                missing_ids = [category_id for category_id in normalized_ids if category_id not in existing_ids]
+                if missing_ids:
+                    raise FileNotFoundError(f"找不到文档分类：{missing_ids[0]}")
+            connection.execute(
+                "DELETE FROM document_category_links WHERE document_id = ?",
+                (document_id,),
+            )
+            connection.executemany(
+                "INSERT INTO document_category_links(document_id, category_id) VALUES(?, ?)",
+                ((document_id, category_id) for category_id in normalized_ids),
+            )
+        return self._get_document(document_id)
 
     def import_document(self, source_path: str | Path) -> DocumentImportResult:
         path = Path(source_path).expanduser().resolve()
@@ -2067,23 +2091,7 @@ class DocumentLibraryService:
     def _get_document(self, document_id: int) -> LibraryDocument:
         with session(self.database_path) as connection:
             row = connection.execute(
-                """
-                SELECT d.*,
-                       COALESCE((
-                           SELECT GROUP_CONCAT(categories.id, char(31))
-                           FROM document_category_links links
-                           JOIN document_categories categories ON categories.id = links.category_id
-                           WHERE links.document_id = d.id AND categories.deleted_at IS NULL
-                       ), '') AS category_ids,
-                       COALESCE((
-                           SELECT GROUP_CONCAT(categories.name, char(31))
-                           FROM document_category_links links
-                           JOIN document_categories categories ON categories.id = links.category_id
-                           WHERE links.document_id = d.id AND categories.deleted_at IS NULL
-                       ), '') AS category_names
-                FROM library_documents d
-                WHERE d.id = ? AND d.deleted_at IS NULL
-                """,
+                DOCUMENT_SELECT_SQL + " AND d.id = ?",
                 (document_id,),
             ).fetchone()
         if row is None:

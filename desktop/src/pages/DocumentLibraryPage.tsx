@@ -7,7 +7,7 @@ import {
   useRef,
   useState,
 } from 'react';
-import type { DragEvent, MouseEvent, ReactNode } from 'react';
+import type { DragEvent, ReactNode } from 'react';
 import {
   ArrowLeft,
   ArrowDownToLine,
@@ -62,6 +62,7 @@ import {
   renameDocumentCategory,
   renameLibraryDocumentVolume,
   updateLibraryDocument,
+  updateLibraryDocumentCategories,
 } from '../api/client';
 import type {
   DocumentCategory,
@@ -79,7 +80,7 @@ import { PrimaryButton } from '../components/PrimaryButton';
 import { SecondaryButton } from '../components/SecondaryButton';
 import { DangerButton } from '../components/DangerButton';
 import { FloatingNotice } from '../components/FloatingNotice';
-import { BodyPortal, ExportFormatDialog, LibraryContextMenu, LibraryDefinition, LibraryDialog, LibraryDivider, LibraryResourceCard, LibraryResourceGrid, LibrarySidebarSectionTitle } from '../components/LibraryPrimitives';
+import { BodyPortal, ExportFormatDialog, LibraryContextMenu, LibraryDefinition, LibraryDialog, LibraryDivider, LibraryResourceCard, LibraryResourceGrid, LibrarySidebarItem, LibrarySidebarSectionTitle } from '../components/LibraryPrimitives';
 import { TopBar } from '../components/TopBar';
 import { useAutoDismiss } from '../hooks/useAutoDismiss';
 
@@ -119,6 +120,7 @@ export function DocumentLibraryPage() {
   const [exportOpen, setExportOpen] = useState(false);
   const [categoryCreateOpen, setCategoryCreateOpen] = useState(false);
   const [categoryContextMenu, setCategoryContextMenu] = useState<{ category: DocumentCategory; x: number; y: number } | null>(null);
+  const [documentContextMenu, setDocumentContextMenu] = useState<{ document: LibraryDocument; x: number; y: number } | null>(null);
   const [categoryRename, setCategoryRename] = useState<DocumentCategory | null>(null);
   const [metadataTitle, setMetadataTitle] = useState('');
   const [metadataAuthor, setMetadataAuthor] = useState('');
@@ -242,6 +244,18 @@ export function DocumentLibraryPage() {
       if (activeCategoryId === category.id) setActiveCategoryId(null);
       setCategories((current) => current.filter((item) => item.id !== category.id));
       setMessage(`已删除分类“${category.name}”。`);
+    }, false);
+  }
+
+  async function toggleDocumentCategory(document: LibraryDocument, category: DocumentCategory) {
+    const assigned = document.category_ids.includes(category.id);
+    const categoryIds = assigned
+      ? document.category_ids.filter((categoryId) => categoryId !== category.id)
+      : [...document.category_ids, category.id];
+    await runBusy(async () => {
+      const updated = await updateLibraryDocumentCategories(document.id, categoryIds);
+      setDocuments((current) => current.map((item) => item.id === updated.id ? updated : item));
+      setMessage(assigned ? `已将“${document.title}”移出“${category.name}”。` : `已将“${document.title}”加入“${category.name}”。`);
     }, false);
   }
 
@@ -814,7 +828,7 @@ export function DocumentLibraryPage() {
           </header>
           <nav aria-label="文档筛选">
             {systemFilters.map(({ icon: Icon, key, label }) => (
-              <SidebarFilterButton active={systemFilter === key} count={filterCount(key)} icon={<Icon size={16} />} key={key} label={label} onClick={() => {
+              <LibrarySidebarItem active={systemFilter === key} count={filterCount(key)} icon={<Icon size={16} />} key={key} label={label} onClick={() => {
                 setSystemFilter(key);
                 if (key === 'uncategorized') setActiveCategoryId(null);
               }} />
@@ -822,7 +836,7 @@ export function DocumentLibraryPage() {
             <LibraryDivider />
             <LibrarySidebarSectionTitle action={<button aria-label="新建文档分类" className="library-add-category" disabled={busy} onClick={() => setCategoryCreateOpen(true)} title="新建分类" type="button"><Plus size={15} /></button>}>我的分类</LibrarySidebarSectionTitle>
             {categories.length ? categories.map((category) => (
-              <SidebarFilterButton
+              <LibrarySidebarItem
                 active={activeCategoryId === category.id}
                 count={categoryCount(category.id)}
                 icon={<Folder size={16} />}
@@ -861,6 +875,12 @@ export function DocumentLibraryPage() {
                     ariaLabel={`${document.title}，${document.author || '未知作者'}`}
                     key={document.id}
                     onClick={() => setSelectedId(document.id)}
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      setSelectedId(document.id);
+                      setCategoryContextMenu(null);
+                      setDocumentContextMenu({ document, x: event.clientX, y: event.clientY });
+                    }}
                     onDoubleClick={() => void openProcessing(document)}
                     selected={selectedDocument?.id === document.id}
                   >
@@ -938,6 +958,27 @@ export function DocumentLibraryPage() {
           onClose={() => setCategoryContextMenu(null)}
           x={categoryContextMenu.x}
           y={categoryContextMenu.y}
+        />
+      ) : null}
+      {documentContextMenu ? (
+        <LibraryContextMenu
+          actions={categories.length ? categories.map((category) => {
+            const assigned = documentContextMenu.document.category_ids.includes(category.id);
+            return {
+              icon: <Folder size={14} />,
+              label: assigned ? `移出“${category.name}”` : `加入“${category.name}”`,
+              onSelect: () => void toggleDocumentCategory(documentContextMenu.document, category),
+            };
+          }) : [{
+            icon: <Plus size={14} />,
+            label: '新建分类',
+            onSelect: () => setCategoryCreateOpen(true),
+          }]}
+          className="document-category-context-menu"
+          label={`${documentContextMenu.document.title} 分类操作`}
+          onClose={() => setDocumentContextMenu(null)}
+          x={documentContextMenu.x}
+          y={documentContextMenu.y}
         />
       ) : null}
       {categoryRename ? (
@@ -1815,10 +1856,6 @@ function CreateVolumeDialog({
       <label className="library-name-field"><span>分卷名称</span><input autoFocus className="form-input" maxLength={80} onChange={(event) => setTitle(event.target.value)} value={title} /></label>
     </LibraryDialog>
   );
-}
-
-function SidebarFilterButton({ active, count, icon, label, onClick, onContextMenu }: { active: boolean; count: number; icon: ReactNode; label: string; onClick: () => void; onContextMenu?: (event: MouseEvent<HTMLButtonElement>) => void }) {
-  return <button aria-current={active ? 'page' : undefined} className={`library-sidebar-item ${active ? 'selected' : ''}`} onClick={onClick} onContextMenu={onContextMenu} type="button">{icon}<span>{label}</span><small>{count}</small></button>;
 }
 
 function DefaultBookCover({ compact = false, document }: { compact?: boolean; document: LibraryDocument }) {

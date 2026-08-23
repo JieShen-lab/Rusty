@@ -88,7 +88,7 @@ export function NewProjectPage({ onNavigate }: Props) {
   async function chooseWorkspace() {
     const picker = window.rustyDesktop?.selectWorkspaceDirectory;
     if (!picker) {
-      setError('当前窗口仍在使用旧版桌面桥接。请完全退出 Rusty 后重新打开；重启前也可以手动输入工作目录。');
+      setError('当前环境无法打开目录选择器，请手动输入工作目录。');
       return;
     }
     setError(null);

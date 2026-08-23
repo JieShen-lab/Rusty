@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-
 SERVICE_NAME = "rusty-novel"
 
 
@@ -49,26 +47,6 @@ class KeyringSecretStore(SecretStore):
             return
 
 
-@dataclass
-class InMemorySecretStore(SecretStore):
-    values: dict[str, str] = field(default_factory=dict)
-
-    def set_secret(self, key: str, value: str) -> str:
-        self.values[key] = value
-        return f"memory:{key}"
-
-    def get_secret(self, ref: str | None) -> str | None:
-        if not ref:
-            return None
-        if ref.startswith("memory:"):
-            return self.values.get(ref.removeprefix("memory:"))
-        return None
-
-    def delete_secret(self, ref: str | None) -> None:
-        if ref and ref.startswith("memory:"):
-            self.values.pop(ref.removeprefix("memory:"), None)
-
-
 def default_secret_store() -> SecretStore:
     return KeyringSecretStore()
 
@@ -78,4 +56,3 @@ def _key_from_ref(ref: str) -> str | None:
     if not ref.startswith(prefix):
         return None
     return ref.removeprefix(prefix)
-

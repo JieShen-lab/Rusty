@@ -8,8 +8,6 @@ from pathlib import Path
 from .connection import session
 
 
-CURRENT_SCHEMA_VERSION = 66
-
 PROMPT_SLOTS = (
     ("global_system", "只使用提供的事实与当前有效章节正文；用户明确要求优先。严格遵守当前任务和输出契约，不虚构未提供事实，不跨阶段擅自创作。"),
     ("chapter_summary", "阅读当前章节原文，按提示词要求生成剧情总结、关键事件、主要人物及人物设定。提示词可以决定总结的细节、视角和侧重点。不要生成原文大纲。"),
@@ -17,15 +15,6 @@ PROMPT_SLOTS = (
     ("expansion", "阅读整本小说原文并执行用户要求，设计应插入当前章之后的新章节大纲。大纲按顺序编号；只返回新大纲，不要返回旧大纲或正文。"),
     ("plot_rewrite", "阅读当前章节原文并执行用户要求，生成按顺序编号的重写大纲。只返回新大纲，不要返回旧大纲或正文。"),
     ("writing", "根据程序提供的原文、新大纲及细节和作者风格生成完整小说正文。不同创作方向会提供不同组合；只使用实际提供的内容，不要输出说明、分析或JSON。"),
-)
-
-V64_PROMPT_SLOTS = (
-    ("global_system", "只使用请求中提供的事实和当前有效正文；遵守用户明确要求与输出契约，不虚构未提供事实，不跨任务擅自扩展。"),
-    ("chapter_summary", "阅读当前章节原文，生成剧情总结、关键事件、主要人物及人物设定；不要提出修改方案或创作正文。"),
-    ("plot_adjust", "根据用户要求生成用于对照的旧大纲，以及包含必要细节的新大纲。未要求改变的内容必须保留。"),
-    ("expansion", "阅读整本小说原文并根据用户要求，设计应插入当前章之后的新章节大纲；不要修改当前章节。"),
-    ("plot_rewrite", "阅读当前章节原文并根据用户要求生成全新的重写大纲；只返回大纲，不要生成正文。"),
-    ("writing", "根据程序提供的原文、新大纲、用户要求和作者风格生成完整小说正文；不要输出分析、说明或 JSON。"),
 )
 
 AUTHOR_STYLE_DIMENSIONS = (
@@ -63,11 +52,6 @@ AUTHOR_STYLE_BASE_INSTRUCTION = (
 )
 
 SCHEMA_SQL = """
-CREATE TABLE IF NOT EXISTS schema_migrations (
-    version INTEGER PRIMARY KEY,
-    applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
 CREATE TABLE IF NOT EXISTS projects (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
@@ -238,7 +222,7 @@ CREATE TABLE IF NOT EXISTS prompt_slots (
 CREATE TABLE IF NOT EXISTS chapter_workflow_state (
     chapter_id INTEGER PRIMARY KEY,
     current_stage TEXT NOT NULL DEFAULT 'not_started' CHECK(current_stage IN (
-        'not_started','summary','direction','special_analysis','style','writing','review','confirmed'
+        'not_started','summary','direction','special_analysis','style','writing','review'
     )),
     source_base_kind TEXT CHECK(source_base_kind IN ('original','rewrite_version')),
     source_base_version_id INTEGER,
@@ -298,7 +282,7 @@ CREATE TABLE IF NOT EXISTS chapter_writings (
     result_text TEXT NOT NULL DEFAULT '',
     created_chapter_id INTEGER,
     source_hash TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','reviewed','confirmed')),
+    status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','reviewed')),
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE,
@@ -449,182 +433,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_library_draft_chapter
     ON library_document_drafts(document_id, chapter_id) WHERE chapter_id IS NOT NULL;
 """
 
-CANONICAL_TABLES = (
-    "projects", "book_metadata", "ai_models",
-    "project_settings", "story_volumes", "chapters", "chapter_source_versions",
-    "chapter_rewrite_versions", "chapter_rewrites", "materials", "material_ai_settings",
-    "prompt_slots", "chapter_workflow_state",
-    "chapter_workflow_summaries", "chapter_creative_intents", "chapter_special_analyses",
-    "chapter_style_contexts", "chapter_writings", "library_documents", "document_categories",
-    "document_category_links", "library_document_revisions", "library_document_volumes",
-    "library_document_chapters", "library_document_drafts", "document_library_settings",
-    "document_split_proposals",
-)
-
-LEGACY_MIGRATION_TABLES = (*CANONICAL_TABLES, "project_documents")
-
-
 def initialize_database(connection: sqlite3.Connection) -> None:
-    """Create v66 directly or migrate the supported v63/v64/v65 baselines."""
-    connection.execute(
-        "CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
-    )
-    row = connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()
-    version = int(row[0]) if row and row[0] is not None else 0
-    if version == 0:
-        connection.executescript(SCHEMA_SQL)
-        _seed_defaults(connection)
-    elif version in {63, 64, 65}:
-        _migrate_to_v66(connection, version)
-    elif version == CURRENT_SCHEMA_VERSION:
-        connection.executescript(SCHEMA_SQL)
-        _seed_defaults(connection)
-    else:
-        raise RuntimeError(
-            f"Unsupported Rusty schema version {version}; only a fresh database, v63, v64, or v65 can be opened."
-        )
-    connection.execute("DELETE FROM schema_migrations")
-    connection.execute("INSERT INTO schema_migrations(version) VALUES(?)", (CURRENT_SCHEMA_VERSION,))
-
-
-def _migrate_to_v66(connection: sqlite3.Connection, source_version: int) -> None:
-    connection.commit()
-    connection.execute("PRAGMA foreign_keys=OFF")
-    try:
-        prefix = f"__v{source_version}_"
-        old_tables = {
-            str(row[0]) for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
-            ).fetchall()
-        }
-        for table in LEGACY_MIGRATION_TABLES:
-            if table in old_tables:
-                connection.execute(f'ALTER TABLE "{table}" RENAME TO "{prefix}{table}"')
-        connection.executescript(SCHEMA_SQL)
-
-        for table in CANONICAL_TABLES:
-            backup = f"{prefix}{table}"
-            if not _table_exists(connection, backup):
-                continue
-            if table == "chapter_rewrite_versions" and source_version == 63:
-                connection.execute(
-                    f"""INSERT OR IGNORE INTO chapter_rewrite_versions(
-                           id,project_id,chapter_id,version,parent_version_id,source_kind,
-                           source_base_kind,source_base_version_id,source_hash,rewritten_text,
-                           content_hash,created_at
-                       ) SELECT id,project_id,chapter_id,version,parent_version_id,
-                                CASE WHEN source_kind='manual' THEN 'manual' ELSE 'ai' END,
-                                source_base_kind,source_base_version_id,source_hash,rewritten_text,
-                                content_hash,created_at
-                         FROM {backup}
-                         ORDER BY chapter_id,version"""
-                )
-                continue
-            new_columns = _columns(connection, table)
-            old_columns = _columns(connection, backup)
-            shared = [column for column in new_columns if column in old_columns]
-            if not shared:
-                continue
-            quoted = ",".join(f'"{column}"' for column in shared)
-            where = (
-                " WHERE material_type='author_style'"
-                if table == "materials" and "material_type" in old_columns
-                else ""
-            )
-            connection.execute(
-                f'INSERT OR IGNORE INTO "{table}"({quoted}) SELECT {quoted} FROM "{backup}"{where}'
-            )
-
-        old_settings = f"{prefix}material_ai_settings"
-        if _table_exists(connection, old_settings) and "system_prompt" in _columns(connection, old_settings):
-            row = connection.execute(
-                f'SELECT system_prompt FROM "{old_settings}" WHERE task_type=?',
-                ("author_style_extraction",),
-            ).fetchone()
-            if row is not None:
-                connection.execute(
-                    "UPDATE material_ai_settings SET extraction_rules=? WHERE task_type='author_style_extraction'",
-                    (str(row[0] or ""),),
-                )
-
-        _canonicalize_author_materials(connection)
-        _seed_defaults(connection)
-        if source_version == 63 and "prompt_definitions" in old_tables:
-            _copy_prompt_slots(connection)
-        if source_version == 64:
-            _restore_v64_unmodified_defaults(connection)
-        _assign_existing_cover_palettes(connection)
-        _mark_expansion_chapters(connection, f"{prefix}chapter_writings")
-        _detach_legacy_project_documents(connection, f"{prefix}project_documents")
-
-        keep = {"schema_migrations", *CANONICAL_TABLES}
-        for row in connection.execute(
-            "SELECT type,name FROM sqlite_master WHERE type IN ('view','trigger') AND name NOT LIKE 'sqlite_%'"
-        ).fetchall():
-            connection.execute(f'DROP {str(row[0]).upper()} IF EXISTS "{str(row[1])}"')
-        for row in connection.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
-        ).fetchall():
-            name = str(row[0])
-            if name not in keep:
-                connection.execute(f'DROP TABLE IF EXISTS "{name}"')
-        connection.executescript(SCHEMA_SQL)
-        connection.commit()
-    finally:
-        connection.execute("PRAGMA foreign_keys=ON")
-
-
-def _mark_expansion_chapters(connection: sqlite3.Connection, writings_table: str) -> None:
-    if not _table_exists(connection, writings_table) or "created_chapter_id" not in _columns(connection, writings_table):
-        return
-    connection.execute(
-        f"""UPDATE chapters SET origin_kind='expansion'
-            WHERE id IN (
-                SELECT DISTINCT created_chapter_id
-                FROM "{writings_table}"
-                WHERE created_chapter_id IS NOT NULL
-            )"""
-    )
-
-
-def _detach_legacy_project_documents(connection: sqlite3.Connection, links_table: str) -> None:
-    """Remove the old relation without deleting documents or their files."""
-    if not _table_exists(connection, links_table):
-        return
-    document_ids = connection.execute(
-        f'SELECT DISTINCT document_id FROM "{links_table}" WHERE document_id IS NOT NULL'
-    ).fetchall()
-    for row in document_ids:
-        document_id = int(row[0])
-        if not _is_pure_project_mirror(connection, document_id):
-            continue
-        connection.execute(
-            "UPDATE library_documents SET deleted_at=COALESCE(deleted_at,CURRENT_TIMESTAMP) WHERE id=?",
-            (document_id,),
-        )
-
-
-def _is_pure_project_mirror(connection: sqlite3.Connection, document_id: int) -> bool:
-    document = connection.execute(
-        "SELECT favorite FROM library_documents WHERE id=?", (document_id,)
-    ).fetchone()
-    if document is None or bool(document[0]):
-        return False
-    if connection.execute(
-        "SELECT 1 FROM document_category_links WHERE document_id=? LIMIT 1", (document_id,)
-    ).fetchone() is not None:
-        return False
-    if connection.execute(
-        "SELECT 1 FROM library_document_drafts WHERE document_id=? LIMIT 1", (document_id,)
-    ).fetchone() is not None:
-        return False
-    revision_types = {
-        str(row[0]).strip()
-        for row in connection.execute(
-            "SELECT revision_type FROM library_document_revisions WHERE document_id=?", (document_id,)
-        ).fetchall()
-    }
-    return revision_types <= {"import", "project_sync"}
+    """Create the current application schema and seed its required defaults."""
+    connection.executescript(SCHEMA_SQL)
+    _seed_defaults(connection)
 
 
 def _seed_defaults(connection: sqlite3.Connection) -> None:
@@ -644,161 +456,6 @@ def _seed_defaults(connection: sqlite3.Connection) -> None:
     connection.execute(
         "INSERT OR IGNORE INTO chapter_workflow_state(chapter_id) SELECT id FROM chapters"
     )
-
-
-def _restore_v64_unmodified_defaults(connection: sqlite3.Connection) -> None:
-    restored = dict(PROMPT_SLOTS)
-    for slot_key, old_content in V64_PROMPT_SLOTS:
-        connection.execute(
-            "UPDATE prompt_slots SET content=? WHERE slot_key=? AND content=?",
-            (restored[slot_key], slot_key, old_content),
-        )
-    row = connection.execute(
-        "SELECT * FROM material_ai_settings WHERE task_type='author_style_extraction'"
-    ).fetchone()
-    if row is None:
-        return
-    old_dimensions = [
-        {"id": "language", "name": "语言与句式", "requirement": "分析词汇、句长、节奏和修辞"},
-        {"id": "narration", "name": "叙事方式", "requirement": "分析视角、距离、节奏和信息组织"},
-        {"id": "dialogue", "name": "对白与人物呈现", "requirement": "分析对白、动作和人物塑造"},
-    ]
-    if (
-        str(row["detail_level"]) == "standard"
-        and str(row["extraction_rules"]) == "只提取文本中可观察的作者风格，不总结剧情，不评价优劣，不生成仿写正文。"
-        and str(row["base_instruction"]) == "分析完整样本文本并返回整体风格与各配置维度。证据不足的维度保持简洁。"
-        and _json_array(row["dimensions_json"]) == old_dimensions
-        and not str(row["extra_requirements"])
-    ):
-        connection.execute(
-            """UPDATE material_ai_settings SET extraction_rules=?,base_instruction=?,dimensions_json=?
-               WHERE task_type='author_style_extraction'""",
-            (
-                AUTHOR_STYLE_EXTRACTION_RULES,
-                AUTHOR_STYLE_BASE_INSTRUCTION,
-                json.dumps(AUTHOR_STYLE_DIMENSIONS, ensure_ascii=False),
-            ),
-        )
-
-
-def _assign_existing_cover_palettes(connection: sqlite3.Connection) -> None:
-    connection.execute(
-        """UPDATE library_documents SET cover_palette=CASE ((id - 1) % 7)
-               WHEN 0 THEN 'indigo' WHEN 1 THEN 'terracotta' WHEN 2 THEN 'jade'
-               WHEN 3 THEN 'slate' WHEN 4 THEN 'ochre' WHEN 5 THEN 'plum'
-               ELSE 'bluegray' END
-           WHERE cover_palette='slate'"""
-    )
-
-
-def _copy_prompt_slots(connection: sqlite3.Connection) -> None:
-    selectors = {
-        "global_system": "kind='master'",
-        "chapter_summary": "task_key='chapter_summary'",
-        "plot_adjust": "workflow_key='plot_adjust' AND task_key='special_analysis'",
-        "expansion": "workflow_key='expansion' AND task_key='special_analysis'",
-        "plot_rewrite": "workflow_key='plot_rewrite' AND task_key='special_analysis'",
-        "writing": "task_key='writing'",
-    }
-    for slot_key, selector in selectors.items():
-        row = connection.execute(
-            f"""SELECT content FROM prompt_definitions
-                WHERE deleted_at IS NULL AND {selector}
-                ORDER BY is_default DESC,updated_at DESC,id DESC LIMIT 1"""
-        ).fetchone()
-        if row is not None and str(row[0] or "").strip():
-            connection.execute(
-                "UPDATE prompt_slots SET content=?,updated_at=CURRENT_TIMESTAMP WHERE slot_key=?",
-                (str(row[0]), slot_key),
-            )
-
-
-def _canonicalize_author_materials(connection: sqlite3.Connection) -> None:
-    rows = connection.execute(
-        "SELECT id,content_json,source_metadata_json FROM materials"
-    ).fetchall()
-    for row in rows:
-        content = _json_object(row["content_json"])
-        metadata = _json_object(row["source_metadata_json"])
-        source_file_name = str(
-            metadata.get("source_file_name")
-            or metadata.get("file_name")
-            or metadata.get("source_filename")
-            or ""
-        ).strip()
-        canonical_metadata = {
-            key: value
-            for key, value in {
-                "source_type": metadata.get("source_type") or ("file" if source_file_name else None),
-                "source_file_name": source_file_name or None,
-                "source_path": metadata.get("source_path"),
-                "source_format": metadata.get("source_format"),
-                "book_title": metadata.get("book_title"),
-            }.items()
-            if value not in {None, ""}
-        }
-        raw_dimensions = content.get("dimensions") if isinstance(content.get("dimensions"), list) else []
-        dimensions: list[dict[str, object]] = []
-        for index, item in enumerate(raw_dimensions, 1):
-            if not isinstance(item, dict):
-                continue
-            dimension_id = str(item.get("id") or f"dimension-{index}").strip()
-            if not dimension_id:
-                continue
-            dimensions.append({
-                "id": dimension_id,
-                "name": str(item.get("name") or "未命名维度").strip(),
-                "analysis": str(item.get("analysis") or "").strip(),
-                "features": _json_strings(item.get("features")),
-                "examples": _json_strings(item.get("examples")),
-            })
-        work = str(content.get("work") or "").strip()
-        if not work and source_file_name:
-            work = Path(source_file_name).stem
-        canonical_content = {
-            "schema_version": 1,
-            "work": work,
-            "overall_style": str(content.get("overall_style") or content.get("summary") or "").strip(),
-            "dimensions": dimensions,
-        }
-        connection.execute(
-            "UPDATE materials SET content_json=?,source_metadata_json=? WHERE id=?",
-            (
-                json.dumps(canonical_content, ensure_ascii=False),
-                json.dumps(canonical_metadata, ensure_ascii=False),
-                int(row["id"]),
-            ),
-        )
-
-
-def _json_object(value: object) -> dict[str, object]:
-    try:
-        parsed = json.loads(str(value or "{}"))
-    except (TypeError, ValueError):
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
-
-
-def _json_array(value: object) -> list[object]:
-    try:
-        parsed = json.loads(str(value or "[]"))
-    except (TypeError, ValueError):
-        return []
-    return parsed if isinstance(parsed, list) else []
-
-
-def _json_strings(value: object) -> list[str]:
-    return [str(item).strip() for item in value if str(item).strip()] if isinstance(value, list) else []
-
-
-def _table_exists(connection: sqlite3.Connection, name: str) -> bool:
-    return connection.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
-    ).fetchone() is not None
-
-
-def _columns(connection: sqlite3.Connection, table: str) -> list[str]:
-    return [str(row[1]) for row in connection.execute(f'PRAGMA table_info("{table}")').fetchall()]
 
 
 def initialize_database_file(database_path: str | Path) -> None:

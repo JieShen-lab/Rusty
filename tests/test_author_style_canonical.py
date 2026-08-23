@@ -59,7 +59,7 @@ class AuthorStyleCanonicalTests(unittest.TestCase):
             self.assertEqual([item["name"] for item in configured], [item["name"] for item in outcome.result.dimensions])
             self.assertNotIn("requirement", outcome.result.dimensions[0])
 
-    def test_settings_export_is_v2_and_v1_is_explicitly_rejected(self) -> None:
+    def test_settings_export_round_trip_uses_current_format(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             database = initialized_database(Path(directory) / "rusty.db")
             service = MaterialService(database)
@@ -72,8 +72,6 @@ class AuthorStyleCanonicalTests(unittest.TestCase):
             )
             imported = service.import_author_style_settings(exported)
             self.assertEqual(exported["extraction_rules"], imported.extraction_rules)
-            with self.assertRaisesRegex(ValueError, "旧版作者风格提取设置"):
-                service.import_author_style_settings({"schema_version": 1, "config_type": "author_style_extraction"})
 
     def test_author_page_preview_delegates_to_the_canonical_extraction_pipeline(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:

@@ -40,6 +40,7 @@ from .schemas import (
     AISplitPreviewRequest,
     CreateProjectRequest,
     DocumentCreateChapterRequest,
+    DocumentCategoryAssignmentRequest,
     DocumentCursorSplitRequest,
     DocumentLibraryMigrateRequest,
     DocumentMergeRequest,
@@ -258,11 +259,6 @@ def create_app(
         _require_chapter(projects, chapter_id)
         return creative.save_writing(chapter_id, str(payload.get("result_text") or ""))
 
-    @app.post("/api/chapters/{chapter_id}/workflow/confirm", dependencies=[Depends(_require_token)])
-    def confirm_workflow(chapter_id: int) -> dict[str, Any]:
-        _require_chapter(projects, chapter_id)
-        return creative.confirm_chapter(chapter_id)
-
     @app.get("/api/models")
     def list_models() -> list[dict[str, Any]]:
         return [asdict(item) for item in models.list_models()]
@@ -389,6 +385,10 @@ def _register_document_routes(app: FastAPI, documents: DocumentLibraryService, c
     def delete_category(category_id: int) -> dict[str, bool]:
         documents.delete_category(category_id)
         return {"ok": True}
+
+    @app.put("/api/documents/{document_id}/categories", dependencies=write)
+    def set_document_categories(document_id: int, payload: DocumentCategoryAssignmentRequest) -> dict[str, Any]:
+        return asdict(documents.set_document_categories(document_id, payload.category_ids))
 
     @app.get("/api/documents/{document_id}/revisions")
     def list_revisions(document_id: int) -> list[dict[str, Any]]:

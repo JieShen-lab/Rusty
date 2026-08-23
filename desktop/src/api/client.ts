@@ -98,8 +98,6 @@ export const saveChapterSpecialAnalysis = (id: number, value: import('./types').
 export const resolveChapterStyle = (id: number, value: { author_style_material_id?: number | null }) => trackAITask('确定写作风格', () => request<import('./types').ChapterStyleContext>(`/api/chapters/${id}/workflow/style/resolve`, body(value)));
 export const generateChapterWriting = (id: number, replaceExisting = false) => trackAITask('生成章节草稿', () => request<import('./types').ChapterWriting>(`/api/chapters/${id}/workflow/writing/generate`, body({ replace_existing: replaceExisting })));
 export const saveChapterWriting = (id: number, resultText: string) => request<import('./types').ChapterWriting>(`/api/chapters/${id}/workflow/writing`, put({ result_text: resultText }));
-export const confirmChapterWorkflow = (id: number) => request<ChapterWorkflowState>(`/api/chapters/${id}/workflow/confirm`, { method: 'POST' });
-
 export function previewProject(sourcePath: string, workspacePath = '', split?: ChapterSplitOptions) {
   return request<PreviewResponse>('/api/projects/preview', body({ source_path: sourcePath, workspace_path: workspacePath, split: split ?? { mode: 'auto' } }));
 }
@@ -139,6 +137,7 @@ export const getDocumentCategories = () => request<DocumentCategory[]>('/api/doc
 export const createDocumentCategory = (name: string) => request<DocumentCategory>('/api/document-categories', body({ name }));
 export const renameDocumentCategory = (id: number, name: string) => request<DocumentCategory>(`/api/document-categories/${id}`, body({ name }));
 export const deleteDocumentCategory = (id: number) => request<{ ok: boolean }>(`/api/document-categories/${id}/delete`, { method: 'POST' });
+export const updateLibraryDocumentCategories = (id: number, categoryIds: number[]) => request<LibraryDocument>(`/api/documents/${id}/categories`, put({ category_ids: categoryIds }));
 export const getLibraryDocumentRevisions = (id: number) => request<LibraryDocumentRevision[]>(`/api/documents/${id}/revisions`);
 export const getLibraryDocumentDirectory = (id: number) => request<LibraryDocumentDirectory>(`/api/documents/${id}/directory`);
 export const getLibraryDocumentContent = (id: number, chapterId?: number | null) => request<import('./types').LibraryDocumentContent>(`/api/documents/${id}/content${chapterId == null ? '' : `?chapter_id=${chapterId}`}`);

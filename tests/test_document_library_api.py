@@ -84,6 +84,45 @@ class DocumentLibraryApiTests(unittest.TestCase):
             self.assertEqual(200, renamed.status_code)
             self.assertEqual("第七卷 新雨", directory_after.json()["volumes"][0]["title"])
 
+    def test_document_categories_can_be_assigned_and_removed(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            source = root / "categorized.txt"
+            source.write_text("第一章\n正文。\n", encoding="utf-8")
+            environment = {
+                "RUSTY_API_TOKEN": "category-test-token",
+                "RUSTY_DOCUMENT_LIBRARY_PATH": str(root / "library"),
+            }
+            headers = {"X-Rusty-Token": "category-test-token"}
+            with patch.dict(os.environ, environment):
+                client = TestClient(create_app(root / "rusty.db"))
+                imported = client.post(
+                    "/api/documents/import",
+                    headers=headers,
+                    json={"source_path": str(source)},
+                ).json()["document"]
+                category = client.post(
+                    "/api/document-categories",
+                    headers=headers,
+                    json={"name": "参考资料"},
+                ).json()
+                assigned = client.put(
+                    f"/api/documents/{imported['id']}/categories",
+                    headers=headers,
+                    json={"category_ids": [category["id"]]},
+                )
+                removed = client.put(
+                    f"/api/documents/{imported['id']}/categories",
+                    headers=headers,
+                    json={"category_ids": []},
+                )
+
+            self.assertEqual(200, assigned.status_code)
+            self.assertEqual([category["id"]], assigned.json()["category_ids"])
+            self.assertEqual(["参考资料"], assigned.json()["categories"])
+            self.assertEqual(200, removed.status_code)
+            self.assertEqual([], removed.json()["category_ids"])
+
 
 if __name__ == "__main__":
     unittest.main()

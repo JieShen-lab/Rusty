@@ -129,9 +129,9 @@ class CreativeWorkflowCanonicalTests(unittest.TestCase):
                 writing = workflow.generate_chapter(chapter_id)
                 self.assertNotIn("writing_plan", writing)
                 model_calls_before_review = len(executor.calls)
-                workflow.save_writing(chapter_id, writing["result_text"] + " 人工修改")
-                confirmed = workflow.confirm_chapter(chapter_id)
-                self.assertEqual("confirmed", confirmed["current_stage"])
+                reviewed = workflow.save_writing(chapter_id, writing["result_text"] + " 人工修改")
+                self.assertEqual("reviewed", reviewed["status"])
+                self.assertEqual("review", workflow.get_chapter_workflow(chapter_id)["current_stage"])
                 self.assertEqual(model_calls_before_review, len(executor.calls))
 
     def test_changed_source_blocks_stale_workflow(self) -> None:

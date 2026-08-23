@@ -26,6 +26,6 @@ npm run electron:dev
 
 工程与文档库是两个完全独立的数据域。创建工程不会自动创建文档库文档；工程章节、创作工作流和工程导出由工程系统维护，工程导出由 `ProjectService` 直接生成 TXT/EPUB。文档库只管理用户主动导入的文档和自身版本，文档库导出由 `DocumentLibraryService` 从文档库版本生成 TXT/EPUB。
 
-当前数据库 schema 为 v66；该版本删除了工程与文档库之间的 `project_documents` 业务关系。旧关联文档会在迁移时区分处理：纯工程镜像软删除，存在分类、草稿或用户编辑版本的文档保留为普通文档库文档。
+应用只创建和使用当前数据库结构，不再包含旧数据库升级与数据兼容逻辑。升级后应从空数据库开始使用。
 
 当前实现与数据结构见 [docs/current-implementation.md](docs/current-implementation.md)。
