@@ -103,8 +103,8 @@ export function AuthorLibraryPage() {
           </SecondaryButton>
         </>
       )} />
-      {error ? <div className="inline-alert error document-library-alert" role="alert">{error}</div> : null}
-      {message ? <div className="inline-alert success document-library-alert" role="status">{message}</div> : null}
+      {error ? <div className="inline-alert error material-alert" role="alert">{error}</div> : null}
+      {message ? <div className="inline-alert success material-alert" role="status">{message}</div> : null}
 
       <div className="document-library-layout material-browser-layout material-library-unified">
         <main className="document-shelf-panel material-browser-shelf">

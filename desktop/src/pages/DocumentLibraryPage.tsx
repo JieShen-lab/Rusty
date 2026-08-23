@@ -79,6 +79,7 @@ import type {
 import { PrimaryButton } from '../components/PrimaryButton';
 import { SecondaryButton } from '../components/SecondaryButton';
 import { DangerButton } from '../components/DangerButton';
+import { FloatingNotice } from '../components/FloatingNotice';
 import { BodyPortal, LibraryContextMenu, LibraryDialog, LibraryDivider, LibraryResourceCard, LibraryResourceGrid, LibrarySidebarSectionTitle } from '../components/LibraryPrimitives';
 import { TopBar } from '../components/TopBar';
 import { useAutoDismiss } from '../hooks/useAutoDismiss';
@@ -92,7 +93,7 @@ type CleanupStatus = Omit<LibraryDocumentAICleanupResult['chapters'][number], 's
 const systemFilters = [
   { key: 'all', label: '全部文档', icon: LibraryBig },
   { key: 'project', label: '工程文档', icon: FolderOpen },
-  { key: 'recent', label: '最近导入', icon: Clock3 },
+  { key: 'uncategorized', label: '未分类', icon: Folder },
 ] as const;
 type SystemFilter = typeof systemFilters[number]['key'];
 
@@ -680,7 +681,7 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
       <div className="project-workbench document-workbench">
         <header className="workbench-toolbar">
           <div className="project-heading">
-            <button className="button navigation-back-button workbench-back-button" onClick={() => { void flushEditorDraft('关闭工作台').then((saved) => { if (saved) setWorkspaceOpen(false); }); }} type="button">
+            <button className="button primary navigation-back-button workbench-back-button" onClick={() => { void flushEditorDraft('关闭工作台').then((saved) => { if (saved) setWorkspaceOpen(false); }); }} type="button">
               <ArrowLeft size={16} />返回文档库
             </button>
           </div>
@@ -710,10 +711,7 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
   </button>
 </div>
         </header>
-        <div className="workbench-feedback">
-          {error ? <div className="inline-alert error workbench-alert" role="alert"><span>{error}</span></div> : null}
-          {message ? <div className="inline-alert success workbench-alert" role="status"><span>{message}</span></div> : null}
-        </div>
+        <FloatingNotice error={error} message={message} />
         <DocumentWorkspace
           ref={editorControllerRef}
           chapters={chapters}
@@ -861,8 +859,7 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
         )}
       />
 
-      {error ? <div className="inline-alert error document-library-alert" role="alert">{error}</div> : null}
-      {message ? <div className="inline-alert success document-library-alert" role="status">{message}</div> : null}
+      <FloatingNotice error={error} message={message} />
 
       <div className="document-library-layout">
         <aside className="document-library-sidebar">
@@ -873,6 +870,7 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
             {systemFilters.map(({ icon: Icon, key, label }) => (
               <SidebarFilterButton active={systemFilter === key} count={filterCount(key)} icon={<Icon size={16} />} key={key} label={label} onClick={() => {
                 setSystemFilter(key);
+                if (key === 'uncategorized') setActiveCategoryId(null);
               }} />
             ))}
             <LibraryDivider />
@@ -884,7 +882,10 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
                 icon={<Folder size={16} />}
                 key={category.id}
                 label={category.name}
-                onClick={() => setActiveCategoryId(activeCategoryId === category.id ? null : category.id)}
+                onClick={() => {
+                  if (systemFilter === 'uncategorized') setSystemFilter('all');
+                  setActiveCategoryId(activeCategoryId === category.id ? null : category.id);
+                }}
                 onContextMenu={(event) => {
                   event.preventDefault();
                   setCategoryContextMenu({ category, x: event.clientX, y: event.clientY });
@@ -1860,10 +1861,10 @@ function documentsForSystemFilter(
   filter: SystemFilter,
 ): LibraryDocument[] {
   if (filter === 'project') return documents.filter((document) => document.is_project_document);
-  if (filter === 'recent') {
-    return documents.filter((document) => !document.is_project_document)
-      .sort((left, right) => right.created_at.localeCompare(left.created_at) || right.id - left.id)
-      .slice(0, 5);
+  if (filter === 'uncategorized') {
+    return documents.filter((document) => (
+      !document.is_project_document && document.category_ids.length === 0
+    ));
   }
   return documents;
 }

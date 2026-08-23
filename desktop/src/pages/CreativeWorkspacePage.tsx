@@ -52,7 +52,7 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
   }
 
   return <div className="creative-workspace chapter-flow-page">
-    <header className="creative-topbar"><div className="creative-project-title"><button className="button navigation-back-button" onClick={() => onNavigate('/library')} type="button"><ArrowLeft size={16} />工程</button><div><h1>{projectName}</h1><span>章节创作工作台</span></div></div><div className="creative-direction-marker">{workflow ? stageLabel(workflow.current_stage) : '正在读取'}</div></header>
+    <header className="creative-topbar"><div className="creative-project-title"><button className="button primary navigation-back-button" onClick={() => onNavigate('/library')} type="button"><ArrowLeft size={16} />工程</button><div><h1>{projectName}</h1><span>章节创作工作台</span></div></div><div className="creative-direction-marker">{workflow ? stageLabel(workflow.current_stage) : '正在读取'}</div></header>
     {error ? <div className="inline-alert error creative-alert" role="alert">{error}</div> : null}{message ? <div className="inline-alert success creative-alert" role="status">{message}</div> : null}{workflow?.source_changed ? <div className="inline-alert error creative-alert">章节原文已经变化，请从内容总结重新开始，避免沿用过期分析。</div> : null}
     <div className="creative-columns chapter-flow-columns">
       <StageProgress active={activeStage} availableIndex={workflow ? availableStageIndex(workflow) : 0} onSelect={setActiveStage} workflow={workflow} />

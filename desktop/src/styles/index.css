@@ -75,9 +75,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .button.primary:hover:not(:disabled) { border-color: var(--button-primary-hover); background: var(--button-primary-hover); }
 .button.secondary { border-color: var(--button-secondary-border); background: var(--button-secondary-bg); color: var(--ink); }
 .button.ghost { min-height: 36px; border-color: transparent; background: transparent; color: var(--muted); padding-inline: 10px; }
-.button.navigation-back-button { min-height: 36px; height: 36px; gap: 7px; border-color: transparent; background: var(--accent-soft); color: var(--accent); padding: 0 11px; font-size: 13px; font-weight: 650; }
-.button.navigation-back-button:hover:not(:disabled) { border-color: var(--selected-border); background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); }
-.button.navigation-back-button svg { width: 16px; height: 16px; stroke-width: 2; }
 .button.danger { border-color: var(--button-danger-border); background: transparent; color: var(--button-danger-text); }
 .button.danger:hover:not(:disabled) { border-color: var(--button-danger-border); background: var(--danger-soft); color: var(--button-danger-text); }
 .button.compact { min-height: 34px; padding-inline: 11px; font-size: 12px; }
@@ -96,7 +93,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .inline-alert { border: 1px solid transparent; border-radius: 8px; padding: 11px 14px; background: var(--paper-muted); color: var(--muted); font-size: 12px; }
 .inline-alert.error { border-color: color-mix(in srgb, var(--danger-border) 58%, transparent); background: var(--danger-soft); color: var(--danger); }
 .inline-alert.success { border-color: color-mix(in srgb, var(--success-border) 58%, transparent); background: var(--success-soft); color: var(--success); }
-.model-alert { flex: 0 0 auto; margin: -8px 0 14px; }
+.floating-notice-stack { position: fixed; top: 42px; left: 50%; z-index: 1600; display: grid; max-width: min(560px, calc(100vw - 32px)); transform: translateX(-50%); gap: 8px; pointer-events: none; }
+.floating-notice { width: max-content; max-width: 100%; border-radius: 9px; box-shadow: 0 12px 30px rgb(15 23 42 / 18%); overflow-wrap: anywhere; pointer-events: auto; }
 .status-pill-default { border-color: var(--line); background: var(--paper-muted); color: var(--muted); }
 .status-pill-success { border-color: var(--success-border); background: var(--success-soft); color: var(--success); }
 .status-pill-warning { border-color: var(--warning); background: var(--warning-soft); color: var(--warning); }
@@ -122,7 +120,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 
 /* Document library */
 .document-library-page { display: flex; height: 100%; min-height: 600px; flex-direction: column; }
-.document-library-alert { flex: 0 0 auto; margin: -8px 0 14px; }
 .document-library-layout { display: grid; min-height: 0; flex: 1; grid-template-columns: 210px minmax(480px, 1fr) 310px; overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); }
 .document-library-sidebar, .document-shelf-panel, .document-detail-panel { min-width: 0; min-height: 0; }
 .document-library-sidebar { display: grid; grid-template-rows: auto minmax(0, 1fr); border-right: 1px solid var(--line); background: var(--paper-muted); }
@@ -309,7 +306,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .document-resource-create { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; border-top: 1px solid var(--line); padding: 12px 18px; }
 
 /* Full document workspace */
-.project-workbench.document-workbench { height: calc(100% + 48px); margin: -24px; grid-template-rows: 84px auto minmax(0, 1fr); }
+.project-workbench.document-workbench { height: calc(100% + 48px); margin: -24px; grid-template-rows: 84px minmax(0, 1fr); }
 .workbench-grid.document-workspace-layout { grid-template-columns: 260px minmax(0, 1fr) 300px; }
 .document-workspace-chapters nav button.draggable { cursor: grab; }
 .document-workspace-chapters nav button.draggable:active { cursor: grabbing; }
@@ -930,11 +927,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .workflow-rail button span { display: grid; width: 24px; height: 24px; flex: 0 0 24px; place-items: center; border-radius: 50%; background: var(--paper-muted); color: var(--ink-muted); font-size: 11px; }
 .workflow-rail button.active { border-color: var(--selected-border); background: var(--accent-soft); color: var(--accent); font-weight: 650; }
 .workflow-rail button.active span { background: var(--accent); color: var(--on-accent); }
-.workbench-feedback { min-height: 0; }
-.workbench-alert { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin: 8px 12px 0; }
-.workbench-alert span { min-width: 0; overflow-wrap: anywhere; }
-.workbench-alert button { flex: 0 0 auto; cursor: pointer; border: 1px solid currentColor; border-radius: 6px; background: transparent; color: inherit; padding: 5px 10px; font: inherit; }
-.workbench-alert button:hover { background: rgb(255 255 255 / 55%); }
 .workbench-grid { min-height: 0; display: grid; overflow: hidden; gap: 8px; }
 .chapter-binder, .workbench-inspector, .workspace-center { min-width: 0; min-height: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); }
 .chapter-binder { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; }

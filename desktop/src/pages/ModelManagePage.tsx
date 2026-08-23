@@ -3,6 +3,7 @@ import { Plus, Save, Trash2, Wifi } from 'lucide-react';
 import { createModel, deleteModel, getModels, testModel, updateModel } from '../api/client';
 import type { ModelConfig, ModelWrite } from '../api/types';
 import { EmptyState } from '../components/EmptyState';
+import { FloatingNotice } from '../components/FloatingNotice';
 import { SurfaceCard } from '../components/SurfaceCard';
 import { DangerButton } from '../components/DangerButton';
 import { PrimaryButton } from '../components/PrimaryButton';
@@ -118,7 +119,11 @@ export function ModelManagePage() {
     setMessage(null);
     try {
       const result = await testModel(selectedId);
-      setMessage(result.ok ? `连接成功：${result.message}` : `连接失败：${result.message}`);
+      if (result.ok) {
+        setMessage(`连接成功：${result.message}`);
+      } else {
+        setError(`连接失败：${result.message}`);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -129,8 +134,7 @@ export function ModelManagePage() {
   return (
     <div className="models-page">
       <TopBar title="模型" onRefresh={() => loadModels(selectedId)} />
-      {error ? <div className="inline-alert error model-alert" role="alert">后端错误：{error}</div> : null}
-      {message ? <div className="inline-alert success model-alert" role="status">{message}</div> : null}
+      <FloatingNotice error={error} message={message} />
       <div className="models-layout">
         <SurfaceCard className="model-list-panel" title="模型列表">
           <SecondaryButton className="mb-4 w-full" onClick={startNew}>
