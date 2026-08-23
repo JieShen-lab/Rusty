@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useState } from 'react';
 import { AppShell } from './components/AppShell';
+import { AITaskNotice } from './components/FloatingNotice';
 import type { RouteKey } from './components/Sidebar';
 import { DocumentLibraryPage } from './pages/DocumentLibraryPage';
 import { ModelManagePage } from './pages/ModelManagePage';
@@ -38,9 +39,8 @@ function parseRoute(pathname: string): Route {
   if (parts[0] === 'new-project') return { key: 'new-project' };
   if (parts[0] === 'models') return { key: 'models' };
   if (parts[0] === 'prompts') return { key: 'prompts' };
-  if (parts[0] === 'authors' || parts[0] === 'materials' || parts[0] === 'outlines' || parts[0] === 'anchors') return { key: 'authors' };
+  if (parts[0] === 'authors') return { key: 'authors' };
   if (parts[0] === 'documents') return { key: 'documents' };
-  if (parts[0] === 'styles') return { key: 'prompts' };
   return { key: 'library' };
 }
 
@@ -86,9 +86,11 @@ export default function App() {
   if (route.key === 'prompts') page = <PromptManagePage />;
   if (route.key === 'authors') page = <AuthorLibraryPage />;
   if (route.key === 'documents') page = <DocumentLibraryPage />;
+  const showAITasks = ['library', 'models', 'prompts', 'authors', 'documents'].includes(route.key);
 
   return (
     <AppShell active={route.key} onNavigate={navigate} onToggleTheme={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')} theme={theme}>
+      {showAITasks ? <AITaskNotice /> : null}
       {page}
     </AppShell>
   );

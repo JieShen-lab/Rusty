@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlparse
 
 from rusty.db import session
 from rusty.secrets import SecretStore, default_secret_store
@@ -112,7 +111,7 @@ class ModelService:
             secret_ref = existing["api_key_secret_ref"]
             if api_key:
                 new_secret_ref = self.secret_store.set_secret(self._api_key_name(model_id), api_key)
-                if secret_ref and secret_ref != new_secret_ref and not self._is_legacy_secret_ref(secret_ref):
+                if secret_ref and secret_ref != new_secret_ref:
                     self.secret_store.delete_secret(secret_ref)
                 secret_ref = new_secret_ref
 
@@ -154,18 +153,10 @@ class ModelService:
             ).fetchone()
             if row is not None:
                 secret_ref = row["api_key_secret_ref"]
-                if not self._is_legacy_secret_ref(secret_ref):
+                if secret_ref:
                     self.secret_store.delete_secret(secret_ref)
             connection.execute(
                 "UPDATE ai_models SET deleted_at = CURRENT_TIMESTAMP, is_default = 0 WHERE id = ?",
-                (model_id,),
-            )
-
-    def set_default(self, model_id: int) -> None:
-        with session(self.database_path) as connection:
-            connection.execute("UPDATE ai_models SET is_default = 0 WHERE deleted_at IS NULL")
-            connection.execute(
-                "UPDATE ai_models SET is_default = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND deleted_at IS NULL",
                 (model_id,),
             )
 
@@ -245,34 +236,6 @@ class ModelService:
             return None
         return self.secret_store.get_secret(row["api_key_secret_ref"])
 
-    def test_connection(self, model_id: int, ai_client=None) -> ModelTestResult:
-        from rusty.services.ai_client import create_ai_client
-
-        model = self.resolve_model_config(model_id)
-        api_key = self.get_api_key(model_id)
-        hostname = (urlparse(model.base_url).hostname or "").lower()
-        if not api_key and hostname not in {"localhost", "127.0.0.1", "::1"}:
-            return ModelTestResult(
-                ok=False,
-                message="No API key is available in the system keyring. Enter and save the API key again.",
-                elapsed_ms=None,
-            )
-        client = ai_client or create_ai_client(purpose="connection_test")
-        try:
-            response = client.chat(
-                model,
-                api_key,
-                [
-                    {
-                        "role": "user",
-                        "content": "Reply with OK to confirm this model connection works.",
-                    }
-                ],
-            )
-        except Exception as exc:  # noqa: BLE001
-            return ModelTestResult(ok=False, message=str(exc), elapsed_ms=None)
-        return ModelTestResult(ok=True, message=response.text.strip(), elapsed_ms=response.elapsed_ms)
-
     def _from_row(self, row) -> ModelConfig:
         secret_ref = row["api_key_secret_ref"]
         try:
@@ -296,9 +259,3 @@ class ModelService:
         database_identity = str(self.database_path.resolve()).casefold()
         database_fingerprint = hashlib.sha256(database_identity.encode("utf-8")).hexdigest()[:20]
         return f"database:{database_fingerprint}:model:{model_id}:api_key"
-
-    @staticmethod
-    def _is_legacy_secret_ref(ref: str | None) -> bool:
-        if not ref:
-            return False
-        return ":model:" in ref and ":database:" not in ref and not ref.startswith("memory:database:")

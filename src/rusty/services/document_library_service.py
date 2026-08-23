@@ -50,16 +50,6 @@ class DocumentImportResult:
 
 
 @dataclass(frozen=True)
-class ProcessingTemplate:
-    id: int
-    name: str
-    settings: dict[str, object]
-    is_default: bool
-    created_at: str
-    updated_at: str
-
-
-@dataclass(frozen=True)
 class DocumentRevision:
     id: int
     document_id: int
@@ -148,25 +138,6 @@ class LibraryDocumentContent:
     start_offset: int
 
 
-@dataclass(frozen=True)
-class SplitChapterCandidate:
-    index: int
-    title: str
-    start_line: int
-    end_line: int
-    start_offset: int
-    end_offset: int
-    word_count: int
-
-
-@dataclass(frozen=True)
-class SplitPreview:
-    preview_token: str
-    revision_id: int
-    chapter_count: int
-    chapters: list[SplitChapterCandidate]
-
-
 def default_document_library_path() -> Path:
     base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
     return base / "Rusty" / "document-library"
@@ -252,12 +223,6 @@ class DocumentLibraryService:
                 """
             ).fetchall()
         return [self._row_to_document(row) for row in rows]
-
-    def list_recent_imports(self, limit: int = 5) -> list[LibraryDocument]:
-        """Return user-imported documents; project projections are not imports."""
-        if limit <= 0:
-            return []
-        return [document for document in self.list_documents() if not document.is_project_document][:limit]
 
     def update_document_metadata(
         self,
@@ -432,38 +397,6 @@ class DocumentLibraryService:
             if cursor.rowcount == 0:
                 raise FileNotFoundError(f"找不到文档分类：{category_id}")
 
-    def set_document_category(
-        self,
-        document_id: int,
-        category_id: int,
-        selected: bool,
-    ) -> LibraryDocument:
-        self._get_document(document_id)
-        with session(self.database_path) as connection:
-            category = connection.execute(
-                "SELECT id FROM document_categories WHERE id = ? AND deleted_at IS NULL",
-                (category_id,),
-            ).fetchone()
-            if category is None:
-                raise FileNotFoundError(f"找不到文档分类：{category_id}")
-            if selected:
-                connection.execute(
-                    """
-                    INSERT OR IGNORE INTO document_category_links (document_id, category_id)
-                    VALUES (?, ?)
-                    """,
-                    (document_id, category_id),
-                )
-            else:
-                connection.execute(
-                    """
-                    DELETE FROM document_category_links
-                    WHERE document_id = ? AND category_id = ?
-                    """,
-                    (document_id, category_id),
-                )
-        return self._get_document(document_id)
-
     def import_document(self, source_path: str | Path) -> DocumentImportResult:
         path = Path(source_path).expanduser().resolve()
         if path.suffix.lower() not in SUPPORTED_DOCUMENT_SUFFIXES:
@@ -573,141 +506,6 @@ class DocumentLibraryService:
                 (project_id, result.document.id),
             )
         return self._get_document(result.document.id)
-
-    def sync_project_document(self, project_id: int) -> LibraryDocument | None:
-        """Refresh the read-only library projection from the project's saved chapter state."""
-        with session(self.database_path) as connection:
-            project = connection.execute(
-                """
-                SELECT p.name, m.title, m.author, links.document_id
-                FROM projects p
-                JOIN project_documents links ON links.project_id = p.id
-                LEFT JOIN book_metadata m ON m.project_id = p.id
-                WHERE p.id = ? AND p.deleted_at IS NULL
-                """,
-                (project_id,),
-            ).fetchone()
-            if project is None:
-                return None
-            volume_rows = connection.execute(
-                "SELECT id, volume_index, title FROM story_volumes WHERE project_id = ? ORDER BY volume_index",
-                (project_id,),
-            ).fetchall()
-            chapter_rows = connection.execute(
-                """
-                SELECT chapter_index, title, original_text, rewritten_text, volume_id
-                FROM chapters
-                WHERE project_id = ?
-                ORDER BY chapter_index
-                """,
-                (project_id,),
-            ).fetchall()
-        if not chapter_rows:
-            raise ValueError("工程没有可同步的章节。")
-
-        parts: list[str] = []
-        cursor = 0
-        chapter_boundaries: list[dict[str, object]] = []
-        volume_boundaries: list[dict[str, object]] = []
-        volume_index_by_id = {int(row["id"]): int(row["volume_index"]) for row in volume_rows}
-        ordered_groups: list[tuple[sqlite3.Row | None, list[sqlite3.Row]]] = [
-            (volume, [chapter for chapter in chapter_rows if chapter["volume_id"] == volume["id"]])
-            for volume in volume_rows
-        ]
-        unassigned = [chapter for chapter in chapter_rows if chapter["volume_id"] is None]
-        if unassigned:
-            ordered_groups.append((None, unassigned))
-        for volume, group in ordered_groups:
-            if not group:
-                continue
-            volume_start = cursor
-            volume_title = str(volume["title"] or "").strip() if volume is not None else ""
-            if volume_title:
-                prefix = f"{volume_title}\n\n"
-                parts.append(prefix)
-                cursor += len(prefix)
-            for chapter in group:
-                body = str(chapter["rewritten_text"] or chapter["original_text"] or "").strip()
-                section = f"{format_chapter_heading(int(chapter['chapter_index']), str(chapter['title']))}\n\n{body}\n"
-                if parts and not parts[-1].endswith("\n\n"):
-                    parts.append("\n")
-                    cursor += 1
-                start = cursor
-                parts.append(section)
-                cursor += len(section)
-                chapter_boundaries.append(
-                    {
-                        "title": str(chapter["title"]),
-                        "start_offset": start,
-                        "end_offset": cursor,
-                        "volume_index": volume_index_by_id.get(int(chapter["volume_id"])) if chapter["volume_id"] is not None else None,
-                    }
-                )
-            if volume is not None:
-                volume_boundaries.append(
-                    {
-                        "volume_index": int(volume["volume_index"]),
-                        "title": volume_title,
-                        "start_offset": volume_start,
-                        "end_offset": cursor,
-                    }
-                )
-        text = "".join(parts)
-        document_id = int(project["document_id"])
-        with session(self.database_path) as connection:
-            connection.execute(
-                "UPDATE library_documents SET deleted_at = NULL WHERE id = ?",
-                (document_id,),
-            )
-        document = self._get_document(document_id)
-        current = self._ensure_initial_revision(document_id)
-        content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
-        if content_hash != self._revision_hash(current.id):
-            self._create_text_revision(
-                document,
-                current,
-                text,
-                "project_sync",
-                {"project_id": project_id},
-                chapter_boundaries=chapter_boundaries,
-                volume_boundaries=volume_boundaries,
-            )
-        title = str(project["title"] or project["name"])
-        author = str(project["author"]) if project["author"] is not None else None
-        with session(self.database_path) as connection:
-            connection.execute(
-                "UPDATE library_documents SET title = ?, author = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (title, author, document_id),
-            )
-        return self._get_document(document_id)
-
-    def list_processing_templates(self) -> list[ProcessingTemplate]:
-        with session(self.database_path) as connection:
-            rows = connection.execute(
-                """
-                SELECT *
-                FROM document_processing_templates
-                WHERE deleted_at IS NULL
-                ORDER BY is_default DESC, id
-                """
-            ).fetchall()
-        return [self._row_to_template(row) for row in rows]
-
-    def create_processing_template(self, name: str, settings: dict[str, object]) -> ProcessingTemplate:
-        normalized_name = name.strip()
-        if not normalized_name:
-            raise ValueError("模板名称不能为空。")
-        normalized_settings = self._validate_template_settings(settings)
-        with session(self.database_path) as connection:
-            cursor = connection.execute(
-                """
-                INSERT INTO document_processing_templates (name, settings_json)
-                VALUES (?, ?)
-                """,
-                (normalized_name, json.dumps(normalized_settings, ensure_ascii=False)),
-            )
-            template_id = int(cursor.lastrowid)
-        return self._get_template(template_id)
 
     def list_revisions(self, document_id: int) -> list[DocumentRevision]:
         self._ensure_initial_revision(document_id)
@@ -982,19 +780,6 @@ class DocumentLibraryService:
             raise RuntimeError(f"Draft {draft_id} was not persisted.")
         return draft
 
-    def discard_draft(self, document_id: int, chapter_id: int | None = None) -> None:
-        self._ensure_content_mutable(document_id)
-        self._get_document(document_id)
-        with session(self.database_path) as connection:
-            connection.execute(
-                """
-                DELETE FROM library_document_drafts
-                WHERE document_id = ?
-                  AND ((? IS NULL AND chapter_id IS NULL) OR chapter_id = ?)
-                """,
-                (document_id, chapter_id, chapter_id),
-            )
-
     def commit_draft(self, document_id: int, chapter_id: int | None = None) -> CleanupResult:
         self._ensure_content_mutable(document_id)
         draft = self.get_draft(document_id, chapter_id)
@@ -1014,38 +799,6 @@ class DocumentLibraryService:
             draft_base_revision_id=draft.base_revision_id,
         )
         return result
-
-    def save_content(
-        self,
-        document_id: int,
-        *,
-        text: str,
-        title: str | None = None,
-        chapter_id: int | None = None,
-    ) -> CleanupResult:
-        self._ensure_content_mutable(document_id)
-        content = self.get_content(document_id, chapter_id)
-        self.save_draft(
-            document_id,
-            base_revision_id=content.revision_id,
-            title=title if title is not None else content.title,
-            text=text,
-            chapter_id=chapter_id,
-        )
-        return self.commit_draft(document_id, chapter_id)
-
-    def rename_chapter(self, document_id: int, chapter_id: int, title: str) -> CleanupResult:
-        """Rename a chapter through its own revision path without changing the document title."""
-        self._ensure_content_mutable(document_id)
-        content = self.get_content(document_id, chapter_id)
-        self.save_draft(
-            document_id,
-            chapter_id=chapter_id,
-            base_revision_id=content.revision_id,
-            title=title,
-            text=content.body_text,
-        )
-        return self.commit_draft(document_id, chapter_id)
 
     def rename_volume(self, document_id: int, volume_id: int, title: str) -> CleanupResult:
         self._ensure_content_mutable(document_id)
@@ -1595,7 +1348,6 @@ class DocumentLibraryService:
         text: str,
         position: str = "after",
         anchor_chapter_id: int | None = None,
-        current_chapter_id: int | None = None,
     ) -> CleanupResult:
         self._ensure_content_mutable(document_id)
         document = self._get_document(document_id)
@@ -1605,17 +1357,11 @@ class DocumentLibraryService:
         volumes = self.list_volumes(document_id)
         volume_index_by_id = {volume.id: volume.index for volume in volumes}
         normalized_title = normalize_chapter_title(title)
-        if anchor_chapter_id is None:
-            anchor_chapter_id = current_chapter_id
-        legacy_end = position == "end"
-        if legacy_end:
-            position = "after"
-            anchor_chapter_id = None
         if position not in {"before", "after"}:
             raise ValueError("插入位置必须是 before 或 after。")
         insert_at = len(source_text)
         target: LibraryChapter | None = None
-        if chapters and not legacy_end:
+        if chapters:
             target = next((chapter for chapter in chapters if chapter.id == anchor_chapter_id), None)
             if target is None:
                 raise FileNotFoundError(f"找不到锚点章节：{anchor_chapter_id}")
@@ -1910,196 +1656,6 @@ class DocumentLibraryService:
         )
         return revision, self.list_chapters(document_id)
 
-    def preview_regex_split(self, document_id: int, pattern: str) -> SplitPreview:
-        revision = self._ensure_initial_revision(document_id)
-        text = Path(revision.storage_path).read_text(encoding="utf-8")
-        try:
-            regex = re.compile(pattern, re.MULTILINE)
-        except re.error as exc:
-            raise ValueError(f"正则无效：{exc}") from exc
-        matches = list(regex.finditer(text))
-        if not matches:
-            raise ValueError("没有匹配到章节标题。")
-        chapters = self._candidates_from_matches(text, matches)
-        token = hashlib.sha256(f"{revision.id}:{pattern}:{self._revision_hash(revision.id)}".encode("utf-8")).hexdigest()
-        return SplitPreview(preview_token=token, revision_id=revision.id, chapter_count=len(chapters), chapters=chapters)
-
-    def apply_regex_split(
-        self,
-        document_id: int,
-        pattern: str,
-        preview_token: str,
-        boundaries: list[dict[str, object]] | None = None,
-    ) -> list[LibraryChapter]:
-        preview = self.preview_regex_split(document_id, pattern)
-        if preview.preview_token != preview_token:
-            raise ValueError("分章预览已失效，请重新预览。")
-        _, chapters = self.apply_split_boundaries(
-            document_id,
-            source_revision_id=preview.revision_id,
-            boundaries=boundaries or [
-                {
-                    "title": chapter.title,
-                    "start_offset": chapter.start_offset,
-                    "end_offset": chapter.end_offset,
-                    "reason": "regex match",
-                }
-                for chapter in preview.chapters
-            ],
-            revision_type="split_regex",
-            metadata={"pattern": pattern, "preview_token": preview_token},
-        )
-        return chapters
-
-    def apply_split_boundaries(
-        self,
-        document_id: int,
-        *,
-        source_revision_id: int,
-        boundaries: list[dict[str, object]],
-        revision_type: str,
-        metadata: dict[str, object] | None = None,
-    ) -> tuple[DocumentRevision, list[LibraryChapter]]:
-        self._ensure_content_mutable(document_id)
-        document = self._get_document(document_id)
-        current = self._ensure_initial_revision(document_id)
-        if current.id != source_revision_id:
-            raise ValueError("The document changed after the split preview; generate a new preview.")
-        text = Path(current.storage_path).read_text(encoding="utf-8")
-        normalized = _validate_continuous_boundaries(text, boundaries)
-        current_volumes = self.list_volumes(document_id)
-        final_boundaries: list[dict[str, object]] = []
-        for boundary in normalized:
-            start = int(boundary["start_offset"])
-            end = int(boundary["end_offset"])
-            volume = next(
-                (
-                    item
-                    for item in current_volumes
-                    if item.start_offset <= start < item.end_offset
-                ),
-                None,
-            )
-            if volume is not None and start == volume.start_offset:
-                heading_end = text.find("\n", start, end)
-                if heading_end >= 0:
-                    content_start = heading_end + 1
-                    while content_start < end and text[content_start] == "\n":
-                        content_start += 1
-                    if content_start < end:
-                        start = content_start
-            final_boundaries.append(
-                {
-                    "title": boundary["title"],
-                    "start_offset": start,
-                    "end_offset": end,
-                    "volume_index": volume.index if volume is not None else None,
-                }
-            )
-        revision = self._create_text_revision(
-            document,
-            current,
-            text,
-            revision_type,
-            metadata or {},
-            chapter_boundaries=final_boundaries,
-            volume_boundaries=[
-                {
-                    "volume_index": volume.index,
-                    "title": volume.title,
-                    "start_offset": volume.start_offset,
-                    "end_offset": volume.end_offset,
-                }
-                for volume in current_volumes
-            ],
-        )
-        return revision, self.list_chapters(document_id)
-
-    def mark_chapter(self, document_id: int, revision_id: int, title: str, start_offset: int, end_offset: int) -> list[LibraryChapter]:
-        self._ensure_content_mutable(document_id)
-        normalized_title = normalize_chapter_title(title)
-        if not normalized_title:
-            raise ValueError("Chapter title is required.")
-        revision = self._ensure_initial_revision(document_id)
-        if revision.id != revision_id:
-            raise ValueError("Only the current active revision can be marked.")
-        text = Path(revision.storage_path).read_text(encoding="utf-8")
-        if start_offset < 0 or end_offset <= start_offset or end_offset > len(text):
-            raise ValueError("Chapter offsets are out of bounds or reversed.")
-        chapters = self.list_chapters(document_id)
-        for chapter in chapters:
-            existing_start, existing_end = self._chapter_offsets(text, chapter)
-            if start_offset < existing_end and end_offset > existing_start:
-                raise ValueError(
-                    f"Chapter range overlaps '{chapter.title}' [{existing_start}, {existing_end})."
-                )
-        volume_id = next(
-            (
-                volume.id
-                for volume in self.list_volumes(document_id)
-                if volume.start_offset <= start_offset < volume.end_offset
-            ),
-            None,
-        )
-        with session(self.database_path) as connection:
-            temporary_index = -(
-                int(
-                    connection.execute(
-                        "SELECT COALESCE(MAX(chapter_index), 0) + 1 FROM library_document_chapters WHERE revision_id = ?",
-                        (revision_id,),
-                    ).fetchone()[0]
-                )
-                + 1000000
-            )
-            connection.execute(
-                """
-                INSERT INTO library_document_chapters (
-                    document_id, revision_id, chapter_index, title, start_line, end_line,
-                    start_offset, end_offset, word_count, volume_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    document_id,
-                    revision_id,
-                    temporary_index,
-                    normalized_title,
-                    text.count("\n", 0, start_offset) + 1,
-                    text.count("\n", 0, end_offset) + 1,
-                    start_offset,
-                    end_offset,
-                    count_text_units(text[start_offset:end_offset]),
-                    volume_id,
-                ),
-            )
-            ordered = connection.execute(
-                """
-                SELECT id
-                FROM library_document_chapters
-                WHERE revision_id = ?
-                ORDER BY COALESCE(start_offset, 2147483647), chapter_index
-                """,
-                (revision_id,),
-            ).fetchall()
-            for index, row in enumerate(ordered, start=1):
-                connection.execute(
-                    "UPDATE library_document_chapters SET chapter_index = ? WHERE id = ?",
-                    (-(2000000 + index), int(row["id"])),
-                )
-            for index, row in enumerate(ordered, start=1):
-                connection.execute(
-                    "UPDATE library_document_chapters SET chapter_index = ? WHERE id = ?",
-                    (index, int(row["id"])),
-                )
-            connection.execute(
-                """
-                UPDATE library_documents
-                SET chapter_count = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-                """,
-                (len(ordered), document_id),
-            )
-        return self.list_chapters(document_id)
-
     def export_document(self, document_id: int, export_format: str, output_path: str | Path) -> Path:
         document = self._get_document(document_id)
         output = Path(output_path).expanduser().resolve()
@@ -2128,91 +1684,6 @@ class DocumentLibraryService:
             author=document.author,
             use_rewrites=False,
             volume_titles=volume_titles,
-        )
-
-    def apply_cleanup(self, document_id: int, template_id: int) -> CleanupResult:
-        self._ensure_content_mutable(document_id)
-        document = self._get_document(document_id)
-        current_revision = self._ensure_initial_revision(document_id)
-        template = self._get_template(template_id)
-        source_path = Path(current_revision.storage_path)
-        if not source_path.is_file():
-            raise FileNotFoundError(f"找不到当前文档版本：{source_path}")
-
-        settings = self._validate_template_settings(template.settings)
-        pattern = re.compile(str(settings["chapter_pattern"]))
-        source_text = source_path.read_text(encoding="utf-8")
-        cleaned_text = self._apply_rule_cleanup(source_text, pattern, settings)
-        encoded_text = cleaned_text.encode("utf-8")
-        content_hash = hashlib.sha256(encoded_text).hexdigest()
-        if content_hash == self._revision_hash(current_revision.id):
-            return CleanupResult(document=document, revision=current_revision, created=False)
-
-        revisions = self.list_revisions(document_id)
-        revision_number = (revisions[0].revision_number if revisions else 0) + 1
-        safe_title = self._safe_filename(document.title)
-        storage_path = self.library_path / f"{safe_title}-{content_hash[:12]}-v{revision_number}.txt"
-        temporary_path = storage_path.with_suffix(".tmp")
-        temporary_path.write_bytes(encoded_text)
-        temporary_path.replace(storage_path)
-        chapters, volumes = split_document_structure(
-            cleaned_text,
-            pattern,
-            {volume.title for volume in self.list_volumes(document_id)},
-        )
-
-        try:
-            with session(self.database_path) as connection:
-                cursor = connection.execute(
-                    """
-                    INSERT INTO library_document_revisions (
-                        document_id, revision_number, revision_type, storage_path,
-                        content_hash, template_id, parent_revision_id, metadata_json
-                    ) VALUES (?, ?, 'cleanup', ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        document_id,
-                        revision_number,
-                        str(storage_path),
-                        content_hash,
-                        template.id,
-                        current_revision.id,
-                        json.dumps({"settings": settings}, ensure_ascii=False),
-                    ),
-                )
-                revision_id = int(cursor.lastrowid)
-                self._insert_chapters(
-                    connection,
-                    document_id,
-                    revision_id,
-                    chapters,
-                    volumes,
-                )
-                connection.execute(
-                    """
-                    UPDATE library_documents
-                    SET storage_path = ?, stored_size_bytes = ?, chapter_count = ?,
-                        word_count = ?, status = 'processed', current_revision_id = ?,
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE id = ?
-                    """,
-                    (
-                        str(storage_path),
-                        len(encoded_text),
-                        len(chapters),
-                        count_text_units(cleaned_text),
-                        revision_id,
-                        document_id,
-                    ),
-                )
-        except Exception:
-            storage_path.unlink(missing_ok=True)
-            raise
-
-        return CleanupResult(
-            document=self._get_document(document_id),
-            revision=self.list_revisions(document_id)[0],
-            created=True,
         )
 
     def activate_revision(self, document_id: int, revision_id: int) -> LibraryDocument:
@@ -2523,31 +1994,6 @@ class DocumentLibraryService:
             return start, len(text)
         return start, line_starts[max(start_index, end_line)]
 
-    @staticmethod
-    def _candidates_from_matches(text: str, matches: list[re.Match[str]]) -> list[SplitChapterCandidate]:
-        line_starts = [0]
-        for match in re.finditer("\n", text):
-            line_starts.append(match.end())
-        candidates: list[SplitChapterCandidate] = []
-        for index, match in enumerate(matches, start=1):
-            start = match.start()
-            end = matches[index].start() if index < len(matches) else len(text)
-            start_line = text.count("\n", 0, start) + 1
-            end_line = text.count("\n", 0, end) + 1
-            title = (match.group(1) if match.groups() else match.group(0)).strip()
-            candidates.append(
-                SplitChapterCandidate(
-                    index=index,
-                    title=title,
-                    start_line=start_line,
-                    end_line=end_line,
-                    start_offset=start,
-                    end_offset=end,
-                    word_count=count_text_units(text[start:end]),
-                )
-            )
-        return candidates
-
     def _read_source(self, path: Path) -> tuple[ParsedBook, str]:
         suffix = path.suffix.lower()
         if suffix == ".txt":
@@ -2601,20 +2047,6 @@ class DocumentLibraryService:
             ).fetchone()
         if row is not None:
             raise ValueError("工程文档以工程内容为准，文档库工作区仅支持阅读、版本浏览和导出。")
-
-    def _get_template(self, template_id: int) -> ProcessingTemplate:
-        with session(self.database_path) as connection:
-            row = connection.execute(
-                """
-                SELECT *
-                FROM document_processing_templates
-                WHERE id = ? AND deleted_at IS NULL
-                """,
-                (template_id,),
-            ).fetchone()
-        if row is None:
-            raise FileNotFoundError(f"找不到处理模板：{template_id}")
-        return self._row_to_template(row)
 
     def _ensure_initial_revision(self, document_id: int) -> DocumentRevision:
         document = self._get_document(document_id)
@@ -2763,53 +2195,6 @@ class DocumentLibraryService:
         ]
 
     @staticmethod
-    def _apply_rule_cleanup(
-        text: str,
-        chapter_pattern: re.Pattern[str],
-        settings: dict[str, object],
-    ) -> str:
-        chapter_indent = int(settings["chapter_indent"])
-        paragraph_indent = int(settings["paragraph_indent"])
-        blank_lines = int(settings["blank_lines"])
-        trim_whitespace = bool(settings["trim_whitespace"])
-        formatted_lines: list[str] = []
-
-        for raw_line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
-            line = raw_line.rstrip() if trim_whitespace else raw_line
-            content = line.lstrip(" \t　") if trim_whitespace else line
-            if not content:
-                continue
-            indent = chapter_indent if chapter_pattern.fullmatch(content) else paragraph_indent
-            formatted_lines.append(f"{'　' * indent}{content}")
-
-        separator = "\n" * (blank_lines + 1)
-        return separator.join(formatted_lines).strip() + "\n"
-
-    @staticmethod
-    def _validate_template_settings(settings: dict[str, object]) -> dict[str, object]:
-        chapter_pattern = str(settings.get("chapter_pattern") or "").strip()
-        if not chapter_pattern:
-            raise ValueError("章节标题正则不能为空。")
-        try:
-            re.compile(chapter_pattern)
-        except re.error as exc:
-            raise ValueError(f"章节标题正则无效：{exc}") from exc
-
-        normalized: dict[str, object] = {
-            "chapter_pattern": chapter_pattern,
-            "chapter_indent": int(settings.get("chapter_indent", 0)),
-            "paragraph_indent": int(settings.get("paragraph_indent", 2)),
-            "blank_lines": int(settings.get("blank_lines", 1)),
-            "trim_whitespace": bool(settings.get("trim_whitespace", True)),
-        }
-        for key in ("chapter_indent", "paragraph_indent"):
-            if not 0 <= int(normalized[key]) <= 8:
-                raise ValueError("缩进必须在 0 到 8 个全角空格之间。")
-        if not 0 <= int(normalized["blank_lines"]) <= 3:
-            raise ValueError("段落间空行必须在 0 到 3 行之间。")
-        return normalized
-
-    @staticmethod
     def _insert_chapters(
         connection,
         document_id: int,
@@ -2924,21 +2309,6 @@ class DocumentLibraryService:
         if len(display_name) > 40:
             raise ValueError("分类名称不能超过 40 个字符。")
         return display_name, display_name.casefold()
-
-    @staticmethod
-    def _row_to_template(row) -> ProcessingTemplate:
-        try:
-            settings = json.loads(str(row["settings_json"]))
-        except json.JSONDecodeError:
-            settings = {}
-        return ProcessingTemplate(
-            id=int(row["id"]),
-            name=str(row["name"]),
-            settings=settings if isinstance(settings, dict) else {},
-            is_default=bool(row["is_default"]),
-            created_at=str(row["created_at"]),
-            updated_at=str(row["updated_at"]),
-        )
 
     @staticmethod
     def _row_to_revision(row) -> DocumentRevision:

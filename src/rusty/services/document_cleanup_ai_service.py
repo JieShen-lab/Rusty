@@ -57,30 +57,10 @@ class DocumentCleanupAIService:
         content = self.document_service.get_content(document_id, chapter_id)
         instruction = prompt.strip() or DEFAULT_CLEANUP_PROMPT
         result = self.model_service.run(
-            invocation_kind="document_cleanup",
-            stage="formatting_cleanup",
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Clean formatting only. Preserve every meaningful sentence, fact, character, "
-                        "and event. Do not summarize, rewrite, add, or remove content. Return strict JSON."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": (
-                        f"Title: {content.title}\n"
-                        f"Cleanup requirement: {instruction}\n"
-                        "Return {\"text\": \"...\"}.\n\n"
-                        f"Source text:\n{content.body_text}"
-                    ),
-                },
-            ],
+            messages=self._task_messages(content.title, content.body_text, instruction),
             output_schema=CLEANUP_SCHEMA,
             validator=_validate_cleanup,
             model_id=model_id,
-            document_id=document_id,
         )
         return self.document_service.apply_prompt_cleanup(
             document_id,
@@ -115,31 +95,10 @@ class DocumentCleanupAIService:
             source_text = draft.text if draft and draft.base_revision_id == content.revision_id else content.body_text
             try:
                 model_result = self.model_service.run(
-                    invocation_kind="document_cleanup",
-                    stage="formatting_cleanup",
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": (
-                                "Clean formatting only. Preserve every meaningful sentence, fact, character, "
-                                "and event. Do not summarize, rewrite, add, or remove content. Return strict JSON."
-                            ),
-                        },
-                        {
-                            "role": "user",
-                            "content": (
-                                f"Title: {source_title}\n"
-                                f"Cleanup requirement: {instruction}\n"
-                                "Return {\"text\": \"...\"}.\n\n"
-                                f"Source text:\n{source_text}"
-                            ),
-                        },
-                    ],
+                    messages=self._task_messages(source_title, source_text, instruction),
                     output_schema=CLEANUP_SCHEMA,
                     validator=_validate_cleanup,
                     model_id=model_id,
-                    document_id=document_id,
-                    chapter_id=chapter.id,
                 )
                 cleaned[chapter.id] = (source_title, str(model_result.value["text"]))
                 statuses.append(CleanupChapterStatus(chapter.id, chapter.title, "success"))
@@ -154,6 +113,21 @@ class DocumentCleanupAIService:
             if cleaned else None
         )
         return CleanupBatchResult(result=result, chapters=statuses)
+
+    @staticmethod
+    def _task_messages(title: str, source_text: str, instruction: str) -> list[dict[str, str]]:
+        return [{
+            "role": "user",
+            "content": (
+                "[TASK: DOCUMENT CLEANUP]\n"
+                "Only clean whitespace, paragraph breaks, punctuation spacing, and obvious formatting. "
+                "Preserve every meaningful sentence, fact, character, and event. "
+                "Do not summarize, rewrite, add, or remove content. Return strict JSON.\n\n"
+                f"Title: {title}\nCleanup requirement: {instruction}\n"
+                "Return {\"text\": \"...\"}.\n\n"
+                f"Source text:\n{source_text}"
+            ),
+        }]
 
 
 def _validate_cleanup(value: dict[str, Any]) -> dict[str, str]:

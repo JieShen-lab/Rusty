@@ -14,7 +14,7 @@ export function statusVariant(status?: string | null): Variant {
   const normalized = (status ?? '').toLowerCase();
   if (['processed', 'completed', 'rewritten', 'kept_original', 'ready'].includes(normalized)) return 'success';
   if (['processing', 'running', 'split', 'imported'].includes(normalized)) return 'info';
-  if (['pending', 'draft', 'needs_rewrite', 'partial'].includes(normalized)) return 'warning';
+  if (['pending', 'draft', 'partial'].includes(normalized)) return 'warning';
   if (['failed', 'error', 'deleted'].includes(normalized)) return 'danger';
   return 'default';
 }

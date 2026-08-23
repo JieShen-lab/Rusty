@@ -51,20 +51,14 @@ class DocumentSplitAIService:
         content = self.document_service.get_content(document_id, chapter_id)
         instruction = prompt.strip() or DEFAULT_AI_SPLIT_PROMPT
         result = self.model_service.run(
-            invocation_kind="document_ai_split",
-            stage="chapter_boundaries",
             messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Only choose chapter boundaries and titles for the exact source body. "
-                        "Never rewrite or invent text. Boundaries must start at 0, be continuous and "
-                        "non-overlapping, and end at the source length. Return strict JSON only."
-                    ),
-                },
                 {
                     "role": "user",
                     "content": (
+                        "[TASK: DOCUMENT SPLIT]\n"
+                        "Only choose chapter boundaries and titles for the exact source body. "
+                        "Never rewrite or invent text. Boundaries must start at 0, be continuous and "
+                        "non-overlapping, and end at the source length. Return strict JSON only.\n\n"
                         f"Current chapter title: {content.title}\n"
                         f"User requirement: {instruction}\n"
                         f"Source length: {len(content.body_text)} characters.\n"
@@ -76,21 +70,19 @@ class DocumentSplitAIService:
             output_schema=AI_SPLIT_SCHEMA,
             validator=lambda value: _validate_split(value, len(content.body_text)),
             model_id=model_id,
-            document_id=document_id,
         )
         with session(self.database_path) as connection:
             cursor = connection.execute(
                 """
                 INSERT INTO document_split_proposals (
                     document_id, source_revision_id, proposal_kind,
-                    boundaries_json, unmatched_json, model_invocation_id
-                ) VALUES (?, ?, 'ai', ?, '{}', ?)
+                    boundaries_json, unmatched_json
+                ) VALUES (?, ?, 'ai', ?, '{}')
                 """,
                 (
                     document_id,
                     content.revision_id,
                     json.dumps(result.value["chapters"], ensure_ascii=False),
-                    result.invocation_id,
                 ),
             )
             proposal_id = int(cursor.lastrowid)
@@ -104,7 +96,6 @@ class DocumentSplitAIService:
             "source_revision_id": content.revision_id,
             "chapter_id": chapter_id,
             "chapters": result.value["chapters"],
-            "model_invocation_id": result.invocation_id,
         }
 
     def apply(self, proposal_id: int, *, chapters: list[dict[str, Any]] | None = None) -> dict[str, Any]:
@@ -132,7 +123,6 @@ class DocumentSplitAIService:
             revision_type="split_ai",
             metadata={
                 "proposal_id": proposal_id,
-                "model_invocation_id": proposal["model_invocation_id"],
                 "prompt": proposal_context.get("prompt"),
             },
         )

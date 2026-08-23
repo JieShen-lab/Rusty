@@ -9,7 +9,6 @@ description = "Local desktop tool for importing, parsing, previewing, and export
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "PySide6>=6.7",
     "beautifulsoup4>=4.12",
     "charset-normalizer>=3.3",
     "ebooklib>=0.18",
@@ -33,7 +32,6 @@ ui-r2 = [
 ]
 
 [project.scripts]
-rusty = "rusty.__main__:main"
 rusty-init-db = "rusty.db.schema:main"
 
 [tool.setuptools.packages.find]

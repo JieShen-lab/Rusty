@@ -3,7 +3,6 @@ import type { ReactNode } from 'react';
 import {
   ArrowLeft,
   ArrowRight,
-  BookOpenText,
   Check,
   ClipboardCheck,
   Cpu,
@@ -25,14 +24,13 @@ import type {
   ChapterSplitOptions,
   ModelConfig,
   PreviewResponse,
-  ProjectKind,
 } from '../api/types';
 
 type Props = { onNavigate: (path: string) => void };
-type WizardStep = 'purpose' | 'import' | 'split' | 'preview' | 'model' | 'confirm';
+type WizardStep = 'import' | 'split' | 'preview' | 'model' | 'confirm';
 type SplitMode = ChapterSplitOptions['mode'];
 
-const FLOW_STEPS: Array<{ key: Exclude<WizardStep, 'purpose'>; label: string; icon: ReactNode }> = [
+const FLOW_STEPS: Array<{ key: WizardStep; label: string; icon: ReactNode }> = [
   { key: 'import', label: '导入文件', icon: <Upload size={17} /> },
   { key: 'split', label: '章节拆分', icon: <Scissors size={17} /> },
   { key: 'preview', label: '预览信息', icon: <Eye size={17} /> },
@@ -42,7 +40,6 @@ const FLOW_STEPS: Array<{ key: Exclude<WizardStep, 'purpose'>; label: string; ic
 
 export function NewProjectPage({ onNavigate }: Props) {
   const [step, setStep] = useState<WizardStep>('import');
-  const [purpose, setPurpose] = useState<ProjectKind | null>('rewrite');
   const [sourcePath, setSourcePath] = useState('');
   const [workspacePath, setWorkspacePath] = useState('');
   const [projectName, setProjectName] = useState('');
@@ -152,7 +149,7 @@ export function NewProjectPage({ onNavigate }: Props) {
   }
 
   async function create() {
-    if (!preview || !purpose || !modelId) return;
+    if (!preview || !modelId) return;
     setBusy(true);
     setError(null);
     try {
@@ -160,11 +157,7 @@ export function NewProjectPage({ onNavigate }: Props) {
         preview.preview_token,
         projectName,
         workspacePath,
-        purpose,
-        null,
-        null,
         modelId,
-        null,
       );
       onNavigate(`/workspace/${project.id}`);
     } catch (reason) {
@@ -176,20 +169,16 @@ export function NewProjectPage({ onNavigate }: Props) {
 
   function previous() {
     setError(null);
-    if (step === 'purpose' || step === 'import') {
+    if (step === 'import') {
       onNavigate('/library');
       return;
     }
     const index = FLOW_STEPS.findIndex((item) => item.key === step);
-    setStep(index <= 0 ? 'purpose' : FLOW_STEPS[index - 1].key);
+    setStep(index <= 0 ? 'import' : FLOW_STEPS[index - 1].key);
   }
 
   async function next() {
     setError(null);
-    if (step === 'purpose') {
-      if (purpose) setStep('import');
-      return;
-    }
     if (step === 'import') {
       setStep('split');
       return;
@@ -208,7 +197,6 @@ export function NewProjectPage({ onNavigate }: Props) {
 
   const canContinue = (() => {
     if (busy) return false;
-    if (step === 'purpose') return purpose !== null;
     if (step === 'import') return Boolean(sourcePath && workspacePath);
     if (step === 'split') {
       if (sourceFormat !== 'txt') return true;
@@ -246,7 +234,7 @@ export function NewProjectPage({ onNavigate }: Props) {
           <ol>
             {FLOW_STEPS.map((item, index) => {
               const currentIndex = FLOW_STEPS.findIndex((candidate) => candidate.key === step);
-              const complete = step !== 'purpose' && index < currentIndex;
+              const complete = index < currentIndex;
               const active = item.key === step;
               return (
                 <li className={`${active ? 'active' : ''} ${complete ? 'complete' : ''}`} key={item.key}>
@@ -259,25 +247,6 @@ export function NewProjectPage({ onNavigate }: Props) {
         </aside>
 
         <main className="wizard-content">
-          {step === 'purpose' ? (
-            <WizardSection title="选择工程类型">
-              <div className="purpose-choice-grid">
-                <PurposeOption
-                  active={purpose === 'rewrite'}
-                  icon={<FilePenLine size={26} />}
-                  onClick={() => setPurpose('rewrite')}
-                  title="改写工程"
-                />
-                <PurposeOption
-                  active={purpose === 'branch'}
-                  icon={<BookOpenText size={26} />}
-                  onClick={() => setPurpose('branch')}
-                  title="扩写工程"
-                />
-              </div>
-            </WizardSection>
-          ) : null}
-
           {step === 'import' ? (
             <WizardSection title="导入文件">
               <div className="import-dropzone">
@@ -396,7 +365,7 @@ export function NewProjectPage({ onNavigate }: Props) {
       </div>
 
       <footer className="setup-actions wizard-actions">
-        <button className="button secondary" onClick={previous} type="button"><ArrowLeft size={17} />{step === 'purpose' ? '取消' : '上一步'}</button>
+        <button className="button secondary" onClick={previous} type="button"><ArrowLeft size={17} />{step === 'import' ? '取消' : '上一步'}</button>
         <button className="button primary wide" disabled={!canContinue} onClick={() => void next()} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); } }} type="button">{primaryLabel}<ArrowRight size={17} /></button>
       </footer>
     </div>
@@ -405,10 +374,6 @@ export function NewProjectPage({ onNavigate }: Props) {
 
 function WizardSection({ children, title }: { children: ReactNode; title: string }) {
   return <section className="wizard-section"><header><h2>{title}</h2></header>{children}</section>;
-}
-
-function PurposeOption({ active, icon, onClick, title }: { active: boolean; icon: ReactNode; onClick: () => void; title: string }) {
-  return <button aria-pressed={active} className={`purpose-card ${active ? 'selected' : ''}`} onClick={onClick} type="button"><span className="purpose-icon">{icon}</span><span><strong>{title}</strong></span><span className="radio-mark" /></button>;
 }
 
 function SplitModeButton({ active, label, onClick }: { active: boolean; label: string; onClick: () => void }) {

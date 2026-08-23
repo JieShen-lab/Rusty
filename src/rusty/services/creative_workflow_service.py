@@ -2,14 +2,15 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 from rusty.db import default_database_path, session
 from rusty.models import count_text_units
 from rusty.services.chapter_version_service import ChapterVersionService
-from rusty.services.material_service import MaterialService, compile_material_ai_prompt
+from rusty.services.author_style_extraction_service import AuthorStyleExtractionService
+from rusty.services.ai_request_executor import AIRequestExecutor
+from rusty.services.material_service import MaterialService
 from rusty.services.workflow_ai import WorkflowAI
 
 
@@ -20,20 +21,22 @@ class WorkflowSourceConflict(ValueError):
 
 
 class CreativeWorkflowService:
-    """Chapter-only creative workflow. Legacy scene data is deliberately ignored."""
+    """The chapter-level creative workflow used by the desktop application."""
 
-    def __init__(self, database_path: str | Path | None = None, *, ai_client: Any | None = None) -> None:
+    def __init__(
+        self,
+        database_path: str | Path | None = None,
+        *,
+        ai_client: Any | None = None,
+        executor: AIRequestExecutor | None = None,
+    ) -> None:
         self.database_path = Path(database_path) if database_path is not None else default_database_path()
-        self.ai = WorkflowAI(self.database_path, ai_client=ai_client)
+        self.ai = WorkflowAI(self.database_path, ai_client=ai_client, executor=executor)
         self.versions = ChapterVersionService(self.database_path)
         self.materials = MaterialService(self.database_path)
-
-    def list_chapter_states(self, project_id: int) -> list[dict[str, Any]]:
-        with session(self.database_path) as connection:
-            rows = connection.execute(
-                "SELECT id FROM chapters WHERE project_id=? ORDER BY chapter_index,id", (project_id,)
-            ).fetchall()
-        return [self.get_chapter_workflow(int(row["id"])) for row in rows]
+        self.author_styles = AuthorStyleExtractionService(
+            self.database_path, executor=self.ai.executor
+        )
 
     def get_chapter_workflow(self, chapter_id: int) -> dict[str, Any]:
         source = self.versions.resolve_chapter_source(chapter_id)
@@ -59,9 +62,6 @@ class CreativeWorkflowService:
             "writing": self._writing_out(writing),
             "updated_at": str(state["updated_at"]),
         }
-
-    def get_chapter_state(self, chapter_id: int) -> dict[str, Any]:
-        return self.get_chapter_workflow(chapter_id)
 
     def run_chapter_summary(self, chapter_id: int) -> dict[str, Any]:
         source = self.versions.resolve_chapter_source(chapter_id)
@@ -200,10 +200,8 @@ class CreativeWorkflowService:
         strategy = intent["strategy"]
         if author_style_material_id is not None:
             material = self.materials.get_material(author_style_material_id)
-            if material is None or material.material_type != "author_style":
+            if material is None:
                 raise ValueError("Selected author style material does not exist.")
-            if material.analysis_status != "analyzed":
-                raise ValueError("Selected author style material is not analyzed.")
             mode, scope = "selected_author_style", "chapter"
             snapshot = {"name": material.name, "description": material.description, "raw_text": material.raw_text,
                         "profile": self._load(material.content_json, {})}
@@ -215,16 +213,18 @@ class CreativeWorkflowService:
                 raise ValueError("重写剧情需要选择一个作者风格。")
             style_text, scope = self._document_text(source), "document"
             settings = self.materials.get_ai_settings("author_style_extraction")
-            settings_snapshot = asdict(settings)
-            extracted = self.ai.generate_json(
-                project_id=source.project_id, stage="author_style_extraction",
-                payload={"sample_text": style_text,
-                         "extraction_prompt": compile_material_ai_prompt(settings)},
-                output_contract="JSON object containing style_snapshot object and generated_guidance string.",
-                plain_context=True,
-            )
-            snapshot = extracted.get("style_snapshot") if isinstance(extracted.get("style_snapshot"), dict) else extracted
-            guidance = str(extracted.get("generated_guidance") or self._style_guidance(snapshot))
+            settings_snapshot = {
+                "task_type": settings.task_type,
+                "model_id": settings.model_id,
+                "detail_level": settings.detail_level,
+                "extraction_rules": settings.extraction_rules,
+                "base_instruction": settings.base_instruction,
+                "dimensions": [dict(item) for item in settings.dimensions],
+                "extra_requirements": settings.extra_requirements,
+                "updated_at": settings.updated_at,
+            }
+            snapshot = self.author_styles.extract(style_text).to_dict()
+            guidance = self._style_guidance(snapshot)
             mode, author_style_material_id, material_version = "source_auto", None, None
         with session(self.database_path) as connection:
             connection.execute(
@@ -312,17 +312,11 @@ class CreativeWorkflowService:
                     connection,
                     chapter_id=created_source.chapter_id,
                     rewritten_text=text,
-                    source_operation="manual",
-                    source_run_id=writing["id"],
                     source_base_kind=created_source.source_kind,
                     source_base_version_id=created_source.source_version_id,
                     source_hash=created_source.content_hash,
-                    facts_before=created_source.facts_before,
-                    facts_after=created_source.facts_after,
                     expected_head_version_id=created_source.expected_head_version_id,
                     source_kind=source_kind,
-                    fact_chain_status="needs_recompute",
-                    mapping_strategy="structural",
                 )
             self._set_stage(connection, chapter_id, "review")
         return self.get_writing(chapter_id) or {}
@@ -336,11 +330,9 @@ class CreativeWorkflowService:
             with session(self.database_path) as connection:
                 self.versions.append_chapter_rewrite_version(
                     connection, chapter_id=chapter_id, rewritten_text=writing["result_text"],
-                    source_operation="manual", source_run_id=writing["id"], source_base_kind=source.source_kind,
+                    source_base_kind=source.source_kind,
                     source_base_version_id=source.source_version_id, source_hash=source.content_hash,
-                    facts_before=source.facts_before, facts_after=source.facts_after,
                     expected_head_version_id=source.expected_head_version_id, source_kind="ai",
-                    fact_chain_status="needs_recompute", mapping_strategy="structural",
                 )
         with session(self.database_path) as connection:
             connection.execute("UPDATE chapter_writings SET status='confirmed',updated_at=CURRENT_TIMESTAMP WHERE chapter_id=?", (chapter_id,))
@@ -361,17 +353,11 @@ class CreativeWorkflowService:
                     connection,
                     chapter_id=created_id,
                     rewritten_text=text,
-                    source_operation="manual",
-                    source_run_id=int(existing["id"]),
                     source_base_kind=created_source.source_kind,
                     source_base_version_id=created_source.source_version_id,
                     source_hash=created_source.content_hash,
-                    facts_before=created_source.facts_before,
-                    facts_after=created_source.facts_after,
                     expected_head_version_id=created_source.expected_head_version_id,
                     source_kind="ai",
-                    fact_chain_status="needs_recompute",
-                    mapping_strategy="structural",
                 )
             return created_id
         with session(self.database_path) as connection:

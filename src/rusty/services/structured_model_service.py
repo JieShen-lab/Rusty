@@ -5,11 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from rusty.db import session
-from rusty.services.ai_client import AIClient, create_ai_client
-from rusty.services.model_service import ModelConfig, ModelService
 from rusty.db import default_database_path
-from rusty.services.project_service import ProjectService
+from rusty.services.ai_request_executor import AIRequestExecutor
 
 
 Validator = Callable[[dict[str, Any]], dict[str, Any]]
@@ -17,177 +14,55 @@ Validator = Callable[[dict[str, Any]], dict[str, Any]]
 
 @dataclass(frozen=True)
 class StructuredModelResult:
-    invocation_id: int
-    model_id: int
     value: dict[str, Any]
-    raw_response: str
-    token_usage: dict[str, Any]
-    elapsed_ms: int
-    repaired: bool
 
 
 class StructuredModelService:
-    """Execute auditable JSON model calls with one schema-repair attempt."""
+    """Parse and validate JSON responses, with one executor-backed repair attempt."""
 
     def __init__(
         self,
         database_path: str | Path | None = None,
         *,
-        ai_client: AIClient | None = None,
+        executor: AIRequestExecutor | None = None,
+        ai_client: Any | None = None,
     ) -> None:
         self.database_path = Path(database_path) if database_path is not None else default_database_path()
-        self.model_service = ModelService(self.database_path)
-        self.project_service = ProjectService(self.database_path)
-        self.ai_client = ai_client or create_ai_client(purpose="generation")
+        self.executor = executor or AIRequestExecutor(self.database_path, ai_client=ai_client)
 
     def run(
         self,
         *,
-        invocation_kind: str,
-        stage: str,
         messages: list[dict[str, str]],
         output_schema: dict[str, Any],
         validator: Validator,
         model_id: int | None = None,
         project_id: int | None = None,
-        document_id: int | None = None,
-        chapter_id: int | None = None,
-        scene_id: int | None = None,
-        resource_type: str | None = None,
-        resource_id: int | None = None,
     ) -> StructuredModelResult:
-        model = self.resolve_model(model_id=model_id, project_id=project_id)
-        request = {
-            "messages": messages,
-            "output_schema": output_schema,
-            "model": {
-                "id": model.id,
-                "name": model.model_name,
-                "temperature": model.temperature,
-                "max_tokens": model.max_tokens,
-            },
-        }
-        with session(self.database_path) as connection:
-            cursor = connection.execute(
-                """
-                INSERT INTO model_invocations (
-                    invocation_kind, project_id, document_id, chapter_id, scene_id,
-                    resource_type, resource_id, model_id, stage, request_json,
-                    output_schema_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    invocation_kind,
-                    project_id,
-                    document_id,
-                    chapter_id,
-                    scene_id,
-                    resource_type,
-                    resource_id,
-                    model.id,
-                    stage,
-                    json.dumps(request, ensure_ascii=False),
-                    json.dumps(output_schema, ensure_ascii=False),
-                ),
-            )
-            invocation_id = int(cursor.lastrowid)
-        token_usage: dict[str, Any] = {}
-        elapsed_ms = 0
-        raw_response = ""
+        response = self.executor.execute(messages, model_id=model_id, project_id=project_id)
+        raw_response = response.text
         try:
-            response = self.ai_client.chat(model, self.model_service.get_api_key(model.id), messages)
-            raw_response = response.text
-            token_usage = dict(response.token_usage)
-            elapsed_ms = response.elapsed_ms
-            try:
-                parsed = _parse_json_object(raw_response)
-                value = validator(parsed)
-                repaired = False
-                validation = {"valid": True, "repaired": False}
-            except (TypeError, ValueError, json.JSONDecodeError) as first_error:
-                repair_messages = [
-                    {
-                        "role": "system",
-                        "content": (
-                            "Repair the supplied response to match the JSON schema exactly. "
-                            "Return JSON only; do not add facts or prose."
-                        ),
-                    },
+            value = validator(_parse_json_object(raw_response))
+        except (TypeError, ValueError, json.JSONDecodeError) as first_error:
+            repair = self.executor.execute(
+                [
+                    {"role": "assistant", "content": raw_response},
                     {
                         "role": "user",
                         "content": (
+                            "[TASK: JSON REPAIR]\n"
+                            "Repair the previous response to match the JSON schema exactly. "
+                            "Return JSON only and do not add facts.\n\n"
                             f"Schema:\n{json.dumps(output_schema, ensure_ascii=False)}\n\n"
-                            f"Validation error:\n{first_error}\n\n"
-                            f"Invalid response:\n{raw_response}"
+                            f"Validation error:\n{first_error}"
                         ),
                     },
-                ]
-                repaired_response = self.ai_client.chat(
-                    model,
-                    self.model_service.get_api_key(model.id),
-                    repair_messages,
-                )
-                token_usage = _merge_usage(token_usage, repaired_response.token_usage)
-                elapsed_ms += repaired_response.elapsed_ms
-                parsed = _parse_json_object(repaired_response.text)
-                value = validator(parsed)
-                validation = {
-                    "valid": True,
-                    "repaired": True,
-                    "initial_error": str(first_error),
-                    "repair_response": repaired_response.text,
-                }
-                repaired = True
-            with session(self.database_path) as connection:
-                connection.execute(
-                    """
-                    UPDATE model_invocations
-                    SET status = 'completed', response_text = ?, parsed_json = ?,
-                        validation_json = ?, token_usage_json = ?, elapsed_ms = ?,
-                        completed_at = CURRENT_TIMESTAMP
-                    WHERE id = ?
-                    """,
-                    (
-                        raw_response,
-                        json.dumps(value, ensure_ascii=False),
-                        json.dumps(validation, ensure_ascii=False),
-                        json.dumps(token_usage, ensure_ascii=False),
-                        elapsed_ms,
-                        invocation_id,
-                    ),
-                )
-            return StructuredModelResult(
-                invocation_id=invocation_id,
-                model_id=model.id,
-                value=value,
-                raw_response=raw_response,
-                token_usage=token_usage,
-                elapsed_ms=elapsed_ms,
-                repaired=repaired,
+                ],
+                model_id=model_id,
+                project_id=project_id,
             )
-        except Exception as exc:
-            with session(self.database_path) as connection:
-                connection.execute(
-                    """
-                    UPDATE model_invocations
-                    SET status = 'failed', response_text = ?, token_usage_json = ?,
-                        elapsed_ms = ?, error_type = ?, error_message = ?,
-                        completed_at = CURRENT_TIMESTAMP
-                    WHERE id = ?
-                    """,
-                    (
-                        raw_response,
-                        json.dumps(token_usage, ensure_ascii=False),
-                        elapsed_ms or None,
-                        type(exc).__name__,
-                        str(exc),
-                        invocation_id,
-                    ),
-                )
-            raise
-
-    def resolve_model(self, *, model_id: int | None, project_id: int | None) -> ModelConfig:
-        return self.model_service.resolve_model_config(model_id, project_id=project_id)
+            value = validator(_parse_json_object(repair.text))
+        return StructuredModelResult(value=value)
 
 
 def _parse_json_object(text: str) -> dict[str, Any]:
@@ -200,12 +75,3 @@ def _parse_json_object(text: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("Model response must be a JSON object.")
     return value
-
-
-def _merge_usage(first: dict[str, Any], second: dict[str, Any]) -> dict[str, Any]:
-    keys = set(first) | set(second)
-    merged: dict[str, Any] = {}
-    for key in keys:
-        left, right = first.get(key), second.get(key)
-        merged[key] = left + right if isinstance(left, (int, float)) and isinstance(right, (int, float)) else right or left
-    return merged
