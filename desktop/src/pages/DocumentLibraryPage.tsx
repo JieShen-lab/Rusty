@@ -1607,7 +1607,13 @@ function CleanupDialog(props: {
               </label>)}
             </div>
           </fieldset>
-          <label className="document-modal-stack"><span>具体要求</span><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} /></label>
+          <label className="document-modal-stack document-chapter-text">
+  <span>具体要求</span>
+  <textarea
+    value={prompt}
+    onChange={(event) => setPrompt(event.target.value)}
+  />
+</label>
           {statusItems.length ? <section className="cleanup-status-list" aria-live="polite"><h3>处理状态</h3>{statusItems.map((item) => <div key={item.chapter_id}><span>{item.title || `章节 ${item.chapter_id}`}</span><strong className={item.status}>{cleanupStatusLabel(item.status)}</strong>{item.error ? <small>{item.error}</small> : null}</div>)}</section> : null}
         </div>
     </LibraryDialog>
@@ -1704,26 +1710,166 @@ function DocumentActionDialog(props: {
             <footer><SecondaryButton onClick={props.onClose}>取消</SecondaryButton><PrimaryButton disabled={props.busy || selected.length < 1 || !title.trim()} onClick={() => props.onMerge([props.currentDocument.id, ...selected], title.trim())}>创建新文档</PrimaryButton></footer>
           </>
         ) : null}
-        {props.action === 'create-chapter' ? (
-          <>
-            <div className="document-modal-body document-create-chapter-body">
-              <label className="document-modal-row"><span>章节标题</span><input className="form-input" value={title} onChange={(event) => setTitle(event.target.value)} /></label>
-              <label className="document-modal-row"><span>插入位置</span><select value={positionMode} onChange={(event) => setPositionMode(event.target.value as typeof positionMode)}><option value="before-current">本章之前</option><option value="after-current">本章之后</option><option value="after-index">指定章节之后</option></select></label>
-              {positionMode === 'after-index' ? <label className="document-modal-row"><span>指定章节</span><select aria-label="指定章节" value={anchorIndex} onChange={(event) => setAnchorIndex(Number(event.target.value))}>{props.chapters.map((chapter) => <option key={chapter.id} value={chapter.index}>{chapterDisplayTitle(chapter)}</option>)}</select></label> : <p className="document-action-anchor">锚点：{currentChapter ? chapterDisplayTitle(currentChapter) : '当前文档暂无章节'}</p>}
-              <label className="document-modal-stack document-chapter-text"><span>正文</span><textarea value={text} onChange={(event) => setText(event.target.value)} /></label>
-            </div>
-            <footer><SecondaryButton onClick={props.onClose}>取消</SecondaryButton><PrimaryButton disabled={props.busy || (props.chapters.length > 0 && !createAnchor)} onClick={() => props.onCreateChapter(title.trim(), text, createPosition, createAnchor?.id ?? null)}>保存为新版本</PrimaryButton></footer>
-          </>
-        ) : null}
-        {props.action === 'split' ? (
-          <>
-            <div className="document-modal-body document-split-body">
-              <div className="document-split-tabs"><button className={splitTab === 'cursor' ? 'selected' : ''} onClick={() => setSplitTab('cursor')} type="button">光标处分章</button><button className={splitTab === 'ai' ? 'selected' : ''} onClick={() => setSplitTab('ai')} type="button">AI 分章</button></div>
-              {splitTab === 'cursor' ? <><label className="document-modal-row"><span>下一章标题</span><input className="form-input" value={title} onChange={(event) => setTitle(event.target.value)} /></label><p className="document-cursor-position">当前分割位置：{props.cursorOffset == null ? '请先在正文中放置光标' : `第 ${props.cursorOffset} 字`}</p></> : <label className="document-modal-stack"><span>分章要求</span><textarea value={splitPrompt} onChange={(event) => setSplitPrompt(event.target.value)} /></label>}
-            </div>
-            <footer><SecondaryButton onClick={props.onClose}>取消</SecondaryButton>{splitTab === 'cursor' ? <PrimaryButton disabled={props.busy || !title.trim() || props.cursorOffset == null || props.cursorOffset <= 0 || props.cursorOffset >= props.currentBodyLength} onClick={() => props.onCursorSplit(title.trim(), props.cursorOffset!)}>分章</PrimaryButton> : <PrimaryButton disabled={props.busy || !splitPrompt.trim()} onClick={() => void applyAI()}>AI 分章</PrimaryButton>}</footer>
-          </>
-        ) : null}
+{props.action === 'create-chapter' ? (
+  <>
+    <div className="document-modal-body document-create-chapter-body">
+      <label className="document-modal-row">
+        <span>章节名称</span>
+        <input
+          className="form-input"
+          value={title}
+          onChange={(event) => setTitle(event.target.value)}
+        />
+      </label>
+
+      <label className="document-modal-row">
+        <span>插入位置</span>
+        <select
+          className="form-input"
+          value={positionMode}
+          onChange={(event) =>
+            setPositionMode(event.target.value as typeof positionMode)
+          }
+        >
+          <option value="before-current">本章之前</option>
+          <option value="after-current">本章之后</option>
+          <option value="after-index">指定章节之后</option>
+        </select>
+      </label>
+
+      {positionMode === 'after-index' ? (
+        <label className="document-modal-row">
+          <span>指定章节</span>
+          <select
+            aria-label="指定章节"
+            className="form-input"
+            value={anchorIndex}
+            onChange={(event) => setAnchorIndex(Number(event.target.value))}
+          >
+            {props.chapters.map((chapter) => (
+              <option key={chapter.id} value={chapter.index}>
+                {chapterDisplayTitle(chapter)}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
+
+      <label className="document-modal-stack document-chapter-text">
+        <span>正文</span>
+        <textarea
+          value={text}
+          onChange={(event) => setText(event.target.value)}
+        />
+      </label>
+    </div>
+
+    <footer>
+      <SecondaryButton onClick={props.onClose}>
+        取消
+      </SecondaryButton>
+
+      <PrimaryButton
+        disabled={
+          props.busy
+          || (props.chapters.length > 0 && !createAnchor)
+        }
+        onClick={() =>
+          props.onCreateChapter(
+            title.trim(),
+            text,
+            createPosition,
+            createAnchor?.id ?? null,
+          )
+        }
+      >
+        保存为新版本
+      </PrimaryButton>
+    </footer>
+  </>
+) : null}
+
+{props.action === 'split' ? (
+  <>
+    <div className="document-modal-body document-split-body">
+      <div className="document-split-tabs">
+        <button
+          className={splitTab === 'cursor' ? 'selected' : ''}
+          onClick={() => setSplitTab('cursor')}
+          type="button"
+        >
+          光标处分章
+        </button>
+
+        <button
+          className={splitTab === 'ai' ? 'selected' : ''}
+          onClick={() => setSplitTab('ai')}
+          type="button"
+        >
+          AI 分章
+        </button>
+      </div>
+
+      {splitTab === 'cursor' ? (
+        <>
+          <label className="document-modal-row">
+            <span>下一章标题</span>
+            <input
+              className="form-input"
+              value={title}
+              onChange={(event) => setTitle(event.target.value)}
+            />
+          </label>
+
+          <p className="document-cursor-position">
+            当前分割位置：
+            {props.cursorOffset == null
+              ? '请先在正文中放置光标'
+              : `第 ${props.cursorOffset} 字`}
+          </p>
+        </>
+      ) : (
+<label className="document-modal-stack document-chapter-text">
+  <span>分章要求</span>
+  <textarea
+    value={splitPrompt}
+    onChange={(event) => setSplitPrompt(event.target.value)}
+  />
+</label>
+      )}
+    </div>
+
+    <footer>
+      <SecondaryButton onClick={props.onClose}>
+        取消
+      </SecondaryButton>
+
+      {splitTab === 'cursor' ? (
+        <PrimaryButton
+          disabled={
+            props.busy
+            || !title.trim()
+            || props.cursorOffset == null
+            || props.cursorOffset <= 0
+            || props.cursorOffset >= props.currentBodyLength
+          }
+          onClick={() =>
+            props.onCursorSplit(title.trim(), props.cursorOffset!)
+          }
+        >
+          分章
+        </PrimaryButton>
+      ) : (
+        <PrimaryButton
+          disabled={props.busy || !splitPrompt.trim()}
+          onClick={() => void applyAI()}
+        >
+          AI 分章
+        </PrimaryButton>
+      )}
+    </footer>
+  </>
+) : null}
         {localError ? <div className="inline-alert error" role="alert">{localError}</div> : null}
       </section>
     </div>
@@ -1794,19 +1940,46 @@ function ExportDialog({
 }) {
   return (
     <BodyPortal>
-    <div className="document-processing-backdrop" role="presentation">
-      <section aria-labelledby="document-export-title" aria-modal="true" className="document-export-dialog" role="dialog">
-        <header>
-          <div><span>导出文档</span><h2 id="document-export-title">{document.title}</h2></div>
-          <button aria-label="关闭导出" className="icon-button" onClick={onClose} type="button"><X size={17} /></button>
-        </header>
-        <div className="document-export-options">
-          <button disabled={busy} onClick={() => onExport('txt')} type="button"><strong>TXT</strong><ChevronRight size={16} /></button>
-          <button disabled={busy} onClick={() => onExport('epub')} type="button"><strong>EPUB</strong><ChevronRight size={16} /></button>
+  <div
+    className="document-processing-backdrop"
+    onMouseDown={(event) => {
+      if (event.target === event.currentTarget) onClose();
+    }}
+    role="presentation"
+  >
+    <section
+      aria-labelledby="document-export-title"
+      aria-modal="true"
+      className="document-export-dialog"
+      role="dialog"
+    >
+      <header>
+        <div className="document-export-heading">
+          <span>导出：</span>
+          <h2 id="document-export-title">{document.title}</h2>
         </div>
-      </section>
-    </div>
-    </BodyPortal>
+      </header>
+
+      <div className="document-export-options">
+        <button
+          disabled={busy}
+          onClick={() => onExport('txt')}
+          type="button"
+        >
+          TXT
+        </button>
+
+        <button
+          disabled={busy}
+          onClick={() => onExport('epub')}
+          type="button"
+        >
+          EPUB
+        </button>
+      </div>
+    </section>
+  </div>
+</BodyPortal>
   );
 }
 

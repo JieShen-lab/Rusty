@@ -2927,6 +2927,13 @@ select:focus-visible {
   padding: 0 12px;
   outline: none;
 }
+.document-chapter-text textarea:focus,
+.document-chapter-text textarea:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px
+    color-mix(in srgb, var(--accent) 18%, transparent);
+}
 .document-modal-row > span,
 .document-modal-stack > span { color: var(--text-primary); font-size: 18px; font-weight: 500; }
 .document-modal-stack { display: grid; min-height: 0; gap: 8px; }
@@ -3201,16 +3208,17 @@ select:focus-visible {
 .project-chapter-list .chapter-row { box-shadow: none; }
 .project-chapter-list .chapter-row.selected { border-left-color: transparent; box-shadow: none; }
 .chapter-flow-page .rail-save-state { margin: 0 12px; }
-.action-create-chapter .document-chapter-text textarea {
-  min-height: 460px;
+.document-chapter-text textarea {
+  width: 100%;
+  min-height: 320px;
 
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--border-default);
   border-radius: 10px;
 
   background: var(--surface-input);
   color: var(--text-primary);
 
-  padding: 20px 20px;
+  padding: 14px 16px;
   outline: none;
   resize: vertical;
 }
