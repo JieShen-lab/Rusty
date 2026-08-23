@@ -29,7 +29,12 @@ from rusty.services.ai_client import (
     AIResponseParseError,
 )
 from rusty.services.anchor_service import AnchorService, OutlineTemplate
-from rusty.services.material_service import Material, MaterialService, compile_material_ai_prompt
+from rusty.services.material_service import (
+    Material,
+    MaterialService,
+    compile_material_ai_prompt,
+    material_work_from_source_metadata,
+)
 from rusty.services.analysis_service import AnalysisService
 from rusty.services.chapter_split_service import ChapterSplitService
 from rusty.services.chapter_version_service import ChapterVersionService
@@ -73,9 +78,6 @@ from .schemas import (
     AnalysisPromptTemplateOut,
     AnalysisPromptTemplateWriteRequest,
     AnchorExtractRequest,
-    AuthorStyleDimensionApplyRequest,
-    AuthorStyleDimensionPreviewOut,
-    AuthorStyleDimensionPreviewRequest,
     AISplitApplyRequest,
     AISplitPreviewRequest,
     CharacterAnalyzeRequest,
@@ -2488,17 +2490,16 @@ def create_app(
     def preview_material_extraction(
         payload: MaterialExtractionPreviewRequest,
     ) -> MaterialExtractionPreviewOut:
-        text, resolved_metadata = _resolve_anchor_source(
-            payload,
+        text, resolved_metadata = _resolve_material_file_source(
+            payload.source_path,
             project_service=project_service,
-            document_library_service=document_library_service,
         )
         preview = anchor_extraction_service.preview_materials_from_text(
             text,
             task_type=payload.task_type,
             name=payload.name,
             model_id=payload.model_id,
-            source_metadata={**resolved_metadata, **payload.source_metadata},
+            source_metadata=resolved_metadata,
         )
         return MaterialExtractionPreviewOut(
             preview_token=preview.preview_token,
@@ -2529,42 +2530,11 @@ def create_app(
             errors=result["errors"],
         )
 
-    @app.post(
-        "/api/materials/{material_id}/author-style/dimensions/preview",
-        response_model=AuthorStyleDimensionPreviewOut,
-        dependencies=[Depends(_require_token)],
-    )
-    def preview_author_style_dimension(
-        material_id: int,
-        payload: AuthorStyleDimensionPreviewRequest,
-    ) -> AuthorStyleDimensionPreviewOut:
-        return AuthorStyleDimensionPreviewOut(
-            **anchor_extraction_service.preview_author_style_dimension(
-                material_id, **payload.model_dump()
-            )
-        )
-
-    @app.post(
-        "/api/materials/{material_id}/author-style/dimensions/apply",
-        response_model=MaterialOut,
-        dependencies=[Depends(_require_token)],
-    )
-    def apply_author_style_dimension(
-        material_id: int,
-        payload: AuthorStyleDimensionApplyRequest,
-    ) -> MaterialOut:
-        return _material_out(
-            anchor_extraction_service.apply_author_style_dimension(
-                material_id, preview_token=payload.preview_token
-            )
-        )
-
     @app.post("/api/material-extractions", response_model=MaterialExtractOut, dependencies=[Depends(_require_token)])
     def extract_materials(payload: MaterialExtractRequest) -> MaterialExtractOut:
-        text, source_metadata = _resolve_anchor_source(
-            payload,
+        text, source_metadata = _resolve_material_file_source(
+            payload.source_path,
             project_service=project_service,
-            document_library_service=document_library_service,
         )
         material_ids = anchor_extraction_service.extract_materials_from_text(
             text,
@@ -3363,6 +3333,19 @@ def _material_out(material: Material) -> MaterialOut:
     source_summary = material.source_summary
     if source_summary is None:
         raise RuntimeError("Material source summary was not generated.")
+    content = _json_object(material.content_json)
+    content.pop("source_works", None)
+    content.pop("introduction", None)
+    source_metadata = _json_object(material.source_metadata_json)
+    if material.material_type == "author_style":
+        if "work" not in content:
+            work = material_work_from_source_metadata(source_metadata)
+            if work:
+                content["work"] = work
+        if "overall_style" not in content:
+            content["overall_style"] = str(content.get("summary") or "").strip()
+        content.setdefault("summary", "")
+        content.setdefault("dimensions", [])
     return MaterialOut(
         id=material.id,
         material_type=material.material_type,
@@ -3373,9 +3356,9 @@ def _material_out(material: Material) -> MaterialOut:
         description=material.description,
         detail_level=material.detail_level,
         raw_text=material.raw_text,
-        content=_json_object(material.content_json),
+        content=content,
         analysis_status=material.analysis_status,
-        source_metadata=_json_object(material.source_metadata_json),
+        source_metadata=source_metadata,
         import_metadata=_json_object(material.import_metadata_json),
         source_material_id=material.source_material_id,
         source_version=material.source_version,
@@ -3482,19 +3465,7 @@ def _resolve_anchor_source(
     if payload.sample_text and payload.sample_text.strip():
         return payload.sample_text, {"source_type": "paste"}
     if payload.source_path:
-        source_path = _validate_source_path(payload.source_path)
-        if source_path.stat().st_size > STYLE_EXTRACTION_MAX_FILE_BYTES:
-            raise _http_error(400, "anchor_source_too_large", "AI 提取源文件过大。")
-        book = project_service.preview_book(source_path)
-        text = "\n\n".join(f"# {chapter.title}\n{chapter.text}" for chapter in book.chapters)
-        return text, {
-            "source_type": "file",
-            "file_name": book.source_path.name,
-            "source_file_name": book.source_path.name,
-            "source_path": str(source_path),
-            "source_format": book.source_format,
-            "book_title": book.title,
-        }
+        return _resolve_material_file_source(payload.source_path, project_service=project_service)
     if payload.source_project_id is not None:
         project = project_service.get_project(payload.source_project_id)
         if project is None:
@@ -3515,6 +3486,26 @@ def _resolve_anchor_source(
         "document_title": content.title,
         "source_document_id": content.document_id,
         "source_document_title": content.title,
+    }
+
+
+def _resolve_material_file_source(
+    source_path: str,
+    *,
+    project_service: ProjectService,
+) -> tuple[str, dict[str, Any]]:
+    path = _validate_source_path(source_path)
+    if path.stat().st_size > STYLE_EXTRACTION_MAX_FILE_BYTES:
+        raise _http_error(400, "anchor_source_too_large", "AI 提取源文件过大。")
+    book = project_service.preview_book(path)
+    text = "\n\n".join(f"# {chapter.title}\n{chapter.text}" for chapter in book.chapters)
+    return text, {
+        "source_type": "file",
+        "file_name": book.source_path.name,
+        "source_file_name": book.source_path.name,
+        "source_path": str(path),
+        "source_format": book.source_format,
+        "book_title": book.title,
     }
 
 

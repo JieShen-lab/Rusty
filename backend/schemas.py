@@ -1016,8 +1016,14 @@ class MaterialJsonImportRequest(BaseModel):
     default_project_id: int | None = None
 
 
-class MaterialExtractRequest(AnchorExtractRequest):
+class MaterialExtractRequest(BaseModel):
     material_type: Literal["author_style"]
+    name: str = Field(min_length=1)
+    detail_level: Literal["brief", "standard", "detailed"] = "standard"
+    source_path: str = Field(min_length=1)
+    model_id: int | None = None
+    scope: Literal["public", "project"] = "public"
+    project_id: int | None = None
 
 
 class MaterialExtractOut(BaseModel):
@@ -1069,13 +1075,9 @@ class MaterialAISettingsWriteRequest(BaseModel):
 
 class MaterialExtractionPreviewRequest(BaseModel):
     task_type: Literal["author_style_extraction"]
-    name: str | None = None
-    sample_text: str | None = Field(default=None, max_length=50000)
-    source_path: str | None = None
-    source_project_id: int | None = None
-    source_document_id: int | None = None
+    name: str = Field(min_length=1)
+    source_path: str = Field(min_length=1)
     model_id: int | None = None
-    source_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class MaterialExtractionCandidateOut(BaseModel):
@@ -1116,25 +1118,6 @@ class MaterialExtractionApplyItemOut(BaseModel):
 class MaterialExtractionApplyOut(BaseModel):
     created: list[MaterialExtractionApplyItemOut] = Field(default_factory=list)
     errors: list[MaterialExtractionApplyItemOut] = Field(default_factory=list)
-
-
-class AuthorStyleDimensionPreviewRequest(BaseModel):
-    dimension_id: str = Field(min_length=1, max_length=100)
-    dimension_name: str = Field(min_length=1, max_length=100)
-    dimension_requirement: str = Field(default="", max_length=4000)
-    model_id: int | None = None
-
-
-class AuthorStyleDimensionPreviewOut(BaseModel):
-    preview_token: str
-    dimension_id: str
-    analysis: str
-    features: list[str] = Field(default_factory=list)
-    examples: list[str] = Field(default_factory=list)
-
-
-class AuthorStyleDimensionApplyRequest(BaseModel):
-    preview_token: str = Field(min_length=1)
 
 
 class CharacterSourceSummaryOut(BaseModel):

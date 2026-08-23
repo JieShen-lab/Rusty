@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowDown, ArrowUp, BookOpenText, CircleGauge, CloudSun, MessageCircle, Plus, Search, Settings, Sparkles, TextQuote, Trash2, UserRound, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, CircleGauge, CloudSun, MessageCircle, Plus, Search, Settings, Sparkles, TextQuote, Trash2 } from 'lucide-react';
 import {
-  applyAuthorStyleDimension,
   applyMaterialExtraction,
   deleteMaterial,
   exportAuthorStyleSettings,
@@ -9,7 +8,6 @@ import {
   getMaterials,
   getModels,
   importAuthorStyleSettings,
-  previewAuthorStyleDimension,
   previewMaterialExtraction,
   updateMaterial,
   updateMaterialAISettings,
@@ -29,8 +27,6 @@ import { SecondaryButton } from '../components/SecondaryButton';
 import { TopBar } from '../components/TopBar';
 import { useAutoDismiss } from '../hooks/useAutoDismiss';
 
-type Launch = { materialType: MaterialType; selectedText: string; sourceMetadata?: Record<string, unknown> };
-
 const MATERIAL_TYPE: MaterialType = 'author_style';
 const MATERIAL_TASK = 'author_style_extraction' as const;
 
@@ -42,7 +38,6 @@ export function AuthorLibraryPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [editing, setEditing] = useState<Material | null>(null);
-  const [launch, setLaunch] = useState<Launch | null>(null);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -67,19 +62,13 @@ export function AuthorLibraryPage() {
   }, []);
 
   useEffect(() => { void load(); }, [load]);
-  useEffect(() => {
-    const incoming = window.history.state?.materialExtraction as Launch | undefined;
-    if (!incoming?.selectedText || !incoming.materialType) return;
-    setLaunch(incoming);
-    setCreateOpen(true);
-    window.history.replaceState(null, '', window.location.href);
-  }, []);
 
   const visible = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase();
     return materials.filter((item) => {
       if (item.material_type !== type) return false;
-      return !needle || [item.name, item.description, item.categories.join(' ')]
+      const profile = authorProfile(item);
+      return !needle || [profile.name, profile.work, item.categories.join(' ')]
         .join(' ').toLocaleLowerCase().includes(needle);
     });
   }, [materials, query, type]);
@@ -96,7 +85,7 @@ export function AuthorLibraryPage() {
     <div className="document-library-page material-library-page">
       <TopBar title="作者" actions={(
         <>
-          <PrimaryButton disabled={busy} onClick={() => { setLaunch(null); setCreateOpen(true); }}>
+          <PrimaryButton disabled={busy} onClick={() => setCreateOpen(true)}>
             <Plus size={16} />新建作者
           </PrimaryButton>
           <SecondaryButton aria-label="作者风格提取设置" className="icon-only" onClick={() => setSettingsOpen(true)}>
@@ -111,14 +100,15 @@ export function AuthorLibraryPage() {
           <header>
             <label className="search-field document-search material-library-search">
               <Search size={15} /><span className="sr-only">搜索作者</span>
-              <input onChange={(event) => setQuery(event.target.value)} placeholder="搜索作者、来源作品或分类" type="search" value={query} />
+              <input onChange={(event) => setQuery(event.target.value)} placeholder="搜索作者、作品或分类" type="search" value={query} />
             </label>
           </header>
           {loading ? <LibraryEmptyState title="正在读取作者档案…" /> : visible.length ? (
             <div className="document-shelf-scroll">
               <div className="author-profile-list" aria-label="作者列表">
-                {visible.map((material) => (
-                  <button
+                {visible.map((material) => {
+                  const profile = authorProfile(material);
+                  return <button
                     aria-pressed={selectedId === material.id}
                     className={`author-profile-row ${selectedId === material.id ? 'selected' : ''}`}
                     key={material.id}
@@ -126,10 +116,9 @@ export function AuthorLibraryPage() {
                     onDoubleClick={() => setEditing(material)}
                     type="button"
                   >
-                    <AuthorCover author={authorProfile(material).name} id={material.id} />
-                    <span className="author-profile-copy"><strong>{authorProfile(material).name}</strong><small>{authorProfile(material).introduction || authorProfile(material).overallStyle || '尚未填写作者简介'}</small><em>添加时间：{formatDate(material.created_at)}</em></span>
-                  </button>
-                ))}
+                    <span className="author-profile-copy"><strong>{profile.name}</strong><small>{profile.work || '尚未填写作品'}</small><em>修改日期：{formatDate(material.updated_at)}</em></span>
+                  </button>;
+                })}
               </div>
             </div>
           ) : (
@@ -143,8 +132,7 @@ export function AuthorLibraryPage() {
             <>
               <div className="document-detail-scroll">
                 <section className="document-detail-identity author-detail-identity"><div><h3>{authorProfile(selected).name}</h3><p>{selected.analysis_status === 'analyzed' ? '作者档案已分析' : '作者档案待分析'}</p></div></section>
-                <section><div className="document-detail-heading"><span>简介</span></div><p className="material-detail-copy">{authorProfile(selected).introduction || '尚未填写简介'}</p></section>
-                <section><div className="document-detail-heading"><span>来源作品</span></div><div className="author-work-list">{authorProfile(selected).works.length ? authorProfile(selected).works.map((work) => <span key={work}><BookOpenText size={13} />{work}</span>) : <span>尚未填写</span>}</div></section>
+                <section><div className="document-detail-heading"><span>作品</span></div><p className="material-detail-copy">{authorProfile(selected).work || '尚未填写作品'}</p></section>
                 <section><div className="document-detail-heading"><span>整体风格</span></div><p className="material-detail-copy">{authorProfile(selected).overallStyle || '尚未形成整体风格总结'}</p></section>
                 <AuthorDimensionTable content={selected.content} />
               </div>
@@ -157,52 +145,60 @@ export function AuthorLibraryPage() {
         </aside>
       </div>
 
-      {createOpen ? <CreateMaterialDialog busy={busy} launch={launch} onClose={() => setCreateOpen(false)} onError={setError} onSaved={async (id) => { setCreateOpen(false); setLaunch(null); await load(id); setMessage('作者风格已保存。'); }} /> : null}
+      {createOpen ? <CreateMaterialDialog busy={busy} onClose={() => setCreateOpen(false)} onError={setError} onSaved={async (id) => { setCreateOpen(false); await load(id); setMessage('作者风格已保存。'); }} /> : null}
       {settingsOpen ? <MaterialSettingsDialog materialType={type} onClose={() => setSettingsOpen(false)} onError={setError} onSaved={() => setMessage('提取设置已保存，并成为新的默认配置。')} /> : null}
       {editing ? <MaterialEditor material={editing} onClose={() => setEditing(null)} onError={setError} onSaved={async (id) => { await load(id); const updated = (await getMaterials()).find((item) => item.id === id) ?? null; setEditing(updated); setMessage('作者档案已保存。'); }} /> : null}
     </div>
   );
 }
 
-function CreateMaterialDialog({ busy, launch, onClose, onError, onSaved }: {
-  busy: boolean; launch: Launch | null;
+function CreateMaterialDialog({ busy, onClose, onError, onSaved }: {
+  busy: boolean;
   onClose: () => void; onError: (value: string) => void; onSaved: (id: number) => Promise<void>;
 }) {
   const [name, setName] = useState('');
-  const [sourceWorks, setSourceWorks] = useState('');
-  const [text, setText] = useState(launch?.selectedText ?? '');
+  const [sourcePath, setSourcePath] = useState('');
   const [working, setWorking] = useState(false);
-  const fileRef = useRef<HTMLInputElement>(null);
+  const selectedFileName = sourcePath.split(/[\\/]/).pop() || sourcePath;
+  async function chooseFile() {
+    const picker = window.rustyDesktop?.selectBookFile;
+    if (!picker) {
+      onError('当前窗口不支持文件选择，请从 Rusty 桌面应用中打开。');
+      return;
+    }
+    try {
+      const selected = await picker();
+      if (selected) setSourcePath(selected);
+    } catch (reason) {
+      onError(errorMessage(reason));
+    }
+  }
   async function extract() {
     if (!name.trim()) { onError('请填写作者姓名。'); return; }
-    if (!sourceWorks.trim()) { onError('请至少填写一部来源作品。'); return; }
-    if (!text.trim()) { onError('请输入或选择用于分析的来源文本。'); return; }
+    if (!sourcePath) { onError('请选择文件。'); return; }
     setWorking(true);
     try {
       const result = await previewMaterialExtraction({
-        task_type: MATERIAL_TASK, name: name.trim() || null, sample_text: text,
-        source_metadata: launch?.sourceMetadata ?? { source_type: 'paste' },
+        task_type: MATERIAL_TASK, name: name.trim(), source_path: sourcePath,
       });
       const candidate = result.candidates[0];
       if (!candidate) throw new Error('AI 未返回可预览内容。');
-      const finalName = name.trim() || candidate.name.trim();
+      const finalName = name.trim();
       if (!finalName) throw new Error('AI 未返回有效名称。');
       const applied = await applyMaterialExtraction({
         preview_token: result.preview_token,
         selected_candidate_ids: [candidate.candidate_id],
-        candidates: [{ ...candidate, name: finalName, description: candidate.description || '', content: { ...candidate.content, author_name: finalName, introduction: candidate.description || '', source_works: lines(sourceWorks), overall_style: String(candidate.content.overall_style ?? candidate.content.summary ?? '') }, selected: true, category_ids: [] }],
+        candidates: [{ ...candidate, name: finalName, description: candidate.description || '', content: candidate.content, selected: true, category_ids: [] }],
       });
       const created = applied.created[0]?.material_id;
       if (!created) throw new Error(applied.errors[0]?.error || '保存失败。');
       await onSaved(created);
     } catch (reason) { onError(errorMessage(reason)); } finally { setWorking(false); }
   }
-  return <LibraryDialog className="material-create-dialog" footer={<><SecondaryButton onClick={onClose}>取消</SecondaryButton><PrimaryButton disabled={busy || working || !name.trim() || !sourceWorks.trim() || !text.trim()} onClick={() => void extract()}><Sparkles size={15} />分析并建档</PrimaryButton></>} onClose={onClose} title="新建作者">
-    <div className="library-form-grid">
-      <label><span>作者姓名</span><input autoFocus value={name} onChange={(event) => setName(event.target.value)} /></label>
-      <label><span>来源作品（每行一部）</span><textarea value={sourceWorks} onChange={(event) => setSourceWorks(event.target.value)} /></label>
-      <label className="wide"><span>作品文本样本</span><textarea className="tall" maxLength={50000} value={text} onChange={(event) => setText(event.target.value)} /></label>
-      <div className="wide material-source-options"><SecondaryButton onClick={() => fileRef.current?.click()}>选择文本文件</SecondaryButton><input ref={fileRef} hidden accept=".txt,.md,text/plain,text/markdown" type="file" onChange={(event) => { const file = event.target.files?.[0]; if (file) void file.text().then(setText); }} /></div>
+  return <LibraryDialog className="material-create-dialog" footer={<><SecondaryButton onClick={onClose}>取消</SecondaryButton><PrimaryButton disabled={busy || working || !name.trim() || !sourcePath} onClick={() => void extract()}><Sparkles size={15} />分析并建档</PrimaryButton></>} onClose={onClose} title="新建作者">
+    <div className="author-create-form">
+      <label className="author-create-row"><span>作者姓名</span><input autoFocus value={name} onChange={(event) => setName(event.target.value)} /></label>
+      <div className="author-create-row"><span>选择文件</span><div className="author-create-file"><SecondaryButton onClick={() => void chooseFile()}>打开文件夹</SecondaryButton>{selectedFileName ? <span className="author-create-file-name" title={sourcePath}>已选择：{selectedFileName}</span> : null}</div></div>
     </div>
   </LibraryDialog>;
 }
@@ -260,60 +256,73 @@ function DimensionSettings({ dimensions, onChange }: { dimensions: MaterialAIDim
 function MaterialEditor({ material, onClose, onError, onSaved }: { material: Material; onClose: () => void; onError: (value: string) => void; onSaved: (id: number) => Promise<void> }) {
   const profile = authorProfile(material);
   const [name, setName] = useState(profile.name);
-  const [description, setDescription] = useState(profile.introduction);
-  const [sourceWorks, setSourceWorks] = useState(profile.works.join('\n'));
+  const [work, setWork] = useState(profile.work);
   const [overallStyle, setOverallStyle] = useState(profile.overallStyle);
   const [rawText, setRawText] = useState(material.raw_text);
   const [content, setContent] = useState<Record<string, unknown>>(material.content);
   const [busy, setBusy] = useState(false);
   function profileContent() {
-    return { ...content, author_name: name.trim(), introduction: description, source_works: lines(sourceWorks), overall_style: overallStyle, summary: overallStyle };
+    const next = { ...content, work: work.trim(), overall_style: overallStyle };
+    delete next.author_name;
+    delete next.introduction;
+    delete next.source_works;
+    return next;
   }
   async function save() {
     setBusy(true);
-    try { await updateMaterial(material.id, { name: name.trim(), description, detail_level: material.detail_level, raw_text: rawText, content: profileContent(), analysis_status: material.analysis_status, timeline_start_chapter: material.timeline_start_chapter, timeline_end_chapter: material.timeline_end_chapter, sort_order: material.sort_order }); await onSaved(material.id); }
+    try { await updateMaterial(material.id, { name: name.trim(), description: material.description, detail_level: material.detail_level, raw_text: rawText, content: profileContent(), analysis_status: material.analysis_status, timeline_start_chapter: material.timeline_start_chapter, timeline_end_chapter: material.timeline_end_chapter, sort_order: material.sort_order }); await onSaved(material.id); }
     catch (reason) { onError(errorMessage(reason)); } finally { setBusy(false); }
   }
-  async function extractDimension(dimension: AuthorDimension) {
-    if (dimension.analysis || dimension.features.length || dimension.examples.length) {
-      if (!window.confirm('重新提取将覆盖该维度当前的 AI 分析、具体特征和原文实例，不会影响其他维度。')) return;
-    }
-    setBusy(true);
-    try {
-      await updateMaterial(material.id, { name: name.trim(), description, detail_level: material.detail_level, raw_text: rawText, content: profileContent(), analysis_status: material.analysis_status, timeline_start_chapter: material.timeline_start_chapter, timeline_end_chapter: material.timeline_end_chapter, sort_order: material.sort_order });
-      const preview = await previewAuthorStyleDimension(material.id, { dimension_id: dimension.id, dimension_name: dimension.name, dimension_requirement: dimension.requirement });
-      const summary = `风格分析：\n${preview.analysis}\n\n具体特征：\n${preview.features.join('\n')}\n\n原文实例：\n${preview.examples.join('\n')}\n\n确认应用到当前维度？`;
-      if (!window.confirm(summary)) return;
-      const updated = await applyAuthorStyleDimension(material.id, preview.preview_token);
-      setContent(updated.content); await onSaved(material.id);
-    } catch (reason) { onError(errorMessage(reason)); } finally { setBusy(false); }
-  }
   return <LibraryDialog className="author-style-editor-dialog" footer={<><SecondaryButton onClick={onClose}>关闭</SecondaryButton><PrimaryButton disabled={busy || !name.trim()} onClick={() => void save()}>保存档案</PrimaryButton></>} onClose={onClose} title="编辑作者档案">
-    <div className="library-form-grid"><label><span>作者姓名</span><input value={name} onChange={(event) => setName(event.target.value)} /></label><label><span>来源作品（每行一部）</span><textarea value={sourceWorks} onChange={(event) => setSourceWorks(event.target.value)} /></label><label className="wide"><span>作者简介</span><textarea value={description} onChange={(event) => setDescription(event.target.value)} /></label><label className="wide"><span>整体风格</span><textarea value={overallStyle} onChange={(event) => setOverallStyle(event.target.value)} /></label><label className="wide"><span>用于分析的作品原文</span><textarea value={rawText} onChange={(event) => setRawText(event.target.value)} /></label></div>
-    <AuthorDimensionList content={content} editable onChange={setContent} onExtract={(dimension) => void extractDimension(dimension)} />
+    <div className="library-form-grid"><label><span>作者姓名</span><input value={name} onChange={(event) => setName(event.target.value)} /></label><label><span>作品</span><input value={work} onChange={(event) => setWork(event.target.value)} /></label><label className="wide"><span>整体风格</span><textarea value={overallStyle} onChange={(event) => setOverallStyle(event.target.value)} /></label><label className="wide"><span>用于分析的作品原文</span><textarea value={rawText} onChange={(event) => setRawText(event.target.value)} /></label></div>
+    <AuthorDimensionList content={content} editable onChange={setContent} />
   </LibraryDialog>;
 }
 
 type AuthorDimension = { id: string; name: string; requirement: string; analysis: string; features: string[]; examples: string[] };
-function AuthorDimensionList({ content, editable = false, onChange, onExtract }: { content: Record<string, unknown>; editable?: boolean; onChange: (value: Record<string, unknown>) => void; onExtract?: (value: AuthorDimension) => void }) {
+function AuthorDimensionList({ content, editable = false, onChange }: { content: Record<string, unknown>; editable?: boolean; onChange: (value: Record<string, unknown>) => void }) {
   const dimensions = authorDimensions(content.dimensions);
   const update = (id: string, value: Partial<AuthorDimension>) => onChange({ ...content, dimensions: dimensions.map((item) => item.id === id ? { ...item, ...value } : item) });
-  return <section className="author-dimension-editor"><div className="section-heading"><h3>作者风格维度</h3>{editable ? <button onClick={() => onChange({ ...content, dimensions: [...dimensions, { id: crypto.randomUUID(), name: '新维度', requirement: '', analysis: '', features: [], examples: [] }] })} type="button"><Plus size={14} />新增维度</button> : null}</div>{dimensions.map((item, index) => <details key={item.id} open={index === 0}><summary><span>{item.name}</span><small>{item.analysis ? '已分析' : '待分析'}</small></summary><div className="author-dimension-body">{editable ? <><label><span>维度名称</span><input value={item.name} onChange={(event) => update(item.id, { name: event.target.value })} /></label><label><span>提取要求</span><textarea value={item.requirement} onChange={(event) => update(item.id, { requirement: event.target.value })} /></label><label><span>风格分析</span><textarea value={item.analysis} onChange={(event) => update(item.id, { analysis: event.target.value })} /></label><label><span>具体特征 / 常用表达（每行一项）</span><textarea value={item.features.join('\n')} onChange={(event) => update(item.id, { features: lines(event.target.value) })} /></label><label><span>原文实例（每行一项）</span><textarea value={item.examples.join('\n')} onChange={(event) => update(item.id, { examples: lines(event.target.value) })} /></label><div className="author-dimension-actions"><button disabled={index === 0} onClick={() => onChange({ ...content, dimensions: move(dimensions, index, index - 1) })} type="button"><ArrowUp size={14} />上移</button><button disabled={index === dimensions.length - 1} onClick={() => onChange({ ...content, dimensions: move(dimensions, index, index + 1) })} type="button"><ArrowDown size={14} />下移</button><button onClick={() => onExtract?.(item)} type="button"><Sparkles size={14} />{item.analysis ? 'AI 重新提取' : 'AI 提取此维度'}</button><button className="danger" onClick={() => onChange({ ...content, dimensions: dimensions.filter((value) => value.id !== item.id) })} type="button"><Trash2 size={14} />删除</button></div></> : <><p>{item.requirement}</p><p>{item.analysis || '尚未分析'}</p><ul>{item.features.map((value) => <li key={value}>{value}</li>)}</ul><blockquote>{item.examples.join('\n')}</blockquote></>}</div></details>)}</section>;
+  return <section className="author-dimension-editor"><div className="section-heading"><h3>作者风格维度</h3>{editable ? <button onClick={() => onChange({ ...content, dimensions: [...dimensions, { id: crypto.randomUUID(), name: '新维度', requirement: '', analysis: '', features: [], examples: [] }] })} type="button"><Plus size={14} />新增维度</button> : null}</div>{dimensions.map((item, index) => <details key={item.id} open={index === 0}><summary><span>{item.name}</span><small>{item.analysis ? '已分析' : '待分析'}</small></summary><div className="author-dimension-body">{editable ? <><label><span>维度名称</span><input value={item.name} onChange={(event) => update(item.id, { name: event.target.value })} /></label><label><span>提取要求</span><textarea value={item.requirement} onChange={(event) => update(item.id, { requirement: event.target.value })} /></label><label><span>风格分析</span><textarea value={item.analysis} onChange={(event) => update(item.id, { analysis: event.target.value })} /></label><label><span>具体特征 / 常用表达（每行一项）</span><textarea value={item.features.join('\n')} onChange={(event) => update(item.id, { features: lines(event.target.value) })} /></label><label><span>原文实例（每行一项）</span><textarea value={item.examples.join('\n')} onChange={(event) => update(item.id, { examples: lines(event.target.value) })} /></label><div className="author-dimension-actions"><button disabled={index === 0} onClick={() => onChange({ ...content, dimensions: move(dimensions, index, index - 1) })} type="button"><ArrowUp size={14} />上移</button><button disabled={index === dimensions.length - 1} onClick={() => onChange({ ...content, dimensions: move(dimensions, index, index + 1) })} type="button"><ArrowDown size={14} />下移</button><button className="danger" onClick={() => onChange({ ...content, dimensions: dimensions.filter((value) => value.id !== item.id) })} type="button"><Trash2 size={14} />删除</button></div></> : <><p>{item.requirement}</p><p>{item.analysis || '尚未分析'}</p><ul>{item.features.map((value) => <li key={value}>{value}</li>)}</ul><blockquote>{item.examples.join('\n')}</blockquote></>}</div></details>)}</section>;
 }
 
 function authorDimensions(value: unknown): AuthorDimension[] { return Array.isArray(value) ? value.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object')).map((item, index) => ({ id: String(item.id || `dimension-${index + 1}`), name: String(item.name || '未命名维度'), requirement: String(item.requirement || ''), analysis: String(item.analysis || ''), features: stringArray(item.features), examples: stringArray(item.examples) })) : []; }
 function stringArray(value: unknown): string[] { return Array.isArray(value) ? value.map(String).filter(Boolean) : []; }
 function lines(value: string): string[] { return value.split('\n').map((item) => item.trim()).filter(Boolean); }
 function move<T>(items: T[], from: number, to: number): T[] { const copy = [...items]; const [item] = copy.splice(from, 1); if (item !== undefined) copy.splice(to, 0, item); return copy; }
-function authorProfile(material: Material): { name: string; introduction: string; works: string[]; overallStyle: string } {
-  const storedWorks = stringArray(material.content.source_works);
-  const sourceLabel = String(material.source_metadata.document_title || material.source_metadata.source_filename || '').trim();
+function authorProfile(material: Material): { name: string; work: string; overallStyle: string } {
+  const hasStoredWork = Object.prototype.hasOwnProperty.call(material.content, 'work');
+  const hasStoredOverallStyle = Object.prototype.hasOwnProperty.call(material.content, 'overall_style');
   return {
     name: String(material.content.author_name || material.name),
-    introduction: String(material.content.introduction || material.description || ''),
-    works: storedWorks.length ? storedWorks : sourceLabel ? [sourceLabel] : [],
-    overallStyle: String(material.content.overall_style || material.content.summary || ''),
+    work: hasStoredWork ? String(material.content.work || '').trim() : sourceWorkName(material.source_metadata),
+    overallStyle: hasStoredOverallStyle ? String(material.content.overall_style || '').trim() : String(material.content.summary || '').trim(),
   };
+}
+
+function sourceWorkName(metadata: Record<string, unknown>): string {
+  if (String(metadata.source_type || '').trim().toLowerCase() === 'file') {
+    for (const key of ['file_name', 'source_file_name', 'source_filename']) {
+      const value = visibleFileName(metadata[key]);
+      if (value) return value;
+    }
+  }
+  for (const key of ['document_title', 'source_document_title', 'book_title']) {
+    const value = String(metadata[key] || '').trim();
+    if (value) return value;
+  }
+  for (const key of ['file_name', 'source_file_name', 'source_filename']) {
+    const value = visibleFileName(metadata[key]);
+    if (value) return value;
+  }
+  return '';
+}
+
+function visibleFileName(value: unknown): string {
+  const name = String(value || '').trim().replace(/\\/g, '/').split('/').pop() || '';
+  if (!name) return '';
+  const extensionIndex = name.lastIndexOf('.');
+  return extensionIndex > 0 ? name.slice(0, extensionIndex) : name;
 }
 
 function AuthorDimensionTable({ content }: { content: Record<string, unknown> }) {
@@ -322,9 +331,6 @@ function AuthorDimensionTable({ content }: { content: Record<string, unknown> })
   return <section className="author-dimension-table"><div className="document-detail-heading"><span>分析维度</span></div>{dimensions.length ? <div className="author-dimension-rows">{dimensions.map((item, index) => <article key={item.id}><div className="author-dimension-name"><span>{icons[index % icons.length]}</span><strong>{item.name}</strong></div><div className="author-dimension-analysis"><p><b>分析：</b>{item.analysis || item.requirement || '尚未分析'}</p>{item.features.length ? <p><b>特征：</b>{item.features.join('、')}</p> : null}{item.examples.length ? <p><b>来源示例：</b>{item.examples.join('；')}</p> : null}</div></article>)}</div> : <p className="material-detail-copy">尚未添加分析维度</p>}</section>;
 }
 
-function AuthorCover({ author, id }: { author: string; id: number }) {
-  return <span className={`author-cover palette-${id % 3}`} aria-hidden="true"><UserRound size={24} /><strong>{Array.from(author.trim())[0] || '作'}</strong></span>;
-}
 function formatDate(value: string): string { const timestamp = Date.parse(value); return Number.isFinite(timestamp) ? new Date(timestamp).toLocaleDateString('zh-CN').replace(/\//g, '-') : '未知'; }
-function compilePreview(settings: MaterialAISettings): string { return `${settings.system_prompt}\n\n任务：\n${settings.base_instruction}\n\n分析维度：\n${settings.dimensions.map((item, index) => `${index + 1}. ${item.name}\nID: ${item.id}\n提取要求：${item.requirement}`).join('\n\n')}\n\n附加要求：\n${settings.extra_requirements || '无'}\n\n输出协议：\n返回 summary 与按稳定 ID 对齐的 dimensions（analysis / features / examples）。`; }
+function compilePreview(settings: MaterialAISettings): string { return `${settings.system_prompt}\n\n任务：\n${settings.base_instruction}\n\n分析维度：\n${settings.dimensions.map((item, index) => `${index + 1}. ${item.name}\nID: ${item.id}\n提取要求：${item.requirement}`).join('\n\n')}\n\n附加要求：\n${settings.extra_requirements || '无'}\n\n输出协议：\n返回 overall_style、summary 与按稳定 ID 对齐的 dimensions（analysis / features / examples）；overall_style 是独立顶层字段，不属于 dimensions。`; }
 function errorMessage(reason: unknown): string { return reason instanceof Error ? reason.message : String(reason); }

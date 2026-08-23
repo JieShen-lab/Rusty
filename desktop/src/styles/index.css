@@ -796,18 +796,12 @@ select:focus-visible {
 .material-extract-type-grid strong { font-size: 11px; }
 .material-extract-type-grid span { color: var(--muted); font-size: 9px; }
 .material-form-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(140px, .45fr); gap: 12px; }
-.material-source-tabs, .material-editor-tabs { display: flex; gap: 3px; border-bottom: 1px solid var(--line); }
-.material-source-tabs button, .material-editor-tabs button { cursor: pointer; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); padding: 9px 13px; font-size: 10px; font-weight: 650; }
-.material-source-tabs button.selected, .material-editor-tabs button.selected { border-color: var(--accent); color: var(--ink); }
-.material-source-textarea { width: 100%; min-height: 190px !important; resize: vertical; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--paper-muted); color: var(--ink); padding: 13px; font: 12px/1.75 "Microsoft YaHei UI", sans-serif; }
 .material-dialog > footer { display: flex; justify-content: flex-end; gap: 9px; border-top: 1px solid var(--line); padding-top: 15px; }
 .material-editor { display: grid; width: min(1180px, 100%); height: min(790px, calc(100vh - 78px)); grid-template-rows: auto auto minmax(0, 1fr) auto; overflow: hidden; border: 1px solid var(--line); border-radius: 14px; background: var(--paper); box-shadow: 0 24px 70px rgb(31 42 58 / 24%); }
 .material-editor > header { padding: 18px 22px; }
 .material-editor > header > div:last-child { display: flex; align-items: center; gap: 8px; }
-.material-editor-tabs { padding: 0 22px; }
 .material-editor-content { display: grid; min-height: 0; grid-template-columns: minmax(0, 1fr) 330px; overflow: hidden; }
 .material-editor-main { min-width: 0; overflow: auto; border-right: 1px solid var(--line); padding: 20px 22px; }
-.material-description-input { width: 100%; min-height: 78px; resize: vertical; border: 1px solid var(--line); border-radius: 8px; background: var(--paper-muted); color: var(--ink); padding: 11px; font: 11px/1.65 "Microsoft YaHei UI", sans-serif; }
 .material-visual-sections { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 18px; }
 .material-visual-sections > section, .material-editor-content > aside > section, .material-editor-content > aside details { border: 1px solid var(--line); border-radius: 9px; background: var(--paper-muted); padding: 14px; }
 .material-editor-content > aside { display: grid; align-content: start; gap: 12px; overflow: auto; background: var(--paper-muted); padding: 18px; }
@@ -1241,8 +1235,6 @@ select:focus-visible {
 .editable-manuscript { position: relative; display: flex; width: 100%; min-height: 0; flex: 1; flex-direction: column; }
 .manuscript-editor { width: 100%; min-height: 0; height: 100%; flex: 1; overflow-y: auto; border: 0; outline: 0; resize: none; padding: 18px; font: inherit; line-height: 1.9; background: var(--paper); color: var(--ink); box-shadow: none; }
 .manuscript-editor:focus, .manuscript-editor:focus-visible { border: 0; outline: 0; box-shadow: none; }
-.selection-resource-menu { position: fixed; z-index: 100; display: grid; min-width: 190px; padding: 6px; background: var(--paper); border: 1px solid var(--line-strong); border-radius: 8px; box-shadow: 0 10px 30px rgba(20, 24, 31, 0.18); }
-.selection-resource-menu button { text-align: left; padding: 8px 10px; border-radius: 6px; }
 
 /* Character and material libraries adapt to the document-library visual contract. */
 .character-library-page, .material-library-page { height: 100%; min-height: 600px; }
@@ -2026,16 +2018,17 @@ select:focus-visible {
 .material-workflow-dialog,
 .material-editor-dialog { width: min(1040px, calc(100vw - 64px)); max-height: calc(100vh - 64px); }
 .material-settings-dialog { width: min(940px, calc(100vw - 64px)); }
+.material-create-dialog { width: min(560px, calc(100vw - 32px)); height: auto; max-height: none; }
+.material-create-dialog .library-dialog-body { gap: 0; overflow: visible; padding: 24px 26px; }
+.material-create-dialog > footer { padding: 14px 26px; }
+.author-create-form { display: grid; gap: 18px; }
+.author-create-row { display: grid; grid-template-columns: 92px minmax(0, 1fr); min-width: 0; align-items: center; column-gap: 16px; }
+.author-create-row > span { color: var(--text-primary); font-size: 12px; font-weight: 600; }
+.author-create-row input { width: min(240px, 100%); min-height: 38px; border: 1px solid var(--border-strong); border-radius: 8px; outline: 0; background: var(--surface-input); color: var(--text-primary); padding: 0 11px; font-size: 12px; }
+.author-create-row input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent); }
+.author-create-file { display: flex; min-width: 0; align-items: center; gap: 10px; }
+.author-create-file-name { min-width: 0; overflow: hidden; color: var(--text-secondary); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .material-workflow-tabs, .material-settings-tabs { display: flex; flex-wrap: wrap; gap: 6px; border-bottom: 1px solid var(--line); padding-bottom: 10px; }
-.material-create-form { margin-top: 2px; }
-.material-form-hint { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.7; }
-.material-source-field { display: grid; grid-column: 1 / -1; gap: 6px; }
-.material-source-field > span { color: var(--muted); font-size: 11px; font-weight: 650; }
-.material-source-options { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
-.material-source-options button, .material-source-options label, .material-source-options > span { display: inline-flex; min-height: 30px; cursor: pointer; align-items: center; border: 1px solid var(--line); border-radius: 7px; background: var(--paper-muted); color: var(--ink-soft); padding: 0 9px; font-size: 10px; }
-.material-source-options button[aria-pressed="true"], .material-source-options > span { border-color: var(--selected-border); background: var(--accent-soft); color: var(--accent); }
-.material-source-options label input { position: absolute; width: 1px; height: 1px; overflow: hidden; opacity: 0; }
-.material-source-options small { max-width: 220px; overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
 .material-candidate-list { display: grid; gap: 12px; }
 .material-candidate-card { display: grid; gap: 11px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper-muted); padding: 14px; }
 .material-candidate-card.disabled { opacity: .55; }
@@ -2739,7 +2732,7 @@ select:focus-visible {
 
 /* Author profiles: the product has authors, while the legacy material table remains an internal detail. */
 .author-profile-list { display: grid; gap: 6px; padding: 12px 14px 22px; }
-.author-profile-row { width: 100%; min-height: 70px; display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid transparent; border-radius: 10px; background: transparent; color: var(--text-primary); text-align: left; cursor: pointer; }
+.author-profile-row { width: 100%; min-height: 70px; display: grid; grid-template-columns: minmax(0, 1fr); align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid transparent; border-radius: 10px; background: transparent; color: var(--text-primary); text-align: left; cursor: pointer; }
 .author-profile-row:hover { background: var(--surface-hover); }
 .author-profile-row.selected { border-color: var(--accent-border); background: var(--accent-soft); }
 .author-profile-avatar { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 50%; background: var(--surface-subtle); color: var(--accent); }
@@ -2747,16 +2740,55 @@ select:focus-visible {
 .author-profile-copy { min-width: 0; display: grid; gap: 5px; }
 .author-profile-copy strong { overflow: hidden; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
 .author-profile-copy small { overflow: hidden; color: var(--text-secondary); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.author-profile-status { border-radius: 999px; padding: 4px 7px; background: var(--surface-subtle); color: var(--text-secondary); font-size: 10px; }
-.author-profile-status.analyzed { background: var(--accent-soft); color: var(--accent); }
 .author-detail-identity { align-items: center; }
-.author-work-list { display: flex; flex-wrap: wrap; gap: 7px; }
-.author-work-list span { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--border-default); border-radius: 999px; padding: 5px 8px; color: var(--text-secondary); font-size: 11px; }
-.material-detail-panel .author-dimension-editor { padding: 0; }
-.material-detail-panel .author-dimension-editor .section-heading button { display: none; }
-.material-detail-panel .author-dimension-editor details { border-top: 1px solid var(--border-default); padding: 7px 0; }
-.material-detail-panel .author-dimension-editor summary { cursor: pointer; font-size: 12px; }
-.material-detail-panel .author-dimension-body { color: var(--text-secondary); font-size: 12px; line-height: 1.7; }
+
+/* Author dialogs use the next readable typography step without changing the global application scale. */
+.material-settings-dialog h2,
+.author-style-editor-dialog h2 { font-size: 23px; }
+.material-settings-dialog .library-dialog-body,
+.author-style-editor-dialog .library-dialog-body { gap: 20px; padding: 24px 26px; }
+.material-settings-dialog .library-form-grid,
+.author-style-editor-dialog .library-form-grid { gap: 18px; }
+.material-settings-dialog .library-form-grid label > span,
+.author-style-editor-dialog .library-form-grid label > span,
+.material-settings-dialog .material-extra-requirements > span { color: var(--ink); font-size: 16px; font-weight: 600; }
+.material-settings-dialog .library-form-grid input,
+.material-settings-dialog .library-form-grid select,
+.author-style-editor-dialog .library-form-grid input,
+.material-settings-dialog .library-form-grid textarea,
+.author-style-editor-dialog .library-form-grid textarea,
+.material-settings-dialog .material-extra-requirements textarea { min-height: 46px; font-size: 16px; line-height: 1.6; }
+.material-settings-dialog .library-form-grid textarea,
+.author-style-editor-dialog .library-form-grid textarea,
+.material-settings-dialog .material-extra-requirements textarea { min-height: 118px; padding: 11px 13px; }
+.material-settings-dialog .section-heading h3,
+.author-style-editor-dialog .section-heading h3 { font-size: 18px; }
+.material-settings-dialog .section-heading button,
+.author-style-editor-dialog .section-heading button,
+.material-settings-dialog .material-settings-transfer .button,
+.material-settings-dialog > footer .button,
+.author-style-editor-dialog > footer .button { min-height: 42px; font-size: 15px; }
+.material-settings-dialog .material-dimension-settings { gap: 13px; }
+.material-settings-dialog .material-dimension-settings article { grid-template-columns: 48px minmax(180px, .36fr) minmax(300px, 1fr) auto; gap: 14px; padding: 14px; }
+.material-settings-dialog .material-dimension-settings article label { gap: 7px; }
+.material-settings-dialog .material-dimension-settings article label > span { font-size: 16px; font-weight: 600; }
+.material-settings-dialog .material-dimension-settings article input,
+.material-settings-dialog .material-dimension-settings article textarea { min-height: 46px; padding: 10px 12px; font-size: 16px; line-height: 1.6; }
+.material-settings-dialog .material-dimension-settings article textarea { min-height: 122px; }
+.material-settings-dialog .material-dimension-settings button { min-height: 40px; font-size: 15px; }
+.material-settings-dialog .material-prompt-preview h3 { font-size: 18px; }
+.material-settings-dialog .material-prompt-preview pre { font: 14px/1.7 Consolas, monospace; }
+.author-style-editor-dialog .author-dimension-editor { gap: 18px; }
+.author-style-editor-dialog .author-dimension-editor > details > summary { min-height: 50px; padding-inline: 15px; font-size: 17px; }
+.author-style-editor-dialog .author-dimension-editor > details > summary small { font-size: 14px; }
+.author-style-editor-dialog .author-dimension-body { gap: 14px; padding: 16px; }
+.author-style-editor-dialog .author-dimension-body label { gap: 7px; font-size: 15px; }
+.author-style-editor-dialog .author-dimension-body label > span { font-size: 15px; font-weight: 600; }
+.author-style-editor-dialog .author-dimension-body input,
+.author-style-editor-dialog .author-dimension-body textarea { min-height: 46px; padding: 10px 12px; font-size: 16px; line-height: 1.65; }
+.author-style-editor-dialog .author-dimension-body textarea { min-height: 112px; }
+.author-style-editor-dialog .author-dimension-actions { gap: 9px; }
+.author-style-editor-dialog .author-dimension-actions button { min-height: 40px; font-size: 15px; }
 
 /* Six-stage chapter workspace. */
 .chapter-flow-page { min-height: 720px; }
@@ -3110,35 +3142,32 @@ select:focus-visible {
 .material-browser-layout.material-library-unified { grid-template-columns: minmax(340px, 420px) minmax(420px, 1fr); }
 .material-browser-shelf > header { min-height: 54px; padding: 9px 14px; }
 .author-profile-list { gap: 0; padding: 0 12px 18px; }
-.author-profile-row { min-height: 96px; grid-template-columns: 54px minmax(0, 1fr); gap: 13px; border: 0; border-bottom: 1px solid var(--border-default); border-radius: 0; padding: 11px 9px; }
+.author-profile-row { min-height: 92px; grid-template-columns: minmax(0, 1fr); gap: 10px; border: 0; border-bottom: 1px solid var(--border-default); border-radius: 0; padding: 16px 18px; }
 .author-profile-row.selected { border: 1px solid var(--accent); border-radius: 4px; background: color-mix(in srgb, var(--accent) 5%, var(--surface-input)); }
-.author-cover { display: grid; width: 50px; height: 50px; grid-template-areas: "avatar"; place-items: center; overflow: hidden; border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border-strong)); border-radius: 50%; background: color-mix(in srgb, var(--accent) 10%, var(--surface-subtle)); color: var(--accent); }
-.author-cover.palette-1 { background: color-mix(in srgb, #4c8b68 12%, var(--surface-subtle)); color: #397557; }
-.author-cover.palette-2 { background: color-mix(in srgb, #9a7445 12%, var(--surface-subtle)); color: #856137; }
-.author-cover svg, .author-cover strong { grid-area: avatar; }
-.author-cover svg { opacity: .18; }
-.author-cover strong { font-family: "Noto Serif SC", "Songti SC", serif; font-size: 20px; font-weight: 700; }
-.author-profile-copy { align-content: center; gap: 6px; }
-.author-profile-copy strong { font-family: "Noto Serif SC", "Songti SC", serif; font-size: 16px; }
-.author-profile-copy small { display: -webkit-box; overflow: hidden; color: var(--text-secondary); font-size: 11px; line-height: 1.55; text-overflow: ellipsis; white-space: normal; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
-.author-profile-copy em { color: var(--muted); font-size: 10px; font-style: normal; }
+.author-profile-copy { align-content: center; gap: 7px; }
+.author-profile-copy strong { font-family: "Noto Serif SC", "Songti SC", serif; font-size: 22px; line-height: 1.45; }
+.author-profile-copy small { display: block; overflow: hidden; color: var(--text-secondary); font-size: 16px; line-height: 1.5; text-overflow: ellipsis; white-space: nowrap; }
+.author-profile-copy em { color: var(--muted); font-size: 14px; font-style: normal; line-height: 1.5; }
 .material-detail-panel { min-width: 0; }
-.material-detail-panel > header { min-height: 54px; padding: 16px 20px 10px; }
-.material-detail-panel .document-detail-scroll { padding: 8px 22px 22px; }
-.material-detail-panel .document-detail-scroll > section { margin: 0; padding: 10px 0; }
+.material-detail-panel > header { min-height: 58px; padding: 16px 22px 12px; }
+.material-detail-panel > header h2 { font-size: 21px; }
+.material-detail-panel .document-detail-scroll { padding: 10px 26px 26px; }
+.material-detail-panel .document-detail-scroll > section { margin: 0; padding: 14px 0; }
 .author-detail-identity { padding-top: 14px !important; }
-.author-detail-identity h3 { font-family: "Noto Serif SC", "Songti SC", serif; font-size: 25px !important; font-weight: 650; }
-.author-work-list span { border: 0; padding: 2px 0; font-family: "Noto Serif SC", "Songti SC", serif; }
-.material-detail-copy { color: var(--text-secondary); font-size: 12px; line-height: 1.75; }
-.author-dimension-table { display: grid; gap: 7px; }
+.author-detail-identity h3 { font-family: "Noto Serif SC", "Songti SC", serif; font-size: 32px !important; font-weight: 650; line-height: 1.3; }
+.author-detail-identity p { margin: 8px 0 0; color: var(--text-secondary); font-size: 16px; line-height: 1.5; }
+.material-detail-panel .document-detail-heading { margin-bottom: 11px; }
+.material-detail-panel .document-detail-heading span { font-size: 20px; font-weight: 600; }
+.material-detail-copy { color: var(--text-secondary); font-size: 16px; line-height: 1.7; }
+.author-dimension-table { display: grid; gap: 10px; }
 .author-dimension-rows { overflow: hidden; border: 1px solid var(--border-default); border-radius: 4px; }
-.author-dimension-rows article { display: grid; grid-template-columns: 116px minmax(0, 1fr); min-height: 72px; }
+.author-dimension-rows article { display: grid; grid-template-columns: minmax(190px, 220px) minmax(0, 1fr); min-height: 88px; }
 .author-dimension-rows article + article { border-top: 1px solid var(--border-default); }
-.author-dimension-name { display: flex; align-items: center; gap: 9px; border-right: 1px solid var(--border-default); padding: 12px; }
+.author-dimension-name { display: flex; align-items: center; gap: 11px; border-right: 1px solid var(--border-default); padding: 16px; }
 .author-dimension-name > span { display: grid; color: var(--accent); }
-.author-dimension-name strong { font-size: 12px; }
-.author-dimension-analysis { display: grid; align-content: center; gap: 3px; padding: 7px 12px; }
-.author-dimension-analysis p { margin: 0; color: var(--text-secondary); font-size: 11px; line-height: 1.55; }
+.author-dimension-name strong { font-size: 17px; line-height: 1.45; }
+.author-dimension-analysis { display: grid; align-content: center; gap: 6px; padding: 13px 18px; }
+.author-dimension-analysis p { margin: 0; color: var(--text-secondary); font-size: 16px; line-height: 1.65; }
 .author-dimension-analysis b { color: var(--text-primary); }
 
 /* Fixed prompt contract: exactly six workflow prompts. */
@@ -3234,8 +3263,6 @@ select:focus-visible {
 .material-form-grid select:focus,
 .material-form-grid textarea:focus,
 .material-project-select select:focus,
-.material-source-textarea:focus,
-.material-description-input:focus,
 .resource-editor input:not([type="checkbox"]):not([type="radio"]):focus,
 .resource-editor select:focus,
 .resource-editor textarea:focus,

@@ -4514,8 +4514,22 @@ def _material_ai_v54_defaults() -> dict[str, dict[str, object]]:
             "dimensions": [{"id": item[0], "name": item[1], "requirement": item[2]} for item in plot_names],
         },
         "author_style_extraction": {
-            "system_prompt": "你负责分析输入文本的作者写作风格，并返回严格结构化 JSON。",
-            "base_instruction": "分析输入文本的作者写作风格，以便后续写作复现其可操作的表达规律。\n\n" + shared_style_rules,
+            "system_prompt": (
+                "你负责分析输入文本的作者写作风格，并返回严格结构化 JSON。\n\n"
+                "除用户配置的具体分析维度外，必须单独提取 overall_style（整体风格）。\n\n"
+                "overall_style 用于综合概括样本文本在宏观层面的稳定写作规律，包括但不限于叙事方式、叙事视角、"
+                "信息展开、句段节奏、对话与描写关系、情绪表达、场景转换和整体表达倾向。\n\n"
+                "overall_style 必须直接基于输入样本文本总结，不能依据作者身份、生平或外部知识进行推断，"
+                "不能只把各分析维度的结果机械拼接，也不能使用空泛文学评价。\n\n"
+                "所有分析都必须服务于后续风格复现，并严格遵守规定的 JSON 输出结构。"
+            ),
+            "base_instruction": (
+                "分析输入文本的作者写作风格，以便后续写作复现其可操作的表达规律。\n\n"
+                "首先提取整体风格（overall_style）。整体风格用于综合说明整份样本文本最稳定、最具统摄性的写作规律，"
+                "应概括作者通常如何组织叙事、展开信息、安排句段节奏、处理对话与描写、表达情绪、切换场景以及控制整体信息密度。\n\n"
+                "整体风格不是文学评价，也不是下面各分析维度结果的简单拼接，而是一段可以直接作为后续写作总约束使用的风格总结。\n\n"
+                "随后按照用户配置的分析维度逐项分析。\n\n" + shared_style_rules
+            ),
             "dimensions": [{"id": item[0], "name": item[1], "requirement": item[2]} for item in style_names],
         },
     }

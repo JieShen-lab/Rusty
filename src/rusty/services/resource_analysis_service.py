@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -9,7 +10,17 @@ from rusty.services.material_service import Material, MaterialService
 from rusty.services.structured_model_service import StructuredModelResult, StructuredModelService
 
 
-AUTHOR_STYLE_SCHEMA = {"type": "object", "required": ["summary", "dimensions"]}
+logger = logging.getLogger(__name__)
+
+AUTHOR_STYLE_SCHEMA = {
+    "type": "object",
+    "required": ["summary", "overall_style", "dimensions"],
+    "properties": {
+        "summary": {"type": "string"},
+        "overall_style": {"type": "string"},
+        "dimensions": {"type": "array"},
+    },
+}
 
 
 class ResourceAnalysisService:
@@ -47,10 +58,14 @@ class ResourceAnalysisService:
             validator=_validate_author_style, model_id=model_id, project_id=material.project_id,
             resource_type="material", resource_id=material.id,
         )
+        existing = json.loads(material.content_json)
+        if isinstance(existing, dict):
+            existing.pop("source_works", None)
+            existing.pop("introduction", None)
         return {
             "material_id": material.id, "model_id": result.model_id,
             "invocation_id": result.invocation_id, "proposal": result.value,
-            "existing": json.loads(material.content_json), "_result": result,
+            "existing": existing, "_result": result,
         }
 
     def apply_material_analysis(
@@ -70,7 +85,12 @@ def _material_messages(material: Material) -> list[dict[str, str]]:
         {"role": "system", "content": (
             "Analyze one complete author style profile. Describe concrete writing methods and "
             "quote examples exactly from the source. Style must not introduce story facts. "
-            "Return strict JSON with summary and dimensions[{id,name,requirement,analysis,features[],examples[]}]."
+            "First produce a separate top-level overall_style describing the stable macro-level writing rules "
+            "for narrative organization, viewpoint, information flow, sentence and paragraph rhythm, dialogue and "
+            "description balance, emotion, scene transitions, information density, and overall expression. "
+            "It must be grounded in the sample, not author identity or external knowledge, not a mechanical "
+            "concatenation of dimensions, and not a vague literary evaluation. "
+            "Return strict JSON with summary, overall_style, and dimensions[{id,name,requirement,analysis,features[],examples[]}]."
         )},
         {"role": "user", "content": (
             f"Name: {material.name}\nExisting description: {material.description}"
@@ -82,6 +102,9 @@ def _material_messages(material: Material) -> list[dict[str, str]]:
 def _validate_author_style(value: dict[str, Any]) -> dict[str, Any]:
     if "summary" not in value or "dimensions" not in value:
         raise ValueError("Missing required fields: summary, dimensions")
+    overall_style = str(value.get("overall_style") or "").strip()
+    if not overall_style:
+        logger.warning("Author style analysis response omitted overall_style; preserving an empty field.")
     if not isinstance(value["dimensions"], list):
         raise ValueError("dimensions must be an array.")
     dimensions: list[dict[str, Any]] = []
@@ -95,7 +118,11 @@ def _validate_author_style(value: dict[str, Any]) -> dict[str, Any]:
             "features": _string_list(item.get("features", [])),
             "examples": _string_list(item.get("examples", [])),
         })
-    return {"summary": str(value["summary"] or "").strip(), "dimensions": dimensions}
+    return {
+        "summary": str(value["summary"] or "").strip(),
+        "overall_style": overall_style,
+        "dimensions": dimensions,
+    }
 
 
 def _string_list(value: Any) -> list[str]:

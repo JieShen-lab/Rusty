@@ -85,7 +85,7 @@ export default function App() {
   if (route.key === 'models') page = <ModelManagePage />;
   if (route.key === 'prompts') page = <PromptManagePage />;
   if (route.key === 'authors') page = <AuthorLibraryPage />;
-  if (route.key === 'documents') page = <DocumentLibraryPage onNavigate={navigate} />;
+  if (route.key === 'documents') page = <DocumentLibraryPage />;
 
   return (
     <AppShell active={route.key} onNavigate={navigate} onToggleTheme={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')} theme={theme}>

@@ -760,6 +760,20 @@ export type MaterialAIDimension = {
   requirement: string;
 };
 
+export type AuthorStyleContent = Record<string, unknown> & {
+  work?: string;
+  summary?: string;
+  overall_style?: string;
+  dimensions?: Array<{
+    id: string;
+    name: string;
+    requirement: string;
+    analysis: string;
+    features: string[];
+    examples: string[];
+  }>;
+};
+
 export type MaterialSourceSummary = {
   kind:
     | 'manual'
@@ -795,7 +809,7 @@ export type Material = {
   description: string;
   detail_level: StyleDetailLevel;
   raw_text: string;
-  content: Record<string, unknown>;
+  content: AuthorStyleContent;
   analysis_status: AnalysisStatus;
   source_metadata: Record<string, unknown>;
   import_metadata: Record<string, unknown>;
@@ -820,7 +834,7 @@ export type MaterialWrite = {
   description?: string;
   detail_level?: StyleDetailLevel;
   raw_text?: string;
-  content: Record<string, unknown>;
+  content: AuthorStyleContent;
   analysis_status?: AnalysisStatus;
   source_metadata?: Record<string, unknown>;
   import_metadata?: Record<string, unknown>;
@@ -857,7 +871,7 @@ export type MaterialExtractionCandidate = {
   selected: boolean;
   name: string;
   description: string;
-  content: Record<string, unknown>;
+  content: AuthorStyleContent;
   category_ids?: number[];
   evidence: Array<Record<string, unknown>>;
   evidence_summary: string;
@@ -878,14 +892,6 @@ export type MaterialExtractionPreview = {
 export type MaterialExtractionApplyResult = {
   created: Array<{ candidate_id: string; material_id: number | null; error: string | null }>;
   errors: Array<{ candidate_id: string; material_id: number | null; error: string | null }>;
-};
-
-export type AuthorStyleDimensionPreview = {
-  preview_token: string;
-  dimension_id: string;
-  analysis: string;
-  features: string[];
-  examples: string[];
 };
 
 export type SelectionResourceCreate = {

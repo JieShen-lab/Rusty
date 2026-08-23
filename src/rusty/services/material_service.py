@@ -15,6 +15,16 @@ MATERIAL_TYPES = {"author_style"}
 MATERIAL_SCOPES = {"public", "project"}
 ANALYSIS_STATUSES = {"unanalyzed", "analyzed"}
 MATERIAL_AI_TASK_TYPES = {"author_style_extraction"}
+AUTHOR_STYLE_SYSTEM_OVERALL_STYLE_REQUIREMENT = (
+    "固定输出要求：除用户配置的具体分析维度外，必须单独提取 overall_style（整体风格）。"
+    "它必须直接基于输入样本文本概括宏观、稳定且可用于后续写作复现的表达规律；"
+    "不能依据作者身份、生平或外部知识推断，不能把各维度结果机械拼接，也不能使用空泛文学评价。"
+)
+AUTHOR_STYLE_BASE_OVERALL_STYLE_REQUIREMENT = (
+    "固定任务：首先提取整体风格（overall_style），综合说明整份样本文本如何组织叙事、展开信息、"
+    "安排句段节奏、处理对话与描写、表达情绪、切换场景和控制信息密度。整体风格不是文学评价，"
+    "也不是分析维度结果的简单拼接，而是一段可以直接作为后续写作总约束使用的具体总结。"
+)
 
 
 @dataclass(frozen=True)
@@ -129,9 +139,15 @@ class MaterialService:
         if query and query.strip():
             like = f"%{query.strip()}%"
             clauses.append(
-                "(m.name LIKE ? OR m.description LIKE ? OR m.raw_text LIKE ?)"
+                "(m.name LIKE ? OR json_extract(m.content_json, '$.work') LIKE ? "
+                "OR json_extract(m.source_metadata_json, '$.document_title') LIKE ? "
+                "OR json_extract(m.source_metadata_json, '$.source_document_title') LIKE ? "
+                "OR json_extract(m.source_metadata_json, '$.book_title') LIKE ? "
+                "OR json_extract(m.source_metadata_json, '$.file_name') LIKE ? "
+                "OR json_extract(m.source_metadata_json, '$.source_file_name') LIKE ? "
+                "OR json_extract(m.source_metadata_json, '$.source_filename') LIKE ?)"
             )
-            parameters.extend([like, like, like])
+            parameters.extend([like, like, like, like, like, like, like, like])
         pagination = ""
         if limit is not None:
             if limit < 1 or limit > 500:
@@ -217,6 +233,10 @@ class MaterialService:
             source_metadata_value.setdefault("legacy_scope", "project")
             source_metadata_value.setdefault("legacy_project_id", project_id)
             source_metadata_value.setdefault("migrated_to_unified_library", True)
+        source_content = content if isinstance(content, dict) else {}
+        normalized_content = normalize_material_content(material_type, source_content)
+        if material_type == "author_style" and "work" not in source_content:
+            normalized_content["work"] = material_work_from_source_metadata(source_metadata_value)
         with session(self.database_path) as connection:
             if project_id is not None:
                 self._require_project(connection, project_id)
@@ -237,10 +257,7 @@ class MaterialService:
                     description,
                     detail_level,
                     raw_text,
-                    json.dumps(
-                        normalize_material_content(material_type, content or {}),
-                        ensure_ascii=False,
-                    ),
+                    json.dumps(normalized_content, ensure_ascii=False),
                     analysis_status,
                     json.dumps(source_metadata_value, ensure_ascii=False),
                     json.dumps(import_metadata or {}, ensure_ascii=False),
@@ -302,18 +319,24 @@ class MaterialService:
         detail_level = _validate_detail_level(detail_level)
         if not candidates:
             raise ValueError("At least one material candidate is required.")
+        source_metadata_value = dict(source_metadata or {})
         prepared: list[dict[str, Any]] = []
         for candidate in candidates:
             candidate_id = str(candidate.get("candidate_id") or "")
             try:
+                normalized_content = normalize_material_content(
+                    material_type, candidate.get("content")
+                )
+                if material_type == "author_style":
+                    normalized_content["work"] = material_work_from_source_metadata(
+                        source_metadata_value
+                    )
                 prepared.append(
                     {
                         **candidate,
                         "candidate_id": candidate_id,
                         "name": _required_name(str(candidate.get("name") or "")),
-                        "content": normalize_material_content(
-                            material_type, candidate.get("content")
-                        ),
+                        "content": normalized_content,
                         "category_ids": [
                             int(value) for value in candidate.get("category_ids", [])
                         ],
@@ -359,7 +382,7 @@ class MaterialService:
                             detail_level,
                             raw_text,
                             json.dumps(candidate["content"], ensure_ascii=False),
-                            json.dumps(source_metadata, ensure_ascii=False),
+                            json.dumps(source_metadata_value, ensure_ascii=False),
                             json.dumps(import_metadata, ensure_ascii=False),
                             int(candidate.get("sort_order") or 0),
                         ),
@@ -456,7 +479,7 @@ class MaterialService:
             raise ValueError("Material analysis result must be a non-empty object.")
         with session(self.database_path) as connection:
             row = connection.execute(
-                "SELECT material_type, import_metadata_json FROM materials WHERE id = ? AND deleted_at IS NULL",
+                "SELECT material_type, import_metadata_json, content_json, source_metadata_json FROM materials WHERE id = ? AND deleted_at IS NULL",
                 (material_id,),
             ).fetchone()
             if row is None:
@@ -464,6 +487,15 @@ class MaterialService:
             metadata = _json_object(str(row["import_metadata_json"]))
             metadata["last_analyzed_model_id"] = model_id
             metadata["last_analysis_invocation_id"] = invocation_id
+            normalized_content = normalize_material_content(str(row["material_type"]), content)
+            if str(row["material_type"]) == "author_style":
+                existing_content = _json_object(str(row["content_json"]))
+                if "work" in existing_content:
+                    normalized_content["work"] = str(existing_content.get("work") or "").strip()
+                else:
+                    normalized_content["work"] = material_work_from_source_metadata(
+                        _json_object(str(row["source_metadata_json"]))
+                    )
             connection.execute(
                 """
                 UPDATE materials
@@ -474,7 +506,7 @@ class MaterialService:
                 """,
                 (
                     json.dumps(
-                        normalize_material_content(str(row["material_type"]), content),
+                        normalized_content,
                         ensure_ascii=False,
                     ),
                     json.dumps(metadata, ensure_ascii=False),
@@ -787,6 +819,7 @@ class MaterialService:
 
     def list_ai_settings(self) -> list[MaterialAISettings]:
         with session(self.database_path) as connection:
+            _upgrade_author_style_prompt_contract(connection)
             rows = connection.execute(
                 "SELECT * FROM material_ai_settings ORDER BY task_type"
             ).fetchall()
@@ -1011,6 +1044,32 @@ def _required_name(value: str) -> str:
     return normalized
 
 
+def material_work_from_source_metadata(value: object) -> str:
+    metadata = value if isinstance(value, dict) else {}
+    if str(metadata.get("source_type") or "").strip().lower() == "file":
+        for key in ("file_name", "source_file_name", "source_filename"):
+            file_name = _visible_file_name(metadata.get(key))
+            if file_name:
+                return file_name
+    for key in ("document_title", "source_document_title", "book_title"):
+        title = str(metadata.get(key) or "").strip()
+        if title:
+            return title
+    for key in ("file_name", "source_file_name", "source_filename"):
+        file_name = _visible_file_name(metadata.get(key))
+        if file_name:
+            return file_name
+    return ""
+
+
+def _visible_file_name(value: object) -> str:
+    name = str(value or "").strip().replace("\\", "/").rsplit("/", 1)[-1]
+    if not name:
+        return ""
+    suffix = Path(name).suffix
+    return name[:-len(suffix)] if suffix and len(name) > len(suffix) else name
+
+
 def _normalize_resource_name(value: str) -> str:
     return " ".join(value.strip().split()).casefold()
 
@@ -1051,14 +1110,47 @@ def _validate_ai_task_type(value: str) -> str:
     return value
 
 
+def _upgrade_author_style_prompt_contract(connection) -> None:
+    row = connection.execute(
+        "SELECT system_prompt, base_instruction FROM material_ai_settings "
+        "WHERE task_type = 'author_style_extraction'"
+    ).fetchone()
+    if row is None:
+        return
+    system_prompt = _append_prompt_requirement(
+        str(row["system_prompt"] or ""),
+        AUTHOR_STYLE_SYSTEM_OVERALL_STYLE_REQUIREMENT,
+    )
+    base_instruction = _append_prompt_requirement(
+        str(row["base_instruction"] or ""),
+        AUTHOR_STYLE_BASE_OVERALL_STYLE_REQUIREMENT,
+    )
+    if system_prompt == str(row["system_prompt"] or "") and base_instruction == str(row["base_instruction"] or ""):
+        return
+    connection.execute(
+        """
+        UPDATE material_ai_settings
+        SET system_prompt = ?, base_instruction = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE task_type = 'author_style_extraction'
+        """,
+        (system_prompt, base_instruction),
+    )
+
+
+def _append_prompt_requirement(prompt: str, requirement: str) -> str:
+    if "overall_style" in prompt:
+        return prompt
+    return f"{prompt.rstrip()}\n\n{requirement}" if prompt.strip() else requirement
+
+
 def compile_material_ai_prompt(settings: MaterialAISettings) -> str:
     dimensions = "\n\n".join(
         f"{index}. {item['name']}\nID: {item['id']}\n提取要求：{item['requirement']}"
         for index, item in enumerate(settings.dimensions, 1)
     )
     output = (
-        "返回一份包含 summary 与 dimensions 的 JSON；每个维度必须返回输入 ID、name、analysis、"
-        "features 字符串数组和 examples 原文字符串数组。"
+        "返回一份包含 overall_style、summary 与 dimensions 的 JSON；overall_style 是独立顶层字段，"
+        "不属于 dimensions；每个维度必须返回输入 ID、name、analysis、features 字符串数组和 examples 原文字符串数组。"
         if settings.task_type == "author_style_extraction"
         else "返回一份包含 premise、stages、conflicts、turning_points、climax、resolution 和 hooks 的剧情骨架 JSON。"
     )
@@ -1103,7 +1195,9 @@ def normalize_author_style_content(value: object) -> dict[str, Any]:
         })
     return {
         "schema_version": 1,
+        "work": str(source.get("work") or "").strip(),
         "summary": str(source.get("summary") or "").strip(),
+        "overall_style": str(source.get("overall_style") or "").strip(),
         "dimensions": dimensions,
         **({"legacy_scene_reference": source["legacy_scene_reference"]} if "legacy_scene_reference" in source else {}),
     }

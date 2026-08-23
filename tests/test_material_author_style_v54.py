@@ -9,21 +9,7 @@ import pytest
 
 from rusty.db import session
 from rusty.db.schema import CURRENT_SCHEMA_VERSION, _migrate_to_v54, initialize_database_file
-from rusty.services.ai_client import AIClient, AIResponse
-from rusty.services.anchor_extraction_service import AnchorExtractionService
 from rusty.services.material_service import MaterialService, compile_material_ai_prompt
-from rusty.services.model_service import ModelService
-
-
-class DimensionAI(AIClient):
-    def chat(self, model, api_key, messages):
-        return AIResponse(
-            text=json.dumps({
-                "id": "dialogue", "analysis": "对话短促。",
-                "features": ["省略主语"], "examples": ["走。"],
-            }, ensure_ascii=False),
-            token_usage={}, elapsed_ms=1,
-        )
 
 
 def test_v54_migrates_scene_materials_categories_filters_and_links_without_loss() -> None:
@@ -100,63 +86,3 @@ def test_current_types_settings_and_author_style_json_round_trip() -> None:
         with pytest.raises(ValueError):
             service.import_author_style_settings({**before, "dimensions": [{"id": "x", "name": "X", "requirement": 1}]})
         assert service.export_author_style_settings() == before
-
-
-def test_author_style_single_dimension_preview_and_apply_only_updates_target() -> None:
-    with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
-        database = Path(directory) / "rusty.db"
-        initialize_database_file(database)
-        ModelService(database).create_model(
-            display_name="Fake", provider="openai_compatible",
-            base_url="https://example.invalid/v1", model_name="fake", is_default=True,
-        )
-        materials = MaterialService(database)
-        material_id = materials.create_material(
-            material_type="author_style", scope="public", name="Writer", raw_text="走。她停下。",
-            content={"schema_version": 1, "summary": "", "dimensions": [
-                {"id": "sentence", "name": "句子", "requirement": "句式", "analysis": "短句", "features": ["短"], "examples": ["走。"]},
-                {"id": "dialogue", "name": "对话", "requirement": "对白", "analysis": "", "features": [], "examples": []},
-            ]},
-        )
-        extraction = AnchorExtractionService(database, ai_client=DimensionAI())
-        preview = extraction.preview_author_style_dimension(
-            material_id, dimension_id="dialogue", dimension_name="对话", dimension_requirement="对白",
-        )
-        assert preview["features"] == ["省略主语"]
-        updated = extraction.apply_author_style_dimension(material_id, preview_token=preview["preview_token"])
-        updated_content = json.loads(updated.content_json)
-        assert updated_content["dimensions"][0]["analysis"] == "短句"
-        assert updated_content["dimensions"][1] == {
-            "id": "dialogue", "name": "对话", "requirement": "对白",
-            "analysis": "对话短促。", "features": ["省略主语"], "examples": ["走。"],
-        }
-        assert all("document_id" not in item and "chapter_id" not in item for item in updated_content["dimensions"])
-
-
-def test_author_style_dimension_extraction_requires_source_and_rejects_stale_preview() -> None:
-    with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
-        database = Path(directory) / "rusty.db"
-        initialize_database_file(database)
-        ModelService(database).create_model(
-            display_name="Fake", provider="openai_compatible",
-            base_url="https://example.invalid/v1", model_name="fake", is_default=True,
-        )
-        materials = MaterialService(database)
-        content = {"schema_version": 1, "summary": "", "dimensions": [
-            {"id": "dialogue", "name": "对话", "requirement": "对白", "analysis": "", "features": [], "examples": []},
-        ]}
-        empty_id = materials.create_material(material_type="author_style", scope="public", name="Empty", content=content)
-        extraction = AnchorExtractionService(database, ai_client=DimensionAI())
-        with pytest.raises(ValueError, match="没有保存可分析的来源文本"):
-            extraction.preview_author_style_dimension(empty_id, dimension_id="dialogue", dimension_name="对话", dimension_requirement="对白")
-        material_id = materials.create_material(material_type="author_style", scope="public", name="Writer", raw_text="走。", content=content)
-        preview = extraction.preview_author_style_dimension(material_id, dimension_id="dialogue", dimension_name="对话", dimension_requirement="对白")
-        material = materials.get_material(material_id)
-        assert material is not None
-        materials.update_material(
-            material_id, name=material.name, description=material.description, detail_level=material.detail_level,
-            raw_text="来源已改变。", content=json.loads(material.content_json), analysis_status=material.analysis_status,
-            timeline_start_chapter=None, timeline_end_chapter=None, sort_order=material.sort_order,
-        )
-        with pytest.raises(ValueError, match="Source text changed"):
-            extraction.apply_author_style_dimension(material_id, preview_token=preview["preview_token"])

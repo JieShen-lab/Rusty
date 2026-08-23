@@ -7,7 +7,7 @@ const projects = [
   { id: 4, name: '海港工程', author: '', status: 'ready', current_stage: 'imported', progress: 0, source_format: 'txt', total_chapters: 1, total_words: 100, processed_chapters: 0, progress_percent: 0, created_at: '', updated_at: '2026-07-26 12:00:00' },
 ];
 const materials = [
-  { id: 1, material_type: 'author_style', scope: 'public', project_id: null, project_name: null, name: '沈砚', description: '擅长都市悬疑叙事。', detail_level: 'standard', raw_text: '雨落在屋檐。', content: { schema_version: 2, author_name: '沈砚', introduction: '擅长都市悬疑叙事。', source_works: ['雨夜旧城'], overall_style: '冷静短句推进，重视环境细节。', summary: '冷静短句推进，重视环境细节。', dimensions: [{ id: 'sentence-features', name: '句子特征', requirement: '分析句式', analysis: '短句推进动作', features: ['短句'], examples: ['雨落在屋檐。'] }] }, analysis_status: 'analyzed', source_metadata: {}, import_metadata: {}, source_material_id: null, source_version: null, timeline_start_chapter: null, timeline_end_chapter: null, sort_order: 0, version: 1, created_at: '', updated_at: '', category_ids: [], categories: [], source_summary: { kind: 'manual', label: '本地创建' } },
+  { id: 1, material_type: 'author_style', scope: 'public', project_id: null, project_name: null, name: '沈砚', description: '擅长都市悬疑叙事。', detail_level: 'standard', raw_text: '雨落在屋檐。', content: { schema_version: 2, author_name: '沈砚', work: '雨夜旧城', overall_style: '冷静短句推进，重视环境细节。', summary: '冷静短句推进，重视环境细节。', dimensions: [{ id: 'sentence-features', name: '句子特征', requirement: '分析句式', analysis: '短句推进动作', features: ['短句'], examples: ['雨落在屋檐。'] }] }, analysis_status: 'analyzed', source_metadata: {}, import_metadata: {}, source_material_id: null, source_version: null, timeline_start_chapter: null, timeline_end_chapter: null, sort_order: 0, version: 1, created_at: '', updated_at: '2026-08-23 10:00:00', category_ids: [], categories: [], source_summary: { kind: 'manual', label: '本地创建' } },
 ];
 const baseDocumentItems = [
   { id: 1, title: '示例长篇', author: '作者', description: null, source_filename: 'novel.txt', source_format: 'txt', storage_path: 'D:/Rusty/novel-v2.txt', source_size_bytes: 100, stored_size_bytes: 100, chapter_count: 1, word_count: 16, status: 'ready', favorite: false, is_project_document: false, category_ids: [11, 12], categories: ['研究', '待整理'], project_ids: [], created_at: '2026-07-29 10:00:00', updated_at: '' },
@@ -68,14 +68,12 @@ async function mockApi(page: Page) {
       body = updated;
     }
     else if (path === '/api/material-extractions/preview') {
-      const request = route.request().postDataJSON() as { source_metadata?: Record<string, unknown> };
-      const metadata = request.source_metadata ?? {};
       body = {
       preview_token: 'material-preview',
       expires_at: '2030-01-01T00:00:00Z',
       task_type: 'author_style_extraction',
       material_type: 'author_style',
-      source_summary: metadata.document_title ? { kind: 'document_selection', label: `《${metadata.document_title}》 · ${metadata.chapter_title}`, document_id: metadata.document_id, chapter_id: metadata.chapter_id } : { kind: 'pasted_text', label: '粘贴文本' },
+      source_summary: { kind: 'file_import', label: '文件 source.txt' },
       prompt_snapshot: { task_type: 'author_style_extraction' },
       candidates: [{
         candidate_id: 'style-1', material_type: 'author_style', selected: true, name: '雨夜文风', description: '雨夜动作写法',
@@ -305,15 +303,13 @@ test('作者页以一位作者一份档案展示完整信息', async ({ page }) 
   await page.goto('/authors');
   await expect(page.getByRole('heading', { name: '作者档案' })).toBeVisible();
   await page.getByText('沈砚', { exact: true }).first().click();
-  await expect(page.locator('.material-detail-panel').getByText('擅长都市悬疑叙事。')).toBeVisible();
-  await expect(page.locator('.author-work-list').getByText('雨夜旧城', { exact: true })).toBeVisible();
+  await expect(page.locator('.material-detail-panel').getByText('雨夜旧城', { exact: true })).toBeVisible();
   await expect(page.locator('.material-detail-panel').getByText('冷静短句推进，重视环境细节。')).toBeVisible();
   await expect(page.getByText('句子特征')).toBeVisible();
   await expect(page.getByText('素材库', { exact: true })).toHaveCount(0);
   await expect(page.locator('.material-library-sidebar')).toHaveCount(0);
   await expect(page.locator('.material-library-unified')).toHaveCSS('grid-template-columns', /\S+px \S+px/);
-  await expect(page.locator('.author-cover img')).toHaveCount(0);
-  await expect(page.locator('.author-cover').first()).toBeVisible();
+  await expect(page.locator('.author-profile-row > .author-profile-copy')).toHaveCount(1);
   if (process.env.RUSTY_E2E_SCREENSHOT_DIR) {
     await page.screenshot({ path: `${process.env.RUSTY_E2E_SCREENSHOT_DIR}/author-library.png` });
   }

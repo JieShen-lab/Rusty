@@ -1,6 +1,5 @@
 import type {
   AnalysisPromptTemplate,
-  AuthorStyleDimensionPreview,
   AnalysisPromptTemplateWrite,
   Chapter,
   ChapterSplitOptions,
@@ -781,34 +780,11 @@ export function importAuthorStyleSettings(value: unknown) {
   });
 }
 
-export function previewAuthorStyleDimension(materialId: number, payload: {
-  dimension_id: string;
-  dimension_name: string;
-  dimension_requirement: string;
-  model_id?: number | null;
-}) {
-  return request<AuthorStyleDimensionPreview>(`/api/materials/${materialId}/author-style/dimensions/preview`, {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
-}
-
-export function applyAuthorStyleDimension(materialId: number, previewToken: string) {
-  return request<Material>(`/api/materials/${materialId}/author-style/dimensions/apply`, {
-    method: 'POST',
-    body: JSON.stringify({ preview_token: previewToken }),
-  });
-}
-
 export function previewMaterialExtraction(payload: {
   task_type: MaterialAITask;
-  name?: string | null;
-  sample_text?: string | null;
-  source_path?: string | null;
-  source_project_id?: number | null;
-  source_document_id?: number | null;
+  name: string;
+  source_path: string;
   model_id?: number | null;
-  source_metadata?: Record<string, unknown>;
 }) {
   return request<MaterialExtractionPreview>('/api/material-extractions/preview', {
     method: 'POST',

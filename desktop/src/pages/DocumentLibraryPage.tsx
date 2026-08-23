@@ -99,7 +99,7 @@ type SystemFilter = typeof systemFilters[number]['key'];
 
 const palettes = ['indigo', 'terracotta', 'jade', 'slate', 'ochre', 'plum', 'bluegray'] as const;
 
-export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string, state?: unknown) => void }) {
+export function DocumentLibraryPage() {
   const [documents, setDocuments] = useState<LibraryDocument[]>([]);
   const [categories, setCategories] = useState<DocumentCategory[]>([]);
   const [libraryPath, setLibraryPath] = useState('');
@@ -446,43 +446,6 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
     }
   }
 
-  async function saveSelection(
-    kind: 'style',
-    text: string,
-    startOffset: number,
-    endOffset: number,
-  ) {
-    if (!documentContent) return;
-    const selected = text.trim();
-    if (!selected) return;
-    if (selected.length > 50000) {
-      setError('选区不能超过 50,000 字符。');
-      return;
-    }
-    const chapter = chapters.find((item) => item.id === documentContent.chapter_id);
-    const volume = volumes.find((item) => item.id === chapter?.volume_id);
-    onNavigate('/authors', {
-      materialExtraction: {
-        materialType: 'author_style',
-        taskType: 'author_style_extraction',
-        selectedText: selected,
-        sourceMetadata: {
-          source_kind: 'document_selection',
-          source_type: 'document',
-          document_id: documentContent.document_id,
-          revision_id: documentContent.revision_id,
-          volume_id: volume?.id ?? null,
-          chapter_id: documentContent.chapter_id,
-          start_offset: startOffset,
-          end_offset: endOffset,
-          document_title: selectedDocument?.title ?? '',
-          volume_title: volume?.title ?? '',
-          chapter_title: chapter ? chapterDisplayTitle(chapter) : '',
-        },
-      },
-    });
-  }
-
   async function showDocumentContent(chapterId: number | null) {
     if (!selectedDocument) return;
     if (!(await flushEditorDraft('切换章节'))) return;
@@ -727,7 +690,6 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
               chapter.id === selectedChapterId ? { ...chapter, title } : chapter
             )));
           }}
-          onSelectionResource={(kind, text, startOffset, endOffset) => void saveSelection(kind, text, startOffset, endOffset)}
           onRenameVolume={(volumeId, title) => void renameVolume(volumeId, title)}
           onReorder={(draggedId, targetId, targetVolumeId) => void reorderChapters(draggedId, targetId, targetVolumeId)}
           processingBusy={processingBusy}
@@ -1017,7 +979,6 @@ type DocumentWorkspaceProps = {
   onDraftSaved: (draft: LibraryDocumentDraft) => void;
   onDirtyChange: (dirty: boolean) => void;
   onTitlePreview: (title: string) => void;
-  onSelectionResource: (kind: 'style', text: string, startOffset: number, endOffset: number) => void;
   processingBusy: boolean;
   readOnly: boolean;
   selectedChapterId: number | null;
@@ -1087,7 +1048,6 @@ const DocumentWorkspace = forwardRef<DocumentEditorController, DocumentWorkspace
             onLiveCountChange={setLiveCount}
             onSaveDraft={props.onSaveDraft}
             onSaveStatusChange={handleSaveStatusChange}
-            onSelectionResource={props.onSelectionResource}
             onTitlePreview={props.onTitlePreview}
             readOnly={props.readOnly}
             ref={editorRef}
@@ -1291,7 +1251,6 @@ const EditableTextPreview = forwardRef<DocumentEditorController, {
   onLiveCountChange: (count: number) => void;
   onSaveDraft: (title: string, text: string) => Promise<LibraryDocumentDraft>;
   onSaveStatusChange: (status: SaveStatus, savedAt: string) => void;
-  onSelectionResource: (kind: 'style', text: string, startOffset: number, endOffset: number) => void;
   onTitlePreview: (title: string) => void;
   readOnly: boolean;
 }>(function EditableTextPreview({
@@ -1305,7 +1264,6 @@ const EditableTextPreview = forwardRef<DocumentEditorController, {
   onLiveCountChange,
   onSaveDraft,
   onSaveStatusChange,
-  onSelectionResource,
   onTitlePreview,
   readOnly,
 }, ref) {
@@ -1318,9 +1276,7 @@ const EditableTextPreview = forwardRef<DocumentEditorController, {
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchIndex, setSearchIndex] = useState(0);
-  const [menu, setMenu] = useState<{ x: number; y: number; text: string; startOffset: number; endOffset: number } | null>(null);
   const editorRef = useRef<HTMLTextAreaElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
   const mountedRef = useRef(true);
   const saveStatusRef = useRef<SaveStatus>(saveStatus);
   const textRef = useRef(text);
@@ -1357,7 +1313,6 @@ const EditableTextPreview = forwardRef<DocumentEditorController, {
     persistedSignatureRef.current = draft ? draftSignature(nextTitle, nextText) : '';
     onDirtyChange(false);
     onLiveCountChange(countTextUnits(nextText));
-    setMenu(null);
     setSearchQuery('');
     setSearchIndex(0);
   }, [content?.revision_id, content?.chapter_id, draft?.id]);
@@ -1394,28 +1349,6 @@ const EditableTextPreview = forwardRef<DocumentEditorController, {
     window.addEventListener('beforeunload', guard);
     return () => window.removeEventListener('beforeunload', guard);
   }, [saveStatus]);
-
-  useEffect(() => {
-    if (!menu) return;
-    const closeOnOutsidePointer = (event: PointerEvent) => {
-      if (event.button === 0 && !menuRef.current?.contains(event.target as Node)) setMenu(null);
-    };
-    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
-      if (event.key === 'Escape') setMenu(null);
-    };
-    const closeMenu = () => setMenu(null);
-    const editor = editorRef.current;
-    window.addEventListener('pointerdown', closeOnOutsidePointer, true);
-    window.addEventListener('keydown', closeOnEscape);
-    window.addEventListener('resize', closeMenu);
-    editor?.addEventListener('scroll', closeMenu, { passive: true });
-    return () => {
-      window.removeEventListener('pointerdown', closeOnOutsidePointer, true);
-      window.removeEventListener('keydown', closeOnEscape);
-      window.removeEventListener('resize', closeMenu);
-      editor?.removeEventListener('scroll', closeMenu);
-    };
-  }, [menu]);
 
   const queueDraftSave = useCallback((snapshotTitle: string, snapshotText: string): Promise<boolean> => {
     const signature = draftSignature(snapshotTitle, snapshotText);
@@ -1469,26 +1402,6 @@ const EditableTextPreview = forwardRef<DocumentEditorController, {
     flushDraft: readOnly ? () => Promise.resolve(true) : flushDraft,
     getCursorOffset: () => editorRef.current?.selectionStart ?? null,
   }), [flushDraft, readOnly]);
-
-  function openMenu(event: MouseEvent<HTMLTextAreaElement>) {
-    const target = event.currentTarget;
-    const rawSelection = target.value.slice(target.selectionStart, target.selectionEnd);
-    const selected = rawSelection.trim();
-    if (!selected) {
-      setMenu(null);
-      return;
-    }
-    event.preventDefault();
-    const leadingWhitespace = rawSelection.length - rawSelection.trimStart().length;
-    const startOffset = (content?.body_start_offset ?? 0) + target.selectionStart + leadingWhitespace;
-    setMenu({
-      x: event.clientX,
-      y: event.clientY,
-      text: selected,
-      startOffset,
-      endOffset: startOffset + selected.length,
-    });
-  }
 
   function moveSearch(direction: 1 | -1) {
     if (!searchMatches.length) return;
@@ -1548,15 +1461,9 @@ const EditableTextPreview = forwardRef<DocumentEditorController, {
           );
           markDirty();
         }}
-        onContextMenu={openMenu}
         ref={editorRef}
         value={loading && !content ? '正在读取正文…' : text}
       />
-      {menu ? (
-        <div className="selection-resource-menu" ref={menuRef} style={{ left: menu.x, top: menu.y }}>
-          <button onClick={() => { onSelectionResource('style', menu.text, menu.startOffset, menu.endOffset); setMenu(null); }} type="button">添加为作者风格来源</button>
-        </div>
-      ) : null}
     </section>
   );
 });
