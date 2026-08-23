@@ -511,8 +511,8 @@ select:focus-visible {
 .project-monogram { display: grid; width: 48px; height: 54px; place-items: center; border: 1px solid #e7ecf3; border-radius: 9px; background: var(--paper); color: var(--muted); font-size: 12px; font-weight: 700; }
 .project-list-copy { min-width: 0; display: grid; gap: 5px; }
 .project-list-copy strong, .project-list-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.project-list-copy strong { font-size: 13px; }
-.project-list-copy small, .project-list-item time { color: var(--muted); font-size: 10px; }
+.project-list-copy strong { font-size: 16px; }
+.project-list-copy small, .project-list-item time { color: var(--muted); font-size: 12px; }
 .project-list-item time { align-self: start; white-space: nowrap; }
 .project-detail-card { display: grid; min-width: 0; min-height: 340px; grid-template-columns: 210px minmax(0, 1fr); gap: 22px; align-self: start; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); padding: 18px 20px; }
 .project-cover { display: grid; min-height: 270px; place-items: center; border: 1px solid var(--line); border-radius: 9px; background: var(--paper-muted); color: var(--muted); font-size: 17px; font-weight: 700; }
