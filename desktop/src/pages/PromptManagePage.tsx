@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { BookOpenText, FileText, Save, Settings2, Sparkles } from 'lucide-react';
 import { getPromptDefinitions, updatePromptDefinition } from '../api/client';
 import type { CreativeStrategy, PromptDefinition, PromptDefinitionWrite } from '../api/types';
+import { FloatingNotice } from '../components/FloatingNotice';
 import { TopBar } from '../components/TopBar';
 
 type PromptSlot = 'system' | 'summary' | CreativeStrategy | 'writing';
@@ -41,7 +42,7 @@ export function PromptManagePage() {
   const meta = SLOTS.find((item) => item.key === slot) ?? SLOTS[0];
   return <div className="prompt-definition-page fixed-prompt-page">
     <TopBar title="提示词" />
-    {feedback.error || feedback.message ? <div className={`inline-alert ${feedback.error ? 'error' : 'success'}`}>{feedback.error || feedback.message}</div> : null}
+    <FloatingNotice error={feedback.error} message={feedback.message} />
     <div className="fixed-prompt-layout">
       <aside className="fixed-prompt-menu">
         <header><h2>工程流程提示词</h2></header>

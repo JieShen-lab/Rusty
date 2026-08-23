@@ -617,7 +617,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .material-project-select select { width: 100%; min-height: 38px; appearance: none; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); padding: 0 34px 0 12px; font-size: 12px; }
 .material-project-select svg { position: absolute; right: 11px; pointer-events: none; color: var(--muted); }
 .material-search { width: min(320px, 30vw); min-height: 38px; margin-left: auto; }
-.material-alert { margin: 0 0 12px; }
 .material-public-layout { display: grid; min-height: 0; flex: 1; grid-template-columns: 230px minmax(480px, 1fr) 310px; overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); }
 .material-category-panel, .material-card-shelf, .material-inspector { min-width: 0; min-height: 0; }
 .material-category-panel { overflow: auto; border-right: 1px solid var(--line); background: var(--paper-muted); padding-bottom: 14px; }
@@ -3079,7 +3078,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 
 /* Fixed prompt contract: exactly six workflow prompts. */
 .fixed-prompt-page { display: flex; min-height: 0; flex: 1; flex-direction: column; }
-.fixed-prompt-page > .inline-alert { margin: 12px 18px 0; }
 .fixed-prompt-layout { display: grid; min-height: 0; flex: 1; grid-template-columns: 278px minmax(0, 1fr); border-top: 1px solid var(--border-default); }
 .fixed-prompt-menu { display: flex; min-height: 0; flex-direction: column; gap: 3px; border-right: 1px solid var(--border-default); background: var(--surface-subtle); padding: 20px 14px; }
 .fixed-prompt-menu > header { padding: 0 10px 13px; }

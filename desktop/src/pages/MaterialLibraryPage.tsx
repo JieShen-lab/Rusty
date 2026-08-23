@@ -22,6 +22,7 @@ import type {
   ModelConfig,
 } from '../api/types';
 import { DangerButton } from '../components/DangerButton';
+import { FloatingNotice } from '../components/FloatingNotice';
 import { LibraryDialog, LibraryEmptyState } from '../components/LibraryPrimitives';
 import { PrimaryButton } from '../components/PrimaryButton';
 import { SecondaryButton } from '../components/SecondaryButton';
@@ -103,8 +104,7 @@ export function AuthorLibraryPage() {
           </SecondaryButton>
         </>
       )} />
-      {error ? <div className="inline-alert error material-alert" role="alert">{error}</div> : null}
-      {message ? <div className="inline-alert success material-alert" role="status">{message}</div> : null}
+      <FloatingNotice error={error} message={message} />
 
       <div className="document-library-layout material-browser-layout material-library-unified">
         <main className="document-shelf-panel material-browser-shelf">
