@@ -167,3 +167,10 @@
   color: var(--ink);
   padding: 0 11px;
 }
+
+.form-input:not([type="checkbox"]):not([type="radio"]):focus,
+.form-input:not([type="checkbox"]):not([type="radio"]):focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent);
+}
