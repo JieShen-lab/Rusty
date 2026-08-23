@@ -113,6 +113,6 @@ test('审查由人工对照编辑并保存修改，不请求模型审查', async
   await expect(page.getByText('原始正文', { exact: true })).toBeVisible();
   const edited = page.getByLabel('修改后正文');
   await edited.fill('人工调整后的正文。');
-  await page.getByRole('button', { name: '保存修改' }).click();
+  await page.getByRole('button', { name: '保存并完成审查' }).click();
   await expect.poll(() => savedText).toBe('人工调整后的正文。');
 });

@@ -1,5 +1,6 @@
 from .connection import connect, session
 from .paths import default_database_path
+from .schema import initialize_database, initialize_database_file
 
 __all__ = [
     "connect",
@@ -8,11 +9,3 @@ __all__ = [
     "initialize_database_file",
     "session",
 ]
-
-
-def __getattr__(name: str):
-    if name in {"initialize_database", "initialize_database_file"}:
-        from . import schema
-
-        return getattr(schema, name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -22,7 +22,12 @@ tmp*/
 desktop/node_modules/
 desktop/dist/
 desktop/dist-electron/
+desktop/playwright-report/
+desktop/release/
+desktop/test-results/
 desktop/src/pages/*.readonly.tsx
+installer/dist/
+installer/work/
 
 # IDE / OS
 .idea/

@@ -3,15 +3,17 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
+import net from 'node:net';
 import path from 'node:path';
 
-const isDev = process.env.NODE_ENV !== 'production';
+const isDev = !app.isPackaged && process.env.NODE_ENV !== 'production';
 const API_HOST = process.env.RUSTY_API_HOST || '127.0.0.1';
-const API_PORT = Number(process.env.RUSTY_API_PORT || '8765');
-const API_BASE = `http://${API_HOST}:${API_PORT}`;
+let apiPort = Number(process.env.RUSTY_API_PORT || (isDev ? '8765' : '0'));
+let apiBase = apiPort > 0 ? `http://${API_HOST}:${apiPort}` : '';
 const API_TOKEN = process.env.RUSTY_API_TOKEN || crypto.randomBytes(24).toString('hex');
 
 let backendProcess: ChildProcessWithoutNullStreams | null = null;
+let mainWindow: BrowserWindow | null = null;
 
 type BackendRequestInput = {
   path: string;
@@ -32,7 +34,7 @@ function proxyBackendRequest(input: BackendRequestInput): Promise<BackendRequest
     return Promise.reject(new Error('只允许访问 Rusty API。'));
   }
   return new Promise((resolve, reject) => {
-    const request = http.request(`${API_BASE}${input.path}`, {
+    const request = http.request(`${apiBase}${input.path}`, {
       method: input.method || 'GET',
       headers: {
         ...input.headers,
@@ -59,6 +61,26 @@ function proxyBackendRequest(input: BackendRequestInput): Promise<BackendRequest
   });
 }
 
+function chooseAvailablePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.unref();
+    server.on('error', reject);
+    server.listen(0, API_HOST, () => {
+      const address = server.address();
+      const port = typeof address === 'object' && address ? address.port : 0;
+      server.close((error) => error ? reject(error) : resolve(port));
+    });
+  });
+}
+
+async function prepareBackendEndpoint(): Promise<void> {
+  if (apiPort <= 0) {
+    apiPort = await chooseAvailablePort();
+    apiBase = `http://${API_HOST}:${apiPort}`;
+  }
+}
+
 function projectRoot(): string {
   const appPath = app.getAppPath();
   const devRoot = path.resolve(appPath, '..');
@@ -79,9 +101,23 @@ function pythonExecutable(root: string): string {
   return fs.existsSync(venvPython) ? venvPython : 'python';
 }
 
+function backendLaunch(): { command: string; args: string[]; cwd: string } {
+  if (app.isPackaged) {
+    const backendRoot = path.join(process.resourcesPath, 'backend');
+    const executable = path.join(backendRoot, process.platform === 'win32' ? 'rusty-backend.exe' : 'rusty-backend');
+    if (!fs.existsSync(executable)) {
+      throw new Error(`Rusty 后端文件不存在：${executable}`);
+    }
+    return { command: executable, args: [], cwd: backendRoot };
+  }
+
+  const root = projectRoot();
+  return { command: pythonExecutable(root), args: ['-m', 'backend.server'], cwd: root };
+}
+
 function waitForHealth(timeoutMs = 1200): Promise<boolean> {
   return new Promise((resolve) => {
-    const request = http.get(`${API_BASE}/api/health`, { timeout: timeoutMs }, (response) => {
+    const request = http.get(`${apiBase}/api/health`, { timeout: timeoutMs }, (response) => {
       response.resume();
       resolve(response.statusCode === 200);
     });
@@ -105,17 +141,20 @@ async function waitForBackendReady(timeoutMs = 12000): Promise<boolean> {
 }
 
 async function ensureBackend(): Promise<void> {
-  if (await waitForHealth()) {
+  if (backendProcess && !backendProcess.killed && await waitForHealth()) {
+    return;
+  }
+  if (isDev && await waitForHealth()) {
     return;
   }
 
-  const root = projectRoot();
-  const spawnedProcess = spawn(pythonExecutable(root), ['-m', 'backend.server'], {
-    cwd: root,
+  const launch = backendLaunch();
+  const spawnedProcess = spawn(launch.command, launch.args, {
+    cwd: launch.cwd,
     env: {
       ...process.env,
       RUSTY_API_HOST: API_HOST,
-      RUSTY_API_PORT: String(API_PORT),
+      RUSTY_API_PORT: String(apiPort),
       RUSTY_API_TOKEN: API_TOKEN,
       RUSTY_API_ALLOWED_ORIGINS: 'http://127.0.0.1:5173,http://localhost:5173,null',
     },
@@ -134,6 +173,9 @@ async function ensureBackend(): Promise<void> {
     if (backendProcess === spawnedProcess) {
       backendProcess = null;
     }
+  });
+  spawnedProcess.on('error', (error) => {
+    console.error(`[rusty-backend] failed to start: ${error.message}`);
   });
 
   const ready = await waitForBackendReady();
@@ -168,7 +210,7 @@ async function restartBackend(): Promise<boolean> {
 }
 
 function createWindow(): void {
-  process.env.RUSTY_RENDERER_API_URL = API_BASE;
+  process.env.RUSTY_RENDERER_API_URL = apiBase;
   process.env.RUSTY_RENDERER_API_TOKEN = API_TOKEN;
 
   const window = new BrowserWindow({
@@ -191,6 +233,10 @@ function createWindow(): void {
       webSecurity: true,
     },
   });
+  mainWindow = window;
+  window.on('closed', () => {
+    if (mainWindow === window) mainWindow = null;
+  });
 
   window.webContents.setWindowOpenHandler(({ url }) => {
     void shell.openExternal(url);
@@ -204,7 +250,7 @@ function createWindow(): void {
     }
   });
 
-  const query = { apiBase: API_BASE, apiToken: API_TOKEN };
+  const query = { apiBase, apiToken: API_TOKEN };
   if (isDev) {
     const params = new URLSearchParams(query);
     void window.loadURL(`http://127.0.0.1:5173?${params.toString()}`);
@@ -273,7 +319,7 @@ ipcMain.handle('rusty:select-workspace-directory', async () => {
 });
 
 ipcMain.handle('rusty:get-backend-config', () => ({
-  apiBase: API_BASE,
+  apiBase,
   apiToken: API_TOKEN,
 }));
 
@@ -281,7 +327,7 @@ ipcMain.handle('rusty:backend-request', (_event, input: BackendRequestInput) => 
 
 ipcMain.handle('rusty:restart-backend', async () => ({
   ok: await restartBackend(),
-  apiBase: API_BASE,
+  apiBase,
   apiToken: API_TOKEN,
 }));
 
@@ -300,10 +346,24 @@ ipcMain.handle('rusty:set-theme', (event, theme: 'light' | 'dark') => {
   return true;
 });
 
-app.whenReady().then(async () => {
-  await ensureBackend();
-  createWindow();
-});
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    const window = mainWindow ?? BrowserWindow.getAllWindows()[0];
+    if (!window) return;
+    if (window.isMinimized()) window.restore();
+    window.show();
+    window.focus();
+  });
+
+  app.whenReady().then(async () => {
+    await prepareBackendEndpoint();
+    await ensureBackend();
+    createWindow();
+  });
+}
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {

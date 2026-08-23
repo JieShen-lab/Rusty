@@ -28,4 +28,17 @@ npm run electron:dev
 
 应用只创建和使用当前数据库结构，不再包含旧数据库升级与数据兼容逻辑。升级后应从空数据库开始使用。
 
+## Windows 封装
+
+封装环境需要 Windows x64、Node.js 与 Python 3.11 以上版本；成品用户不需要安装 Node.js 或 Python。
+
+```powershell
+.\.venv\Scripts\python -m pip install -e ".[dev]"
+Set-Location desktop
+npm install
+npm run package:win
+```
+
+最终交付文件为 `desktop\release\Rusty-Setup-0.1.0.exe`。安装器按当前用户安装，卸载时保留 `%LOCALAPPDATA%\Rusty` 中的数据库和文档。
+
 当前实现与数据结构见 [docs/current-implementation.md](docs/current-implementation.md)。

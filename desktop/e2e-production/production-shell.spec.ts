@@ -4,26 +4,26 @@ import path from 'node:path';
 
 const desktopRoot = process.cwd();
 const repositoryRoot = path.resolve(desktopRoot, '..');
-const runtimeRoot = path.join(repositoryRoot, 'tmp', 'electron-production-e2e');
+const runtimeRoot = path.join(repositoryRoot, 'installer', 'work', 'package-e2e');
+const packagedExecutable = process.env.RUSTY_PACKAGED_EXECUTABLE
+  || path.join(desktopRoot, 'release', 'win-unpacked', 'Rusty.exe');
 
-test('production loadFile renders Rusty with local assets and file-safe navigation', async () => {
-  const indexHtml = fs.readFileSync(path.join(desktopRoot, 'dist', 'index.html'), 'utf8');
-  expect(indexHtml).not.toMatch(/(?:src|href)="\/assets\//);
-  expect(indexHtml).toMatch(/src="\.\/assets\//);
-  expect(indexHtml).toMatch(/href="\.\/assets\//);
+test('packaged Rusty starts its bundled backend and renders local assets', async () => {
+  expect(fs.existsSync(packagedExecutable)).toBe(true);
+  fs.mkdirSync(runtimeRoot, { recursive: true });
 
   const electronApp = await electron.launch({
+    executablePath: packagedExecutable,
     args: [
       '--no-sandbox',
       `--user-data-dir=${path.join(runtimeRoot, `user-data-${process.pid}`)}`,
-      desktopRoot,
     ],
     env: {
       ...process.env,
-      NODE_ENV: 'production',
+      RUSTY_DATABASE_PATH: path.join(runtimeRoot, 'rusty.db'),
       RUSTY_API_HOST: '127.0.0.1',
-      RUSTY_API_PORT: '8767',
-      RUSTY_API_TOKEN: 'electron-e2e-token',
+      RUSTY_API_PORT: '0',
+      RUSTY_API_TOKEN: 'package-e2e-token',
     },
   });
 
@@ -42,25 +42,50 @@ test('production loadFile renders Rusty with local assets and file-safe navigati
     });
 
     await expect(page.getByRole('heading', { name: '工程', exact: true })).toBeVisible();
-    await expect(page).toHaveURL(/^file:\/\/\/.+\/dist\/index\.html\?.+#\/library$/);
-    const rendererState = await page.evaluate(() => ({
-      rootChildren: document.querySelector('#root')?.childElementCount ?? 0,
-      styleSheets: document.styleSheets.length,
-      shellDisplay: getComputedStyle(document.querySelector('.app-shell')!).display,
-    }));
-    expect(rendererState.rootChildren).toBe(1);
-    expect(rendererState.styleSheets).toBeGreaterThan(0);
-    expect(rendererState.shellDisplay).toBe('grid');
+    await expect(page).toHaveURL(/^file:\/\/.+\/dist\/index\.html\?.+#\/library$/);
 
-    for (const [button, route, heading] of [
-      ['文档库', 'documents', '文档库'],
-      ['素材', 'materials', '素材库'],
-      ['角色卡', 'characters', '角色卡库'],
-      ['提示词', 'prompts', '提示词'],
-      ['模型', 'models', '模型'],
+    const backend = await page.evaluate(async () => {
+      const config = await window.rustyDesktop?.getBackendConfig?.();
+      const health = await window.rustyDesktop?.requestBackend?.({ path: '/api/health' });
+      return { config, health };
+    });
+    expect(backend.config?.apiBase).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    expect(backend.config?.apiBase?.endsWith(':0')).toBe(false);
+    expect(backend.health?.status).toBe(200);
+    expect(JSON.parse(backend.health?.body ?? '{}')).toEqual({ ok: true, app: 'Rusty' });
+
+    const keyring = await page.evaluate(async () => {
+      const createdResponse = await window.rustyDesktop?.requestBackend?.({
+        path: '/api/models',
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          display_name: 'Package E2E Model',
+          provider: 'openai_compatible',
+          base_url: 'https://example.invalid/v1',
+          model_name: 'package-e2e',
+          api_key: 'package-e2e-secret',
+        }),
+      });
+      const created = JSON.parse(createdResponse?.body ?? '{}');
+      const deletedResponse = created.id ? await window.rustyDesktop?.requestBackend?.({
+        path: `/api/models/${created.id}/delete`,
+        method: 'POST',
+      }) : undefined;
+      return { createdResponse, created, deletedResponse };
+    });
+    expect(keyring.createdResponse?.status).toBe(200);
+    expect(keyring.created.has_api_key).toBe(true);
+    expect(keyring.created.api_key).toBeUndefined();
+    expect(keyring.deletedResponse?.status).toBe(200);
+
+    for (const [button, heading] of [
+      ['文档库', '文档库'],
+      ['作者', '作者'],
+      ['提示词', '提示词'],
+      ['模型', '模型'],
     ] as const) {
       await page.getByRole('button', { name: button, exact: true }).click();
-      await expect(page).toHaveURL(new RegExp(`#/${route}$`));
       await expect(page.getByRole('heading', { name: heading, exact: true })).toBeVisible();
     }
 
@@ -68,15 +93,6 @@ test('production loadFile renders Rusty with local assets and file-safe navigati
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
     await page.getByRole('button', { name: /浅色/ }).click();
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
-
-    await page.getByRole('button', { name: '工程', exact: true }).click();
-    await expect(page).toHaveURL(/#\/library$/);
-    await expect(page.getByRole('heading', { name: '工程', exact: true })).toBeVisible();
-    await page.getByRole('button', { name: /真实 E2E 1/ }).first().click();
-    await page.getByRole('button', { name: '进入工程', exact: true }).click();
-    await expect(page).toHaveURL(/#\/workspace\/\d+$/);
-    await expect(page.locator('.creative-workspace')).toBeVisible();
-    await expect(page.getByRole('button', { name: '运行预分析' })).toBeVisible();
 
     expect(failedLocalResources).toEqual([]);
     expect(rendererErrors).toEqual([]);

@@ -1,6 +1,8 @@
 {
   "name": "rusty-ui-r2",
   "version": "0.1.0",
+  "description": "Rusty local-first novel writing desktop application",
+  "author": "Rusty",
   "private": true,
   "main": "dist-electron/main.js",
   "scripts": {
@@ -8,16 +10,17 @@
     "electron:dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && npm run electron:build && electron .\"",
     "build": "tsc --noEmit && vite build && npm run electron:build",
     "electron:build": "tsc -p tsconfig.electron.json",
+    "package:win": "powershell -NoProfile -ExecutionPolicy Bypass -File ../installer/build-windows.ps1",
     "test:e2e": "playwright test",
+    "test:e2e:package": "playwright test --config playwright.package.config.ts",
     "test:e2e:ui": "playwright test --ui"
   },
-  "dependencies": {
+  "dependencies": {},
+  "devDependencies": {
     "@vitejs/plugin-react": "^4.3.4",
     "lucide-react": "^0.468.0",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
-  },
-  "devDependencies": {
+    "react-dom": "^18.3.1",
     "@playwright/test": "^1.62.0",
     "@types/node": "^22.10.2",
     "@types/react": "^18.3.17",
@@ -25,10 +28,53 @@
     "autoprefixer": "^10.4.20",
     "concurrently": "^9.1.0",
     "electron": "^33.2.1",
+    "electron-builder": "^26.15.3",
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.7.2",
     "vite": "^6.0.3",
     "wait-on": "^8.0.1"
+  },
+  "build": {
+    "appId": "com.rusty.novel",
+    "productName": "Rusty",
+    "asar": true,
+    "directories": {
+      "output": "release",
+      "buildResources": "resources"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json",
+      "!node_modules/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "../installer/dist/rusty-backend",
+        "to": "backend"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "resources/rusty-icon.png",
+      "artifactName": "Rusty-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "deleteAppDataOnUninstall": false,
+      "differentialPackage": false
+    }
   }
 }
