@@ -3145,20 +3145,20 @@ select:focus-visible {
 .author-profile-row { min-height: 92px; grid-template-columns: minmax(0, 1fr); gap: 10px; border: 0; border-bottom: 1px solid var(--border-default); border-radius: 0; padding: 16px 18px; }
 .author-profile-row.selected { border: 1px solid var(--accent); border-radius: 4px; background: color-mix(in srgb, var(--accent) 5%, var(--surface-input)); }
 .author-profile-copy { align-content: center; gap: 7px; }
-.author-profile-copy strong { font-family: "Noto Serif SC", "Songti SC", serif; font-size: 22px; line-height: 1.45; }
-.author-profile-copy small { display: block; overflow: hidden; color: var(--text-secondary); font-size: 16px; line-height: 1.5; text-overflow: ellipsis; white-space: nowrap; }
-.author-profile-copy em { color: var(--muted); font-size: 14px; font-style: normal; line-height: 1.5; }
+.author-profile-copy strong { font-family: "Noto Serif SC", "Songti SC", serif; font-size: 20px; line-height: 1.45; }
+.author-profile-copy small { display: block; overflow: hidden; color: var(--text-secondary); font-size: 14px; line-height: 1.5; text-overflow: ellipsis; white-space: nowrap; }
+.author-profile-copy em { color: var(--muted); font-size: 12px; font-style: normal; line-height: 1.5; }
 .material-detail-panel { min-width: 0; }
 .material-detail-panel > header { min-height: 58px; padding: 16px 22px 12px; }
 .material-detail-panel > header h2 { font-size: 21px; }
 .material-detail-panel .document-detail-scroll { padding: 10px 26px 26px; }
 .material-detail-panel .document-detail-scroll > section { margin: 0; padding: 14px 0; }
 .author-detail-identity { padding-top: 14px !important; }
-.author-detail-identity h3 { font-family: "Noto Serif SC", "Songti SC", serif; font-size: 32px !important; font-weight: 650; line-height: 1.3; }
+.author-detail-identity h3 { font-family: "Noto Serif SC", "Songti SC", serif; font-size: 24px !important; font-weight: 650; line-height: 1.3; }
 .author-detail-identity p { margin: 8px 0 0; color: var(--text-secondary); font-size: 16px; line-height: 1.5; }
 .material-detail-panel .document-detail-heading { margin-bottom: 11px; }
-.material-detail-panel .document-detail-heading span { font-size: 20px; font-weight: 600; }
-.material-detail-copy { color: var(--text-secondary); font-size: 16px; line-height: 1.7; }
+.material-detail-panel .document-detail-heading span { font-size: 18px; font-weight: 550; }
+.material-detail-copy { color: black; font-size: 15px; line-height: 1.7; }
 .author-dimension-table { display: grid; gap: 10px; }
 .author-dimension-rows { overflow: hidden; border: 1px solid var(--border-default); border-radius: 4px; }
 .author-dimension-rows article { display: grid; grid-template-columns: minmax(190px, 220px) minmax(0, 1fr); min-height: 88px; }
@@ -3167,7 +3167,7 @@ select:focus-visible {
 .author-dimension-name > span { display: grid; color: var(--accent); }
 .author-dimension-name strong { font-size: 17px; line-height: 1.45; }
 .author-dimension-analysis { display: grid; align-content: center; gap: 6px; padding: 13px 18px; }
-.author-dimension-analysis p { margin: 0; color: var(--text-secondary); font-size: 16px; line-height: 1.65; }
+.author-dimension-analysis p { margin: 0; color:black; font-size: 16px; line-height: 1.65; }
 .author-dimension-analysis b { color: var(--text-primary); }
 
 /* Fixed prompt contract: exactly six workflow prompts. */

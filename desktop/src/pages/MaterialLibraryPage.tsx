@@ -131,7 +131,7 @@ export function AuthorLibraryPage() {
           {selected ? (
             <>
               <div className="document-detail-scroll">
-                <section className="document-detail-identity author-detail-identity"><div><h3>{authorProfile(selected).name}</h3><p>{selected.analysis_status === 'analyzed' ? '作者档案已分析' : '作者档案待分析'}</p></div></section>
+                <section className="document-detail-identity author-detail-identity"><div><h3>{authorProfile(selected).name}</h3></div></section>
                 <section><div className="document-detail-heading"><span>作品</span></div><p className="material-detail-copy">{authorProfile(selected).work || '尚未填写作品'}</p></section>
                 <section><div className="document-detail-heading"><span>整体风格</span></div><p className="material-detail-copy">{authorProfile(selected).overallStyle || '尚未形成整体风格总结'}</p></section>
                 <AuthorDimensionTable content={selected.content} />
