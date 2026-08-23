@@ -888,7 +888,7 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
           </section>
         </aside>
 
-        <main className="document-shelf-panel document-library-shelf-panel">
+        <main className="document-shelf-panel">
           <header>
             <div className="document-shelf-tools">
               <label className="search-field document-search">
