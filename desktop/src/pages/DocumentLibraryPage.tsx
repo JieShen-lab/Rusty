@@ -123,7 +123,6 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
   const [categoryCreateOpen, setCategoryCreateOpen] = useState(false);
   const [categoryContextMenu, setCategoryContextMenu] = useState<{ category: DocumentCategory; x: number; y: number } | null>(null);
   const [categoryRename, setCategoryRename] = useState<DocumentCategory | null>(null);
-  const [editingMetadata, setEditingMetadata] = useState<'title' | 'author' | null>(null);
   const [metadataTitle, setMetadataTitle] = useState('');
   const [metadataAuthor, setMetadataAuthor] = useState('');
   const [actionDialog, setActionDialog] = useState<DocumentAction | null>(null);
@@ -154,7 +153,6 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
   useEffect(() => {
     setMetadataTitle(selectedDocument?.title ?? '');
     setMetadataAuthor(selectedDocument?.author ?? '');
-    setEditingMetadata(null);
   }, [selectedDocument?.id]);
 
   useEffect(() => {
@@ -250,20 +248,12 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
     }, false);
   }
 
-  function beginMetadataEdit(field: 'title' | 'author') {
-    if (!selectedDocument) return;
-    setMetadataTitle(selectedDocument.title);
-    setMetadataAuthor(selectedDocument.author ?? '');
-    setEditingMetadata(field);
-  }
-
   async function saveMetadata() {
     if (!selectedDocument || !metadataTitle.trim()) {
       setError('文档名称不能为空。');
       return;
     }
     const originalId = selectedDocument.id;
-    setEditingMetadata(null);
     await runBusy(async () => {
       const saved = await updateLibraryDocument(
         originalId,
@@ -861,7 +851,7 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
 
       <FloatingNotice error={error} message={message} />
 
-      <div className="document-library-layout">
+      <div className="document-library-layout document-library-main-layout">
         <aside className="document-library-sidebar">
           <header>
             <h2>文档筛选</h2>
@@ -893,9 +883,12 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
               />
             )) : <p className="library-sidebar-empty">暂无自定义分类</p>}
           </nav>
+          <section className="document-library-location">
+            <div title={libraryPath}>{libraryPath || '正在读取目录…'}</div>
+          </section>
         </aside>
 
-        <main className="document-shelf-panel">
+        <main className="document-shelf-panel document-library-shelf-panel">
           <header>
             <div className="document-shelf-tools">
               <label className="search-field document-search">
@@ -934,41 +927,23 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
               <div className="document-detail-scroll">
                 <section className="document-detail-identity">
                   <div>
-                    {editingMetadata === 'title' ? (
-                      <input
-                        autoFocus
-                        className="document-metadata-input title"
-                        onBlur={() => void saveMetadata()}
-                        onChange={(event) => setMetadataTitle(event.target.value)}
-                        onKeyDown={(event) => {
-                          if (event.key === 'Enter') event.currentTarget.blur();
-                          if (event.key === 'Escape') setEditingMetadata(null);
-                        }}
-                        value={metadataTitle}
-                      />
-                    ) : (
-                      <button className="document-editable-title" onClick={() => beginMetadataEdit('title')} title="点击修改文档名称" type="button">
-                        {selectedDocument.title}
-                      </button>
-                    )}
-                    {editingMetadata === 'author' ? (
-                      <input
-                        autoFocus
-                        className="document-metadata-input author"
-                        onBlur={() => void saveMetadata()}
-                        onChange={(event) => setMetadataAuthor(event.target.value)}
-                        onKeyDown={(event) => {
-                          if (event.key === 'Enter') event.currentTarget.blur();
-                          if (event.key === 'Escape') setEditingMetadata(null);
-                        }}
-                        placeholder="未知作者"
-                        value={metadataAuthor}
-                      />
-                    ) : (
-                      <button className="document-editable-author" onClick={() => beginMetadataEdit('author')} title="点击修改作者" type="button">
-                        {selectedDocument.author || '未知作者'}
-                      </button>
-                    )}
+                    <input
+                      aria-label="文章名"
+                      className="document-metadata-field document-detail-title"
+                      onBlur={() => void saveMetadata()}
+                      onChange={(event) => setMetadataTitle(event.target.value)}
+                      onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }}
+                      value={metadataTitle}
+                    />
+                    <input
+                      aria-label="作者"
+                      className="document-metadata-field document-detail-author"
+                      onBlur={() => void saveMetadata()}
+                      onChange={(event) => setMetadataAuthor(event.target.value)}
+                      onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }}
+                      placeholder="未知作者"
+                      value={metadataAuthor}
+                    />
                   </div>
                 </section>
                 <section className="document-detail-metadata">
@@ -979,10 +954,6 @@ export function DocumentLibraryPage({ onNavigate }: { onNavigate: (path: string,
                   <Definition label="字数" value={formatNumber(selectedDocument.word_count)} />
                 </section>
               </div>
-              <section className="document-library-location">
-                <span>文档库存储目录</span>
-                <div title={libraryPath}>{libraryPath || '正在读取目录…'}</div>
-              </section>
               <footer className="library-detail-footer">
                 <SecondaryButton onClick={() => setExportOpen(true)}><Download size={15} />导出文档</SecondaryButton>
                 <DangerButton onClick={() => void deleteDocument()}><Trash2 size={15} />删除</DangerButton>
@@ -1126,8 +1097,8 @@ const DocumentWorkspace = forwardRef<DocumentEditorController, DocumentWorkspace
       <aside className="workbench-inspector document-workspace-inspector">
         <div className="document-workspace-info">
           <section>
-            <label className="document-workspace-metadata"><span>书名</span><input aria-label="书名" onBlur={() => { if (!props.readOnly) void props.onUpdateMetadata(metadataTitle, metadataAuthor); }} onChange={(event) => setMetadataTitle(event.target.value)} readOnly={props.readOnly} value={metadataTitle} /></label>
-            <label className="document-workspace-metadata"><span>作者</span><input aria-label="作者" onBlur={() => { if (!props.readOnly) void props.onUpdateMetadata(metadataTitle, metadataAuthor); }} onChange={(event) => setMetadataAuthor(event.target.value)} placeholder="未知作者" readOnly={props.readOnly} value={metadataAuthor} /></label>
+            <label className="document-workspace-metadata"><span>书名</span><input aria-label="书名" className="document-metadata-field" onBlur={() => { if (!props.readOnly) void props.onUpdateMetadata(metadataTitle, metadataAuthor); }} onChange={(event) => setMetadataTitle(event.target.value)} readOnly={props.readOnly} value={metadataTitle} /></label>
+            <label className="document-workspace-metadata"><span>作者</span><input aria-label="作者" className="document-metadata-field" onBlur={() => { if (!props.readOnly) void props.onUpdateMetadata(metadataTitle, metadataAuthor); }} onChange={(event) => setMetadataAuthor(event.target.value)} placeholder="未知作者" readOnly={props.readOnly} value={metadataAuthor} /></label>
           </section>
           <section className="document-workspace-stats">
             <div><span>全文字数</span><strong>{formatNumber(liveTotal)}</strong></div>
