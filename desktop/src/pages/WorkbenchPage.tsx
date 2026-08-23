@@ -107,9 +107,7 @@ export function WorkbenchPage({ onNavigate }: Props) {
                 onDoubleClick={() => onNavigate(`/workspace/${project.id}`)}
                 type="button"
               >
-                  <span className="project-monogram">
-                    {project.name.trim().slice(0, 2).toUpperCase() || '工程'}
-                  </span>
+
                   <span className="project-list-copy">
                     <strong>{project.name}</strong>
                     <small>{formatStage(project.current_stage)} · {Math.round(project.progress * 100)}%</small>

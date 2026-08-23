@@ -11,8 +11,8 @@ const SLOTS: Array<{ key: PromptSlot; label: string; icon: typeof Settings2 }> =
   { key: 'summary', label: '内容总结', icon: BookOpenText },
   { key: 'plot_adjust', label: '调整剧情', icon: FileText },
   { key: 'expansion', label: '增加剧情', icon: FileText },
-  { key: 'plot_rewrite', label: '重写剧情', icon: Sparkles },
-  { key: 'writing', label: '写作', icon: FileText },
+  { key: 'plot_rewrite', label: '重写剧情', icon: FileText },
+  { key: 'writing', label: '写作', icon: Sparkles },
 ];
 
 export function PromptManagePage() {
@@ -45,15 +45,12 @@ export function PromptManagePage() {
     <FloatingNotice error={feedback.error} message={feedback.message} />
     <div className="fixed-prompt-layout">
       <aside className="fixed-prompt-menu">
-        <header><h2>工程流程提示词</h2></header>
-        {SLOTS.map(({ icon: Icon, key, label }, index) => <button className={slot === key ? 'active' : ''} key={key} onClick={() => { setFeedback({}); setSlot(key); }} type="button"><span className="prompt-order">{index + 1}</span><Icon size={17} /><span><strong>{label}</strong></span></button>)}
+        {SLOTS.map(({ icon: Icon, key, label }) => <button className={slot === key ? 'active' : ''} key={key} onClick={() => { setFeedback({}); setSlot(key); }} type="button"><Icon size={18} /><strong>{label}</strong></button>)}
       </aside>
       <main className="fixed-prompt-editor">
-        <header><div><h1>{meta.label}</h1></div>{slot === 'system' ? <strong className="priority-badge">最高优先级</strong> : null}</header>
+        <header><h1>{meta.label}</h1></header>
         {form ? <>
-          <label><span>说明</span><input value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} /></label>
           <label className="prompt-body"><span>提示词正文</span><textarea value={form.content} onChange={(event) => setForm({ ...form, content: event.target.value })} /></label>
-          <label><span>运行时输入</span><textarea className="prompt-input-description" value={form.input_description} onChange={(event) => setForm({ ...form, input_description: event.target.value })} /></label>
           <footer><button className="button primary" disabled={busy || !form.content.trim()} onClick={() => void save()} type="button"><Save size={15} />保存</button></footer>
         </> : <div className="prompt-slot-missing">当前提示词尚未初始化，请重新启动 Rusty 完成数据库升级。</div>}
       </main>
