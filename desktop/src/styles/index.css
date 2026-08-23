@@ -210,7 +210,6 @@ select:focus-visible {
 .document-book { display: grid; min-width: 0; cursor: pointer; justify-items: center; border: 1px solid transparent; border-radius: 10px; background: transparent; padding: 9px 6px; text-align: left; }
 .document-book:hover { border-color: var(--line); background: var(--paper); }
 .document-book.selected { border-color: var(--selected-border); background: var(--accent-soft); }
-.document-project-marker { margin-top: 7px; border: 1px solid var(--info-border); border-radius: 999px; background: var(--info-soft); color: var(--info); padding: 3px 7px; font-size: 9px; }
 .default-book-cover { position: relative; display: flex; width: 124px; aspect-ratio: 2 / 3; overflow: hidden; flex-direction: column; justify-content: space-between; border: 1px solid rgb(42 49 61 / 20%); border-radius: 4px 8px 8px 4px; background: var(--cover-bg); color: var(--cover-ink); padding: 17px 12px 12px 18px; box-shadow: 0 8px 14px rgb(31 42 58 / 14%), inset 8px 0 13px rgb(20 25 34 / 8%); text-align: left; }
 .default-book-cover.compact { width: 72px; flex: 0 0 72px; border-radius: 3px 6px 6px 3px; padding: 10px 7px 7px 11px; box-shadow: 0 5px 10px rgb(31 42 58 / 12%), inset 5px 0 9px rgb(20 25 34 / 8%); }
 .default-book-spine { position: absolute; inset: 0 auto 0 0; width: 7px; background: var(--cover-spine); box-shadow: inset -1px 0 rgb(255 255 255 / 18%); }
@@ -1234,21 +1233,6 @@ select:focus-visible {
 .writing-stage { grid-template-rows: minmax(0, 1fr); }
 .writing-paper { min-height: 0; height: 100%; overflow: auto; padding: 30px clamp(24px, 7vw, 72px); border: 1px solid var(--border-default); border-radius: 8px; background: var(--surface-input); white-space: pre-wrap; }
 /* Document library/workspace polish: one interaction and modal vocabulary. */
-.default-book-cover .document-project-marker {
-  position: absolute;
-  z-index: 2;
-  top: 8px;
-  right: 8px;
-  margin: 0;
-  border: 1px solid rgb(255 255 255 / 45%);
-  border-radius: 999px;
-  background: rgb(15 40 78 / 72%);
-  color: #fff;
-  padding: 3px 6px;
-  font-size: 9px;
-  font-weight: 750;
-  letter-spacing: .04em;
-}
 /* Shared document/character library primitives. */
 .library-sidebar-divider { height: 1px; margin: 14px 8px; background: var(--line); }
 .manuscript-pane > header.document-editor-heading {
@@ -1258,9 +1242,6 @@ select:focus-visible {
   gap: 14px;
 }
 .document-editor-heading > .button { grid-column: 3; justify-self: end; }
-.document-project-inline-badge { display: inline-flex; align-items: center; margin-left: 8px; border: 1px solid var(--info-border); border-radius: 999px; background: var(--info-soft); color: var(--info); padding: 2px 6px; font-size: 10px; font-weight: 700; }
-.document-readonly-note { border: 1px solid var(--info-border); border-radius: 8px; background: var(--info-soft); color: var(--muted); padding: 10px; font-size: 12px; line-height: 1.55; }
-.document-metadata-field[readonly] { cursor: default; border-color: transparent; background: transparent; color: var(--muted); }
 
 .document-modal {
   display: grid;

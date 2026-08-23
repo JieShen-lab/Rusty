@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+from typing import Protocol
+
 from rusty.chapter_titles import format_chapter_heading
-from rusty.models import ChapterRecord, EffectiveExportChapter
+
+
+class ExportChapter(Protocol):
+    title: str
+    original_text: str
+    rewritten_text: str | None
 
 
 def build_txt_export(
-    chapters: list[ChapterRecord] | list[EffectiveExportChapter],
+    chapters: list[ExportChapter],
     use_rewrites: bool = True,
     volume_titles: dict[int, str] | None = None,
 ) -> str:

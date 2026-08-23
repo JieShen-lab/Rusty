@@ -6,11 +6,11 @@ from pathlib import Path
 from ebooklib import epub
 
 from rusty.chapter_titles import format_chapter_heading
-from rusty.models import ChapterRecord, EffectiveExportChapter
+from rusty.exporters.txt import ExportChapter
 
 
 def export_epub(
-    chapters: list[ChapterRecord] | list[EffectiveExportChapter],
+    chapters: list[ExportChapter],
     output_path: str | Path,
     title: str,
     author: str | None = None,
@@ -76,7 +76,7 @@ def export_epub(
 
 
 def _chapter_html(
-    chapter: ChapterRecord | EffectiveExportChapter,
+    chapter: ExportChapter,
     heading: str,
     use_rewrites: bool,
 ) -> str:

@@ -22,6 +22,10 @@ export type Chapter = {
   original_text: string;
   rewritten_text: string | null;
   word_count: number;
+  baseline_word_count: number;
+  current_word_count: number;
+  word_delta: number;
+  is_added_chapter: boolean;
   status: string;
   workflow_stage: CreativeWorkflowStage;
 };
@@ -98,7 +102,7 @@ export type MaterialExtractionApplyResult = { created: Array<{ candidate_id: str
 
 export type DocumentCategory = { id: number; name: string; normalized_name: string; sort_order: number; resource_count: number };
 export type DocumentCoverPalette = 'indigo' | 'terracotta' | 'jade' | 'slate' | 'ochre' | 'plum' | 'bluegray';
-export type LibraryDocument = { id: number; title: string; author: string | null; description: string | null; source_filename: string; source_format: string; storage_path: string; source_size_bytes: number; stored_size_bytes: number; chapter_count: number; word_count: number; cover_palette: DocumentCoverPalette; status: string; favorite: boolean; is_project_document: boolean; category_ids: number[]; categories: string[]; project_ids: number[]; created_at: string; updated_at: string };
+export type LibraryDocument = { id: number; title: string; author: string | null; description: string | null; source_filename: string; source_format: string; storage_path: string; source_size_bytes: number; stored_size_bytes: number; chapter_count: number; word_count: number; cover_palette: DocumentCoverPalette; status: string; favorite: boolean; category_ids: number[]; categories: string[]; created_at: string; updated_at: string };
 export type LibraryDocumentImportResult = { document: LibraryDocument; created: boolean; storage_format: string };
 export type DocumentLibrarySettings = { storage_path: string };
 export type LibraryDocumentRevision = { id: number; document_id: number; revision_number: number; revision_type: string; storage_path: string; parent_revision_id: number | null; created_at: string };

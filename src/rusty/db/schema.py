@@ -605,6 +605,11 @@ def _detach_legacy_project_documents(connection: sqlite3.Connection, links_table
 
 
 def _is_pure_project_mirror(connection: sqlite3.Connection, document_id: int) -> bool:
+    document = connection.execute(
+        "SELECT favorite FROM library_documents WHERE id=?", (document_id,)
+    ).fetchone()
+    if document is None or bool(document[0]):
+        return False
     if connection.execute(
         "SELECT 1 FROM document_category_links WHERE document_id=? LIMIT 1", (document_id,)
     ).fetchone() is not None:

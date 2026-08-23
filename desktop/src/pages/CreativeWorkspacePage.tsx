@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { ArrowLeft, BookOpenText, Check, ChevronRight, Download, RefreshCw, Save, Sparkles, WandSparkles } from 'lucide-react';
-import { exportProject, generateChapterWriting, getChapter, getChapters, getChapterWorkflow, getLibraryDocuments, getMaterials, getProject, resolveChapterStyle, runChapterSpecialAnalysis, runChapterSummary, saveChapterDirection, saveChapterSpecialAnalysis, saveChapterSummary, saveChapterWriting } from '../api/client';
-import type { Chapter, ChapterSpecialAnalysis, ChapterSummary, ChapterWorkflowState, CreativeStrategy, CreativeWorkflowStage, LibraryDocument, Material, StyleDimension, StyleProfile } from '../api/types';
+import { exportProject, generateChapterWriting, getChapter, getChapters, getChapterWorkflow, getMaterials, getProject, resolveChapterStyle, runChapterSpecialAnalysis, runChapterSummary, saveChapterDirection, saveChapterSpecialAnalysis, saveChapterSummary, saveChapterWriting } from '../api/client';
+import type { Chapter, ChapterSpecialAnalysis, ChapterSummary, ChapterWorkflowState, CreativeStrategy, CreativeWorkflowStage, Material, StyleDimension, StyleProfile } from '../api/types';
 import { FloatingNotice } from '../components/FloatingNotice';
-import { LibraryDefinition, LibraryExportDialog } from '../components/LibraryPrimitives';
+import { ExportFormatDialog, LibraryDefinition } from '../components/LibraryPrimitives';
 import { PrimaryButton } from '../components/PrimaryButton';
 import { SecondaryButton } from '../components/SecondaryButton';
 
@@ -19,7 +19,6 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
   const [detail, setDetail] = useState<Chapter | null>(null);
   const [workflow, setWorkflow] = useState<ChapterWorkflowState | null>(null);
   const [authors, setAuthors] = useState<Material[]>([]);
-  const [projectDocument, setProjectDocument] = useState<LibraryDocument | null>(null);
   const [projectOriginalWordCount, setProjectOriginalWordCount] = useState(0);
   const [activeStage, setActiveStage] = useState<UiStage>('summary');
   const [busy, setBusy] = useState(false);
@@ -39,17 +38,6 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
     setProjectOriginalWordCount(0);
     void Promise.all([getChapters(projectId), getMaterials(), getProject(projectId)]).then(([items, profiles, project]) => {
       if (!cancelled) { setChapters(items); setAuthors(profiles); setProjectOriginalWordCount(project.total_words); setSelectedId(items[0]?.id ?? null); }
-    }).catch((reason) => { if (!cancelled) setError(messageOf(reason)); });
-    return () => { cancelled = true; };
-  }, [projectId]);
-
-  useEffect(() => {
-    let cancelled = false;
-    setProjectDocument(null);
-    void getLibraryDocuments().then((documents) => {
-      if (!cancelled) {
-        setProjectDocument(documents.find((document) => document.is_project_document && document.project_ids.includes(projectId)) ?? null);
-      }
     }).catch((reason) => { if (!cancelled) setError(messageOf(reason)); });
     return () => { cancelled = true; };
   }, [projectId]);
@@ -87,9 +75,9 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
   }
 
   async function exportProjectDocument(format: 'txt' | 'epub') {
-    if (!projectDocument || busy) return;
+    if (busy) return;
     try {
-      const outputPath = await window.rustyDesktop?.selectDocumentExportPath?.(format, projectDocument.title);
+      const outputPath = await window.rustyDesktop?.selectDocumentExportPath?.(format, projectName);
       if (!outputPath) return;
       setBusy(true); setError(null); setMessage(null);
       const result = await exportProject(projectId, format, outputPath);
@@ -112,9 +100,9 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
       <StageProgress active={activeStage} availableIndex={workflow ? availableStageIndex(workflow) : 0} onSelect={setActiveStage} workflow={workflow} />
       <aside className="chapter-rail"><div className="binder-heading"><h2>章节</h2><span>共 {chapters.length} 章</span></div><nav className="chapter-list project-chapter-list">{chapters.map((chapter) => { const complete = chapter.workflow_stage === 'review' || chapter.workflow_stage === 'confirmed'; return <button aria-current={chapter.id === selectedId ? 'page' : undefined} className={`chapter-row ${chapter.id === selectedId ? 'selected' : ''}`} key={chapter.id} onClick={() => setSelectedId(chapter.id)} type="button"><span className="chapter-number">第 {chapter.index} 章</span><span className="chapter-name">{chapter.title || '未命名'}</span><span className={`chapter-state ${complete ? 'complete' : ''}`}>{complete ? '已完成' : '未完成'}</span></button>; })}</nav></aside>
       <main className={`chapter-workspace stage-${activeStage}`}>{!selectedId || !workflow ? <div className="stage-placeholder"><h2>正在读取章节工作流…</h2></div> : <StageContent active={activeStage} authors={authors} detail={detail} drafts={drafts} setters={setters} workflow={workflow} />}</main>
-      <ContextPanel active={activeStage} act={act} authors={authors} busy={busy} chapters={chapters} detail={detail} drafts={drafts} onOpenExport={() => setExportOpen(true)} projectDocument={projectDocument} projectOriginalWordCount={projectOriginalWordCount} workflow={workflow} />
+      <ContextPanel active={activeStage} act={act} authors={authors} busy={busy} chapters={chapters} detail={detail} drafts={drafts} onOpenExport={() => setExportOpen(true)} projectOriginalWordCount={projectOriginalWordCount} workflow={workflow} />
     </div>
-    {exportOpen && projectDocument ? <LibraryExportDialog busy={busy} document={projectDocument} onClose={() => setExportOpen(false)} onExport={(format) => void exportProjectDocument(format)} /> : null}
+    {exportOpen ? <ExportFormatDialog busy={busy} title={projectName} onClose={() => setExportOpen(false)} onExport={(format) => void exportProjectDocument(format)} /> : null}
   </div>;
 }
 
@@ -225,16 +213,16 @@ function ReviewStage({ detail, draft, onChange, workflow }: { detail: Chapter | 
   return <section className="flow-stage-card review-stage manual-review-stage"><DiffEditor draft={draft} original={detail?.original_text ?? ''} expansion={workflow.writing.strategy === 'expansion'} onChange={onChange} /></section>;
 }
 
-function ContextPanel({ active, act, authors, busy, chapters, detail, drafts, onOpenExport, projectDocument, projectOriginalWordCount, workflow }: { active: UiStage; act: (action: () => Promise<unknown>, next?: UiStage, success?: string) => Promise<void>; authors: Material[]; busy: boolean; chapters: Chapter[]; detail: Chapter | null; drafts: Drafts; onOpenExport: () => void; projectDocument: LibraryDocument | null; projectOriginalWordCount: number; workflow: ChapterWorkflowState | null }) {
+function ContextPanel({ active, act, authors, busy, chapters, detail, drafts, onOpenExport, projectOriginalWordCount, workflow }: { active: UiStage; act: (action: () => Promise<unknown>, next?: UiStage, success?: string) => Promise<void>; authors: Material[]; busy: boolean; chapters: Chapter[]; detail: Chapter | null; drafts: Drafts; onOpenExport: () => void; projectOriginalWordCount: number; workflow: ChapterWorkflowState | null }) {
   const selectedAuthor = authors.find((author) => author.id === workflow?.style?.author_style_material_id);
   const review = active === 'review';
-  return <aside className={`creative-context-panel document-detail-panel ${review ? 'review-export-context' : ''}`}><header><h2>{review ? '导出统计' : '章节信息'}</h2></header>{review ? <ReviewExportSummary chapters={chapters} originalWordCount={projectOriginalWordCount} /> : <div className="document-detail-scroll"><section className="document-detail-metadata"><LibraryDefinition label="当前来源" value={workflow?.source_base_kind === 'rewrite_version' ? '已改写版本' : '原文章节'} /><LibraryDefinition label="字数" value={`${detail?.word_count ?? 0} 字`} /><LibraryDefinition label="创作方向" value={workflow?.direction ? strategyTitle(workflow.direction.strategy) : '尚未选择'} /><LibraryDefinition label="风格来源" value={workflow?.style?.style_mode === 'selected_author_style' ? selectedAuthor?.name ?? '已保存作者' : workflow?.style ? '整部原作' : '尚未确定'} /></section></div>}<footer className="creative-detail-footer">{workflow ? <StageActions active={active} act={act} busy={busy} drafts={drafts} workflow={workflow} /> : null}{review && workflow?.writing ? <SecondaryButton disabled={busy || !projectDocument} onClick={onOpenExport} title={projectDocument ? undefined : '未找到关联文档'}><Download size={15} />导出文档</SecondaryButton> : null}</footer></aside>;
+  return <aside className={`creative-context-panel document-detail-panel ${review ? 'review-export-context' : ''}`}><header><h2>{review ? '导出统计' : '章节信息'}</h2></header>{review ? <ReviewExportSummary chapters={chapters} originalWordCount={projectOriginalWordCount} /> : <div className="document-detail-scroll"><section className="document-detail-metadata"><LibraryDefinition label="当前来源" value={workflow?.source_base_kind === 'rewrite_version' ? '已改写版本' : '原文章节'} /><LibraryDefinition label="字数" value={`${detail?.current_word_count ?? 0} 字`} /><LibraryDefinition label="创作方向" value={workflow?.direction ? strategyTitle(workflow.direction.strategy) : '尚未选择'} /><LibraryDefinition label="风格来源" value={workflow?.style?.style_mode === 'selected_author_style' ? selectedAuthor?.name ?? '已保存作者' : workflow?.style ? '整部原作' : '尚未确定'} /></section></div>}<footer className="creative-detail-footer">{workflow ? <StageActions active={active} act={act} busy={busy} drafts={drafts} workflow={workflow} /> : null}{review && workflow?.writing ? <SecondaryButton disabled={busy} onClick={onOpenExport}><Download size={15} />导出文档</SecondaryButton> : null}</footer></aside>;
 }
 
 function ReviewExportSummary({ chapters, originalWordCount }: { chapters: Chapter[]; originalWordCount: number }) {
-  const exportedWordCount = chapters.reduce((total, chapter) => total + countTextUnits(chapter.rewritten_text?.trim() || chapter.original_text), 0);
-  const wordDelta = exportedWordCount - originalWordCount;
-  const modifiedCount = chapters.filter((chapter) => Boolean(chapter.rewritten_text?.trim())).length;
+  const exportedWordCount = chapters.reduce((total, chapter) => total + chapter.current_word_count, 0);
+  const wordDelta = chapters.reduce((total, chapter) => total + chapter.word_delta, 0);
+  const modifiedCount = chapters.filter((chapter) => Boolean(chapter.rewritten_text?.trim()) || chapter.is_added_chapter).length;
   const unmodifiedCount = Math.max(chapters.length - modifiedCount, 0);
   const modifiedRatio = chapters.length ? (modifiedCount / chapters.length) * 100 : 0;
   const unmodifiedRatio = chapters.length ? (unmodifiedCount / chapters.length) * 100 : 0;
@@ -276,5 +264,4 @@ function availableStageIndex(workflow: ChapterWorkflowState): number { const fir
 function strategyTitle(value: CreativeStrategy): string { return ({ plot_adjust: '调整剧情', expansion: '增加剧情', plot_rewrite: '重写剧情' })[value]; }
 function formatExportCount(value: number): string { return value >= 10000 ? `${(value / 10000).toFixed(value % 10000 ? 1 : 0)}万` : value.toLocaleString('zh-CN'); }
 function formatSignedCount(value: number): string { return `${value >= 0 ? '+' : '-'}${formatExportCount(Math.abs(value))}`; }
-function countTextUnits(text: string): number { return Array.from(text).reduce((count, character) => /\s/u.test(character) ? count : count + 1, 0); }
 function messageOf(reason: unknown): string { return reason instanceof Error ? reason.message : String(reason); }

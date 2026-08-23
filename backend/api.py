@@ -186,7 +186,6 @@ def create_app(
             payload.project_name,
             model_id=payload.model_id,
         )
-        documents.ensure_project_document(project_id, state.source_path)
         return _project_out(_require_project(projects, project_id))
 
     @app.post("/api/projects/{project_id}/delete", dependencies=[Depends(_require_token)])

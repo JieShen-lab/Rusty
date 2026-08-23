@@ -16,6 +16,40 @@ from backend.api import create_app
 
 
 class DocumentLibraryApiTests(unittest.TestCase):
+    def test_project_creation_does_not_create_a_library_document_copy(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            source = root / "project.txt"
+            source.write_text("第一章\n\n这是工程正文。\n", encoding="utf-8")
+            library_path = root / "library"
+            environment = {
+                "RUSTY_API_TOKEN": "project-test-token",
+                "RUSTY_DOCUMENT_LIBRARY_PATH": str(library_path),
+            }
+            headers = {"X-Rusty-Token": "project-test-token"}
+            with patch.dict(os.environ, environment):
+                client = TestClient(create_app(root / "rusty.db"))
+                before = client.get("/api/documents")
+                preview = client.post(
+                    "/api/projects/preview",
+                    headers=headers,
+                    json={"source_path": str(source), "workspace_path": str(root)},
+                )
+                created = client.post(
+                    "/api/projects",
+                    headers=headers,
+                    json={"preview_token": preview.json()["preview_token"], "project_name": "独立工程"},
+                )
+                after = client.get("/api/documents")
+
+            self.assertEqual(200, before.status_code)
+            self.assertEqual(200, preview.status_code)
+            self.assertEqual(200, created.status_code)
+            self.assertEqual(200, after.status_code)
+            self.assertEqual([], before.json())
+            self.assertEqual([], after.json())
+            self.assertFalse(library_path.exists())
+
     def test_volume_directory_returns_nested_chapters_and_supports_rename(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)

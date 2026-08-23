@@ -5,7 +5,7 @@ Rusty 是本地优先的小说文档管理与章节级 AI 创作桌面应用。�
 当前功能：
 
 - 导入 TXT、EPUB、DOCX 并建立章节工程。
-- 独立文档库：分类、修订、合并、章节/卷编辑、AI 整理、AI 分章与 TXT/EPUB 导出。
+- 独立文档库：只管理用户主动导入的文件及其分类、修订、合并、章节/卷编辑、AI 整理、AI 分章与 TXT/EPUB 导出。
 - 作者风格档案：完整样本提取、人工确认、编辑，以及提取设置导入/导出。
 - 章节工作流：内容总结、调整剧情、增加剧情、重写剧情、风格确定、正文生成和人工确认。
 - 六个固定提示词槽，以及统一注入到每次 AI 请求的全局 System Prompt。
@@ -23,5 +23,9 @@ npm run electron:dev
 ```
 
 默认数据库位置：`%USERPROFILE%\AppData\Local\Rusty\rusty.db`。
+
+工程与文档库是两个完全独立的数据域。创建工程不会自动创建文档库文档；工程章节、创作工作流和工程导出由工程系统维护，工程导出由 `ProjectService` 直接生成 TXT/EPUB。文档库只管理用户主动导入的文档和自身版本，文档库导出由 `DocumentLibraryService` 从文档库版本生成 TXT/EPUB。
+
+当前数据库 schema 为 v66；该版本删除了工程与文档库之间的 `project_documents` 业务关系。旧关联文档会在迁移时区分处理：纯工程镜像软删除，存在分类、草稿或用户编辑版本的文档保留为普通文档库文档。
 
 当前实现与数据结构见 [docs/current-implementation.md](docs/current-implementation.md)。

@@ -3,18 +3,15 @@ import { expect, test, type Page } from '@playwright/test';
 const chapter = {
   id: 901, project_id: 99, index: 1, title: '第一章',
   original_text: '雨落在旧城的屋檐上。', rewritten_text: null,
-  word_count: 11, status: 'imported', start_line: 1, end_line: 1,
+  word_count: 11, baseline_word_count: 11, current_word_count: 11, word_delta: 0,
+  is_added_chapter: false, status: 'imported', workflow_stage: 'direction',
 };
 
 function projectDetail() {
   return {
-    project: {
-      id: 99, name: '章节工作流测试工程', project_kind: 'rewrite', status: 'ready',
-      current_stage: 'imported', source_format: 'txt', total_chapters: 1, total_words: 11,
-      completed_chapters: 0, book_title: '测试小说', author: null, created_at: '',
-      updated_at: '', progress: 0,
-    },
-    metadata: {}, settings: { processing_mode: 'manual' }, exports: [],
+    id: 99, name: '章节工作流测试工程', status: 'ready', current_stage: 'imported',
+    source_format: 'txt', total_chapters: 1, total_words: 11, completed_chapters: 0,
+    book_title: '测试小说', author: null, created_at: '', updated_at: '', progress: 0,
   };
 }
 
@@ -28,7 +25,7 @@ async function mockCurrentWorkspace(page: Page, sourceChanged = false) {
     else if (path === '/api/projects/99/chapters') body = [chapter];
     else if (path === '/api/materials') body = [];
     else if (path === '/api/chapters/901') {
-      body = { chapter, ai_outputs: {}, stage_statuses: [], errors: [] };
+      body = chapter;
     } else if (path === '/api/chapters/901/workflow') {
       body = {
         chapter_id: 901, strategy: 'plot_adjust', current_stage: 'direction',
@@ -101,10 +98,9 @@ test('调整剧情对照旧大纲与可编辑的新大纲及细节', async ({ pa
   }
 });
 
-test('审查由人工对照编辑并保存确认，不请求模型审查', async ({ page }) => {
+test('审查由人工对照编辑并保存修改，不请求模型审查', async ({ page }) => {
   await mockCurrentWorkspace(page);
   let savedText = '';
-  let confirmed = false;
   await page.route('http://127.0.0.1:8765/api/chapters/901/workflow', async (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
     chapter_id: 901, strategy: 'plot_adjust', current_stage: 'review', source_base_kind: 'original', source_base_version_id: null, source_hash: 'source-hash', source_changed: false,
     summary: { chapter_id: 901, plot_summary: '发现线索。', main_characters: '', key_events: '', source_hash: 'source-hash', updated_at: '' },
@@ -113,13 +109,10 @@ test('审查由人工对照编辑并保存确认，不请求模型审查', async
     writing: { id: 1, chapter_id: 901, strategy: 'plot_adjust', result_text: '修改后的雨夜正文。', created_chapter_id: null, source_hash: 'source-hash', status: 'draft', updated_at: '' }, updated_at: '',
   }) }));
   await page.route('http://127.0.0.1:8765/api/chapters/901/workflow/writing', async (route) => { savedText = String(route.request().postDataJSON().result_text); await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' }); });
-  await page.route('http://127.0.0.1:8765/api/chapters/901/workflow/confirm', async (route) => { confirmed = true; await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' }); });
   await page.goto('/workspace/99');
   await expect(page.getByText('原始正文', { exact: true })).toBeVisible();
   const edited = page.getByLabel('修改后正文');
   await edited.fill('人工调整后的正文。');
   await page.getByRole('button', { name: '保存修改' }).click();
   await expect.poll(() => savedText).toBe('人工调整后的正文。');
-  await page.getByRole('button', { name: '保存并人工确认' }).click();
-  await expect.poll(() => confirmed).toBe(true);
 });

@@ -1,7 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { CircleDashed, X } from 'lucide-react';
-import type { LibraryDocument } from '../api/types';
 
 export function BodyPortal({ children }: { children: ReactNode }) {
   return createPortal(children, document.body);
@@ -223,14 +222,14 @@ export function LibraryDefinition({ label, value }: { label: string; value: Reac
   );
 }
 
-export function LibraryExportDialog({
+export function ExportFormatDialog({
   busy,
-  document,
+  title,
   onClose,
   onExport,
 }: {
   busy: boolean;
-  document: LibraryDocument;
+  title: string;
   onClose: () => void;
   onExport: (format: 'txt' | 'epub') => void;
 }) {
@@ -252,7 +251,7 @@ export function LibraryExportDialog({
           <header>
             <div className="document-export-heading">
               <span>导出：</span>
-              <h2 id="document-export-title">{document.title}</h2>
+              <h2 id="document-export-title">{title}</h2>
             </div>
           </header>
 

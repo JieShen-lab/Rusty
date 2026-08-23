@@ -21,7 +21,6 @@ import {
   Download,
   FileInput,
   Folder,
-  FolderOpen,
   FolderPlus,
   LibraryBig,
   Plus,
@@ -80,7 +79,7 @@ import { PrimaryButton } from '../components/PrimaryButton';
 import { SecondaryButton } from '../components/SecondaryButton';
 import { DangerButton } from '../components/DangerButton';
 import { FloatingNotice } from '../components/FloatingNotice';
-import { BodyPortal, LibraryContextMenu, LibraryDefinition, LibraryDialog, LibraryDivider, LibraryExportDialog, LibraryResourceCard, LibraryResourceGrid, LibrarySidebarSectionTitle } from '../components/LibraryPrimitives';
+import { BodyPortal, ExportFormatDialog, LibraryContextMenu, LibraryDefinition, LibraryDialog, LibraryDivider, LibraryResourceCard, LibraryResourceGrid, LibrarySidebarSectionTitle } from '../components/LibraryPrimitives';
 import { TopBar } from '../components/TopBar';
 import { useAutoDismiss } from '../hooks/useAutoDismiss';
 
@@ -92,7 +91,6 @@ type CleanupStatus = Omit<LibraryDocumentAICleanupResult['chapters'][number], 's
 
 const systemFilters = [
   { key: 'all', label: '全部文档', icon: LibraryBig },
-  { key: 'project', label: '工程文档', icon: FolderOpen },
   { key: 'uncategorized', label: '未分类', icon: Folder },
 ] as const;
 type SystemFilter = typeof systemFilters[number]['key'];
@@ -646,8 +644,7 @@ export function DocumentLibraryPage() {
   <button
     className="button primary document-save-button"
     disabled={
-      selectedDocument.is_project_document
-      || (!editorDirty && !documentDraft)
+      (!editorDirty && !documentDraft)
     }
     onClick={() => {
       void flushEditorDraft('保存').then(async (saved) => {
@@ -693,7 +690,6 @@ export function DocumentLibraryPage() {
           onReorder={(draggedId, targetId, targetVolumeId) => void reorderChapters(draggedId, targetId, targetVolumeId)}
           processingBusy={processingBusy}
           selectedChapterId={selectedChapterId}
-          readOnly={selectedDocument.is_project_document}
         />
         {cleanupOpen ? (
           <CleanupDialog
@@ -711,7 +707,6 @@ export function DocumentLibraryPage() {
             document={selectedDocument}
             onClose={() => setRevisionsOpen(false)}
             onRestore={(revisionId) => void restoreRevision(revisionId).then(() => setRevisionsOpen(false))}
-            readOnly={selectedDocument.is_project_document}
             revisions={revisions}
           />
         ) : null}
@@ -723,7 +718,7 @@ export function DocumentLibraryPage() {
             onCreate={(title) => void createVolume(title)}
           />
         ) : null}
-        {exportOpen ? <LibraryExportDialog busy={busy} document={selectedDocument} onClose={() => setExportOpen(false)} onExport={(format) => void exportDocument(format)} /> : null}
+        {exportOpen ? <ExportFormatDialog busy={busy} title={selectedDocument.title} onClose={() => setExportOpen(false)} onExport={(format) => void exportDocument(format)} /> : null}
         {actionDialog ? (
           <DocumentActionDialog
             action={actionDialog}
@@ -924,7 +919,7 @@ export function DocumentLibraryPage() {
         </aside>
       </div>
 
-      {exportOpen && selectedDocument ? <LibraryExportDialog busy={busy} document={selectedDocument} onClose={() => setExportOpen(false)} onExport={(format) => void exportDocument(format)} /> : null}
+      {exportOpen && selectedDocument ? <ExportFormatDialog busy={busy} title={selectedDocument.title} onClose={() => setExportOpen(false)} onExport={(format) => void exportDocument(format)} /> : null}
       {categoryCreateOpen ? (
         <DocumentCategoryNameDialog
           busy={busy}
@@ -979,7 +974,6 @@ type DocumentWorkspaceProps = {
   onDirtyChange: (dirty: boolean) => void;
   onTitlePreview: (title: string) => void;
   processingBusy: boolean;
-  readOnly: boolean;
   selectedChapterId: number | null;
 };
 
@@ -1031,7 +1025,6 @@ const DocumentWorkspace = forwardRef<DocumentEditorController, DocumentWorkspace
         onRenameVolume={props.onRenameVolume}
         onReorder={props.onReorder}
         selectedChapterId={props.selectedChapterId}
-        readOnly={props.readOnly}
         volumes={props.volumes}
       />
       <main className="workspace-center document-workspace-main">
@@ -1048,7 +1041,6 @@ const DocumentWorkspace = forwardRef<DocumentEditorController, DocumentWorkspace
             onSaveDraft={props.onSaveDraft}
             onSaveStatusChange={handleSaveStatusChange}
             onTitlePreview={props.onTitlePreview}
-            readOnly={props.readOnly}
             ref={editorRef}
           />
         </div>
@@ -1056,8 +1048,8 @@ const DocumentWorkspace = forwardRef<DocumentEditorController, DocumentWorkspace
       <aside className="workbench-inspector document-workspace-inspector">
         <div className="document-workspace-info">
           <section>
-            <label className="document-workspace-metadata"><span>书名</span><input aria-label="书名" className="document-metadata-field" onBlur={() => { if (!props.readOnly) void props.onUpdateMetadata(metadataTitle, metadataAuthor); }} onChange={(event) => setMetadataTitle(event.target.value)} readOnly={props.readOnly} value={metadataTitle} /></label>
-            <label className="document-workspace-metadata"><span>作者</span><input aria-label="作者" className="document-metadata-field" onBlur={() => { if (!props.readOnly) void props.onUpdateMetadata(metadataTitle, metadataAuthor); }} onChange={(event) => setMetadataAuthor(event.target.value)} placeholder="未知作者" readOnly={props.readOnly} value={metadataAuthor} /></label>
+            <label className="document-workspace-metadata"><span>书名</span><input aria-label="书名" className="document-metadata-field" onBlur={() => void props.onUpdateMetadata(metadataTitle, metadataAuthor)} onChange={(event) => setMetadataTitle(event.target.value)} value={metadataTitle} /></label>
+            <label className="document-workspace-metadata"><span>作者</span><input aria-label="作者" className="document-metadata-field" onBlur={() => void props.onUpdateMetadata(metadataTitle, metadataAuthor)} onChange={(event) => setMetadataAuthor(event.target.value)} placeholder="未知作者" value={metadataAuthor} /></label>
           </section>
           <section className="document-workspace-stats">
             <div><span>全文字数</span><strong>{formatNumber(liveTotal)}</strong></div>
@@ -1076,14 +1068,14 @@ const DocumentWorkspace = forwardRef<DocumentEditorController, DocumentWorkspace
         </div>
         <div className="document-workspace-actions">
           <div className="document-workspace-action-scroll">
-            {!props.readOnly ? <div className="inspector-action-area">
+            <div className="inspector-action-area">
               <button className="button secondary full" onClick={() => props.onDocumentAction('merge')} type="button"><Combine size={16} />合并文档</button>
               <button className="button secondary full" onClick={() => props.onDocumentAction('create-chapter')} type="button"><Plus size={16} />新增章节</button>
               <button className="button secondary full" disabled={props.selectedChapterId == null} onClick={props.onCreateVolume} type="button"><FolderPlus size={16} />新建分卷</button>
               <button className="button secondary full" onClick={() => props.onDocumentAction('split')} type="button"><Scissors size={16} />分章</button>
               <button className="button secondary full" onClick={props.onOpenCleanup} type="button"><WandSparkles size={16} />文字整理</button>
               <button className="button secondary full" onClick={props.onOpenRevisions} type="button"><Clock3 size={16} />版本记录</button>
-            </div> : <div className="inspector-action-area"><div className="document-readonly-note">工程文档由工程保存结果同步，此处为只读工作区。</div><button className="button secondary full" onClick={props.onOpenRevisions} type="button"><Clock3 size={16} />版本记录</button></div>}
+            </div>
           </div>
           <div className="document-workspace-export"><PrimaryButton onClick={props.onExport}><Download size={15} />导出文档</PrimaryButton></div>
         </div>
@@ -1101,7 +1093,6 @@ function WorkspaceChapterNav({
   onRenameVolume,
   onReorder,
   selectedChapterId,
-  readOnly,
   volumes,
 }: {
   chapters: LibraryDocumentChapter[];
@@ -1112,7 +1103,6 @@ function WorkspaceChapterNav({
   onRenameVolume: (volumeId: number, title: string) => void;
   onReorder: (draggedId: number, targetId: number | null, targetVolumeId: number | null) => void;
   selectedChapterId: number | null;
-  readOnly: boolean;
   volumes: LibraryDocumentVolume[];
 }) {
   const listRef = useRef<HTMLElement>(null);
@@ -1153,17 +1143,16 @@ function WorkspaceChapterNav({
     <button
       aria-current={selectedChapterId === chapter.id ? 'page' : undefined}
       className={`chapter-row draggable ${selectedChapterId === chapter.id ? 'selected' : ''}`}
-      draggable={!readOnly}
+      draggable
       key={chapter.id}
       onClick={() => onContentChange(chapter.id)}
       onContextMenu={(event) => {
-        if (readOnly) return;
         event.preventDefault();
         setChapterMenu({ chapter, x: event.clientX, y: event.clientY });
       }}
-      onDragOver={(event) => { if (!readOnly) event.preventDefault(); }}
-      onDragStart={(event) => { if (!readOnly) startDrag(event, chapter.id); }}
-      onDrop={(event) => { if (!readOnly) dropChapter(event, chapter.id, chapter.volume_id); }}
+      onDragOver={(event) => event.preventDefault()}
+      onDragStart={(event) => startDrag(event, chapter.id)}
+      onDrop={(event) => dropChapter(event, chapter.id, chapter.volume_id)}
       type="button"
     >
       <span className="chapter-number">{chapterOrdinal(displayIndex)}</span>
@@ -1185,8 +1174,8 @@ function WorkspaceChapterNav({
             <section className="document-volume-group" key={volume.id}>
               <div
                 className="document-volume-row"
-                onDragOver={(event) => { if (!readOnly) event.preventDefault(); }}
-                onDrop={(event) => { if (!readOnly) dropChapter(event, null, volume.id); }}
+                onDragOver={(event) => event.preventDefault()}
+                onDrop={(event) => dropChapter(event, null, volume.id)}
               >
                 <button
                   aria-expanded={!isCollapsed}
@@ -1204,7 +1193,6 @@ function WorkspaceChapterNav({
                 <input
                   aria-label={`卷标题：${volume.title}`}
                   defaultValue={volume.title}
-                  readOnly={readOnly}
                   onBlur={(event) => {
                     if (event.target.value.trim() && event.target.value.trim() !== volume.title) {
                       onRenameVolume(volume.id, event.target.value);
@@ -1251,7 +1239,6 @@ const EditableTextPreview = forwardRef<DocumentEditorController, {
   onSaveDraft: (title: string, text: string) => Promise<LibraryDocumentDraft>;
   onSaveStatusChange: (status: SaveStatus, savedAt: string) => void;
   onTitlePreview: (title: string) => void;
-  readOnly: boolean;
 }>(function EditableTextPreview({
   chapterIndex,
   content,
@@ -1264,7 +1251,6 @@ const EditableTextPreview = forwardRef<DocumentEditorController, {
   onSaveDraft,
   onSaveStatusChange,
   onTitlePreview,
-  readOnly,
 }, ref) {
   const initialText = draft?.text ?? content?.body_text ?? '';
   const initialTitle = draft?.title ?? content?.title ?? '';
@@ -1398,9 +1384,9 @@ const EditableTextPreview = forwardRef<DocumentEditorController, {
   }
 
   useImperativeHandle(ref, () => ({
-    flushDraft: readOnly ? () => Promise.resolve(true) : flushDraft,
+    flushDraft,
     getCursorOffset: () => editorRef.current?.selectionStart ?? null,
-  }), [flushDraft, readOnly]);
+  }), [flushDraft]);
 
   function moveSearch(direction: 1 | -1) {
     if (!searchMatches.length) return;
@@ -1451,7 +1437,6 @@ const EditableTextPreview = forwardRef<DocumentEditorController, {
       <textarea
         className="manuscript-editor"
         disabled={loading || !content}
-        readOnly={readOnly}
         onChange={(event) => {
           const nextText = event.target.value;
           setText(nextText);
@@ -1531,7 +1516,6 @@ function RevisionHistoryDialog(props: {
   document: LibraryDocument;
   onClose: () => void;
   onRestore: (revisionId: number) => void;
-  readOnly: boolean;
   revisions: LibraryDocumentRevision[];
 }) {
   const currentRevision = props.revisions.find((revision) => revision.storage_path === props.document.storage_path) ?? props.revisions[0];
@@ -1539,7 +1523,7 @@ function RevisionHistoryDialog(props: {
   const renderRevision = (revision: LibraryDocumentRevision, current: boolean) => (
     <div key={revision.id}>
       <span>版本 {revision.revision_number} · {revisionLabel(revision.revision_type)} · {formatDateTime(revision.created_at)}</span>
-      <button disabled={props.busy || props.readOnly || current} onClick={() => { if (window.confirm('恢复后会切换当前文档版本，确定继续吗？')) props.onRestore(revision.id); }} type="button">{current ? '当前' : props.readOnly ? '只读' : '恢复'}</button>
+      <button disabled={props.busy || current} onClick={() => { if (window.confirm('恢复后会切换当前文档版本，确定继续吗？')) props.onRestore(revision.id); }} type="button">{current ? '当前' : '恢复'}</button>
     </div>
   );
   return (
@@ -1609,7 +1593,7 @@ function DocumentActionDialog(props: {
             <div className="document-modal-body">
               <label className="document-modal-row"><span>新文档标题</span><input className="form-input" value={title} onChange={(event) => setTitle(event.target.value)} /></label>
               <div className="document-merge-columns">
-                <section><h3>可添加文档</h3><div className="document-merge-list">{props.documents.filter((document) => document.id !== props.currentDocument.id).map((document) => <div key={document.id}><span>{document.title}{document.is_project_document ? <small className="document-project-inline-badge">工程</small> : null}</span><button className="button secondary compact" disabled={selected.includes(document.id)} onClick={() => setSelected((current) => [...current, document.id])} type="button">添加</button></div>)}</div></section>
+                <section><h3>可添加文档</h3><div className="document-merge-list">{props.documents.filter((document) => document.id !== props.currentDocument.id).map((document) => <div key={document.id}><span>{document.title}</span><button className="button secondary compact" disabled={selected.includes(document.id)} onClick={() => setSelected((current) => [...current, document.id])} type="button">添加</button></div>)}</div></section>
                 <section><h3>已选择</h3><div className="document-merge-list document-merge-order">{selected.map((id, index) => <div key={id}><span>{index + 1}. {props.documents.find((item) => item.id === id)?.title}</span><span className="document-merge-controls"><button aria-label="上移" disabled={index === 0} onClick={() => moveDocument(index, -1)} type="button">↑</button><button aria-label="下移" disabled={index === selected.length - 1} onClick={() => moveDocument(index, 1)} type="button">↓</button><button onClick={() => setSelected((current) => current.filter((item) => item !== id))} type="button">移除</button></span></div>)}</div></section>
               </div>
             </div>
@@ -1839,7 +1823,7 @@ function SidebarFilterButton({ active, count, icon, label, onClick, onContextMen
 
 function DefaultBookCover({ compact = false, document }: { compact?: boolean; document: LibraryDocument }) {
   const palette = document.cover_palette || 'slate';
-  return <span className={`default-book-cover palette-${palette} ${compact ? 'compact' : ''}`}><span className="default-book-spine" />{document.is_project_document ? <span className="document-project-marker">工程</span> : null}<strong>{document.title}</strong><span className="default-book-author">{document.author || '未知作者'}</span></span>;
+  return <span className={`default-book-cover palette-${palette} ${compact ? 'compact' : ''}`}><span className="default-book-spine" /><strong>{document.title}</strong><span className="default-book-author">{document.author || '未知作者'}</span></span>;
 }
 
 
@@ -1851,11 +1835,8 @@ function documentsForSystemFilter(
   documents: LibraryDocument[],
   filter: SystemFilter,
 ): LibraryDocument[] {
-  if (filter === 'project') return documents.filter((document) => document.is_project_document);
   if (filter === 'uncategorized') {
-    return documents.filter((document) => (
-      !document.is_project_document && document.category_ids.length === 0
-    ));
+    return documents.filter((document) => document.category_ids.length === 0);
   }
   return documents;
 }
@@ -1885,7 +1866,7 @@ function revisionLabel(revisionType: string) {
   if (revisionType === 'split_ai') return 'AI 分章';
   if (revisionType === 'split_cursor') return '光标分章';
   if (revisionType === 'split_regex') return '正则分章';
-  if (revisionType === 'project_sync') return '工程同步';
+  if (revisionType === 'project_sync') return '历史版本';
   if (revisionType === 'cleanup_ai') return '文字整理';
   return '文字整理';
 }

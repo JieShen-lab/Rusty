@@ -15,7 +15,7 @@ from rusty.db import session
 from rusty.exporters import build_txt_export, export_epub
 from rusty.importers import parse_docx, parse_epub, parse_txt, split_document_structure
 from rusty.importers.txt import read_text_with_encoding
-from rusty.models import ChapterRecord, ParsedBook, ParsedChapter, ParsedVolume, count_text_units
+from rusty.models import ParsedBook, ParsedChapter, ParsedVolume, count_text_units
 
 
 SUPPORTED_DOCUMENT_SUFFIXES = {".txt", ".epub", ".docx"}
@@ -38,12 +38,18 @@ class LibraryDocument:
     cover_palette: str
     status: str
     favorite: bool
-    is_project_document: bool
     category_ids: list[int]
     categories: list[str]
-    project_ids: list[int]
     created_at: str
     updated_at: str
+
+
+@dataclass(frozen=True)
+class _LibraryExportChapter:
+    title: str
+    original_text: str
+    rewritten_text: str | None
+    volume_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -209,16 +215,7 @@ class DocumentLibraryService:
                            FROM document_category_links links
                            JOIN document_categories categories ON categories.id = links.category_id
                            WHERE links.document_id = d.id AND categories.deleted_at IS NULL
-                       ), '') AS category_names,
-                       EXISTS(
-                           SELECT 1 FROM project_documents projects
-                           WHERE projects.document_id = d.id
-                       ) AS is_project_document,
-                       COALESCE((
-                           SELECT GROUP_CONCAT(projects.project_id, char(31))
-                           FROM project_documents projects
-                           WHERE projects.document_id = d.id
-                       ), '') AS project_ids
+                       ), '') AS category_names
                 FROM library_documents d
                 WHERE d.deleted_at IS NULL
                 ORDER BY d.created_at DESC, d.id DESC
@@ -233,7 +230,6 @@ class DocumentLibraryService:
         title: str,
         author: str | None,
     ) -> LibraryDocument:
-        self._ensure_content_mutable(document_id)
         normalized_title = title.strip()
         if not normalized_title:
             raise ValueError("文档名称不能为空。")
@@ -491,25 +487,6 @@ class DocumentLibraryService:
         document = self._get_document(document_id)
         return DocumentImportResult(document=document, created=True)
 
-    def ensure_project_document(self, project_id: int, source_path: str | Path) -> LibraryDocument:
-        result = self.import_document(source_path)
-        with session(self.database_path) as connection:
-            project = connection.execute(
-                "SELECT id FROM projects WHERE id = ? AND deleted_at IS NULL",
-                (project_id,),
-            ).fetchone()
-            if project is None:
-                raise FileNotFoundError(f"找不到工程：{project_id}")
-            connection.execute(
-                """
-                INSERT INTO project_documents (project_id, document_id)
-                VALUES (?, ?)
-                ON CONFLICT(project_id) DO UPDATE SET document_id = excluded.document_id
-                """,
-                (project_id, result.document.id),
-            )
-        return self._get_document(result.document.id)
-
     def list_revisions(self, document_id: int) -> list[DocumentRevision]:
         self._ensure_initial_revision(document_id)
         with session(self.database_path) as connection:
@@ -610,7 +587,6 @@ class DocumentLibraryService:
         ordered_chapter_ids: list[int],
         volume_assignments: dict[int, int | None] | None = None,
     ) -> list[LibraryChapter]:
-        self._ensure_content_mutable(document_id)
         revision = self._ensure_initial_revision(document_id)
         chapters = self.list_chapters(document_id)
         existing_ids = {chapter.id for chapter in chapters}
@@ -733,7 +709,6 @@ class DocumentLibraryService:
         text: str,
         chapter_id: int | None = None,
     ) -> LibraryDocumentDraft:
-        self._ensure_content_mutable(document_id)
         document = self._get_document(document_id)
         current = self._ensure_initial_revision(document_id)
         if current.id != base_revision_id:
@@ -784,7 +759,6 @@ class DocumentLibraryService:
         return draft
 
     def commit_draft(self, document_id: int, chapter_id: int | None = None) -> CleanupResult:
-        self._ensure_content_mutable(document_id)
         draft = self.get_draft(document_id, chapter_id)
         if draft is None:
             raise FileNotFoundError("No saved draft exists for this document scope.")
@@ -804,7 +778,6 @@ class DocumentLibraryService:
         return result
 
     def rename_volume(self, document_id: int, volume_id: int, title: str) -> CleanupResult:
-        self._ensure_content_mutable(document_id)
         normalized_title = title.strip()
         if not normalized_title:
             raise ValueError("卷标题不能为空。")
@@ -866,7 +839,6 @@ class DocumentLibraryService:
 
     def create_volume(self, document_id: int, chapter_id: int, title: str) -> CleanupResult:
         """Start a new volume at an existing chapter and preserve the remaining hierarchy."""
-        self._ensure_content_mutable(document_id)
         normalized_title = title.strip()
         if not normalized_title:
             raise ValueError("卷标题不能为空。")
@@ -1050,7 +1022,6 @@ class DocumentLibraryService:
         prompt: str,
     ) -> CleanupResult:
         """Persist prompt-driven cleanup as a new revision while preserving chapter structure."""
-        self._ensure_content_mutable(document_id)
         content = self.get_content(document_id, chapter_id)
         draft = self.save_draft(
             document_id,
@@ -1078,7 +1049,6 @@ class DocumentLibraryService:
         prompt: str,
     ) -> CleanupResult:
         """Replace selected chapter bodies together in one complete-document revision."""
-        self._ensure_content_mutable(document_id)
         if not cleaned_chapters:
             raise ValueError("至少需要一章成功的整理结果。")
         document = self._get_document(document_id)
@@ -1353,7 +1323,6 @@ class DocumentLibraryService:
         position: str = "after",
         anchor_chapter_id: int | None = None,
     ) -> CleanupResult:
-        self._ensure_content_mutable(document_id)
         document = self._get_document(document_id)
         current_revision = self._ensure_initial_revision(document_id)
         source_text = Path(current_revision.storage_path).read_text(encoding="utf-8")
@@ -1440,7 +1409,6 @@ class DocumentLibraryService:
 
     def delete_chapter(self, document_id: int, chapter_id: int) -> CleanupResult:
         """Delete one chapter by creating a full replacement revision."""
-        self._ensure_content_mutable(document_id)
         document = self._get_document(document_id)
         current_revision = self._ensure_initial_revision(document_id)
         source_text = Path(current_revision.storage_path).read_text(encoding="utf-8")
@@ -1503,7 +1471,6 @@ class DocumentLibraryService:
         next_title: str,
     ) -> CleanupResult:
         """Split one chapter at a body-relative cursor without reparsing the document."""
-        self._ensure_content_mutable(document_id)
         content = self.get_content(document_id, chapter_id)
         if cursor_offset <= 0 or cursor_offset >= len(content.body_text):
             raise ValueError("分章位置必须位于正文中间。")
@@ -1594,7 +1561,6 @@ class DocumentLibraryService:
         metadata: dict[str, object] | None = None,
     ) -> tuple[DocumentRevision, list[LibraryChapter]]:
         """Replace one chapter in place with continuous body-relative boundaries."""
-        self._ensure_content_mutable(document_id)
         current = self._ensure_initial_revision(document_id)
         if current.id != source_revision_id:
             raise ValueError("The document changed after the split preview; generate a new preview.")
@@ -1691,7 +1657,6 @@ class DocumentLibraryService:
         )
 
     def activate_revision(self, document_id: int, revision_id: int) -> LibraryDocument:
-        self._ensure_content_mutable(document_id)
         self._get_document(document_id)
         with session(self.database_path) as connection:
             row = connection.execute(
@@ -2043,15 +2008,6 @@ class DocumentLibraryService:
             ).fetchone()
         return self._get_document(int(row["id"])) if row is not None else None
 
-    def _ensure_content_mutable(self, document_id: int) -> None:
-        with session(self.database_path) as connection:
-            row = connection.execute(
-                "SELECT 1 FROM project_documents WHERE document_id = ? LIMIT 1",
-                (document_id,),
-            ).fetchone()
-        if row is not None:
-            raise ValueError("工程文档以工程内容为准，文档库工作区仅支持阅读、版本浏览和导出。")
-
     def _ensure_initial_revision(self, document_id: int) -> DocumentRevision:
         document = self._get_document(document_id)
         with session(self.database_path) as connection:
@@ -2124,16 +2080,7 @@ class DocumentLibraryService:
                            FROM document_category_links links
                            JOIN document_categories categories ON categories.id = links.category_id
                            WHERE links.document_id = d.id AND categories.deleted_at IS NULL
-                       ), '') AS category_names,
-                       EXISTS(
-                           SELECT 1 FROM project_documents projects
-                           WHERE projects.document_id = d.id
-                       ) AS is_project_document,
-                       COALESCE((
-                           SELECT GROUP_CONCAT(projects.project_id, char(31))
-                           FROM project_documents projects
-                           WHERE projects.document_id = d.id
-                       ), '') AS project_ids
+                       ), '') AS category_names
                 FROM library_documents d
                 WHERE d.id = ? AND d.deleted_at IS NULL
                 """,
@@ -2157,44 +2104,30 @@ class DocumentLibraryService:
             return target
         return target.with_name(f"{target.stem}-{content_hash[:8]}{target.suffix}")
 
-    def _chapter_records_for_export(self, document: LibraryDocument) -> list[ChapterRecord]:
+    def _chapter_records_for_export(self, document: LibraryDocument) -> list[_LibraryExportChapter]:
         revision = self._ensure_initial_revision(document.id)
         chapters = self.list_chapters(document.id)
         text = Path(revision.storage_path).read_text(encoding="utf-8")
-        records: list[ChapterRecord] = []
+        records: list[_LibraryExportChapter] = []
         for chapter in chapters:
             start, end = self._chapter_offsets(text, chapter)
             body_start = self._chapter_body_start(text, chapter, start, end)
             body = text[body_start:end].strip()
             records.append(
-                ChapterRecord(
-                    id=chapter.id,
-                    project_id=document.id,
-                    index=chapter.index,
+                _LibraryExportChapter(
                     title=chapter.title,
                     original_text=body,
                     rewritten_text=None,
-                    word_count=chapter.word_count,
-                    status="export",
-                    start_line=chapter.start_line,
-                    end_line=chapter.end_line,
                     volume_id=chapter.volume_id,
                 )
             )
         if records:
             return records
         return [
-            ChapterRecord(
-                id=0,
-                project_id=document.id,
-                index=1,
+            _LibraryExportChapter(
                 title=document.title,
                 original_text=text,
                 rewritten_text=None,
-                word_count=document.word_count,
-                status="export",
-                start_line=None,
-                end_line=None,
             )
         ]
 
@@ -2278,11 +2211,6 @@ class DocumentLibraryService:
             for name in str(row["category_names"] or "").split(chr(31))
             if name
         ]
-        project_ids = [
-            int(value)
-            for value in str(row["project_ids"] or "").split(chr(31))
-            if value
-        ]
         return LibraryDocument(
             id=int(row["id"]),
             title=str(row["title"]),
@@ -2298,10 +2226,8 @@ class DocumentLibraryService:
             cover_palette=str(row["cover_palette"]) if str(row["cover_palette"]) in DOCUMENT_COVER_PALETTES else "slate",
             status=str(row["status"]),
             favorite=bool(row["favorite"]),
-            is_project_document=bool(row["is_project_document"]),
             category_ids=category_ids,
             categories=categories,
-            project_ids=project_ids,
             created_at=str(row["created_at"]),
             updated_at=str(row["updated_at"]),
         )
