@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowDown, ArrowUp, CircleGauge, CloudSun, MessageCircle, Plus, Search, Settings, Sparkles, TextQuote, Trash2 } from 'lucide-react';
+import { ArrowDown, ArrowUp, Plus, Search, Settings, Sparkles, Trash2 } from 'lucide-react';
 import {
   applyMaterialExtraction,
   deleteMaterial,
@@ -81,6 +81,13 @@ export function AuthorLibraryPage() {
     try { await action(); } catch (reason) { setError(errorMessage(reason)); } finally { setBusy(false); }
   }
 
+  function handleMaterialSaved(saved: Material) {
+    setMaterials((current) => current.map((item) => item.id === saved.id ? saved : item));
+    setSelectedId(saved.id);
+    setEditing(saved);
+    setMessage('作者档案已保存。');
+  }
+
   return (
     <div className="document-library-page material-library-page">
       <TopBar title="作者" actions={(
@@ -147,7 +154,7 @@ export function AuthorLibraryPage() {
 
       {createOpen ? <CreateMaterialDialog busy={busy} onClose={() => setCreateOpen(false)} onError={setError} onSaved={async (id) => { setCreateOpen(false); await load(id); setMessage('作者风格已保存。'); }} /> : null}
       {settingsOpen ? <MaterialSettingsDialog materialType={type} onClose={() => setSettingsOpen(false)} onError={setError} onSaved={() => setMessage('提取设置已保存，并成为新的默认配置。')} /> : null}
-      {editing ? <MaterialEditor material={editing} onClose={() => setEditing(null)} onError={setError} onSaved={async (id) => { await load(id); const updated = (await getMaterials()).find((item) => item.id === id) ?? null; setEditing(updated); setMessage('作者档案已保存。'); }} /> : null}
+      {editing ? <MaterialEditor material={editing} onClose={() => setEditing(null)} onError={setError} onSaved={handleMaterialSaved} /> : null}
     </div>
   );
 }
@@ -160,6 +167,7 @@ function CreateMaterialDialog({ busy, onClose, onError, onSaved }: {
   const [sourcePath, setSourcePath] = useState('');
   const [working, setWorking] = useState(false);
   const selectedFileName = sourcePath.split(/[\\/]/).pop() || sourcePath;
+  const workName = visibleFileName(sourcePath);
   async function chooseFile() {
     const picker = window.rustyDesktop?.selectBookFile;
     if (!picker) {
@@ -188,7 +196,7 @@ function CreateMaterialDialog({ busy, onClose, onError, onSaved }: {
       const applied = await applyMaterialExtraction({
         preview_token: result.preview_token,
         selected_candidate_ids: [candidate.candidate_id],
-        candidates: [{ ...candidate, name: finalName, description: candidate.description || '', content: candidate.content, selected: true, category_ids: [] }],
+        candidates: [{ ...candidate, name: finalName, description: candidate.description || '', content: { ...candidate.content, work: workName }, selected: true, category_ids: [] }],
       });
       const created = applied.created[0]?.material_id;
       if (!created) throw new Error(applied.errors[0]?.error || '保存失败。');
@@ -253,12 +261,11 @@ function DimensionSettings({ dimensions, onChange }: { dimensions: MaterialAIDim
   return <section className="material-dimension-settings"><div className="section-heading"><h3>分析维度</h3><button onClick={() => onChange([...dimensions, { id: crypto.randomUUID(), name: '新维度', requirement: '' }])} type="button"><Plus size={14} />新增分析维度</button></div>{dimensions.map((item, index) => <article key={item.id}><div className="dimension-order"><button aria-label="上移维度" disabled={index === 0} onClick={() => onChange(move(dimensions, index, index - 1))} type="button"><ArrowUp size={14} /></button><button aria-label="下移维度" disabled={index === dimensions.length - 1} onClick={() => onChange(move(dimensions, index, index + 1))} type="button"><ArrowDown size={14} /></button></div><label><span>维度名称</span><input value={item.name} onChange={(event) => patch(item.id, { name: event.target.value })} /></label><label><span>提取要求</span><textarea value={item.requirement} onChange={(event) => patch(item.id, { requirement: event.target.value })} /></label><button aria-label="删除维度" className="danger" onClick={() => onChange(dimensions.filter((value) => value.id !== item.id))} type="button"><Trash2 size={14} /></button></article>)}</section>;
 }
 
-function MaterialEditor({ material, onClose, onError, onSaved }: { material: Material; onClose: () => void; onError: (value: string) => void; onSaved: (id: number) => Promise<void> }) {
+function MaterialEditor({ material, onClose, onError, onSaved }: { material: Material; onClose: () => void; onError: (value: string) => void; onSaved: (material: Material) => void }) {
   const profile = authorProfile(material);
   const [name, setName] = useState(profile.name);
   const [work, setWork] = useState(profile.work);
   const [overallStyle, setOverallStyle] = useState(profile.overallStyle);
-  const [rawText, setRawText] = useState(material.raw_text);
   const [content, setContent] = useState<Record<string, unknown>>(material.content);
   const [busy, setBusy] = useState(false);
   function profileContent() {
@@ -270,11 +277,11 @@ function MaterialEditor({ material, onClose, onError, onSaved }: { material: Mat
   }
   async function save() {
     setBusy(true);
-    try { await updateMaterial(material.id, { name: name.trim(), description: material.description, detail_level: material.detail_level, raw_text: rawText, content: profileContent(), analysis_status: material.analysis_status, timeline_start_chapter: material.timeline_start_chapter, timeline_end_chapter: material.timeline_end_chapter, sort_order: material.sort_order }); await onSaved(material.id); }
+    try { const saved = await updateMaterial(material.id, { name: name.trim(), description: material.description, detail_level: material.detail_level, content: profileContent(), analysis_status: material.analysis_status, timeline_start_chapter: material.timeline_start_chapter, timeline_end_chapter: material.timeline_end_chapter, sort_order: material.sort_order }); onSaved(saved); }
     catch (reason) { onError(errorMessage(reason)); } finally { setBusy(false); }
   }
   return <LibraryDialog className="author-style-editor-dialog" footer={<><SecondaryButton onClick={onClose}>关闭</SecondaryButton><PrimaryButton disabled={busy || !name.trim()} onClick={() => void save()}>保存档案</PrimaryButton></>} onClose={onClose} title="编辑作者档案">
-    <div className="library-form-grid"><label><span>作者姓名</span><input value={name} onChange={(event) => setName(event.target.value)} /></label><label><span>作品</span><input value={work} onChange={(event) => setWork(event.target.value)} /></label><label className="wide"><span>整体风格</span><textarea value={overallStyle} onChange={(event) => setOverallStyle(event.target.value)} /></label><label className="wide"><span>用于分析的作品原文</span><textarea value={rawText} onChange={(event) => setRawText(event.target.value)} /></label></div>
+    <div className="library-form-grid"><label><span>作者姓名</span><input value={name} onChange={(event) => setName(event.target.value)} /></label><label><span>作品</span><input value={work} onChange={(event) => setWork(event.target.value)} /></label><label className="wide"><span>整体风格</span><textarea value={overallStyle} onChange={(event) => setOverallStyle(event.target.value)} /></label></div>
     <AuthorDimensionList content={content} editable onChange={setContent} />
   </LibraryDialog>;
 }
@@ -327,8 +334,7 @@ function visibleFileName(value: unknown): string {
 
 function AuthorDimensionTable({ content }: { content: Record<string, unknown> }) {
   const dimensions = authorDimensions(content.dimensions);
-  const icons = [<CircleGauge size={18} />, <TextQuote size={18} />, <MessageCircle size={18} />, <CloudSun size={18} />];
-  return <section className="author-dimension-table"><div className="document-detail-heading"><span>分析维度</span></div>{dimensions.length ? <div className="author-dimension-rows">{dimensions.map((item, index) => <article key={item.id}><div className="author-dimension-name"><span>{icons[index % icons.length]}</span><strong>{item.name}</strong></div><div className="author-dimension-analysis"><p><b>分析：</b>{item.analysis || item.requirement || '尚未分析'}</p>{item.features.length ? <p><b>特征：</b>{item.features.join('、')}</p> : null}{item.examples.length ? <p><b>来源示例：</b>{item.examples.join('；')}</p> : null}</div></article>)}</div> : <p className="material-detail-copy">尚未添加分析维度</p>}</section>;
+  return <section className="author-dimension-table"><div className="document-detail-heading"><span>分析维度</span></div>{dimensions.length ? <div className="author-dimension-rows">{dimensions.map((item) => <article key={item.id}><div className="author-dimension-name"><strong>{item.name}</strong></div><div className="author-dimension-analysis"><p><b>分析：</b>{item.analysis || item.requirement || '尚未分析'}</p>{item.features.length ? <p><b>特征：</b>{item.features.join('、')}</p> : null}{item.examples.length ? <p><b>来源示例：</b>{item.examples.join('；')}</p> : null}</div></article>)}</div> : <p className="material-detail-copy">尚未添加分析维度</p>}</section>;
 }
 
 function formatDate(value: string): string { const timestamp = Date.parse(value); return Number.isFinite(timestamp) ? new Date(timestamp).toLocaleDateString('zh-CN').replace(/\//g, '-') : '未知'; }
