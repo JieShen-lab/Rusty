@@ -86,6 +86,7 @@ const put = (value: unknown): RequestInit => ({ method: 'PUT', body: JSON.string
 export const getProjects = () => request<Project[]>('/api/projects');
 export const getProject = (id: number) => request<Project>(`/api/projects/${id}`);
 export const deleteProject = (id: number) => request<{ ok: boolean }>(`/api/projects/${id}/delete`, { method: 'POST' });
+export const exportProject = (id: number, format: 'txt' | 'epub', outputPath: string) => request<LibraryDocumentExportResult>(`/api/projects/${id}/export`, body({ format, output_path: outputPath }));
 export const getChapters = (projectId: number) => request<Chapter[]>(`/api/projects/${projectId}/chapters`);
 export const getChapter = (chapterId: number) => request<Chapter>(`/api/chapters/${chapterId}`);
 export const getChapterWorkflow = (chapterId: number) => request<ChapterWorkflowState>(`/api/chapters/${chapterId}/workflow`);

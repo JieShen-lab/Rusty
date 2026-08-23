@@ -195,6 +195,12 @@ def create_app(
         projects.delete_project(project_id)
         return {"ok": True}
 
+    @app.post("/api/projects/{project_id}/export", dependencies=[Depends(_require_token)])
+    def export_project(project_id: int, payload: LibraryDocumentExportRequest) -> dict[str, Any]:
+        _require_project(projects, project_id)
+        output = projects.export_project(project_id, payload.format, payload.output_path)
+        return {"ok": True, "format": payload.format, "output_path": str(output)}
+
     @app.get("/api/projects/{project_id}/chapters")
     def list_chapters(project_id: int) -> list[dict[str, Any]]:
         _require_project(projects, project_id)

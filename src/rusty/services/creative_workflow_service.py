@@ -332,19 +332,33 @@ class CreativeWorkflowService:
                 "UPDATE chapter_writings SET result_text=?,status='reviewed',updated_at=CURRENT_TIMESTAMP WHERE chapter_id=?",
                 (text, chapter_id),
             )
-            if writing["strategy"] == "expansion" and writing["created_chapter_id"] is not None:
-                created_source = self.versions.resolve_chapter_source(
-                    int(writing["created_chapter_id"]), connection=connection
-                )
-                self.versions.append_chapter_rewrite_version(
+            target_chapter_id = (
+                int(writing["created_chapter_id"])
+                if writing["strategy"] == "expansion" and writing["created_chapter_id"] is not None
+                else chapter_id
+            )
+            target_source = source if target_chapter_id == chapter_id else self.versions.resolve_chapter_source(
+                target_chapter_id, connection=connection
+            )
+            saved_version = None
+            if target_source.text != text:
+                saved_version = self.versions.append_chapter_rewrite_version(
                     connection,
-                    chapter_id=created_source.chapter_id,
+                    chapter_id=target_source.chapter_id,
                     rewritten_text=text,
-                    source_base_kind=created_source.source_kind,
-                    source_base_version_id=created_source.source_version_id,
-                    source_hash=created_source.content_hash,
-                    expected_head_version_id=created_source.expected_head_version_id,
+                    source_base_kind=target_source.source_kind,
+                    source_base_version_id=target_source.source_version_id,
+                    source_hash=target_source.content_hash,
+                    expected_head_version_id=target_source.expected_head_version_id,
                     source_kind=source_kind,
+                )
+            if target_chapter_id == chapter_id and saved_version is not None:
+                connection.execute(
+                    """UPDATE chapter_workflow_state
+                       SET source_base_kind='rewrite_version',source_base_version_id=?,
+                           source_hash=?,updated_at=CURRENT_TIMESTAMP
+                       WHERE chapter_id=?""",
+                    (int(saved_version["id"]), str(saved_version["content_hash"]), chapter_id),
                 )
             self._set_stage(connection, chapter_id, "review")
         return self.get_writing(chapter_id) or {}
@@ -358,16 +372,21 @@ class CreativeWorkflowService:
         if writing is None:
             raise ValueError("Writing is required before confirmation.")
         if writing["strategy"] in {"plot_adjust", "plot_rewrite"}:
-            with session(self.database_path) as connection:
-                version = self.versions.append_chapter_rewrite_version(
-                    connection, chapter_id=chapter_id, rewritten_text=writing["result_text"],
-                    source_base_kind=source.source_kind,
-                    source_base_version_id=source.source_version_id, source_hash=source.content_hash,
-                    expected_head_version_id=source.expected_head_version_id, source_kind="ai",
-                )
-                confirmed_kind = "rewrite_version"
-                confirmed_version_id = int(version["id"])
-                confirmed_hash = str(version["content_hash"])
+            if source.source_kind == "rewrite_version" and source.text == writing["result_text"].strip():
+                confirmed_kind = source.source_kind
+                confirmed_version_id = source.source_version_id
+                confirmed_hash = source.content_hash
+            else:
+                with session(self.database_path) as connection:
+                    version = self.versions.append_chapter_rewrite_version(
+                        connection, chapter_id=chapter_id, rewritten_text=writing["result_text"],
+                        source_base_kind=source.source_kind,
+                        source_base_version_id=source.source_version_id, source_hash=source.content_hash,
+                        expected_head_version_id=source.expected_head_version_id, source_kind="ai",
+                    )
+                    confirmed_kind = "rewrite_version"
+                    confirmed_version_id = int(version["id"])
+                    confirmed_hash = str(version["content_hash"])
         with session(self.database_path) as connection:
             connection.execute("UPDATE chapter_writings SET status='confirmed',updated_at=CURRENT_TIMESTAMP WHERE chapter_id=?", (chapter_id,))
             connection.execute(

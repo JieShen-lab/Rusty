@@ -80,7 +80,7 @@ import { PrimaryButton } from '../components/PrimaryButton';
 import { SecondaryButton } from '../components/SecondaryButton';
 import { DangerButton } from '../components/DangerButton';
 import { FloatingNotice } from '../components/FloatingNotice';
-import { BodyPortal, LibraryContextMenu, LibraryDefinition, LibraryDialog, LibraryDivider, LibraryResourceCard, LibraryResourceGrid, LibrarySidebarSectionTitle } from '../components/LibraryPrimitives';
+import { BodyPortal, LibraryContextMenu, LibraryDefinition, LibraryDialog, LibraryDivider, LibraryExportDialog, LibraryResourceCard, LibraryResourceGrid, LibrarySidebarSectionTitle } from '../components/LibraryPrimitives';
 import { TopBar } from '../components/TopBar';
 import { useAutoDismiss } from '../hooks/useAutoDismiss';
 
@@ -723,7 +723,7 @@ export function DocumentLibraryPage() {
             onCreate={(title) => void createVolume(title)}
           />
         ) : null}
-        {exportOpen ? <ExportDialog busy={busy} document={selectedDocument} onClose={() => setExportOpen(false)} onExport={(format) => void exportDocument(format)} /> : null}
+        {exportOpen ? <LibraryExportDialog busy={busy} document={selectedDocument} onClose={() => setExportOpen(false)} onExport={(format) => void exportDocument(format)} /> : null}
         {actionDialog ? (
           <DocumentActionDialog
             action={actionDialog}
@@ -924,7 +924,7 @@ export function DocumentLibraryPage() {
         </aside>
       </div>
 
-      {exportOpen && selectedDocument ? <ExportDialog busy={busy} document={selectedDocument} onClose={() => setExportOpen(false)} onExport={(format) => void exportDocument(format)} /> : null}
+      {exportOpen && selectedDocument ? <LibraryExportDialog busy={busy} document={selectedDocument} onClose={() => setExportOpen(false)} onExport={(format) => void exportDocument(format)} /> : null}
       {categoryCreateOpen ? (
         <DocumentCategoryNameDialog
           busy={busy}
@@ -1830,62 +1830,6 @@ function CreateVolumeDialog({
     >
       <label className="library-name-field"><span>分卷名称</span><input autoFocus className="form-input" maxLength={80} onChange={(event) => setTitle(event.target.value)} value={title} /></label>
     </LibraryDialog>
-  );
-}
-
-function ExportDialog({
-  busy,
-  document,
-  onClose,
-  onExport,
-}: {
-  busy: boolean;
-  document: LibraryDocument;
-  onClose: () => void;
-  onExport: (format: 'txt' | 'epub') => void;
-}) {
-  return (
-    <BodyPortal>
-  <div
-    className="document-processing-backdrop"
-    onMouseDown={(event) => {
-      if (event.target === event.currentTarget) onClose();
-    }}
-    role="presentation"
-  >
-    <section
-      aria-labelledby="document-export-title"
-      aria-modal="true"
-      className="document-export-dialog"
-      role="dialog"
-    >
-      <header>
-        <div className="document-export-heading">
-          <span>导出：</span>
-          <h2 id="document-export-title">{document.title}</h2>
-        </div>
-      </header>
-
-      <div className="document-export-options">
-        <button
-          disabled={busy}
-          onClick={() => onExport('txt')}
-          type="button"
-        >
-          TXT
-        </button>
-
-        <button
-          disabled={busy}
-          onClick={() => onExport('epub')}
-          type="button"
-        >
-          EPUB
-        </button>
-      </div>
-    </section>
-  </div>
-</BodyPortal>
   );
 }
 

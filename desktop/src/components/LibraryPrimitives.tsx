@@ -1,6 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { CircleDashed, X } from 'lucide-react';
+import type { LibraryDocument } from '../api/types';
 
 export function BodyPortal({ children }: { children: ReactNode }) {
   return createPortal(children, document.body);
@@ -219,5 +220,52 @@ export function LibraryDefinition({ label, value }: { label: string; value: Reac
       <span>{label}</span>
       <strong title={typeof value === 'string' ? value : undefined}>{value}</strong>
     </div>
+  );
+}
+
+export function LibraryExportDialog({
+  busy,
+  document,
+  onClose,
+  onExport,
+}: {
+  busy: boolean;
+  document: LibraryDocument;
+  onClose: () => void;
+  onExport: (format: 'txt' | 'epub') => void;
+}) {
+  return (
+    <BodyPortal>
+      <div
+        className="document-processing-backdrop"
+        onMouseDown={(event) => {
+          if (event.target === event.currentTarget) onClose();
+        }}
+        role="presentation"
+      >
+        <section
+          aria-labelledby="document-export-title"
+          aria-modal="true"
+          className="document-export-dialog"
+          role="dialog"
+        >
+          <header>
+            <div className="document-export-heading">
+              <span>导出：</span>
+              <h2 id="document-export-title">{document.title}</h2>
+            </div>
+          </header>
+
+          <div className="document-export-options">
+            <button disabled={busy} onClick={() => onExport('txt')} type="button">
+              TXT
+            </button>
+            <button disabled={busy} onClick={() => onExport('epub')} type="button">
+              EPUB
+            </button>
+          </div>
+        </section>
+      </div>
+    </BodyPortal>
   );
 }

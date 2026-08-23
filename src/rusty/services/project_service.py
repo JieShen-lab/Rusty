@@ -5,6 +5,7 @@ from pathlib import Path
 
 from rusty.content_hash import hash_text
 from rusty.db import default_database_path, session
+from rusty.exporters import build_txt_export, export_epub
 from rusty.importers import parse_docx, parse_epub, parse_txt
 from rusty.models import ChapterRecord, ParsedBook, ProjectSettings, ProjectSummary
 
@@ -111,6 +112,55 @@ class ProjectService:
                 (project_id,),
             ).fetchall()
         return [self._chapter(row) for row in rows]
+
+    def export_project(self, project_id: int, export_format: str, output_path: str | Path) -> Path:
+        project = self.get_project(project_id)
+        if project is None:
+            raise FileNotFoundError(f"Project not found: {project_id}")
+        normalized_format = export_format.strip().lower()
+        if normalized_format not in {"txt", "epub"}:
+            raise ValueError("仅支持导出 TXT 或 EPUB。")
+
+        chapters = self.list_chapters(project_id)
+        if not chapters:
+            raise ValueError("Project has no chapters to export.")
+        with session(self.database_path) as connection:
+            metadata = connection.execute(
+                "SELECT title,author,language,source_identifier FROM book_metadata WHERE project_id=?",
+                (project_id,),
+            ).fetchone()
+            volumes = connection.execute(
+                "SELECT id,title FROM story_volumes WHERE project_id=? ORDER BY volume_index,id",
+                (project_id,),
+            ).fetchall()
+
+        title = str(metadata["title"] or project.name) if metadata else project.name
+        author = str(metadata["author"]) if metadata and metadata["author"] else None
+        language = str(metadata["language"]) if metadata and metadata["language"] else None
+        identifier = str(metadata["source_identifier"]) if metadata and metadata["source_identifier"] else None
+        volume_titles = {
+            int(row["id"]): str(row["title"])
+            for row in volumes
+            if str(row["title"] or "").strip()
+        }
+        output = Path(output_path).expanduser().resolve()
+        if normalized_format == "txt":
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(
+                build_txt_export(chapters, use_rewrites=True, volume_titles=volume_titles),
+                encoding="utf-8",
+            )
+            return output
+        return export_epub(
+            chapters,
+            output,
+            title=title,
+            author=author,
+            language=language,
+            identifier=identifier,
+            use_rewrites=True,
+            volume_titles=volume_titles,
+        )
 
     def get_chapter(self, chapter_id: int) -> ChapterRecord | None:
         with session(self.database_path) as connection:
