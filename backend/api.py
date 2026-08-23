@@ -532,7 +532,16 @@ def _preview_out(book: ParsedBook, token: str, split_mode: str) -> dict[str, Any
         "total_chapters": len(book.chapters),
         "total_words": book.total_words,
         "split_mode": split_mode,
-        "chapters": [asdict(item) for item in book.chapters],
+        "chapters": [
+            {
+                "index": item.index,
+                "title": item.title,
+                "word_count": item.word_count,
+                "start_line": item.start_line,
+                "end_line": item.end_line,
+            }
+            for item in book.chapters
+        ],
     }
 
 
