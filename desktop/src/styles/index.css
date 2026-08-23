@@ -492,7 +492,20 @@ select:focus-visible {
 .project-filters > div { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .project-filters select { width: 100%; min-height: 38px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); padding: 0 9px; }
 .project-list { width: 100%; min-height: 0; overflow: auto; }
-.project-list-item { display: grid; width: 100%; grid-template-columns: 48px minmax(0, 1fr) auto; align-items: center; gap: 11px; margin-bottom: 10px; cursor: pointer; border: 1px solid transparent; border-radius: 10px; background: transparent; padding: 11px; text-align: left; }
+.project-list-item {
+  display: grid;
+  width: 100%;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 11px;
+  margin-bottom: 10px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  padding: 11px;
+  text-align: left;
+}
 .project-list-item:hover { border-color: var(--line); background: var(--paper); }
 .project-list-item.selected { border-color: var(--selected-border); background: var(--accent-soft); }
 .project-monogram { display: grid; width: 48px; height: 54px; place-items: center; border: 1px solid #e7ecf3; border-radius: 9px; background: var(--paper); color: var(--muted); font-size: 12px; font-weight: 700; }
@@ -3168,7 +3181,7 @@ select:focus-visible {
 .author-dimension-rows article { display: grid; grid-template-columns: minmax(190px, 220px) minmax(0, 1fr); min-height: 88px; }
 .author-dimension-rows article + article { border-top: 1px solid var(--border-default); }
 .author-dimension-name { display: flex; align-items: center; border-right: 1px solid var(--border-default); padding: 16px; }
-.author-dimension-name strong { font-size: 17px;align-items: center; line-height: 1.45; }
+.author-dimension-name strong { font-size: 17px; line-height: 1.45; }
 .author-dimension-analysis { display: grid; align-content: center; gap: 6px; padding: 13px 18px; }
 .author-dimension-analysis p { margin: 0; color:black; font-size: 16px; line-height: 1.65; }
 .author-dimension-analysis b { color: var(--text-primary); }
