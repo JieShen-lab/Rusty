@@ -80,7 +80,7 @@ import { PrimaryButton } from '../components/PrimaryButton';
 import { SecondaryButton } from '../components/SecondaryButton';
 import { DangerButton } from '../components/DangerButton';
 import { FloatingNotice } from '../components/FloatingNotice';
-import { BodyPortal, LibraryContextMenu, LibraryDialog, LibraryDivider, LibraryResourceCard, LibraryResourceGrid, LibrarySidebarSectionTitle } from '../components/LibraryPrimitives';
+import { BodyPortal, LibraryContextMenu, LibraryDefinition, LibraryDialog, LibraryDivider, LibraryResourceCard, LibraryResourceGrid, LibrarySidebarSectionTitle } from '../components/LibraryPrimitives';
 import { TopBar } from '../components/TopBar';
 import { useAutoDismiss } from '../hooks/useAutoDismiss';
 
@@ -908,11 +908,11 @@ export function DocumentLibraryPage() {
                   </div>
                 </section>
                 <section className="document-detail-metadata">
-                  <Definition label="导入时间" value={formatDate(selectedDocument.created_at)} />
-                  <Definition label="保存格式" value="UTF-8 TXT" />
-                  <Definition label="文件大小" value={formatBytes(selectedDocument.stored_size_bytes)} />
-                  <Definition label="章节" value={selectedDocument.chapter_count ? `${selectedDocument.chapter_count} 章` : '尚未识别'} />
-                  <Definition label="字数" value={formatNumber(selectedDocument.word_count)} />
+                  <LibraryDefinition label="导入时间" value={formatDate(selectedDocument.created_at)} />
+                  <LibraryDefinition label="保存格式" value="UTF-8 TXT" />
+                  <LibraryDefinition label="文件大小" value={formatBytes(selectedDocument.stored_size_bytes)} />
+                  <LibraryDefinition label="章节" value={selectedDocument.chapter_count ? `${selectedDocument.chapter_count} 章` : '尚未识别'} />
+                  <LibraryDefinition label="字数" value={formatNumber(selectedDocument.word_count)} />
                 </section>
               </div>
               <footer className="library-detail-footer">
@@ -1898,9 +1898,6 @@ function DefaultBookCover({ compact = false, document }: { compact?: boolean; do
   return <span className={`default-book-cover palette-${palette} ${compact ? 'compact' : ''}`}><span className="default-book-spine" />{document.is_project_document ? <span className="document-project-marker">工程</span> : null}<strong>{document.title}</strong><span className="default-book-author">{document.author || '未知作者'}</span></span>;
 }
 
-function Definition({ label, value }: { label: string; value: string }) {
-  return <div className="document-definition"><span>{label}</span><strong title={value}>{value}</strong></div>;
-}
 
 function ShelfMessage({ action, title }: { action?: ReactNode; title: string }) {
   return <div className="document-shelf-empty"><LibraryBig size={28} /><strong>{title}</strong>{action ? <div className="document-shelf-empty-action">{action}</div> : null}</div>;

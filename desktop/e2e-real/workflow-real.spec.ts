@@ -11,7 +11,7 @@ async function openProject(page: Page, id: number) {
     await expect(page.getByText('此项目属于旧版分析工程。')).toBeVisible();
     return;
   }
-  await expect(page.getByText('章节创作工作台')).toBeVisible();
+  await expect(page.locator('.creative-project-title h1')).toBeVisible();
   await expect(page.getByRole('button', { name: /第 1 章/ })).toBeVisible();
 }
 

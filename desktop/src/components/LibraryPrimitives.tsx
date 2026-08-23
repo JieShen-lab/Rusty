@@ -217,7 +217,7 @@ export function LibraryDefinition({ label, value }: { label: string; value: Reac
   return (
     <div className="document-definition">
       <span>{label}</span>
-      <strong>{value}</strong>
+      <strong title={typeof value === 'string' ? value : undefined}>{value}</strong>
     </div>
   );
 }

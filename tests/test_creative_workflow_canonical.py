@@ -11,7 +11,7 @@ from rusty.db.schema import AUTHOR_STYLE_DIMENSIONS
 from rusty.models import ParsedBook, ParsedChapter
 from rusty.services.ai_client import AIResponse
 from rusty.services.author_style_extraction_service import AuthorStyleExtractionService
-from rusty.services.creative_workflow_service import CreativeWorkflowService, WorkflowSourceConflict
+from rusty.services.creative_workflow_service import CreativeWorkflowService, WorkflowSourceConflict, normalize_style_profile
 from rusty.services.material_service import MaterialService
 from rusty.services.project_service import ProjectService
 
@@ -59,6 +59,40 @@ def first_chapter(database: Path, project_id: int) -> int:
 
 
 class CreativeWorkflowCanonicalTests(unittest.TestCase):
+    def test_style_guidance_is_plain_text_for_both_snapshot_shapes(self) -> None:
+        auto_snapshot = {
+            "schema_version": 1,
+            "work": "",
+            "overall_style": "克制、短促，以动作推动叙事。",
+            "dimensions": [{
+                "id": "rhythm",
+                "name": "叙事节奏",
+                "analysis": "段落短，信息推进快。",
+                "features": ["少用铺陈", "动作先行"],
+                "examples": ["他推门。雨停了。"],
+            }],
+        }
+        saved_author_snapshot = {
+            "name": "保存作者",
+            "description": "仅供选择作者时查看",
+            "raw_text": "不应出现在写作指引里的原始样本",
+            "profile": auto_snapshot,
+        }
+        self.assertEqual("叙事节奏", normalize_style_profile(saved_author_snapshot)["dimensions"][0]["name"])
+        for snapshot in (auto_snapshot, saved_author_snapshot):
+            guidance = CreativeWorkflowService._style_guidance(snapshot)
+            self.assertIn("整体风格", guidance)
+            self.assertIn("叙事节奏", guidance)
+            self.assertIn("- 少用铺陈", guidance)
+            self.assertNotIn("schema_version", guidance)
+            self.assertNotIn("raw_text", guidance)
+            self.assertNotIn("profile", guidance)
+            self.assertNotIn("{", guidance)
+            payload = CreativeWorkflowService._writing_payload(
+                "plot_adjust", "原文", "新大纲", {"generated_guidance": guidance, "style_snapshot": snapshot}
+            )
+            self.assertEqual(guidance, payload["author_style"])
+
     def test_three_strategies_source_modes_conflict_and_human_review(self) -> None:
         cases = {
             "plot_adjust": ["【旧大纲】\n旧\n【新大纲及细节】\n新", style_json(), "调整后的正文"],

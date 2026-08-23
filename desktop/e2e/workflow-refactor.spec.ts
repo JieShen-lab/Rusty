@@ -52,7 +52,7 @@ test('章节工作台只读取章节与 chapter workflow API', async ({ page }) 
 
   await page.goto('/workspace/99');
   await expect(page.getByRole('button', { name: /第 1 章.*第一章/ })).toBeVisible();
-  await expect(page.getByText('章节创作工作台')).toBeVisible();
+  await expect(page.getByRole('heading', { name: '章节工作流测试工程', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '调整剧情' })).toBeVisible();
 
   expect(requests).toContain('/api/chapters/901/workflow');

@@ -2,8 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { ArrowLeft, BookOpenText, Check, ChevronRight, RefreshCw, Save, Sparkles, WandSparkles } from 'lucide-react';
 import { confirmChapterWorkflow, generateChapterWriting, getChapter, getChapters, getChapterWorkflow, getMaterials, resolveChapterStyle, runChapterSpecialAnalysis, runChapterSummary, saveChapterDirection, saveChapterSpecialAnalysis, saveChapterSummary, saveChapterWriting } from '../api/client';
-import type { Chapter, ChapterSpecialAnalysis, ChapterSummary, ChapterWorkflowState, CreativeStrategy, CreativeWorkflowStage, Material } from '../api/types';
+import type { Chapter, ChapterSpecialAnalysis, ChapterSummary, ChapterWorkflowState, CreativeStrategy, CreativeWorkflowStage, Material, StyleDimension, StyleProfile } from '../api/types';
 import { FloatingNotice } from '../components/FloatingNotice';
+import { LibraryDefinition } from '../components/LibraryPrimitives';
 import { PrimaryButton } from '../components/PrimaryButton';
 import { SecondaryButton } from '../components/SecondaryButton';
 
@@ -75,7 +76,7 @@ export function CreativeWorkspacePage({ onNavigate, projectId, projectName }: Pr
 
   return <div className="creative-workspace chapter-flow-page">
     <FloatingNotice error={error ?? (workflow?.source_changed ? '章节原文已经变化，请从内容总结重新开始，避免沿用过期分析。' : null)} message={message} />
-    <header className="creative-topbar"><div className="creative-project-title"><button className="button primary navigation-back-button" onClick={() => onNavigate('/library')} type="button"><ArrowLeft size={16} />工程</button><div><h1>{projectName}</h1><span>章节创作工作台</span></div></div></header>
+    <header className="creative-topbar"><div className="creative-topbar-side"><button className="button primary navigation-back-button" onClick={() => onNavigate('/library')} type="button"><ArrowLeft size={16} />工程</button></div><div className="creative-project-title"><h1 title={projectName}>{projectName}</h1></div><div aria-hidden="true" className="creative-topbar-side creative-topbar-spacer" /></header>
     <div className="creative-columns chapter-flow-columns">
       <StageProgress active={activeStage} availableIndex={workflow ? availableStageIndex(workflow) : 0} onSelect={setActiveStage} workflow={workflow} />
       <aside className="chapter-rail"><div className="binder-heading"><h2>章节</h2><span>共 {chapters.length} 章</span></div><nav className="chapter-list project-chapter-list">{chapters.map((chapter) => <button aria-current={chapter.id === selectedId ? 'page' : undefined} className={`chapter-row ${chapter.id === selectedId ? 'selected' : ''}`} key={chapter.id} onClick={() => setSelectedId(chapter.id)} type="button"><span className="chapter-number">第 {chapter.index} 章</span><span className="chapter-name">{chapter.title || '未命名'}</span><span className={`chapter-state ${chapter.workflow_stage === 'confirmed' ? 'complete' : ''}`}>{chapter.workflow_stage === 'confirmed' ? '已完成' : '未完成'}</span></button>)}</nav></aside>
@@ -103,30 +104,88 @@ function StageContent({ active, authors, detail, drafts, setters, workflow }: { 
 
 function SummaryStage({ draft, onChange }: { draft: ChapterSummary | null; onChange: (value: ChapterSummary) => void }) {
   if (!draft) return <EmptyStage icon={<Sparkles size={22} />} title="先理解这一章" />;
-  return <section className="flow-stage-card summary-stage"><label className="flow-field"><span>剧情总结</span><textarea value={draft.plot_summary} onChange={(event) => onChange({ ...draft, plot_summary: event.target.value })} /></label><label className="flow-field"><span>关键事件</span><textarea value={draft.key_events} onChange={(event) => onChange({ ...draft, key_events: event.target.value })} /></label><label className="flow-field"><span>主要人物及设定</span><textarea value={draft.main_characters} onChange={(event) => onChange({ ...draft, main_characters: event.target.value })} /></label></section>;
+  return <section className="flow-stage-card summary-stage"><label className="flow-field"><span>剧情总结</span><textarea className="flow-text-surface" value={draft.plot_summary} onChange={(event) => onChange({ ...draft, plot_summary: event.target.value })} /></label><label className="flow-field"><span>关键事件</span><textarea className="flow-text-surface" value={draft.key_events} onChange={(event) => onChange({ ...draft, key_events: event.target.value })} /></label><label className="flow-field"><span>主要人物及设定</span><textarea className="flow-text-surface" value={draft.main_characters} onChange={(event) => onChange({ ...draft, main_characters: event.target.value })} /></label></section>;
 }
 
 function DirectionStage({ instruction, onInstruction, onStrategy, strategy }: { instruction: string; onInstruction: (value: string) => void; onStrategy: (value: CreativeStrategy) => void; strategy: CreativeStrategy }) {
-  const options: Array<[CreativeStrategy, string]> = [['plot_adjust', '调整剧情'], ['expansion', '增加剧情'], ['plot_rewrite', '重写剧情']];
-  return <section className="flow-stage-card direction-stage"><div className="strategy-grid compact">{options.map(([key, title]) => <button className={strategy === key ? 'active' : ''} key={key} onClick={() => onStrategy(key)} type="button"><strong>{title}</strong></button>)}</div><label className="flow-field"><span>你的具体要求</span><textarea value={instruction} onChange={(event) => onInstruction(event.target.value)} /></label></section>;
+  const options: Array<[CreativeStrategy, string, string]> = [
+    ['plot_adjust', '调整剧情', '保留核心剧情，修改事件、顺序与细节。'],
+    ['expansion', '增加剧情', '在当前章节之后创建新的承接章节，不改写原章节。'],
+    ['plot_rewrite', '重写剧情', '保留必要设定与约束，重新组织本章剧情。'],
+  ];
+  return <section className="flow-stage-card direction-stage"><header className="stage-content-heading"><span className="stage-eyebrow">创作策略</span><h2>选择方向</h2></header><div className="strategy-grid compact">{options.map(([key, title, description]) => <button className={strategy === key ? 'active' : ''} key={key} onClick={() => onStrategy(key)} type="button"><strong>{title}</strong><span>{description}</span>{strategy === key ? <Check aria-hidden="true" className="strategy-check" size={16} /> : null}</button>)}</div><label className="flow-field"><span>你的具体要求</span><textarea className="flow-text-surface" placeholder="描述希望保留、调整或新增的剧情要求" value={instruction} onChange={(event) => onInstruction(event.target.value)} /></label></section>;
 }
 
 function AnalysisStage({ draft, instruction, onChange, strategy }: { draft: ChapterSpecialAnalysis | null; instruction: string; onChange: (value: ChapterSpecialAnalysis) => void; strategy?: CreativeStrategy }) {
   if (!strategy) return <LockedStage text="请先完成方向选择。" />;
   if (!draft) return <EmptyStage icon={<WandSparkles size={22} />} title="生成专项分析" />;
-  return <section className="flow-stage-card analysis-stage"><div className="analysis-brief"><span>选择方向</span><strong>{strategyTitle(strategy)}</strong><span>具体要求</span><p>{instruction || '按当前方向生成大纲。'}</p></div>{strategy === 'plot_adjust' ? <OutlineTextComparison source={draft.source_outline} target={draft.target_outline} onChange={(target) => onChange({ ...draft, target_outline: target })} /> : <SingleOutlineEditor value={draft.target_outline} onChange={(target) => onChange({ ...draft, target_outline: target })} />}</section>;
+  return <section className="flow-stage-card analysis-stage"><div className="analysis-brief"><div className="analysis-brief-direction"><span>当前方向</span><strong>{strategyTitle(strategy)}</strong></div><label className="analysis-brief-instruction"><span>具体要求</span><textarea aria-label="具体要求" className="flow-text-surface" readOnly value={instruction || '未填写具体要求'} /></label></div>{strategy === 'plot_adjust' ? <OutlineTextComparison source={draft.source_outline} target={draft.target_outline} onChange={(target) => onChange({ ...draft, target_outline: target })} /> : <SingleOutlineEditor value={draft.target_outline} onChange={(target) => onChange({ ...draft, target_outline: target })} />}</section>;
 }
 
 function StyleStage({ authorId, authors, mode, onAuthor, onMode, workflow }: { authorId: number | null; authors: Material[]; mode: StyleMode; onAuthor: (value: number | null) => void; onMode: (value: StyleMode) => void; workflow: ChapterWorkflowState }) {
   const plotRewrite = workflow.direction?.strategy === 'plot_rewrite'; const selectingAuthor = plotRewrite || mode === 'author';
   if (!workflow.special_analysis) return <LockedStage text="请先完成专项分析。" />;
-  return <section className="flow-stage-card style-stage">{!plotRewrite ? <div className="style-mode-choice"><button className={mode === 'document' ? 'active' : ''} onClick={() => onMode('document')} type="button"><strong>提取本文风格</strong></button><button className={mode === 'author' ? 'active' : ''} onClick={() => onMode('author')} type="button"><strong>使用已保存作者</strong></button></div> : null}{selectingAuthor ? <><div className="author-choice-grid">{authors.map((author) => <button className={authorId === author.id ? 'active' : ''} key={author.id} onClick={() => onAuthor(author.id)} type="button"><span className="author-profile-avatar"><BookOpenText size={18} /></span><strong>{author.name}</strong><small>{String(author.content.work || '').trim() || '尚未填写作品'}</small></button>)}</div>{!authors.length ? <div className="inline-alert">还没有可用的已分析作者，请先到“作者”页面完成档案分析。</div> : null}</> : null}{workflow.style?.generated_guidance ? <div className="style-guidance"><strong>已生成的写作指引</strong><p>{workflow.style.generated_guidance}</p></div> : null}</section>;
+  return <section className="flow-stage-card style-stage">{!plotRewrite ? <div className="style-mode-choice"><button className={mode === 'document' ? 'active' : ''} onClick={() => onMode('document')} type="button"><strong>提取本文风格</strong></button><button className={mode === 'author' ? 'active' : ''} onClick={() => onMode('author')} type="button"><strong>使用已保存作者</strong></button></div> : null}{selectingAuthor ? <><div className="author-choice-grid">{authors.map((author) => <button className={authorId === author.id ? 'active' : ''} key={author.id} onClick={() => onAuthor(author.id)} type="button"><span className="author-profile-avatar"><BookOpenText size={18} /></span><strong>{author.name}</strong><small>{String(author.content.work || '').trim() || '尚未填写作品'}</small></button>)}</div>{!authors.length ? <div className="inline-alert">还没有可用的已分析作者，请先到“作者”页面完成档案分析。</div> : null}</> : null}{workflow.style ? <StyleGuidanceView generatedGuidance={workflow.style.generated_guidance} snapshot={workflow.style.style_snapshot} /> : null}</section>;
 }
+
+function StyleGuidanceView({ generatedGuidance, snapshot }: { generatedGuidance: string; snapshot: unknown }) {
+  const structured = normalizeStyleProfile(snapshot) ?? parseStyleProfile(generatedGuidance);
+  if (structured) return <section aria-labelledby="style-guidance-title" className="style-guidance"><header className="style-guidance-heading"><div><span className="stage-eyebrow">风格</span><h2 id="style-guidance-title">写作指引</h2></div>{structured.work ? <small>参考作品：{structured.work}</small> : null}</header><div className="style-guidance-content">{structured.overall_style ? <article className="style-guidance-block"><h3>整体风格</h3><p className="flow-text-surface">{structured.overall_style}</p></article> : null}{structured.dimensions?.map((dimension, index) => <StyleDimensionView dimension={dimension} key={dimension.id || dimension.name || index} />)}</div></section>;
+
+  const fallback = parseLegacyGuidance(generatedGuidance);
+  if (!fallback) return null;
+  return <section aria-labelledby="style-guidance-title" className="style-guidance"><header className="style-guidance-heading"><div><span className="stage-eyebrow">风格</span><h2 id="style-guidance-title">写作指引</h2></div></header><p className="style-guidance-fallback flow-text-surface">{fallback}</p></section>;
+}
+
+function StyleDimensionView({ dimension }: { dimension: StyleDimension }) {
+  const name = textValue(dimension.name);
+  const analysis = textValue(dimension.analysis);
+  const features = dimension.features?.map(textValue).filter(Boolean) ?? [];
+  const examples = dimension.examples?.map(textValue).filter(Boolean) ?? [];
+  if (!name || (!analysis && !features.length && !examples.length)) return null;
+  return <article className="style-guidance-block style-dimension"><h3>{name}</h3>{analysis ? <p className="style-dimension-analysis flow-text-surface">{analysis}</p> : null}{features.length ? <div className="style-guidance-list"><span>主要特征</span><ul>{features.map((feature) => <li key={feature}>{feature}</li>)}</ul></div> : null}{examples.length ? <div className="style-guidance-examples"><span>参考表现</span>{examples.map((example) => <p key={example}>{example}</p>)}</div> : null}</article>;
+}
+
+function normalizeStyleProfile(snapshot: unknown): StyleProfile | null {
+  if (!isRecord(snapshot)) return null;
+  const profileSource = isRecord(snapshot.profile) ? snapshot.profile : snapshot;
+  const dimensions = Array.isArray(profileSource.dimensions) ? profileSource.dimensions.flatMap((value) => {
+    if (!isRecord(value)) return [];
+    const name = textValue(value.name);
+    if (!name) return [];
+    return [{ id: textValue(value.id), name, analysis: textValue(value.analysis), features: stringList(value.features), examples: stringList(value.examples) }];
+  }) : [];
+  const profile: StyleProfile = {
+    work: textValue(profileSource.work) || textValue(snapshot.work),
+    overall_style: textValue(profileSource.overall_style) || textValue(snapshot.overall_style),
+    dimensions,
+  };
+  return profile.overall_style || dimensions.length ? profile : null;
+}
+
+function parseLegacyGuidance(value: string): string {
+  const source = value.trim();
+  if (!source) return '';
+  try {
+    const parsed = JSON.parse(source) as unknown;
+    return normalizeStyleProfile(parsed) ? '' : typeof parsed === 'string' ? parsed.trim() : '';
+  } catch {
+    return source;
+  }
+}
+
+function parseStyleProfile(value: string): StyleProfile | null {
+  try { return normalizeStyleProfile(JSON.parse(value)); } catch { return null; }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null && !Array.isArray(value); }
+function textValue(value: unknown): string { return typeof value === 'string' ? value.trim() : ''; }
+function stringList(value: unknown): string[] { return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string').map((item) => item.trim()).filter(Boolean) : []; }
 
 function WritingStage({ workflow }: { workflow: ChapterWorkflowState }) {
   if (!workflow.style) return <LockedStage text="请先确定写作风格。" />;
   if (!workflow.writing) return <EmptyStage icon={<WandSparkles size={22} />} title="生成章节草稿" />;
-  return <section className="flow-stage-card writing-stage"><article className="writing-paper">{workflow.writing.result_text}</article></section>;
+  return <section className="flow-stage-card writing-stage"><article className="writing-paper flow-text-surface">{workflow.writing.result_text}</article></section>;
 }
 
 function ReviewStage({ detail, draft, onChange, workflow }: { detail: Chapter | null; draft: string; onChange: (value: string) => void; workflow: ChapterWorkflowState }) {
@@ -136,7 +195,7 @@ function ReviewStage({ detail, draft, onChange, workflow }: { detail: Chapter | 
 
 function ContextPanel({ active, act, authors, busy, detail, drafts, workflow }: { active: UiStage; act: (action: () => Promise<unknown>, next?: UiStage, success?: string) => Promise<void>; authors: Material[]; busy: boolean; detail: Chapter | null; drafts: Drafts; workflow: ChapterWorkflowState | null }) {
   const selectedAuthor = authors.find((author) => author.id === workflow?.style?.author_style_material_id);
-  return <aside className="creative-context-panel"><h2>章节上下文</h2><div className="context-panel-scroll"><section><h3>当前来源</h3><p>{workflow?.source_base_kind === 'rewrite_version' ? '已改写版本' : '原文章节'} · {detail?.word_count ?? 0} 字</p></section><section><h3>创作方向</h3><p>{workflow?.direction ? strategyTitle(workflow.direction.strategy) : '尚未选择'}</p></section><section><h3>风格来源</h3><p>{workflow?.style?.style_mode === 'selected_author_style' ? selectedAuthor?.name ?? '已保存作者' : workflow?.style ? '整部原作' : '尚未确定'}</p></section></div><div className="context-stage-actions"><strong>当前阶段功能</strong>{workflow ? <StageActions active={active} act={act} busy={busy} drafts={drafts} workflow={workflow} /> : null}</div></aside>;
+  return <aside className="creative-context-panel document-detail-panel"><header><h2>章节信息</h2></header><div className="document-detail-scroll"><section className="document-detail-identity"><div><p>第 {detail?.index ?? '—'} 章</p><h3>{detail?.title || '未命名'}</h3></div></section><section className="document-detail-metadata"><LibraryDefinition label="当前来源" value={workflow?.source_base_kind === 'rewrite_version' ? '已改写版本' : '原文章节'} /><LibraryDefinition label="字数" value={`${detail?.word_count ?? 0} 字`} /><LibraryDefinition label="创作方向" value={workflow?.direction ? strategyTitle(workflow.direction.strategy) : '尚未选择'} /><LibraryDefinition label="风格来源" value={workflow?.style?.style_mode === 'selected_author_style' ? selectedAuthor?.name ?? '已保存作者' : workflow?.style ? '整部原作' : '尚未确定'} /></section></div><footer className="creative-detail-footer">{workflow ? <StageActions active={active} act={act} busy={busy} drafts={drafts} workflow={workflow} /> : null}</footer></aside>;
 }
 
 function StageActions({ active, act, busy, drafts, workflow }: { active: UiStage; act: (action: () => Promise<unknown>, next?: UiStage, success?: string) => Promise<void>; busy: boolean; drafts: Drafts; workflow: ChapterWorkflowState }) {
@@ -153,7 +212,7 @@ function StageActions({ active, act, busy, drafts, workflow }: { active: UiStage
 type DiffPart = { text: string; changed: boolean };
 function DiffEditor({ draft, expansion, onChange, original }: { draft: string; expansion: boolean; onChange: (value: string) => void; original: string }) {
   const highlighted = useMemo(() => sentenceDiff(original, draft), [original, draft]); const previewRef = useRef<HTMLElement>(null);
-  return <div className="manual-review-columns"><section><header><strong>{expansion ? '前一章原文' : '原始正文'}</strong><span>红色为删除或替换 · 只读</span></header><article>{renderDiff(highlighted.original, 'removed')}</article></section><section><header><strong>{expansion ? '新增章节正文' : '修改后正文'}</strong><span>绿色为新增或替换 · 可编辑</span></header><div className="review-diff-editor"><article aria-hidden="true" ref={previewRef}>{renderDiff(highlighted.draft, 'added')}</article><textarea aria-label={expansion ? '新增章节正文' : '修改后正文'} value={draft} onChange={(event) => onChange(event.target.value)} onScroll={(event) => { if (previewRef.current) { previewRef.current.scrollTop = event.currentTarget.scrollTop; previewRef.current.scrollLeft = event.currentTarget.scrollLeft; } }} /></div></section></div>;
+  return <div className="manual-review-columns"><section><header><strong>{expansion ? '前一章原文' : '原始正文'}</strong><span>红色为删除或替换 · 只读</span></header><article className="flow-text-surface">{renderDiff(highlighted.original, 'removed')}</article></section><section><header><strong>{expansion ? '新增章节正文' : '修改后正文'}</strong><span>绿色为新增或替换 · 可编辑</span></header><div className="review-diff-editor"><article aria-hidden="true" className="flow-text-surface" ref={previewRef}>{renderDiff(highlighted.draft, 'added')}</article><textarea aria-label={expansion ? '新增章节正文' : '修改后正文'} className="flow-text-surface" value={draft} onChange={(event) => onChange(event.target.value)} onScroll={(event) => { if (previewRef.current) { previewRef.current.scrollTop = event.currentTarget.scrollTop; previewRef.current.scrollLeft = event.currentTarget.scrollLeft; } }} /></div></section></div>;
 }
 function renderDiff(parts: DiffPart[], kind: 'added' | 'removed'): ReactNode { return parts.map((part, index) => part.changed ? <mark className={`review-diff-${kind}`} key={index}>{part.text}</mark> : <span key={index}>{part.text}</span>); }
 function sentenceDiff(original: string, draft: string): { original: DiffPart[]; draft: DiffPart[] } {
@@ -164,9 +223,9 @@ function sentenceDiff(original: string, draft: string): { original: DiffPart[]; 
   return { original: source, draft: target };
 }
 function diffTokens(text: string): string[] { return text.match(/[^。！？!?；;\n]+[。！？!?；;\n]*|[。！？!?；;\n]+/g) ?? (text ? [text] : []); }
-function OutlineTextComparison({ source, target, onChange }: { source: string; target: string; onChange: (value: string) => void }) { return <section className="outline-text-comparison"><header><div><h3>旧大纲</h3><span>只读</span></div><div><h3>新大纲及细节</h3><span>可修改</span></div></header><div className="outline-text-columns"><pre>{source || '暂无旧大纲'}</pre><textarea aria-label="新大纲及细节" onChange={(event) => onChange(event.target.value)} value={target} /></div></section>; }
-function SingleOutlineEditor({ value, onChange }: { value: string; onChange: (value: string) => void }) { return <label className="flow-field single-outline-editor"><span>新大纲</span><textarea aria-label="新大纲" value={value} onChange={(event) => onChange(event.target.value)} /></label>; }
-function EmptyStage({ icon, title }: { icon: ReactNode; title: string }) { return <section className="flow-stage-card empty-stage"><span>{icon}</span><h2>{title}</h2><p>请使用右侧的当前阶段功能继续。</p></section>; }
+function OutlineTextComparison({ source, target, onChange }: { source: string; target: string; onChange: (value: string) => void }) { return <section className="outline-text-comparison"><header><div><h3>旧大纲</h3><span>只读</span></div><div><h3>新大纲及细节</h3><span>可修改</span></div></header><div className="outline-text-columns"><textarea aria-label="旧大纲" className="outline-editor-surface flow-text-surface" readOnly value={source || '暂无旧大纲'} /><textarea aria-label="新大纲及细节" className="outline-editor-surface flow-text-surface" onChange={(event) => onChange(event.target.value)} value={target} /></div></section>; }
+function SingleOutlineEditor({ value, onChange }: { value: string; onChange: (value: string) => void }) { return <label className="flow-field single-outline-editor"><span>新大纲</span><textarea aria-label="新大纲" className="outline-editor-surface flow-text-surface" value={value} onChange={(event) => onChange(event.target.value)} /></label>; }
+function EmptyStage({ icon, title }: { icon: ReactNode; title: string }) { return <section className="flow-stage-card empty-stage"><span>{icon}</span><h2>{title}</h2><p>请使用右侧操作继续。</p></section>; }
 function LockedStage({ text }: { text: string }) { return <section className="flow-stage-card empty-stage"><span><ChevronRight size={22} /></span><h2>前一步尚未完成</h2><p>{text}</p></section>; }
 function stageForState(stage: CreativeWorkflowStage): UiStage { return stage === 'not_started' ? 'summary' : stage === 'confirmed' ? 'review' : stage; }
 function stageComplete(workflow: ChapterWorkflowState, stage: UiStage): boolean { return Boolean(stage === 'summary' ? workflow.summary : stage === 'direction' ? workflow.direction : stage === 'special_analysis' ? workflow.special_analysis : stage === 'style' ? workflow.style : stage === 'writing' ? workflow.writing : workflow.writing?.status === 'reviewed' || workflow.current_stage === 'confirmed'); }

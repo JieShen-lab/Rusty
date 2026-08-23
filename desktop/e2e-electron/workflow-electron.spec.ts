@@ -110,7 +110,7 @@ async function createProject() {
   await expect(page.getByRole('button', { name: /Fake E2E Model/ })).toBeVisible();
   await page.getByRole('button', { name: '下一步' }).click();
   await page.getByRole('button', { name: '开始创建' }).click();
-  await expect(page.getByText('章节创作工作台')).toBeVisible();
+  await expect(page.locator('.creative-project-title h1')).toBeVisible();
   await expect(page.getByRole('button', { name: /第 1 章/ })).toBeVisible();
 }
 
@@ -126,5 +126,5 @@ async function openSeedProject(name: string) {
   await page.getByRole('button', { name: '进入工程' }).click();
   if (name.endsWith('8')) await expect(page.getByText('此项目属于旧版分析工程。')).toBeVisible();
   else if (name === '真实 E2E 4') await expect(page.getByText('扩写工程', { exact: true })).toBeVisible();
-  else await expect(page.getByText('章节创作工作台')).toBeVisible();
+  else await expect(page.locator('.creative-project-title h1')).toBeVisible();
 }

@@ -31,7 +31,10 @@ export type CreativeStrategy = 'plot_adjust' | 'expansion' | 'plot_rewrite';
 export type ChapterSummary = { chapter_id: number; plot_summary: string; main_characters: string; key_events: string; source_hash: string; updated_at: string };
 export type ChapterCreativeIntent = { chapter_id: number; strategy: CreativeStrategy; user_instruction: string; updated_at: string };
 export type ChapterSpecialAnalysis = { chapter_id: number; strategy: CreativeStrategy; source_outline: string; target_outline: string; source_hash: string; updated_at: string };
-export type ChapterStyleContext = { chapter_id: number; strategy: CreativeStrategy; style_mode: 'source_auto' | 'selected_author_style'; author_style_material_id: number | null; style_snapshot: Record<string, unknown>; extraction_settings_snapshot: Record<string, unknown>; generated_guidance: string; source_hash: string; created_at: string };
+export type StyleDimension = { id?: string; name?: string; analysis?: string; features?: string[]; examples?: string[] };
+export type StyleProfile = { schema_version?: number; work?: string; overall_style?: string; dimensions?: StyleDimension[] };
+export type ChapterStyleSnapshot = StyleProfile & { name?: string; description?: string; raw_text?: string; profile?: StyleProfile };
+export type ChapterStyleContext = { chapter_id: number; strategy: CreativeStrategy; style_mode: 'source_auto' | 'selected_author_style'; author_style_material_id: number | null; style_snapshot: ChapterStyleSnapshot; extraction_settings_snapshot: Record<string, unknown>; generated_guidance: string; source_hash: string; created_at: string };
 export type ChapterWriting = { id: number; chapter_id: number; strategy: CreativeStrategy; result_text: string; created_chapter_id: number | null; source_hash: string; status: 'draft' | 'reviewed' | 'confirmed'; updated_at: string };
 export type ChapterWorkflowState = { chapter_id: number; current_stage: CreativeWorkflowStage; source_base_kind: 'original' | 'rewrite_version'; source_base_version_id: number | null; source_hash: string; source_changed: boolean; summary: ChapterSummary | null; direction: ChapterCreativeIntent | null; special_analysis: ChapterSpecialAnalysis | null; style: ChapterStyleContext | null; writing: ChapterWriting | null; updated_at: string };
 

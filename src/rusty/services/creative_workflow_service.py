@@ -17,6 +17,42 @@ from rusty.services.workflow_ai import WorkflowAI
 
 STRATEGIES = {"plot_adjust", "expansion", "plot_rewrite"}
 STAGES = {"not_started", "summary", "direction", "special_analysis", "style", "writing", "review", "confirmed"}
+
+
+def normalize_style_profile(snapshot: object) -> dict[str, Any]:
+    """Return the user-facing style fields from either supported snapshot shape."""
+    source = snapshot if isinstance(snapshot, dict) else {}
+    nested = source.get("profile")
+    profile = nested if isinstance(nested, dict) else source
+
+    def text(value: object) -> str:
+        return value.strip() if isinstance(value, str) else ""
+
+    def strings(value: object) -> list[str]:
+        return [item.strip() for item in value if isinstance(item, str) and item.strip()] if isinstance(value, list) else []
+
+    raw_dimensions = profile.get("dimensions")
+    dimensions: list[dict[str, Any]] = []
+    for item in raw_dimensions if isinstance(raw_dimensions, list) else []:
+        if not isinstance(item, dict):
+            continue
+        name = text(item.get("name"))
+        if not name:
+            continue
+        dimensions.append({
+            "id": text(item.get("id")),
+            "name": name,
+            "analysis": text(item.get("analysis")),
+            "features": strings(item.get("features")),
+            "examples": strings(item.get("examples")),
+        })
+    return {
+        "overall_style": text(profile.get("overall_style")) or text(source.get("overall_style")),
+        "dimensions": dimensions,
+        "work": text(profile.get("work")) or text(source.get("work")),
+    }
+
+
 class WorkflowSourceConflict(ValueError):
     """The current chapter text no longer matches the workflow source."""
 
@@ -452,8 +488,34 @@ class CreativeWorkflowService:
         )
 
     @staticmethod
-    def _style_guidance(snapshot: dict[str, Any]) -> str:
-        return json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"))
+    def _style_guidance(snapshot: object) -> str:
+        profile = normalize_style_profile(snapshot)
+        sections: list[str] = []
+        overall_style = str(profile["overall_style"] or "").strip()
+        if overall_style:
+            sections.extend(["整体风格", overall_style])
+        work = str(profile["work"] or "").strip()
+        if work:
+            sections.append(f"参考作品：{work}")
+        for dimension in profile["dimensions"]:
+            name = str(dimension["name"] or "").strip()
+            analysis = str(dimension["analysis"] or "").strip()
+            features = [str(item).strip() for item in dimension["features"] if str(item).strip()]
+            examples = [str(item).strip() for item in dimension["examples"] if str(item).strip()]
+            if not name or not analysis and not features and not examples:
+                continue
+            if sections:
+                sections.append("")
+            sections.append(name)
+            if analysis:
+                sections.extend(["分析：", analysis])
+            if features:
+                sections.append("主要特征：")
+                sections.extend(f"- {item}" for item in features)
+            if examples:
+                sections.append("参考表现：")
+                sections.extend(f"- {item}" for item in examples)
+        return "\n".join(sections).strip() or "请遵循当前已确定的写作风格。"
 
     @staticmethod
     def _strategy(value: str) -> str:
@@ -465,9 +527,19 @@ class CreativeWorkflowService:
     def _writing_payload(
         strategy: str, source_text: str, target_outline: str, style: dict[str, Any],
     ) -> dict[str, Any]:
+        guidance = str(style.get("generated_guidance") or "").strip()
+        if guidance.startswith(("{", "[")):
+            try:
+                legacy_snapshot = json.loads(guidance)
+            except json.JSONDecodeError:
+                guidance = ""
+            else:
+                guidance = CreativeWorkflowService._style_guidance(legacy_snapshot) if isinstance(legacy_snapshot, dict) else ""
+        if not guidance:
+            guidance = CreativeWorkflowService._style_guidance(style.get("style_snapshot", {}))
         payload: dict[str, Any] = {
             "target_outline": target_outline,
-            "author_style": style["style_snapshot"],
+            "author_style": guidance,
         }
         if strategy == "plot_adjust":
             payload = {"source_text": source_text, **payload}
